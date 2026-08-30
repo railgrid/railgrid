@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -77,6 +78,8 @@ type automaticIntegrationDiscovery struct {
 	failedResourceTypes map[string]struct{}
 	catalogUnavailable  bool
 }
+
+const automaticIntegrationUpdateAttempts = 3
 
 // materializeAutomaticProjectIntegrations temporarily removes the requirement
 // for a user-created integration grant before an assistant turn. It is
@@ -155,14 +158,33 @@ func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *a
 		// controller; this turn-start path must never create or update them.
 		return project, nil
 	}
-	updated, err := c.Projects().Update(ctx, next, metav1.UpdateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("persist automatic provider integrations: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < automaticIntegrationUpdateAttempts; attempt++ {
+		updated, err := c.Projects().Update(ctx, next, metav1.UpdateOptions{})
+		if err == nil {
+			// Do not synchronously reconcile provider resources here. The controller is
+			// the sole owner of provider-resource writes, while read-through status
+			// remains available to subsequent project/integration reads.
+			return updated, nil
+		}
+		lastErr = err
+		if !apierrors.IsConflict(err) || attempt == automaticIntegrationUpdateAttempts-1 {
+			break
+		}
+
+		// The initial Project may have gone stale while automatic discovery was
+		// listing provider resources. Merge only our binding materialization into
+		// the latest object so concurrent user/controller changes to the rest of
+		// the Project survive the retry.
+		next, err = c.Projects().Get(ctx, project.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("persist automatic provider integrations: %w", err)
+		}
+		if !materializeAutomaticIntegrationTargets(next, targets) {
+			return next, nil
+		}
 	}
-	// Do not synchronously reconcile provider resources here. The controller is
-	// the sole owner of provider-resource writes, while read-through status
-	// remains available to subsequent project/integration reads.
-	return updated, nil
+	return nil, fmt.Errorf("persist automatic provider integrations: %w", lastErr)
 }
 
 func automaticProviderCatalogResources(catalog []providerCatalogEntry) []automaticProviderCatalogResource {

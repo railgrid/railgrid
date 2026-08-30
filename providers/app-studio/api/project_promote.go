@@ -160,6 +160,9 @@ var projectPlatformOwnedProductionFields = map[string]struct{}{
 	projectRedeployRevisionField: {},
 	"farosCluster":               {},
 	"credentialsSecretName":      {},
+	// Publishing is the only mutation boundary for template-native access.
+	// Promotion preserves the current policy and starts new deployments private.
+	accessValueField: {},
 }
 
 // Nested platform-owned fields need explicit paths because expose itself is a
@@ -226,6 +229,9 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 	if err := preserveAndValidateProjectImmutableInputs(p, info, merged); err != nil {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, err
 	}
+	if projectTemplateSupportsAccess(info) {
+		merged[accessValueField] = projectProductionAccessValue(p)
+	}
 	for imageInput, image := range images {
 		merged[imageInput] = image
 	}
@@ -251,6 +257,26 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 		},
 		Values: runtime.RawExtension{Raw: raw},
 	}, nil
+}
+
+func projectTemplateSupportsAccess(info projectTemplateInfo) bool {
+	properties, _ := info.ProductionSchema["properties"].(map[string]any)
+	_, supported := properties[accessValueField]
+	return supported
+}
+
+func projectProductionAccessValue(p *aiv1alpha1.Project) string {
+	if binding := findProjectProductionBinding(p); binding != nil {
+		if values := projectBindingValues(binding); values != nil {
+			if access, _ := values[accessValueField].(string); access == accessPublic || access == accessPrivate {
+				return access
+			}
+		}
+		// Older production bindings omitted access and were interpreted as public
+		// by the runtime. Preserve that policy when redeploying them.
+		return accessPublic
+	}
+	return accessPrivate
 }
 
 // projectProductionInputValues keeps the promotion boundary honest even when

@@ -40,6 +40,20 @@ func applicationTemplateForPromote() projectTemplateInfo {
 	return info
 }
 
+func applicationTemplateForPromoteWithAccess() projectTemplateInfo {
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			accessValueField: map[string]any{
+				"type": "string",
+				"enum": []any{accessPublic, accessPrivate},
+			},
+		},
+	}
+	return info
+}
+
 func projectForPromote(name string) *aiv1alpha1.Project {
 	return &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -69,7 +83,7 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 		"frontendImage":              "ghcr.io/evil/x@sha256:ccc",
 		projectRedeployRevisionField: "attacker-revision",
 	}
-	binding, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images, values)
+	binding, err := projectTemplateProdBinding(p, applicationTemplateForPromoteWithAccess(), images, values)
 	if err != nil {
 		t.Fatalf("projectTemplateProdBinding: %v", err)
 	}
@@ -99,6 +113,9 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	if revision, _ := vals[projectRedeployRevisionField].(string); revision == "" || revision == "attacker-revision" {
 		t.Fatalf("%s = %q, want a non-empty platform revision that ignores the user value", projectRedeployRevisionField, revision)
 	}
+	if vals[accessValueField] != accessPrivate {
+		t.Fatalf("access = %v, want a safe private first deployment", vals[accessValueField])
+	}
 	// Non-reserved production knobs pass through.
 	if vals["frontendPort"] != float64(8080) || vals["backendPort"] != float64(3000) {
 		t.Fatalf("ports not preserved: %v / %v", vals["frontendPort"], vals["backendPort"])
@@ -106,7 +123,7 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 }
 
 func TestProjectProductionInputValuesExcludePlatformAndImageOwnedFields(t *testing.T) {
-	info := applicationTemplateForPromote()
+	info := applicationTemplateForPromoteWithAccess()
 	info.ProductionSchema = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -128,9 +145,75 @@ func TestProjectProductionInputValuesExcludePlatformAndImageOwnedFields(t *testi
 		"name":         "attacker-name",
 		"expose":       map[string]any{"hostnamePrefix": "shop", "fqdn": "attacker.example"},
 	})
-	want := map[string]any{"access": "private", "expose": map[string]any{"hostnamePrefix": "shop"}}
+	want := map[string]any{"expose": map[string]any{"hostnamePrefix": "shop"}}
 	if !reflect.DeepEqual(values, want) {
 		t.Fatalf("filtered production values = %#v, want %#v", values, want)
+	}
+}
+
+func TestProjectTemplateProdBindingPreservesPublishingOwnedAccess(t *testing.T) {
+	p := projectForPromote("shop")
+	info := applicationTemplateForPromoteWithAccess()
+	images := map[string]string{"frontendImage": "frontend@sha256:built"}
+	current, err := projectTemplateProdBinding(p, info, images, nil)
+	if err != nil {
+		t.Fatalf("first projectTemplateProdBinding: %v", err)
+	}
+	currentValues, err := aiv1alpha1BindingValues(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentValues[accessValueField] = accessPublic
+	raw, err := json.Marshal(currentValues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Values.Raw = raw
+	upsertProjectProductionBinding(p, current)
+
+	redeployed, err := projectTemplateProdBinding(p, info, images, map[string]any{accessValueField: accessPrivate})
+	if err != nil {
+		t.Fatalf("redeploy projectTemplateProdBinding: %v", err)
+	}
+	redeployedValues, err := aiv1alpha1BindingValues(redeployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redeployedValues[accessValueField] != accessPublic {
+		t.Fatalf("redeployed access = %v, want preserved public policy", redeployedValues[accessValueField])
+	}
+}
+
+func TestProjectTemplateProdBindingPreservesLegacyImplicitPublicAccess(t *testing.T) {
+	p := projectForPromote("shop")
+	info := applicationTemplateForPromoteWithAccess()
+	images := map[string]string{"frontendImage": "frontend@sha256:built"}
+	current, err := projectTemplateProdBinding(p, info, images, nil)
+	if err != nil {
+		t.Fatalf("first projectTemplateProdBinding: %v", err)
+	}
+	currentValues, err := aiv1alpha1BindingValues(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(currentValues, accessValueField)
+	raw, err := json.Marshal(currentValues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Values.Raw = raw
+	upsertProjectProductionBinding(p, current)
+
+	redeployed, err := projectTemplateProdBinding(p, info, images, nil)
+	if err != nil {
+		t.Fatalf("redeploy projectTemplateProdBinding: %v", err)
+	}
+	redeployedValues, err := aiv1alpha1BindingValues(redeployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redeployedValues[accessValueField] != accessPublic {
+		t.Fatalf("redeployed access = %v, want preserved legacy public policy", redeployedValues[accessValueField])
 	}
 }
 

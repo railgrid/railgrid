@@ -20,8 +20,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -154,6 +156,182 @@ func TestMaterializeAutomaticProjectIntegrationsPreservesRevocations(t *testing.
 	}
 }
 
+func TestMaterializeAutomaticProjectIntegrationsRetriesConflictAndPreservesConcurrentSpec(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		TypeMeta:   metav1.TypeMeta{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
+		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
+	}
+	server, c := automaticIntegrationTestServer(t, project, []string{"orders"})
+	dyn, ok := c.Dynamic().(*fake.FakeDynamicClient)
+	if !ok {
+		t.Fatal("dynamic client is not a fake dynamic client")
+	}
+
+	latest := project.DeepCopy()
+	latest.ResourceVersion = "2"
+	latest.Spec.Memory.Constraints = []string{"preserve concurrent edit"}
+	var updateCalls, getCalls int
+	dyn.PrependReactor("update", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalls++
+		if updateCalls == 1 {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: aiv1alpha1.GroupName, Resource: "projects"},
+				project.Name,
+				errors.New("the object has been modified"),
+			)
+		}
+		return false, nil, nil
+	})
+	dyn.PrependReactor("get", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getCalls++
+		if getCalls == 1 {
+			return true, latest.DeepCopy(), nil
+		}
+		return false, nil, nil
+	})
+
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	if err != nil {
+		t.Fatalf("materialize automatic integrations after conflict: %v", err)
+	}
+	if updateCalls != 2 {
+		t.Fatalf("project update calls = %d, want one conflict followed by one retry", updateCalls)
+	}
+	if getCalls != 1 {
+		t.Fatalf("project get calls after conflict = %d, want one fresh read", getCalls)
+	}
+	if got == nil || len(got.Spec.Environments) != 1 || len(got.Spec.Environments[0].Bindings) != 1 {
+		t.Fatalf("retried project bindings = %#v, want one persisted automatic binding", got)
+	}
+	if !reflect.DeepEqual(got.Spec.Memory.Constraints, latest.Spec.Memory.Constraints) {
+		t.Fatalf("concurrent project spec change = %#v, want %#v", got.Spec.Memory.Constraints, latest.Spec.Memory.Constraints)
+	}
+	binding := got.Spec.Environments[0].Bindings[0]
+	if binding.Provider != projectIntegrationProviderDatabricks || binding.ResourceRef == nil || binding.ResourceRef.Name != "orders" {
+		t.Fatalf("retried automatic binding = %#v, want databricks orders reference", binding)
+	}
+}
+
+func TestMaterializeAutomaticProjectIntegrationsConflictWithExistingBindingSkipsRetryUpdate(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		TypeMeta:   metav1.TypeMeta{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
+		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
+	}
+	server, c := automaticIntegrationTestServer(t, project, []string{"orders"})
+	dyn, ok := c.Dynamic().(*fake.FakeDynamicClient)
+	if !ok {
+		t.Fatal("dynamic client is not a fake dynamic client")
+	}
+	latest := projectWithTableIntegration(false)
+	latest.ResourceVersion = "2"
+	latest.Spec.Memory.Constraints = []string{"preserve concurrent edit"}
+	grantedAt := metav1.Now()
+	latestBinding := &latest.Spec.Environments[0].Bindings[0]
+	latestBinding.AllowedActions[0].GrantedBy = automaticProviderActionGrantedBy
+	latestBinding.AllowedActions[0].GrantedAt = &grantedAt
+	latestBinding.AllowedActions = append(latestBinding.AllowedActions, aiv1alpha1.ProjectProviderActionSpec{
+		Name:         "update_table",
+		Version:      "v1",
+		SchemaDigest: "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		GrantedBy:    automaticProviderActionGrantedBy,
+		GrantedAt:    &grantedAt,
+	})
+	var updateCalls, getCalls int
+	dyn.PrependReactor("update", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalls++
+		return true, nil, apierrors.NewConflict(
+			schema.GroupResource{Group: aiv1alpha1.GroupName, Resource: "projects"},
+			project.Name,
+			errors.New("the object has been modified"),
+		)
+	})
+	dyn.PrependReactor("get", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getCalls++
+		return true, latest.DeepCopy(), nil
+	})
+
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	if err != nil {
+		t.Fatalf("materialize automatic integrations with existing binding: %v", err)
+	}
+	if updateCalls != 1 {
+		t.Fatalf("project update calls = %d, want no retry update after fresh object is already current", updateCalls)
+	}
+	if getCalls != 1 {
+		t.Fatalf("project get calls after conflict = %d, want one fresh read", getCalls)
+	}
+	if !reflect.DeepEqual(got.Spec.Memory.Constraints, latest.Spec.Memory.Constraints) {
+		t.Fatalf("latest concurrent spec change = %#v, want %#v", got.Spec.Memory.Constraints, latest.Spec.Memory.Constraints)
+	}
+	if len(got.Spec.Environments) != 1 || len(got.Spec.Environments[0].Bindings) != 1 || len(got.Spec.Environments[0].Bindings[0].AllowedActions) != 2 {
+		t.Fatalf("latest automatic binding = %#v, want existing binding with two actions", got.Spec.Environments)
+	}
+}
+
+func TestMaterializeAutomaticProjectIntegrationsNonConflictUpdateErrorDoesNotRetry(t *testing.T) {
+	server, project, dyn := automaticIntegrationFailureFixture(t)
+	updateErr := errors.New("project update unavailable")
+	var updateCalls, getCalls int
+	dyn.PrependReactor("update", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalls++
+		return true, nil, updateErr
+	})
+	dyn.PrependReactor("get", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getCalls++
+		return false, nil, nil
+	})
+
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), identity{}, project)
+	if err == nil || !strings.HasPrefix(err.Error(), "persist automatic provider integrations: ") {
+		t.Fatalf("non-conflict update result = project %v, err %v; want wrapped persistence error", got, err)
+	}
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("wrapped update error = %v, want original error", err)
+	}
+	if updateCalls != 1 {
+		t.Fatalf("project update calls = %d, want immediate failure without retry", updateCalls)
+	}
+	if getCalls != 0 {
+		t.Fatalf("project get calls after non-conflict error = %d, want no reload", getCalls)
+	}
+}
+
+func TestMaterializeAutomaticProjectIntegrationsStopsAfterConflictAttemptLimit(t *testing.T) {
+	server, project, dyn := automaticIntegrationFailureFixture(t)
+	latest := project.DeepCopy()
+	latest.ResourceVersion = "2"
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: aiv1alpha1.GroupName, Resource: "projects"},
+		project.Name,
+		errors.New("the object has been modified"),
+	)
+	var updateCalls, getCalls int
+	dyn.PrependReactor("update", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updateCalls++
+		return true, nil, conflictErr
+	})
+	dyn.PrependReactor("get", "projects", func(k8stesting.Action) (bool, runtime.Object, error) {
+		getCalls++
+		return true, latest.DeepCopy(), nil
+	})
+
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), identity{}, project)
+	if got != nil || err == nil || !strings.HasPrefix(err.Error(), "persist automatic provider integrations: ") {
+		t.Fatalf("repeated conflict result = project %v, err %v; want wrapped conflict", got, err)
+	}
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("repeated conflict error = %v, want conflict", err)
+	}
+	if updateCalls != automaticIntegrationUpdateAttempts {
+		t.Fatalf("project update calls = %d, want bounded attempt count %d", updateCalls, automaticIntegrationUpdateAttempts)
+	}
+	if getCalls != automaticIntegrationUpdateAttempts-1 {
+		t.Fatalf("project get calls after repeated conflicts = %d, want %d", getCalls, automaticIntegrationUpdateAttempts-1)
+	}
+}
+
 func TestMaterializeAutomaticProjectIntegrationsCatalogAndListFailuresAreBestEffort(t *testing.T) {
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo"}, Spec: aiv1alpha1.ProjectSpec{DisplayName: "Demo"}}
 	scheme := runtime.NewScheme()
@@ -211,4 +389,19 @@ func automaticIntegrationTestServer(t *testing.T, project *aiv1alpha1.Project, n
 		}}}, nil
 	}
 	return server, asclient.NewFromDynamic(dyn)
+}
+
+func automaticIntegrationFailureFixture(t *testing.T) (*Server, *aiv1alpha1.Project, *fake.FakeDynamicClient) {
+	t.Helper()
+	project := &aiv1alpha1.Project{
+		TypeMeta:   metav1.TypeMeta{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
+		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
+	}
+	server, c := automaticIntegrationTestServer(t, project, []string{"orders"})
+	dyn, ok := c.Dynamic().(*fake.FakeDynamicClient)
+	if !ok {
+		t.Fatal("dynamic client is not a fake dynamic client")
+	}
+	return server, project, dyn
 }

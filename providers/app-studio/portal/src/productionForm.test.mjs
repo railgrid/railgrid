@@ -43,7 +43,7 @@ const schema = {
 test('filters platform and image-owned fields while retaining persisted production values', () => {
   assert.deepEqual(
     visibleProductionProperties(schema, ['webImage']).map(([name]) => name),
-    ['access', 'database', 'webEnv', 'emailDomains'],
+    ['database', 'webEnv', 'emailDomains'],
   )
   assert.deepEqual(
     productionFormValuesFromSchema(schema, {
@@ -53,13 +53,12 @@ test('filters platform and image-owned fields while retaining persisted producti
       webImage: 'ignored',
       farosRedeployRevision: 'ignored',
     }, ['webImage']),
-    { access: 'private', database: { size: 'large', version: '16' }, webEnv: {}, emailDomains: [] },
+    { database: { size: 'large', version: '16' }, webEnv: {}, emailDomains: [] },
   )
 })
 
 test('hydrates defaults for first render without overwriting explicit values', () => {
   assert.deepEqual(productionFormValuesFromSchema(schema, {}, ['webImage']), {
-    access: 'public',
     database: { size: 'small', version: '16' },
     webEnv: {},
     emailDomains: [],

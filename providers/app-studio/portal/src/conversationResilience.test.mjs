@@ -183,7 +183,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(productionLoadingSource, /Loading production settings…/)
   assert.match(productionLoadingSource, /aria-busy="true"/)
   assert.match(appSource, /Production status is unavailable\. Refresh to retry\./)
-  assert.match(appSource, /Production settings are unavailable\. Refresh to retry\./)
+  assert.match(appSource, /Production configuration is unavailable\. Refresh to retry\./)
   assert.match(appSource, /if \(isProjectAPIInitializingError\(err\)\)[\s\S]*promotionError\.value/)
   assert.match(appSource, /Connecting to preview…/)
   assert.match(appSource, /const assistantComposerStopControl = computed\(\(\) => assistantComposerStopControlState\(/)

@@ -370,9 +370,13 @@ export interface ProjectAssistantFollowUpQuestionOption {
 
 export interface Project {
   name: string
+  /** Immutable Kubernetes identity; names can be reused after deletion. */
+  uid?: string
   displayName: string
   description?: string
   phase?: string
+  /** True when metadata.deletionTimestamp is present on the Project. */
+  deleting?: boolean
   template?: string
   repository?: {
     ref: string

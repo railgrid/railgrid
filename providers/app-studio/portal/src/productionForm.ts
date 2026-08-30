@@ -36,6 +36,11 @@ const ALWAYS_PLATFORM_OWNED = new Set([
   'credentialsSecretName',
 ])
 
+// App Studio publishing owns the template-native access field. Keeping it out
+// of the generic production form gives access one user-facing owner (Share)
+// and prevents a redeploy from silently changing who can reach the app.
+const PUBLISHING_OWNED = new Set(['access'])
+
 function clone<T>(value: T): T {
   if (value === undefined || value === null) return value
   if (typeof structuredClone === 'function') return structuredClone(value)
@@ -47,7 +52,7 @@ function hasOwn(values: Record<string, unknown>, key: string): boolean {
 }
 
 export function isPlatformOwnedField(name: string, schema: JSONSchema, imageInputs: string[] = []): boolean {
-  if (ALWAYS_PLATFORM_OWNED.has(name) || imageInputs.includes(name)) return true
+  if (ALWAYS_PLATFORM_OWNED.has(name) || PUBLISHING_OWNED.has(name) || imageInputs.includes(name)) return true
   return /^computed by the platform\b/i.test(schema.description?.trim() ?? '')
 }
 

@@ -158,6 +158,10 @@ watch(
 // Mount only after both catalog and workspace access are settled. This also
 // handles provider/org/workspace changes: an access transition first detaches
 // the old element, then a fresh bundle instance is created for the new scope.
+// mountRef is part of the watched identity because AppLayout temporarily
+// suppresses its slot while a persisted workspace hydrates on hard refresh.
+// Starting the loader before that outlet exists would let the script finish
+// with nowhere to mount and leave loadState stuck at "loading" forever.
 watch(
   () => [
     entry.value?.name,
@@ -165,11 +169,12 @@ watch(
     entry.value?.ready,
     catalogSettled.value,
     accessAllowed.value,
+    mountRef.value,
   ] as const,
-  async ([name, version, ready, settled, allowed]) => {
+  async ([name, version, ready, settled, allowed, mount]) => {
     clearMountedElement()
-    if (!name || !ready || !settled || !allowed) return
-    await loadAndMount(name, version)
+    if (!name || !ready || !settled || !allowed || !mount) return
+    await loadAndMount(name, version, mount)
   },
   { immediate: true, flush: 'post' },
 )
@@ -205,9 +210,16 @@ watch(
     // initial load, invalidating the generation here would abandon the real
     // loader and leave the frame stuck in its loading state.
     if (loadState.value !== 'ready' || !accessAllowed.value || !entry.value?.ready) return
+    const generation = mountGeneration
+    const name = entry.value.name
     await nextTick()
-    if (!accessAllowed.value || !entry.value) return
-    mountElement(entry.value.name)
+    if (
+      generation !== mountGeneration ||
+      loadState.value !== 'ready' ||
+      !accessAllowed.value ||
+      entry.value?.name !== name
+    ) return
+    mountElement(name)
   },
   { flush: 'post' },
 )
@@ -259,7 +271,7 @@ function mountElement(name: string, generation?: number): boolean {
   return true
 }
 
-async function loadAndMount(name: string, version: string | undefined) {
+async function loadAndMount(name: string, version: string | undefined, mount: HTMLDivElement) {
   const generation = ++mountGeneration
   loadState.value = 'loading'
   loadError.value = null
@@ -305,11 +317,15 @@ async function loadAndMount(name: string, version: string | undefined) {
     return
   }
 
-  if (!isCurrentMount(generation, name)) return
+  if (!isCurrentMount(generation, name) || mountRef.value !== mount) return
   // The access-approved div is created by the same render that flips
   // accessAllowed. Wait one tick so the ref points at that fresh node.
   await nextTick()
-  if (!isCurrentMount(generation, name) || !mountElement(name, generation)) return
+  if (
+    !isCurrentMount(generation, name) ||
+    mountRef.value !== mount ||
+    !mountElement(name, generation)
+  ) return
   loadState.value = 'ready'
 }
 

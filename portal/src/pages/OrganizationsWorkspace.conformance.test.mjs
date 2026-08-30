@@ -1424,6 +1424,25 @@ test('provider catalog and binding checks have finite loading, missing, error, a
   assert.match(providersStore, /if \(requestSequence !== bindingRequestSequence\) return/)
 })
 
+test('provider hard refresh waits for the hydrated AppLayout mount outlet', () => {
+  const mountWatchStart = providerFrame.indexOf('// Mount only after both catalog and workspace access are settled.')
+  const mountWatchEnd = providerFrame.indexOf('// Theme / token / sub-route changes', mountWatchStart)
+  assert.ok(mountWatchStart >= 0 && mountWatchEnd > mountWatchStart)
+  const mountWatch = providerFrame.slice(mountWatchStart, mountWatchEnd)
+
+  assert.match(mountWatch, /mountRef\.value/)
+  assert.match(mountWatch, /async \(\[name, version, ready, settled, allowed, mount\]\) =>/)
+  assert.match(mountWatch, /if \(!name \|\| !ready \|\| !settled \|\| !allowed \|\| !mount\) return/)
+  assert.match(mountWatch, /await loadAndMount\(name, version, mount\)/)
+
+  const loaderStart = providerFrame.indexOf('async function loadAndMount(')
+  const loaderEnd = providerFrame.indexOf('\n}\n\nfunction pushContext', loaderStart)
+  assert.ok(loaderStart >= 0 && loaderEnd > loaderStart)
+  const loader = providerFrame.slice(loaderStart, loaderEnd)
+  assert.match(loader, /mount: HTMLDivElement/)
+  assert.equal((loader.match(/mountRef\.value !== mount/g) ?? []).length, 2)
+})
+
 test('provider binding reads and disables ignore stale tenant work', () => {
   const refreshStart = providersStore.indexOf('async function refreshBindings()')
   const refreshEnd = providersStore.indexOf('\n\n  // enable hits', refreshStart)

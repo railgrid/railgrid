@@ -59,7 +59,7 @@ free.
 | `--color-success` | `#2fd6a0` | `#0c9c66` | + `-subtle` at 12% alpha (light: `#e5f6ef`), + `-border` at 30% |
 | `--color-warning` | `#f0a63a` | `#c07508` | + `-subtle` (light: `#fdf2e0`) |
 | `--color-danger` | `#ff5d5d` | `#d63a40` | + `-subtle` (light: `#fcebec`), + `-hover` (`#ff7676` / `#bf2f35`) |
-| `--color-danger-surface`, `--color-surface-base`, `--color-text-error`, `--color-on-accent` | aliases | aliases | Compatibility aliases (= danger-subtle / surface / danger / `#fff`) so no `var()` ever falls through to a stale literal |
+| `--color-danger-surface`, `--color-surface-base`, `--color-text-error`, `--color-on-accent` | aliases | aliases | Compatibility aliases (= danger-subtle / surface / danger / `#0a0b12` dark, `#fff` light) so no `var()` ever falls through to a stale literal |
 
 Rules:
 
@@ -465,6 +465,10 @@ and resource-specific content:
 - Primary header anchors that use an accent background retain the
   `text-on-accent` contrast token in both normal and hover states; changing the
   background to `accent-hover` must not reduce readable contrast.
+- Solid accent actions use `--color-on-accent`: near-black text on the bright
+  dark-theme violet and white text on the light-theme violet. Keep this token
+  shared across the host and standalone provider fallbacks so normal-size
+  labels remain readable.
 - The read contract distinguishes first-load loading and error states from a
   later refresh failure. A successful snapshot remains visible when a later
   read fails, with a stale/error notice and `Retry`; `ResourcePage` emits retry

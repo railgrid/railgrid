@@ -105,7 +105,7 @@ test('uses the canonical status badge recipe without a provider-local restatemen
 })
 
 test('compiles text-on-accent with a host-token fallback without leaking self-referential tokens', () => {
-  assert.match(styles, /--color-on-accent:\s*var\(--color-on-accent,\s*#[f]{3}\)/)
+  assert.match(styles, /--color-on-accent:\s*var\(--color-on-accent,\s*#0a0b12\)/)
   assert.match(main, /const styles = rawStyles\.replace\(/)
   assert.match(main, /--color-\[\\w-\]\+:var\\\(--color\[\^;}\]\*;\?\/g/)
 })

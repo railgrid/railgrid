@@ -98,6 +98,26 @@ func TestProjectViewDefaultsMissingSharingToPrivate(t *testing.T) {
 	}
 }
 
+func TestProjectViewExposesImmutableIdentityAndDeletionState(t *testing.T) {
+	now := metav1.Now()
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "todo",
+			UID:               "project-uid",
+			DeletionTimestamp: &now,
+		},
+		Spec: aiv1alpha1.ProjectSpec{DisplayName: "Todo"},
+	}
+
+	view := projectView(context.Background(), nil, project, identity{})
+	if got, want := view.UID, "project-uid"; got != want {
+		t.Fatalf("UID = %q, want %q", got, want)
+	}
+	if !view.Deleting {
+		t.Fatal("Deleting = false, want true when metadata.deletionTimestamp is present")
+	}
+}
+
 func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},

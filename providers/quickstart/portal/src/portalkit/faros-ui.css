@@ -170,7 +170,7 @@ html.light .k-card {
 }
 .k-btn--primary {
   background: var(--color-accent, #8b6bff);
-  color: var(--color-on-accent, #ffffff);
+  color: var(--color-on-accent, #0a0b12);
   box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 .k-btn--primary:hover {
@@ -772,11 +772,11 @@ html.light [data-k-tip]::after {
 .k-tab--active .k-tab__count,
 .k-tab[aria-current="page"] .k-tab__count {
   background: var(--color-accent, #8b6bff);
-  color: var(--color-on-accent, #ffffff);
+  color: var(--color-on-accent, #0a0b12);
 }
 .k-tab__count--attention {
   background: var(--color-warning, #f0a63a);
-  color: var(--color-on-accent, #ffffff);
+  color: var(--color-on-accent, #0a0b12);
 }
 .k-tabs--compact {
   gap: 4px;
@@ -886,13 +886,13 @@ html.light [data-k-tip]::after {
 }
 .k-modal-btn--confirm {
   background: var(--color-accent, #8b6bff);
-  color: var(--color-on-accent, #ffffff);
+  color: var(--color-on-accent, #0a0b12);
   box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 .k-modal-btn--confirm:hover { background: var(--color-accent-hover, #a18aff); }
 .k-modal-btn--danger {
   background: var(--color-danger, #ff5d5d);
-  color: var(--color-on-accent, #ffffff);
+  color: var(--color-on-accent, #0a0b12);
   box-shadow: none;
 }
 .k-modal-btn--danger:hover { background: var(--color-danger-hover, #ff7676); }

@@ -79,7 +79,9 @@
   --color-danger-surface: rgba(255, 93, 93, 0.12);
   --color-surface-base: #0a0b12;
   --color-text-error: #ff5d5d;
-  --color-on-accent: #ffffff;
+  /* Violet Circuit's dark accent is bright enough for near-black text; this
+   * keeps normal-size primary actions at readable contrast. */
+  --color-on-accent: #0a0b12;
 }
 
 /* ── Light override (sharpened light — same shapes, glow becomes shadow) ── */

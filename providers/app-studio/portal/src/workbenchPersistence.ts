@@ -42,6 +42,8 @@ export interface WorkbenchPersistedState {
 
 export const WORKBENCH_PERSISTENCE_VERSION = 1 as const
 export const WORKBENCH_PERSISTENCE_PREFIX = 'faros:app-studio:workbench:v1'
+/** Visibility is an independent preference, so hiding the pane never mutates a saved tab layout. */
+export const WORKBENCH_VISIBILITY_STORAGE_KEY = 'faros:app-studio:workbench-visible:v1'
 
 // A workbench is intentionally small. This bound protects the portal from a
 // manually edited or otherwise corrupted localStorage value while leaving
@@ -70,6 +72,37 @@ function defaultStorage(): WorkbenchPersistenceStorage | undefined {
     return window.localStorage
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Read the pane visibility preference. A missing or inaccessible preference
+ * keeps the workbench visible so the primary project surface remains usable.
+ */
+export function readWorkbenchVisibility(
+  storage: WorkbenchPersistenceStorage | null | undefined = defaultStorage(),
+): boolean {
+  if (!storage) return true
+  try {
+    const value = storage.getItem(WORKBENCH_VISIBILITY_STORAGE_KEY)
+    if (value === '1') return true
+    if (value === '0') return false
+    return true
+  } catch {
+    return true
+  }
+}
+
+/** Persist pane visibility without making storage policy a UI failure. */
+export function writeWorkbenchVisibility(
+  visible: boolean,
+  storage: WorkbenchPersistenceStorage | null | undefined = defaultStorage(),
+): void {
+  if (!storage) return
+  try {
+    storage.setItem(WORKBENCH_VISIBILITY_STORAGE_KEY, visible ? '1' : '0')
+  } catch {
+    // Visibility is a progressive preference; the in-memory state remains valid.
   }
 }
 

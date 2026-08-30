@@ -36,6 +36,8 @@ function storeMode(mode: ThemeMode): void {
 function applyTheme(resolved: 'light' | 'dark') {
   document.documentElement.classList.toggle('dark', resolved === 'dark')
   document.documentElement.classList.toggle('light', resolved === 'light')
+  document.querySelector<HTMLMetaElement>('#faros-color-scheme')?.setAttribute('content', resolved)
+  document.documentElement.style.colorScheme = resolved
 }
 
 export const useThemeStore = defineStore('theme', () => {

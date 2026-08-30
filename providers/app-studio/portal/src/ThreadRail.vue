@@ -76,6 +76,12 @@ let railResizeObserver: ResizeObserver | undefined
 const expanded = computed(() => anchored.value || interactionExpanded.value)
 const visibleExpanded = computed(() => expanded.value && (!mobileViewport.value || mobileOpen.value))
 const effectiveWidth = computed(() => Math.min(railWidth.value, availableWidthCap.value))
+// The rail is an in-flow flex item only while it is anchored on desktop. A
+// collapsed or hover-expanded rail keeps its panel absolute so it can preview
+// over the conversation without reserving any conversation width.
+const layoutWidth = computed(() => (
+  !mobileViewport.value && !mobileOpen.value && anchored.value ? effectiveWidth.value : 0
+))
 const railStyle = computed(() => ({ '--thread-rail-width': `${effectiveWidth.value}px` }))
 const unreadThreadIDSet = computed(() => new Set(
   props.unreadThreadIDs.filter((threadID) => threadID !== props.activeThreadID),
@@ -479,6 +485,7 @@ defineExpose({
   open: () => open(false),
   openAndFocus: () => open(true),
   expanded: visibleExpanded,
+  layoutWidth,
   panelID: THREAD_RAIL_PANEL_ID,
   toggle: togglePanel,
   focusThread,

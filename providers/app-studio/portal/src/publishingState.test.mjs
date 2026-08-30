@@ -49,7 +49,7 @@ test('presents unknown, disabled, enabling, and enabled access without guessing'
   assert.deepEqual(publishingAccessPresentation({ published: false }), {
     label: 'Disabled',
     tone: 'muted',
-    description: 'Choose Public or Invite-only, then select Enable access.',
+    description: 'Use Share to choose who can open the production app.',
     loading: false,
   })
   assert.deepEqual(publishingAccessPresentation({ published: true }), {
@@ -128,7 +128,7 @@ test('keeps production copy deployment-focused while directing unpublished apps 
   )
   assert.equal(
     productionDeploymentDescription({ phase: 'Ready' }, { published: false }),
-    'Production is running but not published. Choose Public or Invite-only below, then select Enable access.',
+    'Production is running with no active access policy. Use Share to choose who can open it.',
   )
   assert.equal(
     productionDeploymentDescription({ phase: 'Ready' }, {

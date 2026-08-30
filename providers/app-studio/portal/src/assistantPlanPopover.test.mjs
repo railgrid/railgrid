@@ -120,7 +120,7 @@ test('programmatic active-project prompts replace rich composer state atomically
   assert.match(replacement, /prompt\.value = value/)
   assert.match(replacement, /assistantComposerParts\.value = \[\{ type: 'text', text: value \}\]/)
 
-  const starter = appSource.slice(appSource.indexOf('async function applyStarterPrompt'), appSource.indexOf('async function applyLandingCategory'))
+  const starter = appSource.slice(appSource.indexOf('async function applyStarterPrompt'), appSource.indexOf('async function applyLandingStarterPrompt'))
   assert.match(starter, /replaceAssistantComposerText\(value\)/)
   assert.match(starter, /assistantComposerRef\.value\?\.focus\(\)/)
   assert.doesNotMatch(starter, /promptRef/)

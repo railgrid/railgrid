@@ -667,6 +667,22 @@ test('scans host and standalone surfaces while recognizing exact authorities', (
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.path.endsWith('/public/index.html') && diagnostic.match === '#abc'))
 })
 
+test('accepts both theme-correct on-accent fallbacks without allowing raw foreground colors', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/style.css': [
+      '.dark-action { color: var(--color-on-accent, #0a0b12); }',
+      '.light-action { color: var(--color-on-accent, #ffffff); }',
+      '.bad { color: #0a0b12; }',
+      '',
+    ].join('\n'),
+  })
+  const result = fixture.run()
+  const rawColors = result.diagnostics.filter((diagnostic) => diagnostic.rule === RULES.RAW_COLOR)
+  assert.equal(rawColors.length, 1)
+  assert.equal(rawColors[0].match, '#0a0b12')
+  assert.match(rawColors[0].path, /providers\/fixture\/portal\/src\/style\.css$/)
+})
+
 test('rejects unknown color token declarations in authority stylesheets', () => {
   const fixture = fixtureRepo({
     'providers/fixture/portal/src/style.css': ':root { --color-surafce: #0a0b12; }\n',

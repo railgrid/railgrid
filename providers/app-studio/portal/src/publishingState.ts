@@ -107,7 +107,7 @@ export function productionDeploymentDescription(
     case 'Publishing':
       return 'The production deployment is running while external access is being enabled.'
     default:
-      return 'Production is running but not published. Choose Public or Invite-only below, then select Enable access.'
+      return 'Production is running with no active access policy. Use Share to choose who can open it.'
   }
 }
 
@@ -126,7 +126,7 @@ export function publishingAccessPresentation(
     return {
       label: 'Disabled',
       tone: 'muted',
-      description: 'Choose Public or Invite-only, then select Enable access.',
+      description: 'Use Share to choose who can open the production app.',
       loading: false,
     }
   }

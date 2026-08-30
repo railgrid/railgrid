@@ -306,8 +306,8 @@ func (g *gqlResource) UpdateStatus(ctx context.Context, obj *unstructured.Unstru
 	return obj, nil
 }
 
-func (g *gqlResource) Delete(ctx context.Context, name string, _ metav1.DeleteOptions, _ ...string) error {
-	return g.scope.Delete(ctx, g.res, g.namespace, name)
+func (g *gqlResource) Delete(ctx context.Context, name string, opts metav1.DeleteOptions, _ ...string) error {
+	return g.scope.DeleteWithOptions(ctx, g.res, g.namespace, name, opts)
 }
 
 // Patch supports only the status subresource (the sole patch App Studio uses).

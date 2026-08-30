@@ -47,6 +47,7 @@ import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue
 import { useDelayedLoading } from './portalkit/useDelayedLoading'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from './portalkit/layoutPreference'
+import { toast } from './portalkit/toast'
 import {
   canSubmitCreatePrompt,
   createSetupItems,
@@ -147,6 +148,12 @@ import {
   publishingAccessSelection,
   shouldPollPublishing,
 } from './publishingState'
+import {
+  createProjectDeletionController,
+  sameProjectIdentity,
+  type ProjectDeletionContext,
+  type ProjectDeletionIdentity,
+} from './projectDeletion'
 import NewProjectWizard from './NewProjectWizard.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
 import {
@@ -183,6 +190,7 @@ import ModelsSettings from './ModelsSettings.vue'
 import ProductionForm from './ProductionForm.vue'
 import ProductionSettingsLoadingShell from './ProductionSettingsLoadingShell.vue'
 import { productionFormValuesFromSchema, type ProductionFormValues } from './productionForm'
+import { productionConfigurationSummary, shortReleaseSHA } from './productionPane'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import {
   activateWorkbenchTab,
@@ -210,7 +218,9 @@ import {
   workbenchCatalogContextFingerprint,
   workbenchPersistenceContextKey,
   workbenchPersistenceStorageKey,
+  readWorkbenchVisibility,
   writeWorkbenchPersistence,
+  writeWorkbenchVisibility,
   type WorkbenchPersistenceScope,
 } from './workbenchPersistence'
 import {
@@ -380,15 +390,6 @@ interface ProviderTool extends WorkbenchProviderToolRef {
   provider: ProviderItem
 }
 
-interface LandingCategoryTile {
-  id: string
-  title: string
-  subtitle: string
-  promptSeed: string
-  icon: Component
-  iconURL?: string
-}
-
 interface WorkbenchLauncherItem {
   id: string
   title: string
@@ -442,6 +443,9 @@ interface ProjectDevelopmentPreviewAuthorization {
 }
 
 const SPLIT_WIDTH_KEY = 'faros:projects:split-width'
+const SPLIT_MIN_PERCENT = 32
+const SPLIT_MAX_PERCENT = 68
+const CONVERSATION_BASE_MIN_WIDTH = 240
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
 const OPENAI_DEFAULT_MODEL = 'gpt-5.4'
@@ -452,6 +456,7 @@ const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MODELS_ROUTE = '~models'
 const CREATE_MODEL_ROUTE = 'create/model'
+const PROJECT_DELETION_POLL_MS = 2000
 const appStudioSectionTabs = [
   { id: 'projects', label: 'Projects', icon: Folder },
   { id: 'models', label: 'Models', icon: Cpu },
@@ -555,6 +560,7 @@ const assistantMarkdownClass = [
 ].join(' ')
 
 const projects = ref<Project[]>([])
+const projectDeletion = createProjectDeletionController()
 const APP_STUDIO_ICON_URL = '/ui/providers/app-studio/icon.svg'
 const PROJECTS_LAYOUT_PREFERENCE_KEY = 'faros:portal:app-studio:projects-layout'
 const projectLayout = ref<LayoutMode>(readLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KEY))
@@ -689,15 +695,23 @@ const projectSettingsSaving = ref(false)
 const projectSettingsStatus = ref<string | null>(null)
 const projectSettingsError = ref<string | null>(null)
 const deletingProjectName = ref('')
+const deletingProjectUID = ref('')
+const projectDeletionError = ref<string | null>(null)
+const projectDeletionRetry = ref<(() => void) | null>(null)
 const prompt = ref('')
 const selectedTurnSkills = ref<ProjectAssistantSkill[]>([])
 const selectedTurnResources = ref<ProjectAssistantContextResource[]>([])
 const assistantComposerParts = ref<ProjectAssistantContentPart[]>([])
+const landingImportOpen = ref(false)
+const landingImportPopoverRef = ref<HTMLElement | null>(null)
+const landingImportDialogRef = ref<HTMLElement | null>(null)
+const landingImportTriggerRef = ref<HTMLButtonElement | null>(null)
 const assistantComposerRef = ref<{ focus: () => void; openPalette: () => void; closePalette: (restoreFocus?: boolean) => void } | null>(null)
 const threadRailRef = ref<{
   open?: () => void
   openAndFocus?: () => void
   expanded?: boolean
+  layoutWidth?: number
   panelID?: string
   toggle?: (returnFocus?: HTMLElement | null) => void
   focusThread?: (threadID: string) => void
@@ -774,6 +788,10 @@ const publishingMembersError = ref<string | null>(null)
 const shareDialogOpen = ref(false)
 const shareButtonRef = ref<HTMLButtonElement | null>(null)
 const productionTechnicalOpen = ref(false)
+const productionSettingsOpen = ref(false)
+const productionDeployReviewRelease = ref<ProjectRelease | null>(null)
+const productionDeployButtonRef = ref<HTMLButtonElement | null>(null)
+const productionDeployConfirmRef = ref<HTMLButtonElement | null>(null)
 
 // Promote to Prod (the production surface's deployment action): read build readiness +
 // the live production environment, and stand up / redeploy production.
@@ -831,6 +849,9 @@ const developmentTemplateBusy = ref(false)
 const developmentTemplateStatus = ref<string | null>(null)
 const developmentTemplateError = ref<string | null>(null)
 const workbench = ref(createDefaultWorkbenchState())
+const workbenchVisible = ref(readWorkbenchVisibility())
+const workbenchToggleRef = ref<HTMLButtonElement | null>(null)
+const workbenchPaneRef = ref<HTMLElement | null>(null)
 let workbenchHydrationScopeKey: string | null = null
 let workbenchHydrationProject = ''
 let workbenchHydrated = false
@@ -867,18 +888,19 @@ const assistantPlanAnnouncement = ref('')
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const splitRegionRef = ref<HTMLDivElement | null>(null)
+const splitResizeDividerRef = ref<HTMLElement | null>(null)
+const splitRegionWidth = ref(0)
+const splitResizing = ref(false)
 const toolHostRef = ref<HTMLDivElement | null>(null)
 const mountedToolEl = ref<HTMLElement | null>(null)
 const splitWidth = ref(readSplitWidth())
 let toolLoadSerial = 0
 let projectLoadSerial = 0
+let projectDeletionPollTimer: number | undefined
 let appComponentMounted = true
 let activeProjectContextFingerprint = ''
 let initializationRetryTimer: number | undefined
-let landingPlaceholderDelayTimer: number | undefined
-let landingPlaceholderTypingTimer: number | undefined
 let assistantDurationTimer: number | undefined
-let landingPlaceholderIndex = 0
 let developmentPreviewAuthorizationSerial = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
 let developmentPreviewRecoveryTimer: number | undefined
@@ -886,6 +908,9 @@ let developmentPreviewComponentMounted = true
 let assistantThreadRequestSerial = 0
 let createReadinessLoadSerial = 0
 let llmModelMutationGeneration = 0
+let splitResizePointerID: number | null = null
+let splitResizeTarget: HTMLElement | null = null
+let splitRegionResizeObserver: ResizeObserver | undefined
 const developmentPreviewRefreshController = new DevelopmentPreviewRefreshController<Project>({
   isMounted: () => developmentPreviewComponentMounted,
   selectedProjectName: () => selected.value?.name,
@@ -923,7 +948,6 @@ let pendingFirstProjectSubmission: ReturnType<typeof newFirstProjectSubmission> 
 let projectCreateGeneration = 0
 let approvalModeLoadSerial = 0
 let approvalModeSaveSerial = 0
-let deleteProjectRequestSerial = 0
 let projectSettingsSaveSerial = 0
 let projectOpenLatchSerial = 0
 let projectOpenLatchOwner = 0
@@ -1055,7 +1079,7 @@ function invalidateProjectContextState() {
   assistantThreadRequestSerial += 1
   approvalModeLoadSerial += 1
   approvalModeSaveSerial += 1
-  deleteProjectRequestSerial += 1
+  projectDeletion.invalidate()
   projectSettingsSaveSerial += 1
   releaseLoadSerial += 1
   historyLoadSerial += 1
@@ -1063,6 +1087,7 @@ function invalidateProjectContextState() {
 
   clearInitializationRetry()
   clearProjectThumbnailURLs()
+  clearProjectDeletionPollTimer()
   clearPromotionPoll()
   clearPublishingPoll()
   clearDevelopmentPreviewAuthorizationRetry()
@@ -1096,7 +1121,7 @@ function invalidateProjectContextState() {
   conversationStatus.value = ''
   reviewPanelHold.value = null
   clearSelectedTurnAttachments()
-  selectedLandingCategory.value = null
+  landingImportOpen.value = false
   projectOpenLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   threadHistoryLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   loading.value = hasToken
@@ -1113,6 +1138,9 @@ function invalidateProjectContextState() {
   approvalModeSaving.value = false
   approvalModeError.value = null
   deletingProjectName.value = ''
+  deletingProjectUID.value = ''
+  projectDeletionError.value = null
+  projectDeletionRetry.value = null
   showSettings.value = false
   shareDialogOpen.value = false
   projectSettingsSaving.value = false
@@ -1422,11 +1450,52 @@ const isBuilderVisible = computed(() =>
 )
 watch(
   isBuilderVisible,
-  (visible) => props.requestFullBleed?.(visible),
+  (visible) => {
+    props.requestFullBleed?.(visible)
+    if (visible) {
+      void nextTick(observeSplitRegion)
+    } else {
+      stopResize()
+      splitRegionResizeObserver?.disconnect()
+      splitRegionResizeObserver = undefined
+      splitRegionWidth.value = 0
+    }
+  },
   { immediate: true, flush: 'sync' },
 )
 const showNewProjectComposer = computed(() => isCreateRoute.value)
-const conversationPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
+const conversationMinimumWidth = computed(() => conversationMinimumWidthForLayout(threadRailRef.value?.layoutWidth ?? 0))
+const renderedSplitWidth = computed(() => clampSplitPercentForWidth(
+  splitWidth.value,
+  splitRegionWidth.value,
+  conversationMinimumWidth.value,
+))
+const splitMinimumPercent = computed(() => splitMinimumPercentForWidth(
+  splitRegionWidth.value,
+  conversationMinimumWidth.value,
+))
+const conversationPaneStyle = computed(() => ({
+  // A hidden workbench gives the conversation the full desktop canvas while
+  // retaining the last split percentage for the next reveal.
+  flexBasis: workbenchVisible.value ? `${renderedSplitWidth.value}%` : '100%',
+  '--conversation-min-width': `${conversationMinimumWidth.value}px`,
+}))
+watch(
+  [conversationMinimumWidth, splitRegionWidth, workbenchVisible],
+  () => {
+    if (!workbenchVisible.value) return
+    const next = clampSplitPercentForWidth(
+      splitWidth.value,
+      splitRegionWidth.value,
+      conversationMinimumWidth.value,
+    )
+    if (next !== splitWidth.value) {
+      splitWidth.value = next
+      persistSplitWidth()
+    }
+  },
+  { flush: 'sync' },
+)
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 // This latch deliberately does not depend on activeAssistantRun. Durable
 // reconciliation may replace or clear that object while an interrupt request
@@ -1520,11 +1589,11 @@ const createSetupItemsForPrompt = computed(() => createSetupItems({
 const createSetupLoading = computed(() => createReadinessChecking.value || llmSettingsLoading.value)
 const createPromptSubmitTitle = computed(() => {
   if (createSetupLoading.value) return 'Checking workspace setup'
-  if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before creating a project'
-  return prompt.value.trim() ? 'Create project and send prompt' : 'Describe what you want to build'
+  if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before preparing a project'
+  return prompt.value.trim() ? 'Prepare project for review' : 'Describe what you want to build'
 })
 const createSetupVisible = computed(() => !createSetupLoading.value && (createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value))
-const createSetupErrorMessage = computed(() => createReadinessError.value || '')
+const createSetupErrorMessage = computed(() => createReadinessError.value || llmSettingsError.value || '')
 function deleteProjectMessage(project: Project): string {
   const projectName = project.displayName || project.name
   const repositoryName = project.repository?.name || project.repository?.ref
@@ -1557,96 +1626,49 @@ const llmApiKeyHint = computed(() =>
       : '',
 )
 const llmBaseURLError = computed(() => validateLLMBaseURL(llmProvider.value, llmBaseURL.value))
-const landingPlaceholderTexts = [
-  'Make an app that...',
-  'Make a dashboard that...',
-  'Make an internal tool that...',
-  'Make a workflow that...',
-  'Make an API that...',
+interface LandingStarterPrompt {
+  id: string
+  label: string
+  prompt: string
+  description: string
+  icon: Component
+}
+
+const landingStarterPrompts: LandingStarterPrompt[] = [
+  {
+    id: 'feedback-tracker',
+    label: 'Feedback tracker',
+    prompt: 'Create a feedback tracker that collects requests, tags themes, and surfaces top priorities',
+    description: 'Collect requests, tag themes, and surface what matters most.',
+    icon: ClipboardList,
+  },
+  {
+    id: 'saas-kpi-dashboard',
+    label: 'SaaS KPI dashboard',
+    prompt: 'Create a SaaS KPI dashboard with revenue trends, churn risk, and filters',
+    description: 'Track revenue trends, churn risk, and the metrics behind growth.',
+    icon: BarChart3,
+  },
+  {
+    id: 'purchase-approval-workflow',
+    label: 'Purchase approval workflow',
+    prompt: 'Build a purchase approval workflow with roles and audit history',
+    description: 'Guide purchase requests through roles, approvals, and audit history.',
+    icon: GitBranch,
+  },
+  {
+    id: 'partner-api-console',
+    label: 'Partner API console',
+    prompt: 'Create a partner API console with keys, usage charts, and request logs',
+    description: 'Give partners keys, usage visibility, and request-level logs.',
+    icon: Braces,
+  },
 ]
-const landingComposerPlaceholder = ref(landingPlaceholderTexts[0])
-const selectedLandingCategory = ref<LandingCategoryTile | null>(null)
 
 const starterPrompts = [
   'Summarize this project and suggest the next best step.',
   'Identify the biggest risk or missing piece in this project.',
   'Draft three concrete tasks that would move this project forward this week.',
-]
-
-interface ProjectStarterTemplate {
-  title: string
-  name: string
-  description: string
-  icon: Component
-}
-
-interface LandingPromptChip {
-  title: string
-  prompt: string
-}
-
-const projectStarterTemplates: ProjectStarterTemplate[] = [
-  {
-    title: 'Web app',
-    name: 'Web app',
-    description: 'Build a responsive web app with a clean landing page, auth, and a focused main workflow.',
-    icon: AppWindow,
-  },
-  {
-    title: 'Dashboard',
-    name: 'Dashboard',
-    description: 'Create an operations dashboard with charts, filters, and a clear status overview.',
-    icon: BarChart3,
-  },
-  {
-    title: 'Internal tool',
-    name: 'Internal tool',
-    description: 'Make an internal tool for managing records, reviewing requests, and editing data quickly.',
-    icon: ClipboardList,
-  },
-  {
-    title: 'Workflow',
-    name: 'Workflow',
-    description: 'Set up a workflow app that guides users through steps, approvals, and notifications.',
-    icon: GitBranch,
-  },
-  {
-    title: 'API',
-    name: 'API',
-    description: 'Ship a small API with predictable endpoints, validation, and example requests.',
-    icon: Braces,
-  },
-]
-
-const landingPromptChips: LandingPromptChip[] = [
-  {
-    title: 'Feedback Priorities',
-    prompt: 'Create a product feedback hub that collects requests, tags themes, and surfaces top priorities',
-  },
-  {
-    title: 'Support Triage',
-    prompt: 'Build a customer support triage workspace that groups tickets by urgency, topic, and SLA',
-  },
-  {
-    title: 'Lightweight CRM',
-    prompt: 'Design a lightweight CRM for leads, contacts, notes, and follow-up reminders',
-  },
-  {
-    title: 'KPI Dashboard',
-    prompt: 'Create a SaaS KPI dashboard with revenue trends, churn risk, and filters',
-  },
-  {
-    title: 'Approval Workflow',
-    prompt: 'Make an approval workflow for purchase requests with roles and audit history',
-  },
-  {
-    title: 'Incident Center',
-    prompt: 'Build an incident command center that tracks severity, owners, and updates',
-  },
-  {
-    title: 'API Console',
-    prompt: 'Create a partner API console with keys, usage charts, and request logs',
-  },
 ]
 
 const filteredProjects = computed(() => {
@@ -1664,12 +1686,45 @@ const projectTableColumns = [
   { key: 'actions', label: 'Actions', ariaLabel: 'Actions' },
 ]
 
+function projectDeletionContext(): ProjectDeletionContext {
+  return {
+    fingerprint: appContextFingerprint(props.ctx),
+    routePath: routePath.value,
+  }
+}
+
+function projectIdentity(project: ProjectDeletionIdentity): ProjectDeletionIdentity {
+  return { name: project.name, uid: project.uid }
+}
+
+function visibleProjectNamed(name: string): Project | null {
+  return projects.value.find((project) => project.name === name) ??
+    (selected.value?.name === name ? selected.value : null)
+}
+
+function isProjectDeleting(project: Project | string): boolean {
+  const visible = typeof project === 'string' ? visibleProjectNamed(project) : project
+  const target: ProjectDeletionIdentity = visible
+    ? projectIdentity(visible)
+    : { name: typeof project === 'string' ? project : project.name }
+  const localOperationMatches = deletingProjectName.value === target.name &&
+    (!deletingProjectUID.value || !target.uid || deletingProjectUID.value === target.uid)
+  return Boolean(
+    visible?.deleting ||
+    localOperationMatches ||
+    projectDeletion.isDeleting(appContextFingerprint(props.ctx), target),
+  )
+}
+
 const projectTableRows = computed<Array<Record<string, unknown>>>(() => filteredProjects.value.map(project => ({
   name: project.name,
+  uid: project.uid ?? '',
+  rowKey: `${project.name}:${project.uid ?? ''}`,
   displayName: project.displayName,
   description: project.description || project.name,
-  phase: project.phase || 'Pending',
+  phase: isProjectDeleting(project) ? 'Deleting…' : project.phase || 'Pending',
   updated: projectTimestamp(project),
+  deleting: isProjectDeleting(project),
   actions: '',
   _project: project,
 })))
@@ -1684,7 +1739,7 @@ function projectFromTableRow(row: Record<string, unknown>): Project | null {
 
 function enterProjectTableRow(row: Record<string, unknown>) {
   const project = projectFromTableRow(row)
-  if (project) enterProject(project)
+  if (project && !isProjectDeleting(project)) enterProject(project)
 }
 
 function requestDeleteProjectTableRow(row: Record<string, unknown>) {
@@ -1698,12 +1753,65 @@ function clearProjectThumbnailRefreshTimer() {
   projectThumbnailRefreshTimer = undefined
 }
 
+function clearProjectDeletionPollTimer() {
+  if (projectDeletionPollTimer === undefined) return
+  window.clearTimeout(projectDeletionPollTimer)
+  projectDeletionPollTimer = undefined
+}
+
+function scheduleProjectDeletionPoll() {
+  clearProjectDeletionPollTimer()
+  if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  if (!projectDeletion.hasPending(contextFingerprint) &&
+      !projects.value.some((project) => projectDeletion.isDeleting(contextFingerprint, project))) return
+  projectDeletionPollTimer = window.setTimeout(() => {
+    projectDeletionPollTimer = undefined
+    if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
+    void load()
+  }, PROJECT_DELETION_POLL_MS)
+}
+
 function clearProjectThumbnailURLs() {
   projectThumbnailLoadSerial += 1
   clearProjectThumbnailRefreshTimer()
   for (const url of Object.values(projectThumbnailURLs.value)) URL.revokeObjectURL(url)
   projectThumbnailURLs.value = {}
   projectThumbnailRevisions.clear()
+}
+
+function removeProjectThumbnail(projectName: string) {
+  const url = projectThumbnailURLs.value[projectName]
+  if (url) URL.revokeObjectURL(url)
+  const nextURLs = { ...projectThumbnailURLs.value }
+  delete nextURLs[projectName]
+  projectThumbnailURLs.value = nextURLs
+  projectThumbnailRevisions.delete(projectName)
+}
+
+function invalidateProjectListRequests() {
+  // A delete is a local list mutation. Fence any list or thumbnail response
+  // that was already in flight so it cannot re-introduce the deleted project
+  // after the optimistic local removal.
+  projectLoadSerial += 1
+  projectThumbnailLoadSerial += 1
+  clearProjectThumbnailRefreshTimer()
+  clearProjectDeletionPollTimer()
+}
+
+function applyProjectList(projectList: Project[]): Project[] {
+  const visibleProjectList = projectDeletion.reconcile(appContextFingerprint(props.ctx), projectList)
+  projects.value = visibleProjectList
+  scheduleProjectDeletionPoll()
+  return visibleProjectList
+}
+
+function removeProjectFromLocalList(target: ProjectDeletionIdentity) {
+  // This is an optimistic local mutation, not an authoritative list read.
+  // Keep the controller tombstone alive so the next route-triggered list read
+  // cannot reintroduce the accepted project from a stale server projection.
+  projects.value = projects.value.filter((item) => !sameProjectIdentity(target, item))
+  scheduleProjectDeletionPoll()
 }
 
 function beginProjectThumbnailRequest(): ProjectThumbnailRequestGuard {
@@ -1717,6 +1825,7 @@ function beginProjectThumbnailRequest(): ProjectThumbnailRequestGuard {
 function projectThumbnailRequestIsCurrent(guard: ProjectThumbnailRequestGuard): boolean {
   return guard.serial === projectThumbnailLoadSerial &&
     guard.contextFingerprint === appContextFingerprint(props.ctx) &&
+    !deletingProjectName.value &&
     isProjectIndexRoute.value
 }
 
@@ -1771,8 +1880,8 @@ async function refreshProjectGalleryThumbnails() {
   try {
     const projectList = await api.listProjects(guard.ctx)
     if (!projectThumbnailRequestIsCurrent(guard)) return
-    projects.value = projectList
-    await hydrateProjectThumbnails(projectList, guard)
+    const visibleProjectList = applyProjectList(projectList)
+    await hydrateProjectThumbnails(visibleProjectList, guard)
   } catch {
     // Normal page refresh/error handling remains authoritative. Thumbnail
     // reconciliation is deliberately silent and retries on the next load.
@@ -1929,16 +2038,6 @@ const launcherSuggestedItems = computed(() => {
   const items = [...launcherBuiltInItems.value, ...launcherProviderItems.value]
   if (!q) return items
   return items.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(q))
-})
-
-const landingCategoryTiles = computed<LandingCategoryTile[]>(() => {
-  return projectStarterTemplates.map((template) => ({
-    id: template.title,
-    title: template.title,
-    subtitle: template.description,
-    promptSeed: `Make a ${template.title.toLowerCase()} that...`,
-    icon: template.icon,
-  }))
 })
 
 function isProjectToolProviderView(provider: ProviderItem, child: { displayName?: string; builtinRoute?: string }): boolean {
@@ -2114,13 +2213,13 @@ const developmentPreviewUnavailableMessage = computed(() => {
 
 onMounted(() => {
   appComponentMounted = true
+  void nextTick(observeSplitRegion)
   void load()
   void loadProviders()
   void loadCreateReadiness()
   void loadLLMSettings()
   void loadImportRepositories()
   void loadDevelopmentTemplates()
-  startLandingPlaceholderRotation()
   assistantDurationTimer = window.setInterval(() => {
     assistantDurationNowMs.value = Date.now()
   }, 1_000)
@@ -2130,12 +2229,28 @@ onMounted(() => {
   window.addEventListener('focus', reloadActiveAssistantConversation)
   window.addEventListener('online', reloadActiveAssistantConversation)
   window.addEventListener('pageshow', reloadActiveAssistantConversation)
+  document.addEventListener('pointerdown', handleLandingImportOutside)
+  document.addEventListener('keydown', handleLandingImportEscape)
   document.addEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
+  window.addEventListener('resize', handleSplitViewportResize)
 })
 
 watch(
   () => props.ctx?.subPath ?? '',
   () => {
+    // A route transition changes the visible workspace. Let an in-flight
+    // deletion finish on the server, but fence its response from the new
+    // route and release the old route's local lock immediately.
+    projectDeletion.invalidate()
+    clearProjectDeletionPollTimer()
+    if (deletingProjectName.value) {
+      deletingProjectName.value = ''
+      deletingProjectUID.value = ''
+      busy.value = false
+    }
+    projectDeletionError.value = null
+    projectDeletionRetry.value = null
+    landingImportOpen.value = false
     invalidateLLMModelMutationState()
     // A route change can leave the previous project's stream mounted until
     // the replacement project has hydrated. Detach that stream immediately,
@@ -2233,6 +2348,8 @@ watch(
     publishingBusyTarget.value = null
     shareDialogOpen.value = false
     productionTechnicalOpen.value = false
+    productionSettingsOpen.value = false
+    productionDeployReviewRelease.value = null
     clearPublishingPoll()
     if (shareWasOpen) void nextTick(() => shareButtonRef.value?.focus())
     assistantWorkedDurationClock.clear()
@@ -2386,8 +2503,9 @@ onBeforeUnmount(() => {
   clearInitializationRetry()
   clearDevelopmentPreviewAuthorizationRetry()
 	clearDevelopmentPreviewRecovery()
-  clearLandingPlaceholderRotation()
   clearProjectThumbnailURLs()
+  clearProjectDeletionPollTimer()
+  projectDeletion.clear()
   if (assistantDurationTimer !== undefined) window.clearInterval(assistantDurationTimer)
   assistantWorkedDurationClock.clear()
   assistantRunController.disconnect()
@@ -2399,9 +2517,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', reloadActiveAssistantConversation)
   window.removeEventListener('online', reloadActiveAssistantConversation)
   window.removeEventListener('pageshow', reloadActiveAssistantConversation)
+  document.removeEventListener('pointerdown', handleLandingImportOutside)
+  document.removeEventListener('keydown', handleLandingImportEscape)
   document.removeEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
-  window.removeEventListener('pointermove', resizeWorkspace)
-  window.removeEventListener('pointerup', stopResize)
+  stopResize()
+  splitRegionResizeObserver?.disconnect()
+  splitRegionResizeObserver = undefined
+  window.removeEventListener('resize', handleSplitViewportResize)
 })
 
 async function load() {
@@ -2458,8 +2580,8 @@ async function load() {
   try {
     const projectList = await api.listProjects(props.ctx)
     if (!projectRequestIsCurrent(requestGuard)) return
-    projects.value = projectList
-    void hydrateProjectThumbnails(projectList)
+    const visibleProjectList = applyProjectList(projectList)
+    void hydrateProjectThumbnails(visibleProjectList)
     projectsLoaded.value = true
     initializing.value = false
     if (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value) {
@@ -2476,7 +2598,7 @@ async function load() {
       resetWorkbench()
       return
     }
-    if (projectList.length === 0) {
+    if (visibleProjectList.length === 0) {
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -2718,6 +2840,44 @@ async function loadDevelopmentTemplates() {
   }
 }
 
+function closeLandingImportPopover(restoreFocus = false) {
+  landingImportOpen.value = false
+  if (restoreFocus) {
+    void nextTick(() => landingImportTriggerRef.value?.focus())
+  }
+}
+
+function handleLandingImportOutside(event: PointerEvent) {
+  const root = landingImportPopoverRef.value
+  const target = event.target
+  if (!root || !(target instanceof Node) || root.contains(target)) return
+  closeLandingImportPopover()
+}
+
+function handleLandingImportEscape(event: KeyboardEvent) {
+  if (!landingImportOpen.value || event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopPropagation()
+  closeLandingImportPopover(true)
+}
+
+function toggleLandingImport() {
+  if (landingImportOpen.value) {
+    closeLandingImportPopover(true)
+    return
+  }
+  landingImportOpen.value = true
+  if (!importRepositoriesLoading.value && importRepositories.value.length === 0 && !importRepositoriesError.value) {
+    void loadImportRepositories()
+  }
+  void nextTick(() => {
+    const dialog = landingImportDialogRef.value
+    if (!dialog) return
+    const firstControl = dialog.querySelector<HTMLElement>('button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    ;(firstControl || dialog).focus({ preventScroll: true })
+  })
+}
+
 // importRepositoryProject creates a project on top of an existing Code
 // repository: the backend adopts the repository and hydrates the workspace
 // from its default branch.
@@ -2733,6 +2893,7 @@ async function importRepositoryProject() {
     resetWorkbench()
     initializeWorkbenchForNewProject(project.name)
     props.navigate(encodeURIComponent(project.name))
+    closeLandingImportPopover()
     void load()
     void loadImportRepositories()
   } catch (e) {
@@ -2800,13 +2961,11 @@ const {
   productionDeployment,
   productionAccess,
   productionURL,
-  productionPublicationReady,
   productionDescription,
   productionPublicationStatus,
   productionOverview,
   productionOverviewDescription,
   productionViewerCount,
-  productionURLPlaceholder,
 } = useProductionSettings({
   promotion,
   publishing,
@@ -2820,6 +2979,9 @@ const {
 
 const latestDeployableRelease = computed(() => newestDeployableRelease(releases.value))
 const currentProductionRelease = computed(() => releases.value.find((release) => release.live && releaseHasPromotionEvidence(release)) ?? null)
+const productionReleaseSHA = computed(() => shortReleaseSHA(latestDeployableRelease.value?.commitSHA || releasePipeline.value.commitSHA))
+const productionDeployReviewSHA = computed(() => shortReleaseSHA(productionDeployReviewRelease.value?.commitSHA))
+const productionSettingsSummary = computed(() => productionConfigurationSummary(promotionValues.value))
 function canPromoteRelease(release: ProjectRelease | null): boolean {
   return Boolean(
     releaseHasPromotionEvidence(release) &&
@@ -2830,6 +2992,27 @@ function canPromoteRelease(release: ProjectRelease | null): boolean {
   )
 }
 const canPromoteLatestRelease = computed(() => canPromoteRelease(latestDeployableRelease.value))
+watch(productionFormValid, (valid) => {
+  if (!valid) productionSettingsOpen.value = true
+})
+
+function openProductionDeployReview(release: ProjectRelease | null) {
+  if (!release || !canPromoteRelease(release)) return
+  productionDeployReviewRelease.value = release
+  void nextTick(() => productionDeployConfirmRef.value?.focus())
+}
+
+function closeProductionDeployReview() {
+  productionDeployReviewRelease.value = null
+  void nextTick(() => productionDeployButtonRef.value?.focus())
+}
+
+async function confirmProductionDeploy() {
+  const release = productionDeployReviewRelease.value
+  if (!release || !canPromoteRelease(release)) return
+  productionDeployReviewRelease.value = null
+  await promoteToProd(false, release)
+}
 const currentBuildActionDisabledReason = computed(() => {
   if (promotionBusy.value) return 'A production deployment is already in progress.'
   if (promotionError.value) return 'Production status is unavailable. Check again before deploying.'
@@ -2855,10 +3038,10 @@ const canRedeployCurrentProduction = computed(() => Boolean(
   productionFormValid.value,
 ))
 const productionSettingsActionDisabledReason = computed(() => {
-  if (!productionBinding.value) return 'Deploy to production before saving production settings.'
+  if (!productionBinding.value) return 'Deploy to production before saving deployment configuration.'
   if (promotionError.value) return 'Production status is unavailable. Check again before redeploying.'
   if (!currentProductionRelease.value) return 'The current production release is unavailable. Refresh Publishing to retry.'
-  if (!productionFormValid.value) return 'Fix the highlighted production settings before redeploying.'
+  if (!productionFormValid.value) return 'Fix the highlighted deployment configuration before redeploying.'
   return ''
 })
 
@@ -3188,34 +3371,6 @@ async function refreshProduction() {
   } finally {
     publishingRefreshBusy.value = false
   }
-}
-
-// setProductionVisibility is the settings pane's inline public/invite-only
-// switch: it applies immediately (no dialog round-trip). Grants/invites stay
-// in the Share dialog; visibility itself is a one-select decision.
-async function setProductionVisibility(mode: ProjectPublishingMode) {
-  const name = selected.value?.name
-  if (!name || !publishingStateAvailable.value || publishingActionBusy.value) return
-  beginPublishingAction('save', mode)
-  publishingActionError.value = null
-  try {
-    const state = await api.publishProject(props.ctx, name, mode)
-    if (selected.value?.name !== name) return
-    publishing.value = state
-    shareMode.value = mode
-    await loadPublishing()
-  } catch (err) {
-    if (selected.value?.name === name) {
-      publishingActionError.value = err instanceof Error ? err.message : String(err)
-    }
-  } finally {
-    finishPublishingAction()
-  }
-}
-
-function onProductionVisibilityChange(event: Event) {
-  const value = (event.target as HTMLSelectElement).value === 'public' ? 'public' : 'restricted'
-  void setProductionVisibility(value)
 }
 
 async function publishCurrentProject() {
@@ -3637,127 +3792,23 @@ async function applyStarterPrompt(value: string) {
   assistantComposerRef.value?.focus()
 }
 
-async function applyLandingCategory(tile: LandingCategoryTile) {
-  const previousCategory = selectedLandingCategory.value
-  const currentPrompt = prompt.value.trim()
-  selectedLandingCategory.value = tile
-  if (!currentPrompt || (previousCategory && currentPrompt === previousCategory.promptSeed.trim())) {
-    prompt.value = tile.promptSeed
-  }
-  clearLandingPlaceholderTyping()
-  landingComposerPlaceholder.value = tile.promptSeed
-  await nextTick()
-  promptRef.value?.focus()
-  promptRef.value?.setSelectionRange(prompt.value.length, prompt.value.length)
-}
-
-function isLandingCategorySelected(tile: LandingCategoryTile): boolean {
-  return selectedLandingCategory.value?.id === tile.id
-}
-
-async function toggleLandingCategory(tile: LandingCategoryTile) {
-  if (isLandingCategorySelected(tile)) {
-    await clearLandingCategory()
-    return
-  }
-  await applyLandingCategory(tile)
-}
-
-async function clearLandingCategory() {
-  const category = selectedLandingCategory.value
-  selectedLandingCategory.value = null
-  if (category && prompt.value.trim() === category.promptSeed.trim()) {
-    prompt.value = ''
-  }
-  if (!prompt.value.trim()) {
-    landingComposerPlaceholder.value = landingPlaceholderTexts[landingPlaceholderIndex]
-    startLandingPlaceholderRotation()
-  }
-  await nextTick()
-  promptRef.value?.focus()
-}
-
-async function applyLandingPromptChip(chip: LandingPromptChip) {
-  const nextPrompt = chip.prompt.trim()
+async function applyLandingStarterPrompt(starter: LandingStarterPrompt) {
+  const nextPrompt = starter.prompt.trim()
   if (!nextPrompt) return
-  selectedLandingCategory.value = null
   prompt.value = nextPrompt
-  clearLandingPlaceholderTyping()
-  landingComposerPlaceholder.value = nextPrompt
   await nextTick()
   promptRef.value?.focus()
   promptRef.value?.setSelectionRange(prompt.value.length, prompt.value.length)
 }
 
 async function openNewProjectComposer() {
-  selectedLandingCategory.value = null
   prompt.value = ''
   error.value = null
+  landingImportOpen.value = false
   wizardOpen.value = false
   props.navigate(CREATE_PROJECT_ROUTE)
   await nextTick()
   promptRef.value?.focus()
-}
-
-function startLandingPlaceholderRotation() {
-  if (landingPlaceholderDelayTimer !== undefined || landingPlaceholderTypingTimer !== undefined) return
-  typeLandingPlaceholder(landingPlaceholderTexts[landingPlaceholderIndex])
-}
-
-function scheduleNextLandingPlaceholder() {
-  clearLandingPlaceholderDelay()
-  landingPlaceholderDelayTimer = window.setTimeout(() => {
-    landingPlaceholderDelayTimer = undefined
-    landingPlaceholderIndex = (landingPlaceholderIndex + 1) % landingPlaceholderTexts.length
-    typeLandingPlaceholder(landingPlaceholderTexts[landingPlaceholderIndex])
-  }, 1800)
-}
-
-function typeLandingPlaceholder(value: string) {
-  clearLandingPlaceholderTyping()
-  if (prompt.value.trim()) {
-    landingComposerPlaceholder.value = value
-    scheduleNextLandingPlaceholder()
-    return
-  }
-
-  let charIndex = 0
-  landingComposerPlaceholder.value = ''
-  const tick = () => {
-    if (prompt.value.trim()) {
-      landingComposerPlaceholder.value = value
-      landingPlaceholderTypingTimer = undefined
-      scheduleNextLandingPlaceholder()
-      return
-    }
-
-    charIndex += 1
-    landingComposerPlaceholder.value = value.slice(0, charIndex)
-    if (charIndex >= value.length) {
-      landingPlaceholderTypingTimer = undefined
-      scheduleNextLandingPlaceholder()
-      return
-    }
-    landingPlaceholderTypingTimer = window.setTimeout(tick, 28)
-  }
-  landingPlaceholderTypingTimer = window.setTimeout(tick, 80)
-}
-
-function clearLandingPlaceholderRotation() {
-  clearLandingPlaceholderDelay()
-  clearLandingPlaceholderTyping()
-}
-
-function clearLandingPlaceholderDelay() {
-  if (landingPlaceholderDelayTimer === undefined) return
-  window.clearTimeout(landingPlaceholderDelayTimer)
-  landingPlaceholderDelayTimer = undefined
-}
-
-function clearLandingPlaceholderTyping() {
-  if (landingPlaceholderTypingTimer === undefined) return
-  window.clearTimeout(landingPlaceholderTypingTimer)
-  landingPlaceholderTypingTimer = undefined
 }
 
 function projectToSlug(value: string): string {
@@ -3927,19 +3978,28 @@ async function onWizardCancel() {
 }
 
 async function onWizardCreate(payload: { prompt: string; templateName?: string; displayName?: string }) {
-  wizardOpen.value = false
   prompt.value = payload.prompt
+  // Revalidate while the confirmation surface is still mounted. A Git or LLM
+  // setting can change after the initial plan; closing first would discard the
+  // user's reviewed name/template and strand them back on the landing surface.
   if (!await ensureCreateSetupReady()) return
+  wizardOpen.value = false
   await createProjectAndStartConversation(payload.prompt, {
     templateName: payload.templateName,
     displayName: payload.displayName,
   })
 }
 
+function onWizardSetupAction(action: 'setup-llm') {
+  if (action === 'setup-llm') void openSettings()
+}
+
+async function onWizardSetupRetry() {
+  await Promise.all([loadCreateReadiness(), loadLLMSettings()])
+}
+
 async function ensureCreateSetupReady(): Promise<boolean> {
-  if (!gitConnectionCreateReady.value && !createReadinessLoading.value) {
-    await loadCreateReadiness()
-  }
+  await Promise.all([loadCreateReadiness(), loadLLMSettings()])
   if (gitConnectionCreateReady.value && llmConfigured.value) return true
   error.value = null
   return false
@@ -3961,7 +4021,7 @@ async function createProjectAndStartConversation(
   const generation = ++projectCreateGeneration
   const now = new Date().toISOString()
   const draftName = `draft-${Date.now()}`
-  const description = selectedLandingCategory.value?.subtitle ?? ''
+  const description = landingStarterPrompts.find((starter) => starter.prompt === content.trim())?.description ?? ''
   let acceptedRun = false
 	let projectName = submission.projectName
   busy.value = true
@@ -3970,7 +4030,6 @@ async function createProjectAndStartConversation(
   error.value = null
   if (!submission.projectName) {
     prompt.value = ''
-    selectedLandingCategory.value = null
     resetWorkbench()
     selected.value = { name: draftName, displayName: 'New project', description, phase: 'Creating', createdAt: now }
     messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', content, createdAt: now }]
@@ -4191,6 +4250,7 @@ async function saveProjectSettings() {
 }
 
 function enterProject(project: Project) {
+  if (isProjectDeleting(project.name)) return
   // The project card already has enough durable metadata to render the normal
   // workspace frame. Seed it before navigation so the gallery is replaced by
   // the split pane in the same render cycle as the click; route hydration then
@@ -4330,7 +4390,7 @@ async function refreshSelectedProjectConversation(projectName: string) {
       projectName,
       messageStreaming.value && activeAssistantProject === projectName,
     )
-    projects.value = projectList
+    applyProjectList(projectList)
     await recoverAssistantConversation(projectName, requestGuard)
   } finally {
     releaseConversationRefreshLatch(conversationRefreshLatchOwner)
@@ -5640,7 +5700,33 @@ function resetWorkbench() {
   invalidateWorkbenchHydration()
 }
 
+function revealWorkbenchPane() {
+  if (workbenchVisible.value) return
+  workbenchVisible.value = true
+  writeWorkbenchVisibility(true)
+}
+
+function toggleWorkbenchPane(event?: MouseEvent) {
+  const trigger = event?.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : workbenchToggleRef.value
+  const nextVisible = !workbenchVisible.value
+  if (!nextVisible) {
+    const activeElement = typeof document !== 'undefined' ? document.activeElement : null
+    if (activeElement && workbenchPaneRef.value?.contains(activeElement)) trigger?.focus()
+  }
+  if (!nextVisible) stopResize()
+  workbenchVisible.value = nextVisible
+  writeWorkbenchVisibility(nextVisible)
+  if (!nextVisible) {
+    void nextTick(() => {
+      if (trigger?.isConnected && !trigger.hasAttribute('disabled')) trigger.focus()
+    })
+  }
+}
+
 function openBuiltInWorkbenchTab(kind: WorkbenchBuiltInTab) {
+  revealWorkbenchPane()
   workbench.value = openWorkbenchBuiltInTab(workbench.value, kind)
 }
 
@@ -5663,6 +5749,7 @@ function openWorkbenchLauncher() {
 }
 
 function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
+  revealWorkbenchPane()
   if (item.providerTool) {
     workbench.value = selectWorkbenchLauncherProviderTool(workbench.value, item.providerTool)
     toolError.value = null
@@ -5674,10 +5761,12 @@ function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
 }
 
 function selectExistingWorkbenchLauncherTab(tabID: string) {
+  revealWorkbenchPane()
   workbench.value = selectExistingWorkbenchTabFromLauncher(workbench.value, tabID)
 }
 
 function activateWorkbenchTabByID(tabID: string) {
+  revealWorkbenchPane()
   workbench.value = activateWorkbenchTab(workbench.value, tabID)
 }
 
@@ -5782,45 +5871,120 @@ function onWorkbenchTabKeydown(event: KeyboardEvent, tabID: string): void {
 
 async function requestDeleteProject(project: Project) {
   if (deletingProjectName.value) return
+  const name = project.name
+  const target = projectIdentity(project)
+  const currentAtStart = visibleProjectNamed(name)
+  // A retry action can outlive the row that created it. Require the current
+  // row to carry the same UID before even opening confirmation; a same-name
+  // replacement must never inherit the old destructive action.
+  if (!currentAtStart || !sameProjectIdentity(target, currentAtStart)) return
+  // Keep the confirmation tied to the route, authenticated context, and
+  // immutable project identity that opened it. A host transition can happen
+  // while the modal is open; in that case the action becomes a no-op.
+  const operation = projectDeletion.begin(target, projectDeletionContext())
+  const operationIsCurrent = () =>
+    appComponentMounted && projectDeletion.isCurrent(operation, projectDeletionContext())
   const confirmed = await confirmDialog({
     title: 'Delete project?',
     message: deleteProjectMessage(project),
     confirmLabel: 'Delete project',
     danger: true,
   })
-  if (!confirmed) return
-  const name = project.name
+  if (!confirmed || !operationIsCurrent() ||
+      !projectDeletion.matchesCurrent(operation, projectDeletionContext(), visibleProjectNamed(name))) return
+  const projectLabel = project.displayName || name
   const deletionScope = workbenchPersistenceScope(name)
   const deletionContextKey = workbenchPersistenceContextKey(deletionScope)
-  const requestSerial = ++deleteProjectRequestSerial
-  const deleteRequestIsCurrent = () =>
-    requestSerial === deleteProjectRequestSerial &&
+  const lifecycleIsCurrent = () => operationIsCurrent() &&
     deletionContextKey === workbenchPersistenceContextKey(workbenchPersistenceContext())
+  const responseIsCurrent = () => lifecycleIsCurrent() &&
+    sameProjectIdentity(target, visibleProjectNamed(name))
   busy.value = true
   deletingProjectName.value = name
+  deletingProjectUID.value = target.uid ?? ''
   error.value = null
+  projectDeletionError.value = null
+  projectDeletionRetry.value = null
+  invalidateProjectListRequests()
   try {
-    await api.deleteProject(props.ctx, name)
+    await api.deleteProject(props.ctx, name, target.uid ?? '')
     // Use the scope captured before the await. The active identity may have
     // changed while the server deleted the old project.
+    projectDeletion.acknowledge(operation)
     removeWorkbenchPersistence(deletionScope)
-    if (!deleteRequestIsCurrent()) return
-    projects.value = await api.listProjects(props.ctx)
-    if (!deleteRequestIsCurrent()) return
-    if (selected.value?.name === name) {
+    if (!responseIsCurrent()) return
+    // DELETE returns after the server accepts the request, while the resource
+    // may remain in a terminating phase. Remove only the accepted project from
+    // the local list instead of immediately reading that stale projection back.
+    invalidateProjectListRequests()
+    removeProjectFromLocalList(target)
+    if (!projects.value.some((item) => item.name === name)) removeProjectThumbnail(name)
+    const hasRemainingProjects = projects.value.length > 0
+    const selectedProjectWasDeleted = sameProjectIdentity(target, selected.value)
+    if (selectedProjectWasDeleted) {
+      // Detach the deleted project's live conversation before clearing the
+      // selection. Route reconciliation will run next, but it must not get a
+      // chance to append late assistant events to the landing surface.
+      assistantThreadRequestSerial += 1
+      assistantRunController.disconnect()
+      activeAssistantSubscription?.abort()
+      activeAssistantSubscription = null
+      setActiveAssistantRun(null)
+      activeAssistantProject = ''
+      activeAssistantThreadID.value = ''
+      activeAssistantThreadSequence = 0
+      messageStreaming.value = false
+      conversationStatus.value = ''
+      reviewPanelHold.value = null
+      assistantStopRequestedRunID.value = ''
+      assistantPendingStartStopRequested.value = false
+      assistantStopError.value = null
+      queuedAssistantMessages.value = []
+      queuedAssistantSteeringID.value = ''
+      queuedAssistantDeliveryBusy.value = false
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
+      resetConversationRefreshLatch()
+      resetThreadMutationLatch()
       selected.value = null
       messages.value = []
-      props.navigate('')
+      assistantThreads.value = []
       resetWorkbench()
       showSettings.value = false
+      props.navigate(hasRemainingProjects ? '' : CREATE_PROJECT_ROUTE)
     }
-    if (projects.value.length === 0) props.navigate(CREATE_PROJECT_ROUTE)
+    toast('info', `Deletion accepted for ${projectLabel}. Cleanup continues in the background.`)
+    if (!hasRemainingProjects && !selectedProjectWasDeleted) props.navigate(CREATE_PROJECT_ROUTE)
   } catch (e) {
-    if (deleteRequestIsCurrent()) error.value = e instanceof Error ? e.message : String(e)
+    if (responseIsCurrent()) {
+      const detail = e instanceof Error ? e.message : String(e)
+      const failureMessage = `Could not delete ${projectLabel}. ${detail || 'The server rejected the request.'}`
+      const retryContextFingerprint = operation.context.fingerprint
+      const retryRoutePath = operation.context.routePath
+      const retryDeletion = () => {
+        // Toast actions outlive route renders. Bind this one to the original
+        // route, workspace, and immutable UID so it cannot target a same-name
+        // Project after navigation, a tenant switch, or recreation.
+        if (appContextFingerprint(props.ctx) !== retryContextFingerprint || routePath.value !== retryRoutePath) return
+        const current = visibleProjectNamed(name)
+        if (!current || !sameProjectIdentity(target, current)) return
+        void requestDeleteProject(current)
+      }
+      error.value = null
+      projectDeletionError.value = failureMessage
+      projectDeletionRetry.value = retryDeletion
+      toast('error', failureMessage, {
+        label: 'Retry deletion',
+        run: retryDeletion,
+      })
+    }
   } finally {
-    if (requestSerial === deleteProjectRequestSerial) {
+    if (lifecycleIsCurrent()) {
       deletingProjectName.value = ''
+      deletingProjectUID.value = ''
       busy.value = false
+      scheduleProjectDeletionPoll()
+      if (isProjectIndexRoute.value) void hydrateProjectThumbnails(projects.value)
     }
   }
 }
@@ -6676,6 +6840,7 @@ function isAbortError(err: unknown): boolean {
 }
 
 function openTool(tool: ProviderTool) {
+  revealWorkbenchPane()
   workbench.value = openWorkbenchProviderTool(workbench.value, tool)
   toolError.value = null
 }
@@ -6794,34 +6959,150 @@ function detachMountedTool() {
 
 function startResize(e: PointerEvent) {
   if (!splitRegionRef.value || window.innerWidth < 768) return
+  const target = e.currentTarget
+  if (!(target instanceof HTMLElement)) return
+  stopResize()
   e.preventDefault()
+  e.stopPropagation()
+  splitResizePointerID = e.pointerId
+  splitResizeTarget = target
+  splitResizing.value = true
+  try {
+    target.setPointerCapture(e.pointerId)
+  } catch {
+    // Pointer capture is unavailable in a few embedded browser contexts; the
+    // window listeners remain as a best-effort fallback.
+  }
   window.addEventListener('pointermove', resizeWorkspace)
   window.addEventListener('pointerup', stopResize)
+  window.addEventListener('pointercancel', stopResize)
+  window.addEventListener('blur', stopResize)
 }
 
-function splitPercentFromPointer(clientX: number, rect: Pick<DOMRect, 'left' | 'width'>): number | null {
+function splitPercentFromPointer(clientX: number, rect: Pick<DOMRect, 'left' | 'width'>, minimumWidth = 0): number | null {
   if (!Number.isFinite(clientX) || !Number.isFinite(rect.left) || !Number.isFinite(rect.width) || rect.width <= 0) return null
   const pct = ((clientX - rect.left) / rect.width) * 100
-  return Math.min(68, Math.max(32, pct))
+  const minimumPercent = Number.isFinite(minimumWidth) && minimumWidth > 0
+    ? Math.min(SPLIT_MAX_PERCENT, Math.max(SPLIT_MIN_PERCENT, (minimumWidth / rect.width) * 100))
+    : SPLIT_MIN_PERCENT
+  return Math.min(SPLIT_MAX_PERCENT, Math.max(minimumPercent, pct))
 }
 
 function resizeWorkspace(e: PointerEvent) {
+  if (!splitResizing.value) return
+  if (splitResizePointerID !== null && e.pointerId !== splitResizePointerID) return
   const splitRegion = splitRegionRef.value
   if (!splitRegion) return
-  const pct = splitPercentFromPointer(e.clientX, splitRegion.getBoundingClientRect())
+  const rect = splitRegion.getBoundingClientRect()
+  splitRegionWidth.value = rect.width
+  const pct = splitPercentFromPointer(e.clientX, rect, conversationMinimumWidth.value)
   if (pct === null) return
   splitWidth.value = pct
 }
 
-function stopResize() {
+function stopResize(event?: Event) {
+  const pointerID = event && 'pointerId' in event && typeof event.pointerId === 'number' ? event.pointerId : null
+  if (pointerID !== null && splitResizePointerID !== null && pointerID !== splitResizePointerID) return
+  const wasResizing = splitResizing.value
+  const target = splitResizeTarget
+  const activePointerID = splitResizePointerID
+  splitResizing.value = false
+  splitResizePointerID = null
+  splitResizeTarget = null
   window.removeEventListener('pointermove', resizeWorkspace)
   window.removeEventListener('pointerup', stopResize)
-  localStorage.setItem(SPLIT_WIDTH_KEY, String(splitWidth.value))
+  window.removeEventListener('pointercancel', stopResize)
+  window.removeEventListener('blur', stopResize)
+  if (target && activePointerID !== null) {
+    try {
+      if (target.hasPointerCapture(activePointerID)) target.releasePointerCapture(activePointerID)
+    } catch {
+      // The target may already have been detached after capture was lost.
+    }
+  }
+  if (wasResizing) {
+    syncSplitRegionGeometry()
+    persistSplitWidth()
+  }
+}
+
+function handleResizeKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  const splitRegion = splitRegionRef.value
+  const width = splitRegion?.getBoundingClientRect().width ?? splitRegionWidth.value
+  const minimum = splitMinimumPercentForWidth(width, conversationMinimumWidth.value)
+  const current = clampSplitPercentForWidth(splitWidth.value, width, conversationMinimumWidth.value)
+  const step = event.shiftKey ? 8 : 2
+  const next = event.key === 'Home'
+    ? minimum
+    : event.key === 'End'
+      ? SPLIT_MAX_PERCENT
+      : current + (event.key === 'ArrowRight' ? step : -step)
+  splitWidth.value = Math.min(SPLIT_MAX_PERCENT, Math.max(minimum, next))
+  splitRegionWidth.value = Number.isFinite(width) && width > 0 ? width : splitRegionWidth.value
+  persistSplitWidth()
+  event.preventDefault()
+}
+
+function conversationMinimumWidthForLayout(layoutWidth: number): number {
+  const safeLayoutWidth = Number.isFinite(layoutWidth) && layoutWidth > 0 ? layoutWidth : 0
+  return CONVERSATION_BASE_MIN_WIDTH + safeLayoutWidth
+}
+
+function splitMinimumPercentForWidth(width: number, minimumWidth = CONVERSATION_BASE_MIN_WIDTH): number {
+  if (!Number.isFinite(width) || width <= 0) return SPLIT_MIN_PERCENT
+  return Math.min(SPLIT_MAX_PERCENT, Math.max(SPLIT_MIN_PERCENT, (minimumWidth / width) * 100))
+}
+
+function clampSplitPercentForWidth(value: number, width: number, minimumWidth = CONVERSATION_BASE_MIN_WIDTH): number {
+  const minimum = splitMinimumPercentForWidth(width, minimumWidth)
+  const safeValue = Number.isFinite(value) ? value : 38
+  return Math.min(SPLIT_MAX_PERCENT, Math.max(minimum, safeValue))
+}
+
+function persistSplitWidth() {
+  try {
+    localStorage.setItem(SPLIT_WIDTH_KEY, String(splitWidth.value))
+  } catch {
+    // Split layout is a progressive preference; storage failures are harmless.
+  }
+}
+
+function syncSplitRegionGeometry() {
+  const rect = splitRegionRef.value?.getBoundingClientRect()
+  if (!rect || !Number.isFinite(rect.width) || rect.width <= 0) {
+    splitRegionWidth.value = 0
+    return
+  }
+  splitRegionWidth.value = rect.width
+  const next = clampSplitPercentForWidth(splitWidth.value, rect.width, conversationMinimumWidth.value)
+  if (next !== splitWidth.value) {
+    splitWidth.value = next
+    persistSplitWidth()
+  }
+}
+
+function observeSplitRegion() {
+  splitRegionResizeObserver?.disconnect()
+  splitRegionResizeObserver = undefined
+  syncSplitRegionGeometry()
+  const splitRegion = splitRegionRef.value
+  if (!splitRegion || typeof ResizeObserver === 'undefined') return
+  splitRegionResizeObserver = new ResizeObserver(syncSplitRegionGeometry)
+  splitRegionResizeObserver.observe(splitRegion)
+}
+
+function handleSplitViewportResize() {
+  syncSplitRegionGeometry()
 }
 
 function readSplitWidth(): number {
-  const raw = Number(localStorage.getItem(SPLIT_WIDTH_KEY))
-  if (Number.isFinite(raw) && raw >= 32 && raw <= 68) return raw
+  try {
+    const raw = Number(localStorage.getItem(SPLIT_WIDTH_KEY))
+    if (Number.isFinite(raw) && raw >= SPLIT_MIN_PERCENT && raw <= SPLIT_MAX_PERCENT) return raw
+  } catch {
+    // A blocked localStorage should not prevent the project from rendering.
+  }
   return 38
 }
 
@@ -7143,7 +7424,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <LayoutSelector v-model="projectLayout" class="ml-auto" aria-label="Project layout" />
         </div>
 
-        <div v-if="error" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+        <div v-if="projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
+          <span class="min-w-0 flex-1">{{ projectDeletionError }}</span>
+          <button type="button" class="font-medium underline underline-offset-2" @click="projectDeletionRetry?.()">Retry deletion</button>
+        </div>
+        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
             <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
@@ -7178,10 +7463,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div v-else-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8">
             <article
               v-for="project in filteredProjects"
-              :key="project.name"
+              :key="`${project.name}:${project.uid ?? ''}`"
               class="group relative overflow-hidden rounded-lg border border-border-subtle bg-surface-raised transition hover:border-accent/40 hover:bg-surface-overlay"
+              :aria-busy="isProjectDeleting(project) || undefined"
             >
-              <button class="block w-full text-left" @click="enterProject(project)">
+              <button
+                class="block w-full text-left disabled:cursor-not-allowed"
+                :disabled="isProjectDeleting(project)"
+                @click="enterProject(project)"
+              >
                 <div class="relative aspect-[16/9] overflow-hidden border-b border-border-subtle bg-surface">
                   <img
                     v-if="projectThumbnailURLs[project.name]"
@@ -7228,12 +7518,25 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
               <button
                 class="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                type="button"
                 title="Delete project"
-                :disabled="busy"
+                :aria-label="`Delete project ${project.displayName}`"
+                :disabled="busy || isProjectDeleting(project)"
                 @click.stop="requestDeleteProject(project)"
               >
                 <Trash2 class="h-4 w-4" :stroke-width="1.75" />
               </button>
+              <div
+                v-if="isProjectDeleting(project)"
+                class="absolute inset-0 z-30 grid place-content-center gap-1 bg-surface/90 p-4 text-center"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <Loader2 class="mx-auto h-5 w-5 animate-spin text-warning" :stroke-width="1.75" aria-hidden="true" />
+                <span class="text-[13px] font-semibold text-text-primary">Deleting…</span>
+                <span class="text-[11px] text-text-muted">Cleanup continues in the background.</span>
+              </div>
             </article>
           </div>
 
@@ -7247,11 +7550,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :columns="projectTableColumns"
           :rows="projectTableRows"
           aria-label="Projects"
-          row-key="name"
+          row-key="rowKey"
           :loaded="projectsLoaded"
           :loading="loading"
-          :interactive="true"
-          :row-aria-label="(row) => `Open project ${String(row.displayName || row.name)}`"
+          :interactive="!projectTableRows.some((row) => row.deleting)"
+          :row-aria-label="(row) => row.deleting
+            ? `Deleting project ${String(row.displayName || row.name)}`
+            : `Open project ${String(row.displayName || row.name)}`"
           :empty-text="error ? 'No projects available.' : projects.length === 0 ? 'Preparing new project...' : 'No projects match this search.'"
           @row-click="enterProjectTableRow"
         >
@@ -7259,20 +7564,21 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <button
               class="k-btn k-btn--ghost k-table-resource-link min-w-[220px] text-left"
               type="button"
+              :disabled="Boolean(row.deleting)"
               @click.stop="enterProjectTableRow(row)"
             >
               <span class="block truncate font-semibold">{{ String(row.displayName || row.name) }}</span>
               <span class="mt-1 block line-clamp-2 text-[12px] leading-[17px] text-text-muted">{{ String(row.description || row.name) }}</span>
             </button>
           </template>
-          <template #phase="{ value }"><StatusBadge :status="String(value)" /></template>
+          <template #phase="{ value }"><StatusBadge :status="String(value)" :tone="String(value) === 'Deleting…' ? 'warning' : null" /></template>
           <template #updated="{ value }"><span class="whitespace-nowrap text-text-muted">{{ String(value) }}</span></template>
           <template #actions="{ row }">
             <ResourceTableDeleteButton
               :label="`Delete project ${String(row.displayName || row.name)}`"
               :busy-label="`Deleting project ${String(row.displayName || row.name)}…`"
-              :busy="deletingProjectName === String(row.name)"
-              :disabled="busy"
+              :busy="deletingProjectName === String(row.name) && deletingProjectUID === String(row.uid || '')"
+              :disabled="busy || Boolean(row.deleting)"
               @click="requestDeleteProjectTableRow(row)"
             />
           </template>
@@ -7291,46 +7597,167 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 :initial-prompt="prompt"
                 :disabled="busy || !canStartProjectFromPrompt"
                 :disabled-reason="createPromptSubmitTitle"
+                :setup-items="createSetupItemsForPrompt"
+                :setup-error="createSetupErrorMessage"
+                :setup-loading="createSetupLoading"
+                :code-connections-url="CODE_CONNECTIONS_URL"
                 @create="onWizardCreate"
                 @cancel="onWizardCancel"
+                @setup-action="onWizardSetupAction"
+                @retry-setup="onWizardSetupRetry"
               />
             </template>
 
             <template v-else>
-            <div class="mx-auto flex max-w-[760px] flex-col items-center text-center">
-              <h2 class="text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
-                What do you want to build?
+            <div class="mx-auto w-full max-w-[860px]">
+              <h2 class="text-left text-[28px] font-semibold leading-8 text-text-primary sm:text-[32px] sm:leading-9">
+                What are we building in Faros today?
               </h2>
-              <p class="mt-4 max-w-[62ch] text-[14px] leading-6 text-text-muted">
-                Describe the app, dashboard, or workflow you want. App Studio will prepare a project name and starting point for you to confirm.
+              <p class="mt-2 max-w-[68ch] text-left text-[14px] leading-6 text-text-secondary">
+                Describe what you want to build. Faros turns your idea into a blueprint you can review before anything is created.
               </p>
             </div>
 
-            <form class="mx-auto mt-7 max-w-[860px]" @submit.prevent="createProjectFromPrompt">
-              <div v-if="!wizardOpen" class="flex min-h-[154px] flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm">
+            <section class="mx-auto mt-5 w-full max-w-[860px]" aria-labelledby="landing-starting-points-title">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <h3 id="landing-starting-points-title" class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Starting points</h3>
+                <span class="text-[11px] text-text-muted">Optional</span>
+              </div>
+              <div class="grid gap-1.5">
+                <button
+                  v-for="starter in landingStarterPrompts"
+                  :key="starter.id"
+                  type="button"
+                  class="group flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md border px-3 py-2 text-left transition hover:border-accent/30 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  :class="prompt.trim() === starter.prompt ? 'border-accent/40 bg-accent/10' : 'border-border-subtle bg-surface'"
+                  :aria-label="`Use ${starter.label} starting point`"
+                  :aria-pressed="prompt.trim() === starter.prompt"
+                  @click="applyLandingStarterPrompt(starter)"
+                >
+                  <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-accent" aria-hidden="true">
+                    <component :is="starter.icon" class="h-4 w-4" :stroke-width="1.75" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-[12px] font-semibold text-text-primary">{{ starter.label }}</span>
+                    <span class="block truncate text-[11px] leading-4 text-text-secondary">{{ starter.description }}</span>
+                  </span>
+                  <ArrowRight class="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+              </div>
+            </section>
+
+            <form class="mx-auto mt-5 max-w-[860px]" @submit.prevent="createProjectFromPrompt">
+              <label for="landing-project-prompt" class="sr-only">
+                Describe what you want to build
+              </label>
+              <div v-if="!wizardOpen" class="relative flex min-h-[132px] flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm transition focus-within:border-accent/50">
                 <textarea
+                  id="landing-project-prompt"
                   ref="promptRef"
                   v-model="prompt"
-                  class="min-h-[82px] w-full flex-1 resize-none border-0 bg-transparent px-5 pt-5 text-[16px] leading-7 text-text-primary outline-none placeholder:text-text-muted"
-                  :placeholder="landingComposerPlaceholder"
+                  class="min-h-[72px] w-full flex-1 resize-none border-0 bg-transparent px-5 pb-12 pt-4 text-[16px] leading-7 text-text-primary outline-none placeholder:text-text-secondary md:text-[14px]"
+                  placeholder="Describe what you want to build…"
                   :disabled="busy"
-                  @keydown.enter.exact.prevent="createProjectFromPrompt"
+                  @keydown.ctrl.enter.prevent="createProjectFromPrompt"
+                  @keydown.meta.enter.prevent="createProjectFromPrompt"
                 />
-                <div class="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-2">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span v-if="!createSetupVisible" class="text-[12px] text-text-muted">
-                      Next you'll confirm the template and starter code, then create.
-                    </span>
+                <div class="absolute bottom-2 left-1.5 right-2 flex min-w-0 items-center gap-2">
+                  <div class="flex min-w-0 items-center gap-0.5">
+                    <div ref="landingImportPopoverRef" class="relative shrink-0">
+                      <button
+                        ref="landingImportTriggerRef"
+                        type="button"
+                        class="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+                        :disabled="busy"
+                        data-k-tip="Import an existing repository"
+                        aria-label="Import an existing repository"
+                        aria-haspopup="dialog"
+                        aria-controls="landing-import-popover"
+                        :aria-expanded="landingImportOpen"
+                        @click="toggleLandingImport"
+                      >
+                        <Plus class="h-4 w-4" :stroke-width="1.75" />
+                      </button>
+                      <div
+                        v-if="landingImportOpen"
+                        ref="landingImportDialogRef"
+                        id="landing-import-popover"
+                        role="dialog"
+                        aria-label="Import an existing repository"
+                        tabindex="-1"
+                        class="absolute bottom-9 left-0 z-50 w-[min(360px,calc(100vw-2rem))] rounded-lg border border-border-default bg-surface-overlay p-3 text-left shadow-xl sm:w-[360px]"
+                        aria-live="polite"
+                      >
+                        <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+                          <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                          Import repository
+                        </div>
+                        <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status" aria-busy="true">
+                          <div class="shimmer h-8 w-full rounded-md bg-surface" />
+                          <div class="text-[12px] text-text-secondary">Loading repositories…</div>
+                        </div>
+                        <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="grid gap-2 text-[12px] text-danger" role="alert">
+                          <span>{{ importRepositoriesError }}</span>
+                          <button type="button" class="w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                        </div>
+                        <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
+                          <span>No unclaimed repositories available.</span>
+                          <button type="button" class="w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
+                        </div>
+                        <div v-else class="grid gap-2">
+                          <div v-if="importRepositoriesLoading" class="flex items-center gap-2 text-[11px] text-text-secondary" role="status" aria-busy="true">
+                            <Loader2 class="h-3.5 w-3.5 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+                            Updating repositories…
+                          </div>
+                          <div v-if="importRepositoriesError" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
+                            <span>{{ importRepositoriesError }}</span>
+                            <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                          </div>
+                          <label for="landing-import-repository" class="text-[11px] font-medium text-text-secondary">Choose a repository</label>
+                          <select
+                            id="landing-import-repository"
+                            v-model="importSelectedRepository"
+                            class="h-9 min-w-0 w-full rounded-md border border-border-default bg-surface px-2.5 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[12px]"
+                            :disabled="importRepositoriesLoading || importBusy"
+                          >
+                            <option value="" disabled>Select a repository…</option>
+                            <option v-for="repo in importRepositories" :key="repo.ref" :value="repo.ref">
+                              {{ repo.name || repo.ref }}
+                            </option>
+                          </select>
+                          <button
+                            type="button"
+                            class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
+                            :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
+                            @click="importRepositoryProject"
+                          >
+                            <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
+                            Import project
+                          </button>
+                        </div>
+                        <div v-if="importError" class="mt-2 rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
+                          {{ importError }}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <button
-                    class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    type="submit"
-                    :disabled="busy || !canStartProjectFromPrompt"
-                    :title="createPromptSubmitTitle"
-                  >
-                    Continue
-                    <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
-                  </button>
+                  <div class="ml-auto flex min-w-0 shrink items-center justify-end gap-1">
+                    <ModelPicker
+                      :models="configuredLLMModels"
+                      :selected-i-d="selectedLLMModel?.id || ''"
+                      :disabled="busy || llmSettingsLoading"
+                      @select="selectedLLMModelID = $event"
+                    />
+                    <button
+                      type="submit"
+                      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      :disabled="busy || !canStartProjectFromPrompt"
+                      :title="createPromptSubmitTitle"
+                      aria-label="Prepare project for review"
+                    >
+                      <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
+                    </button>
+                  </div>
                 </div>
               </div>
               <div v-if="createSetupLoading" class="mt-3 flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-[12px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
@@ -7392,90 +7819,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </div>
             </form>
 
-            <div class="mt-6 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-              <button
-                v-for="tile in landingCategoryTiles"
-                :key="tile.id"
-                type="button"
-                class="flex min-h-[86px] flex-col items-start justify-between gap-3 rounded-md border px-3 py-2.5 text-left text-[12px] transition hover:border-accent/30 hover:bg-surface-hover hover:text-text-primary"
-                :class="isLandingCategorySelected(tile)
-                  ? 'border-accent/40 bg-accent/10 text-text-primary'
-                  : 'border-border-subtle bg-surface text-text-secondary'"
-                @click="toggleLandingCategory(tile)"
-              >
-                <span class="flex items-center gap-2 font-semibold text-text-primary">
-                  <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised">
-                    <img v-if="tile.iconURL" :src="tile.iconURL" alt="" class="h-4 w-4 object-contain" />
-                    <component v-else :is="tile.icon" class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                  </span>
-                  <span class="truncate">{{ tile.title }}</span>
-                </span>
-                <span class="line-clamp-2">{{ tile.subtitle }}</span>
-              </button>
-            </div>
-
-            <div v-if="importRepositoriesLoading || importRepositories.length > 0 || importRepositoriesError" class="mt-6 rounded-md border border-border-subtle bg-surface p-3" :aria-busy="importRepositoriesLoading" aria-live="polite">
-              <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase text-text-muted">
-                <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Or import an existing repository
-              </div>
-              <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status">
-                <div class="shimmer h-8 w-full rounded bg-surface-overlay" />
-                <div class="text-[12px] text-text-muted">Loading repositories…</div>
-              </div>
-              <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
-                <span>{{ importRepositoriesError }}</span>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
-              </div>
-              <div v-else class="flex flex-wrap items-center gap-2">
-                <div v-if="importRepositoriesLoading" class="flex w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-                  <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
-                  Updating repositories…
-                </div>
-                <div v-if="importRepositoriesError" class="flex w-full flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
-                  <span>{{ importRepositoriesError }}</span>
-                  <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
-                </div>
-                <select
-                  v-model="importSelectedRepository"
-                  class="h-8 min-w-[220px] flex-1 rounded-md border border-border-subtle bg-surface px-2 text-[12px] text-text-primary"
-                  :disabled="importRepositoriesLoading || importBusy"
-                >
-                  <option value="" disabled>Select a repository…</option>
-                  <option v-for="repo in importRepositories" :key="repo.ref" :value="repo.ref">
-                    {{ repo.name || repo.ref }}
-                  </option>
-                </select>
-                <button
-                  type="button"
-                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
-                  @click="importRepositoryProject"
-                >
-                  <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                  Import
-                </button>
-              </div>
-              <div v-if="importError" class="mt-2 rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger">
-                {{ importError }}
-              </div>
-            </div>
-
-            <div class="mt-6">
-              <div class="mb-2 text-[11px] font-semibold uppercase text-text-muted">Example prompts</div>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="chip in landingPromptChips"
-                  :key="chip.title"
-                  type="button"
-                  class="rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[12px] font-medium text-text-secondary transition hover:border-accent/30 hover:bg-surface-hover hover:text-text-primary"
-                  :title="chip.prompt"
-                  @click="applyLandingPromptChip(chip)"
-                >
-                  {{ chip.title }}
-                </button>
-              </div>
-            </div>
             </template>
           </section>
         </main>
@@ -7507,7 +7850,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-raised/70" :aria-busy="conversationLoading || conversationRefreshing">
     <div ref="splitRegionRef" class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-      <section data-app-studio-conversation-pane class="flex min-h-0 min-w-0 shrink-0 flex-col md:min-w-[432px]" :style="conversationPaneStyle">
+      <section data-app-studio-conversation-pane class="flex min-h-0 min-w-0 shrink-0 flex-col md:min-w-[var(--conversation-min-width)]" :style="conversationPaneStyle" :class="[
+        'workbench-conversation-pane',
+        workbenchVisible ? 'workbench-conversation-entering' : 'workbench-conversation-leaving',
+        splitResizing ? 'transition-none' : '',
+      ]">
         <header data-app-studio-titlebar class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3">
           <button
             type="button"
@@ -7561,6 +7908,31 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <span class="truncate">{{ selected.repository?.name || selected.repository?.ref || 'No repository' }}</span>
             </div>
           </div>
+          <button
+            ref="workbenchToggleRef"
+            type="button"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            :title="workbenchVisible ? 'Hide workbench' : 'Show workbench'"
+            :aria-label="workbenchVisible ? 'Hide workbench' : 'Show workbench'"
+            :aria-expanded="workbenchVisible"
+            aria-controls="app-studio-workbench-pane"
+            data-app-studio-workbench-toggle
+            @click="toggleWorkbenchPane"
+          >
+            <PanelRight class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            ref="shareButtonRef"
+            title="Share project"
+            aria-label="Share project"
+            :disabled="!selected"
+            @click="openShareDialog"
+          >
+            <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <span>Share</span>
+          </button>
         </header>
 
         <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
@@ -7600,6 +7972,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           before you can continue.
         </template>
         <template v-else>{{ error }}</template>
+      </div>
+      <div v-if="projectDeletionError" class="mx-3 mt-3 flex flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
+        <span class="min-w-0 flex-1">{{ projectDeletionError }}</span>
+        <button type="button" class="font-medium underline underline-offset-2" @click="projectDeletionRetry?.()">Retry deletion</button>
       </div>
 
       <template v-if="selected || projectRouteShellVisible">
@@ -8130,107 +8506,120 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
       </section>
 
-      <div
-        class="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border-subtle transition hover:bg-accent/40 md:flex"
-        title="Resize"
-        @pointerdown="startResize"
-      >
-        <GripVertical class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
-      </div>
-
-      <section data-app-studio-workbench-pane class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0">
-      <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-          <PanelRight class="h-4 w-4 text-accent" :stroke-width="1.75" />
-        </div>
+      <Transition name="workbench-divider">
         <div
-          class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-          role="tablist"
-          aria-label="Workbench tabs"
+          v-show="workbenchVisible"
+          ref="splitResizeDividerRef"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize conversation and workbench panes"
+          :aria-valuemin="splitMinimumPercent"
+          :aria-valuemax="SPLIT_MAX_PERCENT"
+          :aria-valuenow="renderedSplitWidth"
+          :aria-valuetext="`${Math.round(renderedSplitWidth)}% conversation pane`"
+          tabindex="0"
+          class="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border-subtle transition hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none md:flex"
+          :class="splitResizing ? 'transition-none' : ''"
+          title="Resize"
+          @pointerdown="startResize"
+          @pointerup="stopResize"
+          @pointercancel="stopResize"
+          @lostpointercapture="stopResize"
+          @keydown="handleResizeKeydown"
         >
-          <div
-            v-for="tab in workbench.tabs"
-            :key="tab.id"
-            class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
-            :class="workbenchTabButtonClass(tab)"
-            draggable="true"
-            @dragstart="startWorkbenchTabDrag($event, tab)"
-            @dragover="dragOverWorkbenchTab($event, tab)"
-            @drop="dropWorkbenchTab($event, tab)"
-            @dragend="clearWorkbenchTabDragState"
-          >
-            <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="2" aria-hidden="true" />
-            <button
-              type="button"
-              role="tab"
-              class="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none"
-              :id="workbenchTabControlID(tab)"
-              :aria-selected="workbench.activeTabID === tab.id"
-              :aria-controls="workbenchTabPanelID(tab)"
-              :tabindex="workbench.activeTabID === tab.id ? 0 : -1"
-              :title="tab.title"
-              @click="activateWorkbenchTabByID(tab.id)"
-              @keydown="onWorkbenchTabKeydown($event, tab.id)"
-            >
-              <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-              <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              <span class="min-w-0 max-w-[9rem] flex-1 truncate">{{ tab.title }}</span>
-              <span
-                v-if="tab.kind === 'review' && hasPendingReview"
-                class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                aria-hidden="true"
-              />
-            </button>
-            <button
-              v-if="tab.closeable"
-              type="button"
-              class="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
-              :title="`Close ${tab.title}`"
-              :aria-label="`Close ${tab.title}`"
-              @click="closeWorkbenchTabByID(tab.id)"
-            >
-              <X class="h-3 w-3" :stroke-width="2" />
-            </button>
-          </div>
+          <GripVertical class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
         </div>
-        <button
-          type="button"
-          class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
-          :class="hasPendingReview ? 'text-accent' : ''"
-          title="New tab"
-          aria-label="New tab"
-          @click="openWorkbenchLauncher"
+      </Transition>
+
+      <Transition name="workbench-pane">
+        <section data-app-studio-workbench-pane
+          id="app-studio-workbench-pane"
+          ref="workbenchPaneRef"
+          v-show="workbenchVisible"
+          class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0"
+          :aria-hidden="!workbenchVisible"
         >
-          <Plus class="h-4 w-4" :stroke-width="1.75" />
-          <span
-            v-if="hasPendingReview"
-            class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
-            aria-hidden="true"
-          />
-        </button>
+      <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+        <div class="flex min-w-0 flex-1 items-center gap-1">
+          <div class="w-fit max-w-full min-w-0 flex-initial overflow-x-auto">
+            <div
+              class="flex min-w-max items-center gap-1"
+              role="tablist"
+              aria-label="Workbench tabs"
+            >
+              <div
+                v-for="tab in workbench.tabs"
+                :key="tab.id"
+                class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
+                :class="workbenchTabButtonClass(tab)"
+                draggable="true"
+                @dragstart="startWorkbenchTabDrag($event, tab)"
+                @dragover="dragOverWorkbenchTab($event, tab)"
+                @drop="dropWorkbenchTab($event, tab)"
+                @dragend="clearWorkbenchTabDragState"
+              >
+                <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="2" aria-hidden="true" />
+                <button
+                  type="button"
+                  role="tab"
+                  class="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none"
+                  :id="workbenchTabControlID(tab)"
+                  :aria-selected="workbench.activeTabID === tab.id"
+                  :aria-controls="workbenchTabPanelID(tab)"
+                  :tabindex="workbench.activeTabID === tab.id ? 0 : -1"
+                  :title="tab.title"
+                  @click="activateWorkbenchTabByID(tab.id)"
+                  @keydown="onWorkbenchTabKeydown($event, tab.id)"
+                >
+                  <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+                  <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                  <span class="min-w-0 max-w-[9rem] flex-1 truncate">{{ tab.title }}</span>
+                  <span
+                    v-if="tab.kind === 'review' && hasPendingReview"
+                    class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    aria-hidden="true"
+                  />
+                </button>
+                <button
+                  v-if="tab.closeable"
+                  type="button"
+                  class="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
+                  :title="`Close ${tab.title}`"
+                  :aria-label="`Close ${tab.title}`"
+                  @click="closeWorkbenchTabByID(tab.id)"
+                >
+                  <X class="h-3 w-3" :stroke-width="2" />
+                </button>
+              </div>
+            </div>
+          </div>
           <button
             type="button"
-            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-            ref="shareButtonRef"
-            title="Share project"
-            aria-label="Share project"
-            :disabled="!selected"
-            @click="openShareDialog"
+            class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
+            :class="hasPendingReview ? 'text-accent' : ''"
+            title="New tab"
+            aria-label="New tab"
+            @click="openWorkbenchLauncher"
           >
-            <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <span>Share</span>
+            <Plus class="h-4 w-4" :stroke-width="1.75" />
+            <span
+              v-if="hasPendingReview"
+              class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
+              aria-hidden="true"
+            />
           </button>
-          <div class="flex shrink-0 items-center gap-1">
-            <button
-              v-if="activeProviderTool"
-              class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-              title="Open full provider"
-              aria-label="Open full provider"
-              @click="openToolFull"
-            >
-              <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
-            </button>
-          </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <button
+            v-if="activeProviderTool"
+            class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+            title="Open full provider"
+            aria-label="Open full provider"
+            @click="openToolFull"
+          >
+            <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </div>
       </header>
 
       <div
@@ -8799,7 +9188,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div ref="toolHostRef" class="h-full min-h-0 w-full overflow-auto p-3" />
       </div>
       </template>
-      </section>
+        </section>
+      </Transition>
     </div>
   </div>
 
@@ -8997,174 +9387,228 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             aria-label="Publishing"
             class="grid gap-3 outline-none"
           >
-            <section class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-4" aria-label="Production overview" :aria-busy="promotionLoading && !promotion">
+            <section class="grid gap-4 rounded-lg border border-border-subtle bg-surface p-4" aria-label="Production overview" :aria-busy="promotionLoading && !promotion">
               <div class="flex min-w-0 items-start justify-between gap-3">
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
                     <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-                    <h3 class="text-[14px] font-semibold text-text-primary">Production</h3>
+                    <h3 class="text-[15px] font-semibold text-text-primary">Production</h3>
                   </div>
-                  <p class="mt-1 max-w-2xl text-[12px] leading-5 text-text-muted">{{ productionOverviewDescription }}</p>
+                  <p class="mt-1 max-w-2xl text-[13px] leading-5 text-text-secondary">{{ productionOverviewDescription }}</p>
                 </div>
                 <StatusBadge :status="productionOverview.label" :tone="productionOverview.tone" />
               </div>
-              <div v-if="promotion" class="flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-muted" aria-label="Release evidence">
-                <span><span class="font-semibold uppercase tracking-wide">Latest build commit</span> <code class="font-mono text-text-secondary">{{ releasePipeline.commitSHA || 'No commit yet' }}</code></span>
-                <span><span class="font-semibold uppercase tracking-wide">Built images</span> <span class="font-mono text-text-secondary">{{ releasePipeline.builtCount }} / {{ releasePipeline.totalCount }}</span></span>
-              </div>
+
               <ProductionSettingsLoadingShell v-if="promotionLoading && !promotion" />
               <template v-else>
-              <div v-if="!promotion && promotionError" class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-                <div>{{ promotionError }}</div>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-              </div>
-              <template v-else-if="promotion">
-              <ReleasePipeline
-                :pipeline="releasePipeline"
-                :taking-longer="releaseTakingLonger"
-                :needs-attention="releaseArtifactNeedsAttention"
-                :refreshing="publishingRefreshBusy"
-                @refresh="refreshProduction"
-              />
-              <div v-if="!productionBinding || !latestDeployableRelease?.live" class="flex flex-wrap items-center justify-end gap-3 border-y border-border-subtle py-3" aria-label="Production deployment action">
-                <button
-                  type="button"
-                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-surface shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
-                  :disabled="!canPromoteLatestRelease"
-                  @click="promoteToProd(false, latestDeployableRelease)"
-                >
-                  <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
-                  {{ promotionBusy ? 'Deploying…' : productionBinding ? 'Deploy update' : 'Deploy to production' }}
-                </button>
-                <p v-if="currentBuildActionDisabledReason" class="basis-full text-[11px] leading-4 text-text-muted" role="status">{{ currentBuildActionDisabledReason }}</p>
-              </div>
-              </template>
-              <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-                <div>Production status is unavailable. Refresh to retry.</div>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-              </div>
-              <div v-if="productionPublicationReady" class="rounded-lg border border-success/30 bg-success-subtle px-3 py-2 text-[12px] leading-5 text-success" role="status">
-                {{ productionURL ? 'The publication is ready at the production URL.' : 'The publication is ready; the production link is still being resolved.' }}
-              </div>
-              <div v-if="promotion && productionAccess.label === 'Live'" class="grid gap-3">
-                <div class="flex min-w-0 items-center gap-2 border-b border-border-subtle pb-2.5">
-                  <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-                  <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
+                <div v-if="!promotion && promotionError" class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+                  <div>{{ promotionError }}</div>
+                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
-                <dl class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div class="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-                    <dt class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Visibility</dt>
-                    <dd class="mt-1">
-                      <select
-                        :value="publishing?.publication?.mode === 'public' ? 'public' : 'restricted'"
-                        class="h-8 w-full rounded-md border border-border-subtle bg-surface px-2 text-[12px] font-medium text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
-                        aria-label="Production visibility"
-                        :disabled="publishingActionBusy || !publishingStateAvailable"
-                        @change="onProductionVisibilityChange"
-                      >
-                        <option value="restricted">Invite-only</option>
-                        <option value="public">Public — anyone with the link</option>
-                      </select>
-                    </dd>
-                  </div>
-                  <div v-if="publishing?.publication?.mode === 'restricted'" class="rounded-lg border border-border-subtle bg-surface px-3 py-2">
-                    <dt class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Viewers</dt>
-                    <dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionViewerCount }}</dd>
-                  </div>
-                </dl>
-                <div class="flex flex-wrap items-center justify-end gap-2">
-                  <!-- Visibility and viewers are managed in the Share dialog;
-                       surface it right where those facts are displayed so
-                       invite/grant is one click away from this pane. -->
-                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog">
-                    <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Manage access
-                  </button>
-                  <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary">
-                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Open app
-                  </a>
-                </div>
-              </div>
-              <div v-else-if="promotion" class="grid gap-3">
-                <div v-if="publishing?.published" class="grid gap-2 border-t border-border-subtle pt-3">
-                  <div class="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">External access</div>
-                      <div class="mt-0.5 text-[12px] text-text-muted">{{ productionDescription }}</div>
+                <template v-else-if="promotion">
+                  <ReleasePipeline
+                    :pipeline="releasePipeline"
+                    :taking-longer="releaseTakingLonger"
+                    :needs-attention="releaseArtifactNeedsAttention"
+                    :refreshing="publishingRefreshBusy"
+                    @refresh="refreshProduction"
+                  />
+
+                  <section
+                    v-if="latestDeployableRelease && (!productionBinding || !latestDeployableRelease.live)"
+                    class="grid gap-5 border-y border-border-subtle py-5 lg:grid-cols-[minmax(0,1fr)_260px]"
+                    aria-label="Release ready for production"
+                  >
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2 text-[12px] font-semibold text-success">
+                        <Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                        Verified release
+                      </div>
+                      <h4 class="mt-2 text-[18px] font-semibold leading-6 text-text-primary">
+                        {{ productionBinding ? 'Ready to update production to' : 'Ready to deploy' }}
+                        <code class="font-mono text-[16px] font-medium text-text-primary">{{ productionReleaseSHA }}</code>
+                      </h4>
+                      <p class="mt-2 max-w-xl text-[13px] leading-5 text-text-secondary">
+                        {{ productionBinding
+                          ? 'Current production stays online until this exact release is observed. Its access policy will not change.'
+                          : 'Every component image is available. The app starts invite-only, and your development instance keeps running.' }}
+                      </p>
+
+                      <div class="mt-4 divide-y divide-border-subtle border-y border-border-subtle" aria-label="Verified component images">
+                        <div
+                          v-for="component in latestDeployableRelease.components ?? []"
+                          :key="component.name"
+                          class="flex min-w-0 items-center justify-between gap-3 py-2.5 text-[12px]"
+                        >
+                          <span class="min-w-0 truncate font-medium text-text-primary">{{ component.name }}</span>
+                          <span class="inline-flex shrink-0 items-center gap-1.5 text-success"><Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />Image verified</span>
+                        </div>
+                        <div v-if="!(latestDeployableRelease.components?.length)" class="flex items-center justify-between gap-3 py-2.5 text-[12px]">
+                          <span class="text-text-secondary">Component images</span>
+                          <span class="font-mono text-success">{{ releasePipeline.builtCount }} of {{ releasePipeline.totalCount }} verified</span>
+                        </div>
+                      </div>
+
+                      <div class="mt-5 flex flex-wrap items-center gap-3">
+                        <button
+                          ref="productionDeployButtonRef"
+                          type="button"
+                          class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+                          :disabled="!canPromoteLatestRelease"
+                          @click="openProductionDeployReview(latestDeployableRelease)"
+                        >
+                          <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                          {{ promotionBusy ? 'Deploying…' : `Deploy ${productionReleaseSHA}` }}
+                        </button>
+                        <span class="text-[12px] text-text-secondary">{{ productionBinding ? 'Production update' : 'First production deployment' }}</span>
+                      </div>
+                      <p v-if="currentBuildActionDisabledReason" class="mt-2 text-[11px] leading-4 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
                     </div>
-                    <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
+
+                    <aside class="border-t border-border-subtle pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" aria-label="Deployment consequences">
+                      <h4 class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">What will happen</h4>
+                      <dl class="mt-3 divide-y divide-border-subtle">
+                        <div class="py-3 first:pt-0">
+                          <dt class="flex items-center gap-2 text-[12px] font-medium text-text-primary"><Settings2 class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />Production runtime</dt>
+                          <dd class="mt-1 text-[12px] leading-4 text-text-secondary">{{ productionSettingsSummary }}</dd>
+                        </div>
+                        <div class="py-3">
+                          <dt class="flex items-center gap-2 text-[12px] font-medium text-text-primary"><Lock class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />Access policy</dt>
+                          <dd class="mt-1 text-[12px] leading-4 text-text-secondary">
+                            {{ productionBinding
+                              ? (publishing?.publication?.mode === 'public' ? 'Public access stays enabled.' : 'Invite-only access stays enabled.')
+                              : 'Starts invite-only. Use Share afterward to invite people or make it public.' }}
+                          </dd>
+                        </div>
+                        <div class="py-3 pb-0">
+                          <dt class="flex items-center gap-2 text-[12px] font-medium text-text-primary"><AppWindow class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />Development</dt>
+                          <dd class="mt-1 text-[12px] leading-4 text-text-secondary">Your preview and workspace keep running unchanged.</dd>
+                        </div>
+                      </dl>
+                    </aside>
+                  </section>
+
+                  <section
+                    v-if="productionDeployReviewRelease"
+                    class="grid gap-4 rounded-lg border border-accent/35 bg-accent-subtle p-4"
+                    aria-labelledby="production-deploy-review-title"
+                  >
+                    <div>
+                      <h4 id="production-deploy-review-title" class="text-[15px] font-semibold text-text-primary">Deploy this release to production?</h4>
+                      <p class="mt-1 text-[12px] leading-5 text-text-secondary">
+                        {{ productionBinding
+                          ? 'This updates production after the new rollout is observed. Current production remains online during convergence.'
+                          : 'This creates the production runtime with invite-only access. Development remains online.' }}
+                      </p>
+                    </div>
+                    <dl class="grid overflow-hidden border border-border-subtle sm:grid-cols-3">
+                      <div class="bg-surface p-3 sm:border-r sm:border-border-subtle"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Release</dt><dd class="mt-1 font-mono text-[12px] font-medium text-text-primary">{{ productionDeployReviewSHA }}</dd></div>
+                      <div class="border-t border-border-subtle bg-surface p-3 sm:border-r sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Runtime</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionSettingsSummary }}</dd></div>
+                      <div class="border-t border-border-subtle bg-surface p-3 sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Access</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionBinding ? 'Policy unchanged' : 'Invite-only after deploy' }}</dd></div>
+                    </dl>
+                    <div class="flex flex-wrap justify-end gap-2">
+                      <button type="button" class="inline-flex h-9 items-center rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="closeProductionDeployReview">Cancel</button>
+                      <button ref="productionDeployConfirmRef" type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="confirmProductionDeploy">
+                        Deploy release
+                      </button>
+                    </div>
+                  </section>
+
+                  <p v-if="!latestDeployableRelease && currentBuildActionDisabledReason" class="border-t border-border-subtle pt-3 text-[11px] leading-4 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
+
+                  <div v-if="productionAccess.label === 'Live'" class="grid gap-3 border-t border-border-subtle pt-4">
+                    <div class="flex min-w-0 items-center gap-2">
+                      <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
+                      <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
+                    </div>
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Access policy</div>
+                        <div class="mt-1 text-[12px] text-text-secondary">{{ publishing?.publication?.mode === 'public' ? 'Anyone with the link' : `${productionViewerCount} invited viewer${productionViewerCount === '1' ? '' : 's'}` }}</div>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="openShareDialog">
+                          <Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access
+                        </button>
+                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
+                      </div>
+                    </div>
                   </div>
-                  <div v-if="productionURL" class="flex min-w-0 items-center gap-2 text-[12px]"><Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" /><a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono font-medium text-accent hover:underline">{{ productionURL }}</a></div>
-                  <p v-else class="text-[11px] text-text-muted">{{ productionURLPlaceholder }}</p>
-                  <label class="grid max-w-xs gap-1">
-                    <span class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Visibility</span>
-                    <select
-                      :value="publishing?.publication?.mode === 'public' ? 'public' : 'restricted'"
-                      class="h-8 w-full rounded-md border border-border-subtle bg-surface px-2 text-[12px] font-medium text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
-                      aria-label="Production visibility"
-                      :disabled="publishingActionBusy || !publishingStateAvailable"
-                      @change="onProductionVisibilityChange"
-                    >
-                      <option value="restricted">Invite-only</option>
-                      <option value="public">Public — anyone with the link</option>
-                    </select>
-                  </label>
-                  <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[11px] leading-4 text-danger" role="alert">{{ publishing.publication.error }}</p>
-                  <div v-if="productionURL" class="flex flex-wrap items-center justify-end gap-2">
-                    <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
+                  <div v-else class="grid gap-3 border-t border-border-subtle pt-4">
+                    <div v-if="publishing?.published" class="grid gap-2">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Access policy</div>
+                          <div class="mt-1 text-[12px] text-text-secondary">{{ productionDescription }}</div>
+                        </div>
+                        <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
+                      </div>
+                      <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[11px] leading-4 text-danger" role="alert">{{ publishing.publication.error }}</p>
+                      <div class="flex flex-wrap justify-end gap-2"><button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button></div>
+                    </div>
+                    <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success-subtle p-3 text-success">
+                      <div><div class="text-[12px] font-semibold">Production is running</div><div class="mt-1 text-[12px] leading-5">Access is invite-only. Use Share to invite people or make the app public.</div></div>
+                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-success/30 bg-surface px-3 text-[12px] font-medium text-success" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button>
+                    </div>
                   </div>
+                  <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
+                </template>
+                <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+                  <div>Production status is unavailable. Refresh to retry.</div>
+                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
-                <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="grid gap-2 rounded-lg border border-success/30 bg-success-subtle p-3 text-success">
-                  <div class="text-[11px] font-semibold uppercase tracking-wide">Production is running</div>
-                  <div class="mt-0.5 text-[12px] leading-5">Open Share to choose who can access this production app. Redeploying later does not change access.</div>
-                </div>
-              </div>
-              <div v-else class="flex min-h-[120px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
-                <div>Deployment status is unavailable. Refresh to retry.</div>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-              </div>
-              <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
               </template>
             </section>
-            <section v-if="!promotionLoading || promotion" class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-3" aria-label="Production settings">
-              <div>
-                <h3 class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production settings</h3>
-                <p class="mt-1 text-[11px] leading-4 text-text-muted">These inputs come from the selected template. Platform-owned names, rollout revisions, and component images are managed automatically.</p>
-              </div>
-              <div v-if="currentProductionRelease" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-muted" aria-label="Current production release">
-                <span class="font-semibold uppercase tracking-wide">Current production release</span>
-                <code class="font-mono text-text-secondary">{{ currentProductionRelease.commitSHA }}</code>
-              </div>
-              <ProductionForm
-                v-if="promotion"
-                :schema="promotion?.productionSchema ?? null"
-                :values="promotionValues"
-                :image-inputs="(promotion?.build.components ?? []).map(component => component.imageInput).filter(Boolean)"
-                :disabled="promotionBusy || !promotion?.productionSchema"
-                :immutable-paths="promotion?.immutableProductionInputs ?? []"
-                :existing-production="Boolean(productionBinding)"
-                @update:values="updateProductionForm"
-                @validity="productionFormValid = $event"
-              />
-              <div v-if="promotion" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
-                <p class="text-[11px] leading-4 text-text-muted">Saving settings redeploys the current production release. It does not change production access.</p>
-                <button
-                  type="button"
-                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
-                  @click="redeployCurrentProduction"
-                >
-                  <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
-                  Save settings and redeploy
-                </button>
-              </div>
-              <p v-if="promotion && promotionValuesDirty && !canRedeployCurrentProduction" class="text-[11px] leading-4 text-text-muted" role="status">
-                {{ productionSettingsActionDisabledReason }}
-              </p>
-              <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
-                <div>Production settings are unavailable. Refresh to retry.</div>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+
+            <section v-if="!promotionLoading || promotion" class="rounded-lg border border-border-subtle bg-surface" aria-label="Deployment configuration">
+              <button
+                type="button"
+                class="flex w-full items-start justify-between gap-4 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                :aria-expanded="productionSettingsOpen"
+                aria-controls="production-settings-body"
+                @click="productionSettingsOpen = !productionSettingsOpen"
+              >
+                <span class="flex min-w-0 items-start gap-2">
+                  <Settings2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                  <span class="min-w-0"><span class="block text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Deployment configuration</span><span class="mt-1 block text-[12px] leading-4 text-text-secondary">{{ productionSettingsSummary }}</span></span>
+                </span>
+                <ChevronRight class="mt-0.5 h-4 w-4 shrink-0 text-text-muted transition-transform" :class="productionSettingsOpen ? 'rotate-90' : ''" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+              <div id="production-settings-body" v-show="productionSettingsOpen" class="grid gap-3 border-t border-border-subtle p-3">
+                <p class="text-[12px] leading-5 text-text-secondary">Template-owned runtime settings only. Names, rollout revisions, component images, and access policy are managed separately.</p>
+                <div v-if="currentProductionRelease" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-secondary" aria-label="Current production release">
+                  <span class="font-semibold uppercase tracking-wide">Current production release</span>
+                  <code class="font-mono text-text-primary">{{ shortReleaseSHA(currentProductionRelease.commitSHA) }}</code>
+                </div>
+                <ProductionForm
+                  v-if="promotion"
+                  :schema="promotion?.productionSchema ?? null"
+                  :values="promotionValues"
+                  :image-inputs="(promotion?.build.components ?? []).map(component => component.imageInput).filter(Boolean)"
+                  :disabled="promotionBusy || !promotion?.productionSchema"
+                  :immutable-paths="promotion?.immutableProductionInputs ?? []"
+                  :existing-production="Boolean(productionBinding)"
+                  @update:values="updateProductionForm"
+                  @validity="productionFormValid = $event"
+                />
+                <div v-if="promotion" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
+                  <p class="text-[11px] leading-4 text-text-secondary">{{ productionBinding ? 'Saving configuration redeploys the current release. Access does not change.' : 'These values will be reviewed and applied with the first deployment.' }}</p>
+                  <button
+                    v-if="productionBinding"
+                    type="button"
+                    class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
+                    @click="redeployCurrentProduction"
+                  >
+                    <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                    Save configuration and redeploy
+                  </button>
+                </div>
+                <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[11px] leading-4 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
+                <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
+                  <div>Production configuration is unavailable. Refresh to retry.</div>
+                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+                </div>
               </div>
             </section>
             <section class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-3" aria-label="Technical details">
@@ -9267,11 +9711,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               type="button"
               class="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-on-accent transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
               title="Delete project"
-              :disabled="busy"
+              :disabled="busy || isProjectDeleting(settingsProject)"
               @click="requestDeleteProject(settingsProject)"
             >
-              <Trash2 class="h-4 w-4" :stroke-width="1.75" />
-              Delete project
+              <Loader2 v-if="isProjectDeleting(settingsProject)" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+              <Trash2 v-else class="h-4 w-4" :stroke-width="1.75" />
+              {{ isProjectDeleting(settingsProject) ? 'Deleting…' : 'Delete project' }}
             </button>
           </footer>
           </div>
@@ -9296,6 +9741,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :members="publishingMembers"
     :grants="publishing?.grants ?? []"
     v-model:preview-mode="previewMode"
+    :preview-saved-mode="previewAccess?.mode === 'public' ? 'public' : 'restricted'"
     :preview-url="previewAccess?.url ?? ''"
     :preview-supported="Boolean(previewAccess?.supported)"
     :preview-converged="previewAccess?.converged !== false"
@@ -9322,3 +9768,73 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     @retry="retryPublishing"
   />
 </template>
+
+<style scoped>
+.workbench-pane-enter-active,
+.workbench-pane-leave-active {
+  transition: opacity 280ms ease-out;
+}
+
+.workbench-pane-leave-active {
+  transition-duration: 190ms;
+}
+
+.workbench-pane-enter-from,
+.workbench-pane-leave-to {
+  opacity: 0;
+}
+
+.workbench-divider-enter-active,
+.workbench-divider-leave-active {
+  transition: opacity 140ms ease-out;
+}
+
+.workbench-divider-leave-active {
+  transition-duration: 110ms;
+}
+
+@media (min-width: 768px) {
+  .workbench-conversation-pane {
+    transition: flex-basis 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .workbench-conversation-pane.workbench-conversation-leaving {
+    transition-duration: 190ms;
+  }
+
+  .workbench-conversation-pane.transition-none {
+    transition-property: none;
+  }
+
+  .workbench-pane-enter-active {
+    transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 280ms ease-out;
+  }
+
+  .workbench-pane-leave-active {
+    transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1), opacity 190ms ease-out;
+  }
+
+  .workbench-pane-enter-from,
+  .workbench-pane-leave-to {
+    transform: translateX(18px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-conversation-pane {
+    transition: none;
+  }
+
+  .workbench-pane-enter-active,
+  .workbench-pane-leave-active,
+  .workbench-divider-enter-active,
+  .workbench-divider-leave-active {
+    transition: none;
+  }
+
+  .workbench-pane-enter-from,
+  .workbench-pane-leave-to {
+    transform: none;
+  }
+}
+</style>

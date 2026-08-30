@@ -5,7 +5,11 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Faros Portal</title>
-    <script>
+    <!-- Give the browser's native web-content surface a light-safe color
+         before the renderer submits its first frame. The bootstrap immediately
+         narrows this to the resolved Faros theme in the same parser task. -->
+    <meta id="faros-color-scheme" name="color-scheme" content="light dark" />
+    <script id="faros-theme-bootstrap">
       // Apply theme before first paint to prevent flash. Unset preference
       // defaults to dark. Following the OS is an explicit `system` preference;
       // any failure (no matchMedia, storage access, or thrown error) renders
@@ -22,9 +26,15 @@
           var d = t === 'system'
             ? (hasMatchMedia ? (prefersDark ? 'dark' : 'light') : 'dark')
             : t;
+          var scheme = document.getElementById('faros-color-scheme');
+          if (scheme) scheme.setAttribute('content', d);
           document.documentElement.className = d;
+          document.documentElement.style.colorScheme = d;
         } catch (e) {
+          var scheme = document.getElementById('faros-color-scheme');
+          if (scheme) scheme.setAttribute('content', 'dark');
           document.documentElement.className = 'dark';
+          document.documentElement.style.colorScheme = 'dark';
         }
       })();
     </script>

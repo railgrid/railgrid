@@ -93,7 +93,15 @@ func (s *Server) consumeProjectInitialBootstrap(ctx context.Context, scope store
 }
 
 type ProjectView struct {
-	Name           string                        `json:"name"`
+	Name string `json:"name"`
+	// UID is the immutable Kubernetes identity. Project names may be reused
+	// after an asynchronous delete, so portal mutations must never key on name
+	// alone.
+	UID string `json:"uid"`
+	// Deleting is derived from metadata.deletionTimestamp, not from the
+	// controller's eventually-updated status phase. This keeps terminating
+	// projects visibly locked while their finalizers complete.
+	Deleting       bool                          `json:"deleting"`
 	DisplayName    string                        `json:"displayName"`
 	Description    string                        `json:"description,omitempty"`
 	Phase          string                        `json:"phase,omitempty"`
@@ -737,9 +745,18 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := mux.Vars(r)["project"]
+	expectedUID := strings.TrimSpace(r.URL.Query().Get("uid"))
+	if expectedUID == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "project UID is required; refresh the project list and try again")
+		return
+	}
 	p, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		writeProjectError(w, err)
+		return
+	}
+	if string(p.UID) != expectedUID {
+		writeStatus(w, http.StatusConflict, "Conflict", "project identity changed; refresh the project list before deleting")
 		return
 	}
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
@@ -776,7 +793,10 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
+	uid := p.UID
+	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	}); err != nil {
 		writeProjectError(w, err)
 		return
 	}
@@ -1608,6 +1628,8 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project,
 	p = projectWithLiveBindingStatus(ctx, c, p, id)
 	view := ProjectView{
 		Name:         p.Name,
+		UID:          string(p.UID),
+		Deleting:     p.DeletionTimestamp != nil,
 		DisplayName:  p.Spec.DisplayName,
 		Description:  p.Spec.Description,
 		Phase:        p.Status.Phase,

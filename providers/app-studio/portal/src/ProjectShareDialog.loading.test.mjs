@@ -15,26 +15,30 @@ test('keeps the initial Share load layout-stable and announces busy content', ()
 })
 
 test('keeps mutation pending state on the action and target that is busy', () => {
-  assert.match(dialog, /const saveBusy = computed\(\(\) => props\.busy[\s\S]*props\.busyAction === 'save'/)
+  assert.match(dialog, /const productionSaveBusy = computed\(\(\) => props\.busy && props\.busyAction === 'save'/)
+  assert.match(dialog, /const previewSaveBusy = computed\(\(\) => props\.busy && props\.busyAction === null && previewDirty\.value/)
   assert.match(dialog, /const grantBusy = computed\(\(\) => props\.busy && props\.busyAction === 'grant'/)
   assert.match(dialog, /const inviteBusy = computed\(\(\) => props\.busy && props\.busyAction === 'invite'/)
   assert.match(dialog, /const disableBusy = computed\(\(\) => props\.busy && props\.busyAction === 'disable'/)
   assert.match(dialog, /props\.busyAction === 'revoke' && props\.busyTarget === grant/)
-  for (const label of ['Publishing…', 'Saving access…', 'Adding viewer…', 'Inviting…', 'Revoking…', 'Disabling access…']) {
+  for (const label of ['Enabling…', 'Saving…', 'Adding…', 'Inviting…', 'Revoking…', 'Disabling access…']) {
     assert.match(dialog, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   }
-  assert.match(dialog, /:disabled="!link \|\| busy \|\| loading"/)
+  assert.match(dialog, /copyChannelLink\('production'\)/)
+  assert.match(dialog, /copyChannelLink\('preview'\)/)
 })
 
 test('does not authorize Share mutations when only the member read succeeded', () => {
   assert.match(dialog, /publicationStateAvailable: boolean/)
-  assert.match(dialog, /const canSave = computed\(\(\) => \([\s\S]*props\.publicationStateAvailable/)
+  assert.match(dialog, /const canSaveProduction = computed\(\(\) => \([\s\S]*props\.publicationStateAvailable/)
+  assert.match(dialog, /const canSavePreview = computed\(\(\) => \([\s\S]*previewDirty\.value/)
   assert.match(dialog, /const canAddMember = computed\(\(\) => \([\s\S]*props\.publicationStateAvailable/)
   assert.match(dialog, /const canInvite = computed\(\(\) => \([\s\S]*props\.publicationStateAvailable/)
-  assert.match(dialog, /:disabled="busy \|\| loading \|\| !publicationStateAvailable"/)
   assert.match(dialog, /:disabled="busy \|\| !publicationStateAvailable"\s+@click="emit\('revoke', grant\.name\)"/)
   assert.match(dialog, /:disabled="busy \|\| !publicationStateAvailable"\s+@click="emit\('disable'\)"/)
-  assert.match(dialog, /function primaryAction\(\) \{\s*if \(!canSave\.value\) return/)
+  assert.match(dialog, /function saveProductionAccess\(\) \{\s*if \(!canSaveProduction\.value\) return\s*emit\('save'\)/)
+  assert.match(dialog, /function savePreviewAccess\(\) \{\s*if \(!canSavePreview\.value\) return\s*emit\('save-preview'\)/)
+  assert.doesNotMatch(dialog, /function primaryAction/)
   assert.match(dialog, /@click="emit\('retry'\)"/)
   assert.match(dialog, /:disabled="busy"[\s\S]*@click="openPublishing"/)
 })

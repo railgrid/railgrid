@@ -367,8 +367,8 @@ sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
 	@hack/sync-portalkit.sh --verify
 
-test-portal-settings-conformance: ## Verify organization/workspace settings source contracts
-	@node --test portal/src/pages/OrganizationsWorkspace.conformance.test.mjs
+test-portal-settings-conformance: ## Verify portal shell and organization/workspace source contracts
+	@node --test portal/src/theme-bootstrap.test.mjs portal/src/pages/OrganizationsWorkspace.conformance.test.mjs
 
 test-create-flow-conformance: ## Verify route-owned creation uses the canonical page skeleton
 	@node --test hack/create-flow-conformance.test.mjs

@@ -928,8 +928,11 @@ export const api = {
     return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },
 
-  async deleteProject(ctx: FarosContext | null, name: string): Promise<void> {
-    await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+  async deleteProject(ctx: FarosContext | null, name: string, uid: string): Promise<void> {
+    const expectedUID = uid.trim()
+    if (!expectedUID) throw new ProjectAPIRequestError('project UID is required before deleting', 400)
+    const query = new URLSearchParams({ uid: expectedUID })
+    await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}?${query}`)
   },
 
   async syncDevelopment(ctx: FarosContext | null, name: string): Promise<unknown> {

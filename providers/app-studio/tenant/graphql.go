@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -358,6 +359,54 @@ func (s *Scope) Delete(ctx context.Context, res Resource, namespace, name string
 	q := fmt.Sprintf("mutation(%s) { %s }", varDefs, sel)
 	_, err := s.exec(ctx, q, vars, &res, name)
 	return err
+}
+
+// DeleteWithOptions removes one object through the hub's caller-scoped kcp
+// proxy. The generated GraphQL delete mutation only accepts name/namespace and
+// therefore cannot carry Kubernetes UID preconditions. The raw API path uses
+// the same workspace cluster and bearer identity as GraphQL while preserving
+// DeleteOptions atomically at the API server.
+func (s *Scope) DeleteWithOptions(ctx context.Context, res Resource, namespace, name string, opts metav1.DeleteOptions) error {
+	base := s.c.hubBase + "/clusters/" + url.PathEscape(s.clusterID)
+	if res.GVR.Group == "" {
+		base += "/api/" + url.PathEscape(res.GVR.Version)
+	} else {
+		base += "/apis/" + url.PathEscape(res.GVR.Group) + "/" + url.PathEscape(res.GVR.Version)
+	}
+	if res.Namespaced {
+		if namespace == "" {
+			return fmt.Errorf("namespace is required to delete %s %q", res.Kind, name)
+		}
+		base += "/namespaces/" + url.PathEscape(namespace)
+	}
+	endpoint := base + "/" + url.PathEscape(res.GVR.Resource) + "/" + url.PathEscape(name)
+	body, err := json.Marshal(opts)
+	if err != nil {
+		return fmt.Errorf("encode delete options: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	resp, err := s.c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode/100 == 2 {
+		return nil
+	}
+	var status metav1.Status
+	if err := json.Unmarshal(responseBody, &status); err == nil && status.Code != 0 {
+		return &apierrors.StatusError{ErrStatus: status}
+	}
+	return fmt.Errorf("kcp delete HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 }
 
 // itemArgs builds the (varDefs, args, vars) for a single-item operation.

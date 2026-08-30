@@ -58,7 +58,7 @@
   /* Keep foreground text on accent actions readable in both host themes.
      `@theme inline` carries this semantic fallback into text-on-accent while
      the host's runtime token remains authoritative when it is present. */
-  --color-on-accent: var(--color-on-accent, #fff);
+  --color-on-accent: var(--color-on-accent, #0a0b12);
   --color-text-primary: var(--color-text-primary, #e9e9f2);
   --color-text-secondary: var(--color-text-secondary, #8a8ca6);
   --color-text-muted: var(--color-text-muted, #5d5f78);
@@ -68,6 +68,14 @@
   --color-warning-subtle: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   --color-danger: var(--color-danger, #ff5d5d);
   --color-danger-subtle: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+}
+
+:scope {
+  --spacing: 0.25rem;
+}
+
+details[open] > summary .landing-prompt-chevron {
+  transform: rotate(90deg);
 }
 
 faros-provider-app-studio,

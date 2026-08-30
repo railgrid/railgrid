@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -144,5 +145,68 @@ func TestGraphQLResourceListForwardsAndAppliesLabelSelector(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].GetName() != "app-a" {
 		t.Fatalf("packages = %#v, want only app-a", got.Items)
+	}
+}
+
+func TestGraphQLProjectDeleteUsesNativeUIDPrecondition(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		expectedUID  types.UID
+		wantConflict bool
+		wantDeletes  int
+	}{
+		{name: "matching identity deletes", expectedUID: "project-current", wantDeletes: 1},
+		{name: "API server rejects a reused name", expectedUID: "project-old", wantConflict: true, wantDeletes: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			deleteCalls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Fatalf("method = %s, want DELETE", r.Method)
+				}
+				if got, want := r.URL.Path, "/clusters/cluster-id/apis/ai.faros.sh/v1alpha1/projects/demo"; got != want {
+					t.Fatalf("delete path = %q, want %q", got, want)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
+					t.Fatalf("Authorization = %q, want caller token", got)
+				}
+				var opts metav1.DeleteOptions
+				if err := json.NewDecoder(r.Body).Decode(&opts); err != nil {
+					t.Fatalf("decode delete options: %v", err)
+				}
+				if opts.Preconditions == nil || opts.Preconditions.UID == nil || *opts.Preconditions.UID != tt.expectedUID {
+					t.Fatalf("delete preconditions = %#v, want UID %q", opts.Preconditions, tt.expectedUID)
+				}
+				deleteCalls++
+				if tt.wantConflict {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"UID precondition failed","reason":"Conflict","code":409}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+
+			graphQL := tenant.NewGraphQLClient(server.URL, false)
+			scope, err := graphQL.For("cluster-id", "caller-token")
+			if err != nil {
+				t.Fatalf("create GraphQL scope: %v", err)
+			}
+			client := NewFromGraphQL(scope)
+			err = client.Projects().Delete(context.Background(), "demo", metav1.DeleteOptions{
+				Preconditions: &metav1.Preconditions{UID: &tt.expectedUID},
+			})
+			if tt.wantConflict {
+				if !apierrors.IsConflict(err) {
+					t.Fatalf("Delete error = %v, want conflict", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			if deleteCalls != tt.wantDeletes {
+				t.Fatalf("delete mutation calls = %d, want %d", deleteCalls, tt.wantDeletes)
+			}
+		})
 	}
 }

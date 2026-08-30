@@ -314,7 +314,7 @@ export function releasePipelineView(
     { key: 'build', label: 'Build', state: buildFailed ? 'error' : buildDone ? 'done' : buildCurrent ? 'current' : 'pending' },
     { key: 'verify', label: 'Verify images', state: verifyState, detail: totalCount ? `${builtCount} of ${totalCount}` : undefined },
     { key: 'deploy', label: 'Deploy', state: selectedReleaseDeployed ? 'done' : productionFailed ? 'error' : deploying || state === 'ready' ? 'current' : 'pending', detail: requestedRevision ? `requested ${shortSHA(requestedRevision)} / observed ${shortSHA(observedRevision) || '—'}` : undefined },
-    { key: 'access', label: 'Enable access', state: accessLive ? 'done' : selectedReleaseDeployed ? 'current' : 'pending' },
+    { key: 'access', label: 'Access policy', state: accessLive ? 'done' : selectedReleaseDeployed ? 'current' : 'pending' },
   ]
 
   return {

@@ -105,7 +105,10 @@ const DARK_FALLBACKS = Object.freeze({
   'danger-subtle': ['rgba(255,93,93,.12)'],
   'danger-hover': ['#ff7676'],
   'danger-surface': ['rgba(255,93,93,.12)'],
-  'on-accent': ['#fff', '#ffffff'],
+  // Violet Circuit uses near-black on the brighter dark-theme violet and
+  // white on the darker light-theme violet. Both are semantic on-accent
+  // fallbacks; accepting them here does not permit either as an ad-hoc color.
+  'on-accent': ['#0a0b12', '#fff', '#ffffff'],
 })
 
 // Keep this list deliberately small.  A provider's `header`, `form`, `field`,
