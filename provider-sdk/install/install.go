@@ -409,13 +409,51 @@ func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sli
 	return nil
 }
 
+// orgProviderWorkspacePrefix marks a provider workspace owned by one
+// organization rather than the platform:
+// root:faros:tenants:<orgUUID>:providers:<name>.
+const orgProviderWorkspacePrefix = "root:faros:tenants:"
+
+// isOrgOwnedWorkspace reports whether a workspace path belongs to a single
+// organization. Matching on the separator matters: a sibling of the tenants
+// container whose name merely starts with the same letters is not a tenant.
+func isOrgOwnedWorkspace(path string) bool {
+	return strings.HasPrefix(path, orgProviderWorkspacePrefix)
+}
+
 // ApplyBindGrant creates / updates the ClusterRole + ClusterRoleBinding in the
 // provider workspace that lets any authenticated faros user bind to the
 // provider's APIExport from their own workspace. Without it, kcp refuses
 // tenant-side APIBinding creates with 403. Subject is "system:authenticated":
 // the platform admin is the gatekeeper at onboard/install time.
+//
+// That gatekeeper argument does not carry over to an org-owned provider. Nobody
+// vets those — an organization registers one itself — so granting bind to every
+// authenticated user means a member of ANY organization who learns another
+// org's UUID can hand-craft an APIBinding in their own workspace and consume a
+// provider they were never offered. So for an org-owned workspace the grant is
+// not created, and one left by an earlier install is removed.
+//
+// Nothing supported breaks: every APIBinding faros creates comes from the hub's
+// Enable path, which runs as kcp-admin and needs no grant. What stops working
+// is hand-writing an APIBinding with kubectl, which for an Org workspace is
+// already outside the hub-mediated model (decision O-10).
 func ApplyBindGrant(ctx context.Context, cl dynamic.Interface, exportName string) error {
 	roleName := "faros:providers:bind:" + exportName
+
+	// Resolve from the LogicalCluster rather than a caller-supplied path:
+	// Options.WorkspacePath is deliberately empty in normal use, so that a
+	// provider chart is workspace-agnostic. This client is already scoped to
+	// the workspace being installed into, so it can just ask.
+	path, err := workspacePathOf(ctx, cl)
+	if err != nil {
+		// Fail closed. An unresolvable path must not default to the widest
+		// grant, and skipping costs only the unsupported kubectl path.
+		return fmt.Errorf("resolving workspace path for bind grant of %s: %w", exportName, err)
+	}
+	if isOrgOwnedWorkspace(path) {
+		return removeBindGrant(ctx, cl, roleName)
+	}
 	cr := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRole",
@@ -451,6 +489,38 @@ func ApplyBindGrant(ctx context.Context, cl dynamic.Interface, exportName string
 	}}
 	if err := applyUnstructured(ctx, cl, clusterRoleBindingGVR, crb); err != nil {
 		return fmt.Errorf("applying ClusterRoleBinding %s: %w", roleName, err)
+	}
+	return nil
+}
+
+// logicalClusterGVR is kcp's per-workspace singleton, named "cluster", whose
+// kcp.io/path annotation is the workspace's canonical path.
+var logicalClusterGVR = schema.GroupVersionResource{
+	Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
+}
+
+// workspacePathOf returns the canonical path of the workspace cl is scoped to.
+func workspacePathOf(ctx context.Context, cl dynamic.Interface) (string, error) {
+	lc, err := cl.Resource(logicalClusterGVR).Get(ctx, "cluster", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting LogicalCluster: %w", err)
+	}
+	path := lc.GetAnnotations()["kcp.io/path"]
+	if path == "" {
+		return "", fmt.Errorf("LogicalCluster carries no kcp.io/path annotation")
+	}
+	return path, nil
+}
+
+// removeBindGrant deletes a bind grant a previous install created, so that
+// upgrading an org-owned provider closes the hole rather than leaving it open
+// until someone notices. NotFound is success — the usual case.
+func removeBindGrant(ctx context.Context, cl dynamic.Interface, roleName string) error {
+	if err := cl.Resource(clusterRoleBindingGVR).Delete(ctx, roleName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("removing bind ClusterRoleBinding %s: %w", roleName, err)
+	}
+	if err := cl.Resource(clusterRoleGVR).Delete(ctx, roleName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("removing bind ClusterRole %s: %w", roleName, err)
 	}
 	return nil
 }

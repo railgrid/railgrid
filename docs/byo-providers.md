@@ -503,15 +503,22 @@ in URL paths.
   cannot keep a platform provider of the same name looking alive. Org providers
   therefore never set `HeartbeatRequired`, leaving readiness resting on endpoint
   validity. An org-scoped heartbeat path is future work.
-- **No hub-proxied UI or backend.** `/ui/providers/{name}` and
-  `/services/providers/{name}` resolve globally. An org provider that declares
-  `spec.ui.url` will not be proxied, and gets no default `iconURL` (the portal
-  falls back to its generic glyph). API-only org providers — the common case —
-  are unaffected: `EndpointsValid` now accepts an APIExport alone as "this
-  provider offers something", which opens no route since the proxies
-  independently 404 when the URLs are nil. Closing this is the subject of
-  [byo-provider-edge-transport.md](./byo-provider-edge-transport.md), whose
-  phase 2 routes both proxies over the edge tunnel.
+- **The provider UI is not portable; the backend is.** `/services/providers/{name}`
+  now resolves in the caller's Org and routes an org-owned provider over its edge
+  tunnel. `/ui/providers/{name}` does not: it still resolves platform-only, so an
+  Org self-hosting a provider that ships a micro-frontend gets the PLATFORM's
+  bundle while its own copy serves the API — wrong rather than broken, which is
+  the harder failure to notice.
+
+  This is not the same change as the backend one. The bundle is loaded with a
+  plain `<script src="/ui/providers/{name}/main.js">`
+  ([ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue)), so the request
+  carries no `Authorization` header, and `BrowserIdentity` — the hub's only way
+  to name a caller — requires one. There is no identity on an asset GET to scope
+  by. Closing it needs either the portal fetching the bundle with credentials
+  and injecting it as a blob, or the Org encoded in the asset path so no
+  identity is needed. Both are portal-visible changes; neither is a proxy tweak.
+
 - **No edge-driven install.** The Org installs the chart itself with the returned
   kubeconfig. One-click install onto a chosen edge needs credential projection
   into the edge cluster (the agent's `Placement` plane ships no kcp credential
@@ -519,17 +526,29 @@ in URL paths.
   named, connected edge — see
   [byo-provider-edge-transport.md](./byo-provider-edge-transport.md) E-2 — so
   the target is known; only the credential projection is missing.
-- **The `bind` verb is not org-scoped.** The provider's own `init` runs
-  `provider-sdk/install`'s `ApplyBindGrant`, which grants `bind` on the APIExport
-  to the group `system:authenticated` — platform-wide. Discovery and the
-  hub-mediated Enable path are both org-scoped, but a user who learns another
-  Org's UUID can hand-craft an `APIBinding` in their own team workspace
-  referencing `root:faros:tenants:<otherOrg>:providers:<name>` and kcp's
-  admission will allow the bind. Closing this needs the per-Org bind ClusterRole
-  from [provider-scoping.md](./provider-scoping.md) P-3, which is unimplemented
-  for platform providers too — for them the platform admin is the gatekeeper at
-  onboard time, an argument that does not carry over to org-owned providers.
-  **This is the most important gap to close.**
+- **`bind` is no longer granted for org-owned providers, and P-3 is not what
+  closes it.** The provider's `init` used to grant `bind` on its APIExport to
+  `system:authenticated` in every provider workspace. For a platform provider
+  that is defensible — an admin vets it at onboard time. For an org-owned one
+  nobody vets anything, so it meant a member of ANY organization who learned
+  another Org's UUID could hand-craft an `APIBinding` and consume a provider
+  they were never offered.
+
+  `ApplyBindGrant` now resolves its own workspace from the `LogicalCluster` and,
+  under `root:faros:tenants:`, creates no grant and removes one an earlier
+  install left. Nothing supported breaks: every APIBinding faros creates comes
+  from the hub's Enable path, which runs as kcp-admin and needs no grant. What
+  stops working is writing an APIBinding by hand with kubectl, already outside
+  the hub-mediated model (O-10).
+
+  Note this is *not* provider-scoping.md's P-3, a per-Org `bind` ClusterRole.
+  That decision assumes a subject to bind — and there is none: the hub grants
+  workspace access per `User` (`ensureWorkspaceAdmin`), so kcp has no group
+  meaning "members of org X". Granting per member would need a reconciler
+  tracking membership across every org provider workspace. Refusing outright is
+  both simpler and tighter; P-3 should be revisited rather than implemented as
+  written.
+
 - **No `MaximalPermissionPolicy`.** An org provider's permission claims are
   capped only by what each consuming Workspace accepts at Enable. Same posture
   platform providers have today, but it is the thing to fix before any cross-org
