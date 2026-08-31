@@ -582,7 +582,12 @@ func (s *Server) Run(ctx context.Context) error {
 		// hubs — an unauthenticated visitor bounces through /login?next=…,
 		// signs in with whichever mode the hub offers, and the authorize
 		// continuation completes.
-		if s.opts.PublishedAppsDomain != "" {
+		// Registered whenever the hub can reach kcp — NOT gated on
+		// PublishedAppsDomain: redirects are pinned per sign-in to the host
+		// stamped on the instance being authorized, so apps published under a
+		// BYO provider's own zone (or a fully customer-owned domain) work on
+		// hubs that configure no platform apps zone at all.
+		if kcpConfig != nil {
 			sarFactory := func(clusterID string) (authorizationv1client.SubjectAccessReviewInterface, error) {
 				cfg := rest.CopyConfig(kcpConfig)
 				cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterID)
@@ -592,10 +597,14 @@ func (s *Server) Run(ctx context.Context) error {
 				}
 				return clientset.AuthorizationV1().SubjectAccessReviews(), nil
 			}
+			instanceHost, err := appauth.NewKCPInstanceHostResolver(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating published-app host resolver: %w", err)
+			}
 			appAuthCfg := appauth.Config{
-				Sessions:   browserSessionStore,
-				SARClient:  sarFactory,
-				AppsDomain: s.opts.PublishedAppsDomain,
+				Sessions:     browserSessionStore,
+				SARClient:    sarFactory,
+				InstanceHost: instanceHost,
 			}
 			if appCodeStore != nil {
 				// authorize and exchange are separate requests that a scaled hub
@@ -608,7 +617,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("creating published-app auth handler: %w", err)
 			}
 			appAuth.RegisterRoutes(router, authRateLimit)
-			logger.Info("published-app auth routes registered", "appsDomain", s.opts.PublishedAppsDomain)
+			logger.Info("published-app auth routes registered")
 		}
 
 		// Register static token login endpoint if static tokens are configured

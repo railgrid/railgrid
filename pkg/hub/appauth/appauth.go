@@ -134,16 +134,31 @@ func (ref InstanceRef) key() string {
 // cluster. The hub wires this from its kcp admin config; tests use fakes.
 type SARFactory func(clusterID string) (authorizationv1client.SubjectAccessReviewInterface, error)
 
+// InstanceHostResolver reports the public host a published instance is served
+// on — the FQDN the provider deployment stamped onto the instance itself.
+// Redirects are pinned to exactly this host, which is what lets published
+// apps live under ANY zone (platform, BYO edge, or a customer-owned domain)
+// without the hub keeping a domain registry: the instance is the single
+// source of truth for where its traffic terminates.
+//
+// ErrInstanceNotPublished means the instance exists but exposes no host (or
+// does not exist); anything else is an infrastructure failure and fails the
+// authorize closed with a retryable error page.
+type InstanceHostResolver func(ctx context.Context, ref InstanceRef) (string, error)
+
+// ErrInstanceNotPublished is returned by an InstanceHostResolver when the
+// referenced instance has no published host to pin the redirect against.
+var ErrInstanceNotPublished = errors.New("instance has no published host")
+
 // Config assembles a Handler.
 type Config struct {
 	// Sessions is the shared hub browser-session store (portal SSO).
 	Sessions *browsersession.Store
 	// SARClient resolves per-workspace SubjectAccessReview clients.
 	SARClient SARFactory
-	// AppsDomain is the DNS zone published apps live under
-	// (e.g. "apps.faros.example"). Redirects are only issued to hosts
-	// directly under this zone. Empty disables the endpoints.
-	AppsDomain string
+	// InstanceHost resolves the published host of the instance a sign-in is
+	// for. Redirects are only issued to exactly that host.
+	InstanceHost InstanceHostResolver
 	// Codes persists the one-use authorization codes. It defaults to a
 	// bounded process-local map, which is only correct for a single hub
 	// replica: authorize and exchange are separate requests and a scaled hub
@@ -161,13 +176,13 @@ type Config struct {
 
 // Handler serves the authorize and exchange endpoints.
 type Handler struct {
-	sessions   *browsersession.Store
-	sarClient  SARFactory
-	appsDomain string
-	loginPath  string
-	now        func() time.Time
-	random     io.Reader
-	codes      CodeStore
+	sessions     *browsersession.Store
+	sarClient    SARFactory
+	instanceHost InstanceHostResolver
+	loginPath    string
+	now          func() time.Time
+	random       io.Reader
+	codes        CodeStore
 }
 
 // CodeRecord is what authorize binds a code to and exchange verifies against.
@@ -197,18 +212,17 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.SARClient == nil {
 		return nil, fmt.Errorf("appauth: SAR client factory is required")
 	}
-	domain := strings.ToLower(strings.Trim(strings.TrimSpace(cfg.AppsDomain), "."))
-	if domain == "" {
-		return nil, fmt.Errorf("appauth: apps domain is required")
+	if cfg.InstanceHost == nil {
+		return nil, fmt.Errorf("appauth: instance host resolver is required")
 	}
 	h := &Handler{
-		sessions:   cfg.Sessions,
-		sarClient:  cfg.SARClient,
-		appsDomain: domain,
-		loginPath:  cfg.LoginPath,
-		now:        cfg.Now,
-		random:     cfg.Random,
-		codes:      cfg.Codes,
+		sessions:     cfg.Sessions,
+		sarClient:    cfg.SARClient,
+		instanceHost: cfg.InstanceHost,
+		loginPath:    cfg.LoginPath,
+		now:          cfg.Now,
+		random:       cfg.Random,
+		codes:        cfg.Codes,
 	}
 	if h.loginPath == "" {
 		h.loginPath = "/ui/login"
@@ -337,6 +351,33 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pin the redirect to the host the provider stamped onto this very
+	// instance. This is what makes BYO and customer-owned app domains work
+	// with no hub-side domain registry — and it is intentionally checked
+	// only after the SAR: the instance read costs a kcp round trip and
+	// reveals whether an instance exists, so only callers already
+	// authorized on that instance get either. The port is not compared:
+	// the stamped FQDN is portless while local Gateways publish on a high
+	// port, and the code→host binding below still carries the full host.
+	instHost, err := h.instanceHost(r.Context(), ref)
+	if err != nil {
+		if errors.Is(err, ErrInstanceNotPublished) {
+			h.renderError(w, http.StatusBadRequest, "Invalid app access request",
+				"This application has no published address to return to. Return to the app and try again.")
+			return
+		}
+		h.renderError(w, http.StatusServiceUnavailable, "App access is unavailable",
+			"The platform could not verify the application's address. Try again shortly.")
+		return
+	}
+	if !strings.EqualFold(strings.TrimSuffix(redirect.Hostname(), "."), strings.TrimSuffix(instHost, ".")) {
+		klog.FromContext(r.Context()).Info("app authorize: redirect host does not match the instance's published host",
+			"app", ref.Name, "redirectHost", redirect.Hostname(), "instanceHost", instHost)
+		h.renderError(w, http.StatusBadRequest, "Invalid app access request",
+			"The sign-in redirect does not match this application's published address. Return to the app and try again.")
+		return
+	}
+
 	// Bind the code to the redirect's full host INCLUDING any port — the
 	// gate exchanges with its configured external host verbatim (e.g.
 	// "app.example:10443" behind a port-forwarded local Gateway), and a
@@ -445,8 +486,14 @@ func (h *Handler) authorize(ctx context.Context, identity browsersession.Identit
 	return review.Status.Allowed, nil
 }
 
-// validateRedirect pins the redirect to the reserved callback path on a host
-// directly under the apps domain.
+// validateRedirect checks the redirect's shape: HTTPS, the reserved callback
+// path, and nothing that could smuggle extra state (userinfo, query,
+// fragment). Deliberately syntactic only — which HOSTS may receive a code is
+// not decided here but after the SubjectAccessReview, by pinning the host to
+// the authorized instance's own published FQDN (see HandleAuthorize). Doing
+// the host check there keeps this pre-session path free of kcp reads, so an
+// unauthenticated crawler can neither probe instances nor make the hub fan
+// out lookups.
 func (h *Handler) validateRedirect(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -455,13 +502,8 @@ func (h *Handler) validateRedirect(raw string) (*url.URL, error) {
 	if u.Scheme != "https" || u.User != nil || u.Fragment != "" || u.RawQuery != "" {
 		return nil, fmt.Errorf("invalid redirect")
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "" || !strings.HasSuffix(host, "."+h.appsDomain) {
-		return nil, fmt.Errorf("redirect host outside apps domain")
-	}
-	// Exactly one label under the apps zone: no nested subdomains.
-	if strings.Contains(strings.TrimSuffix(host, "."+h.appsDomain), ".") {
-		return nil, fmt.Errorf("redirect host outside apps domain")
+	if strings.ToLower(u.Hostname()) == "" {
+		return nil, fmt.Errorf("redirect host missing")
 	}
 	if u.EscapedPath() != CallbackPath {
 		return nil, fmt.Errorf("redirect path is not the app callback")

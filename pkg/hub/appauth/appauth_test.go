@@ -44,11 +44,16 @@ type fixture struct {
 	sars     []*authorizationv1.SubjectAccessReview
 	allow    bool
 	sarErr   error
+	// instanceHost is what the fake resolver reports as the instance's
+	// published host; hostErr overrides it with a resolver failure.
+	instanceHost string
+	hostErr      error
+	hostLookups  []InstanceRef
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{allow: true}
+	f := &fixture{allow: true, instanceHost: "my-shop-abcdef123456." + testAppsDomain}
 	f.sessions = browsersession.New(browsersession.Config{})
 	factory := func(clusterID string) (authorizationv1client.SubjectAccessReviewInterface, error) {
 		if f.sarErr != nil {
@@ -64,7 +69,14 @@ func newFixture(t *testing.T) *fixture {
 		})
 		return cs.AuthorizationV1().SubjectAccessReviews(), nil
 	}
-	h, err := New(Config{Sessions: f.sessions, SARClient: factory, AppsDomain: testAppsDomain})
+	resolver := func(_ context.Context, ref InstanceRef) (string, error) {
+		f.hostLookups = append(f.hostLookups, ref)
+		if f.hostErr != nil {
+			return "", f.hostErr
+		}
+		return f.instanceHost, nil
+	}
+	h, err := New(Config{Sessions: f.sessions, SARClient: factory, InstanceHost: resolver})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -360,17 +372,14 @@ func TestAuthorizePolicyOutageFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAuthorizeRejectsBadRedirects(t *testing.T) {
+func TestAuthorizeRejectsMalformedRedirects(t *testing.T) {
+	// Shape violations are rejected before the session or SAR are touched.
 	f := newFixture(t)
 	for name, redirect := range map[string]string{
-		"outside domain":   "https://evil.example" + CallbackPath,
-		"nested subdomain": "https://a.b." + testAppsDomain + CallbackPath,
-		"suffix squat":     "https://evil-" + testAppsDomain + CallbackPath,
-		"http scheme":      strings.Replace(validRedirect(), "https://", "http://", 1),
-		"wrong path":       "https://ok." + testAppsDomain + "/anywhere",
-		"userinfo":         "https://u@ok." + testAppsDomain + CallbackPath,
-		"query smuggling":  validRedirect() + "?x=1",
-		"apex apps domain": "https://" + testAppsDomain + CallbackPath,
+		"http scheme":     strings.Replace(validRedirect(), "https://", "http://", 1),
+		"wrong path":      "https://ok." + testAppsDomain + "/anywhere",
+		"userinfo":        "https://u@ok." + testAppsDomain + CallbackPath,
+		"query smuggling": validRedirect() + "?x=1",
 	} {
 		rec := httptest.NewRecorder()
 		f.handler.HandleAuthorize(rec, f.loggedInRequest(t, authorizeURL(redirect)))
@@ -379,7 +388,73 @@ func TestAuthorizeRejectsBadRedirects(t *testing.T) {
 		}
 	}
 	if len(f.sars) != 0 {
-		t.Fatalf("SAR ran for an invalid redirect")
+		t.Fatalf("SAR ran for a malformed redirect")
+	}
+	if len(f.hostLookups) != 0 {
+		t.Fatalf("instance host was resolved for a malformed redirect")
+	}
+}
+
+func TestAuthorizeRejectsRedirectsOffTheInstanceHost(t *testing.T) {
+	// Well-formed redirects to any host other than the one stamped on the
+	// instance are rejected — after the SAR, never before: the instance read
+	// must not be reachable by unauthenticated or unauthorized callers.
+	f := newFixture(t)
+	for name, redirect := range map[string]string{
+		"unrelated host":     "https://evil.example" + CallbackPath,
+		"nested subdomain":   "https://a.b." + testAppsDomain + CallbackPath,
+		"suffix squat":       "https://evil-" + testAppsDomain + CallbackPath,
+		"apex apps domain":   "https://" + testAppsDomain + CallbackPath,
+		"sibling app host":   "https://other-app-abcdef123456." + testAppsDomain + CallbackPath,
+		"host with sub-part": "https://sub.my-shop-abcdef123456." + testAppsDomain + CallbackPath,
+	} {
+		rec := httptest.NewRecorder()
+		f.handler.HandleAuthorize(rec, f.loggedInRequest(t, authorizeURL(redirect)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "" {
+			t.Errorf("%s: code was minted despite host mismatch: %s", name, loc)
+		}
+	}
+	if len(f.sars) == 0 || len(f.hostLookups) == 0 {
+		t.Fatalf("host pinning must run after the SAR (sars=%d lookups=%d)", len(f.sars), len(f.hostLookups))
+	}
+}
+
+func TestAuthorizeAllowsCustomerOwnedDomain(t *testing.T) {
+	// The pin is the instance's own stamped host — a BYO provider zone or a
+	// fully customer-owned domain needs no hub-side domain configuration.
+	f := newFixture(t)
+	f.instanceHost = "shop.customer-corp.example"
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, f.loggedInRequest(t, authorizeURL("https://shop.customer-corp.example"+CallbackPath)))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (body: %s)", rec.Code, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil || loc.Host != "shop.customer-corp.example" || loc.Query().Get("code") == "" {
+		t.Fatalf("bad redirect target: %q (%v)", rec.Header().Get("Location"), err)
+	}
+}
+
+func TestAuthorizeUnpublishedInstanceRejected(t *testing.T) {
+	f := newFixture(t)
+	f.hostErr = ErrInstanceNotPublished
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, f.loggedInRequest(t, authorizeURL(validRedirect())))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestAuthorizeHostResolverOutageFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	f.hostErr = http.ErrServerClosed
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, f.loggedInRequest(t, authorizeURL(validRedirect())))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
 

@@ -37,11 +37,12 @@ type Options struct {
 	// path is disabled. Use with OIDC so humans sign in with a username and
 	// password at the IdP.
 	DisableTokenLogin bool
-	// PublishedAppsDomain is the DNS zone published template instances are
-	// served under (e.g. "apps.faros.example"). When set, the hub mounts the
-	// login-time published-app authorize/exchange endpoints and only ever
-	// redirects sign-ins back to hosts directly under this zone. Empty
-	// disables published-app auth entirely.
+	// PublishedAppsDomain is deprecated and ignored. The published-app
+	// authorize/exchange endpoints are always mounted, and sign-in redirects
+	// are pinned per request to the host stamped on the instance being
+	// authorized — so apps under BYO provider zones and customer-owned
+	// domains need no hub-side domain configuration. The flag is kept only
+	// so existing deployments that pass it keep starting.
 	PublishedAppsDomain string
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
