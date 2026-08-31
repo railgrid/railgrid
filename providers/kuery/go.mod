@@ -14,7 +14,7 @@ require (
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
 	sigs.k8s.io/controller-runtime v0.24.1
-	sigs.k8s.io/multicluster-runtime v0.24.1
+	sigs.k8s.io/multicluster-runtime v0.24.2-0.20260817130819-087d80cae466
 )
 
 require (

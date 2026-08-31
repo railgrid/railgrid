@@ -43,7 +43,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/e2e-framework v0.6.0
 	sigs.k8s.io/kind v0.31.0
-	sigs.k8s.io/multicluster-runtime v0.24.1
+	sigs.k8s.io/multicluster-runtime v0.24.2-0.20260817130819-087d80cae466
 	sigs.k8s.io/yaml v1.6.0
 )
 
