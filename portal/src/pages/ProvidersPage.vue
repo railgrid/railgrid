@@ -490,8 +490,8 @@ function dependencyNotice(p: ProviderDTO): string {
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
                   {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span><span
-                    v-if="p.upgradeAvailable && p.installedChartVersion && p.availableChartVersion"
-                  > · chart v{{ p.installedChartVersion }} &rarr; v{{ p.availableChartVersion }}</span>
+                    v-if="p.upgradeAvailable && p.installedVersion && p.availableVersion"
+                  > · {{ p.installedVersion }} &rarr; {{ p.availableVersion }}</span>
                 </p>
                 <!-- The gap between "workspace exists" and "chart installed" is
                      where a half-finished install sits; say so explicitly. -->

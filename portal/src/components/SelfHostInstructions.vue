@@ -89,11 +89,11 @@ function downloadKubeconfig() {
             <ArrowUpCircle class="h-4 w-4 text-accent" :stroke-width="2" />
             {{ upgrade.title }}
             <span
-              v-if="registration.provider.installedChartVersion && registration.provider.availableChartVersion"
+              v-if="registration.provider.installedVersion && registration.provider.availableVersion"
               class="font-mono text-[10px] font-normal text-text-muted"
             >
-              v{{ registration.provider.installedChartVersion }} &rarr;
-              v{{ registration.provider.availableChartVersion }}
+              {{ registration.provider.installedVersion }} &rarr;
+              {{ registration.provider.availableVersion }}
             </span>
           </h4>
           <p v-if="upgrade.description" class="mt-0.5 text-[11px] text-text-muted">{{ upgrade.description }}</p>
