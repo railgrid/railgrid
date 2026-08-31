@@ -23,6 +23,7 @@ import type {
   ProjectAssistantThreadItem,
   ProjectAssistantTurn,
   ProjectLLMSettings,
+  ProjectLLMModelDiscovery,
   ProjectIntegration,
   ProjectProviderActionGrant,
   ProjectProviderResourceReference,
@@ -826,6 +827,13 @@ export const api = {
     return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL(ctx)}/llm-settings`)
   },
 
+  async discoverLLMModels(
+    ctx: FarosContext | null,
+    body: { provider: string; baseURL: string; apiKey?: string; existingModelID?: string },
+  ): Promise<ProjectLLMModelDiscovery> {
+    return request<ProjectLLMModelDiscovery>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models/discover`, body)
+  },
+
   async patchLLMSettings(
     ctx: FarosContext | null,
     body: { provider?: string; baseURL?: string; model?: string; apiKey?: string },
@@ -835,7 +843,7 @@ export const api = {
 
   async createLLMModel(
     ctx: FarosContext | null,
-    body: { name: string; provider?: string; baseURL?: string; model: string; apiKey?: string },
+    body: { name: string; provider?: string; baseURL?: string; model: string; apiKey: string },
   ): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models`, body)
   },

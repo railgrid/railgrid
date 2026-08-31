@@ -17,6 +17,9 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -72,6 +75,68 @@ func TestProjectLLMRegistryReadsLegacySingleModelSecret(t *testing.T) {
 	}
 	if registry.Models[0].Settings.Model != "legacy-model" || registry.Models[0].Settings.APIKey != "legacy-key" {
 		t.Fatalf("legacy model = %#v", registry.Models[0])
+	}
+}
+
+func TestProjectLLMRegistryRequiresCredentialForConnectedModels(t *testing.T) {
+	model := projectLLMModelSettings{
+		ID:   "gpt-high",
+		Name: "GPT High",
+		Settings: projectLLMSettings{
+			Provider: defaultProjectLLMProvider,
+			BaseURL:  "https://api.openai.com/v1",
+			Model:    "gpt-test",
+		},
+	}
+	if err := validateProjectLLMModelCredential(model); err == nil || err.Error() != "a credential is required to connect this model" {
+		t.Fatalf("missing credential error = %v", err)
+	}
+	model.Settings.APIKey = "workspace-secret"
+	if err := validateProjectLLMModelCredential(model); err != nil {
+		t.Fatalf("configured model rejected: %v", err)
+	}
+}
+
+func TestProjectLLMRegistryFallbackDefaultSkipsModelsWithoutCredentials(t *testing.T) {
+	models := []projectLLMModelSettings{
+		{ID: "deleted", Archived: true, Settings: projectLLMSettings{APIKey: "old-key"}},
+		{ID: "incomplete", Settings: projectLLMSettings{}},
+		{ID: "ready-z", Name: "Zulu", Settings: projectLLMSettings{APIKey: "ready-key"}},
+		{ID: "ready-a", Name: "Alpha", Settings: projectLLMSettings{APIKey: "ready-key"}},
+	}
+	if got := firstConfiguredProjectLLMModelID(models); got != "ready-a" {
+		t.Fatalf("fallback default = %q, want ready-a", got)
+	}
+	if got := firstConfiguredProjectLLMModelID(models[:2]); got != "" {
+		t.Fatalf("fallback default = %q, want empty when no configured model remains", got)
+	}
+	registry := projectLLMRegistry{DefaultModelID: "incomplete", Models: models}
+	if got := configuredProjectLLMDefaultModelID(registry); got != "ready-a" {
+		t.Fatalf("repaired default = %q, want ready-a", got)
+	}
+	registry.DefaultModelID = "ready-z"
+	if got := configuredProjectLLMDefaultModelID(registry); got != "ready-z" {
+		t.Fatalf("configured default = %q, want ready-z", got)
+	}
+}
+
+func TestCreateProjectLLMModelRejectsMissingCredential(t *testing.T) {
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{})
+	server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models", strings.NewReader(
+		`{"name":"GPT High","provider":"openai-compatible","baseURL":"https://api.openai.com/v1","model":"gpt-test"}`,
+	))
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	response := httptest.NewRecorder()
+
+	server.createProjectLLMModel(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "a credential is required to connect this model") {
+		t.Fatalf("body = %q, want actionable credential error", response.Body.String())
 	}
 }
 

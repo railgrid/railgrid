@@ -12,7 +12,7 @@ const { outputText } = ts.transpileModule(source, {
   },
 })
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
-const { validateLLMBaseURL } = await import(moduleURL)
+const { hasLLMModelFormErrors, validateLLMBaseURL, validateLLMModelForm } = await import(moduleURL)
 
 test('accepts an OpenAI-compatible API base URL', () => {
   assert.equal(validateLLMBaseURL('openai-compatible', 'https://opencode.ai/zen/v1'), '')
@@ -47,4 +47,58 @@ test('validates Google URL syntax while leaving its operation paths alone', () =
   assert.equal(validateLLMBaseURL('google-ai-studio', ''), '')
   assert.equal(validateLLMBaseURL('google-ai-studio', 'not-a-url'), 'Enter an absolute HTTP(S) base URL.')
   assert.equal(validateLLMBaseURL('google-ai-studio', 'file:///tmp/model'), 'Base URL must use HTTP or HTTPS.')
+})
+
+test('requires a credential when connecting a model while preserving blank-on-edit semantics', () => {
+  const input = {
+    name: 'GPT High',
+    provider: 'openai-compatible',
+    credentialMode: 'api-key',
+    baseURL: 'https://api.openai.com/v1',
+    model: 'gpt-5.4',
+    credential: '',
+    existingModels: [],
+  }
+  const creating = validateLLMModelForm(input)
+  assert.equal(creating.credential, 'Enter a credential to connect this model.')
+  assert.equal(hasLLMModelFormErrors(creating), true)
+
+  const editing = validateLLMModelForm({ ...input, editingModelID: 'gpt-high' })
+  assert.equal(editing.credential, '')
+  assert.equal(hasLLMModelFormErrors(editing), false)
+
+  const repairingIncomplete = validateLLMModelForm({ ...input, editingModelID: 'gpt-high', credentialRequired: true })
+  assert.equal(repairingIncomplete.credential, 'Enter a credential to connect this model.')
+})
+
+test('reports field-specific name and model errors before the API request', () => {
+  const errors = validateLLMModelForm({
+    name: 'GPT High!',
+    provider: 'openai-compatible',
+    credentialMode: 'api-key',
+    baseURL: 'https://api.openai.com/v1',
+    model: '',
+    credential: 'secret',
+    existingModels: [{ id: 'gpt-high', name: 'GPT High' }],
+  })
+  assert.equal(errors.name, 'A model with this display name already exists.')
+  assert.equal(errors.model, 'Enter the provider’s exact model ID.')
+})
+
+test('validates Google credential shape near the credential field', () => {
+  const base = {
+    name: 'Gemini Fast',
+    provider: 'google-ai-studio',
+    baseURL: 'https://aiplatform.googleapis.com',
+    model: 'google/gemini-3.5-flash',
+    existingModels: [],
+  }
+  assert.equal(
+    validateLLMModelForm({ ...base, credentialMode: 'service-account-json', credential: '{"type":"service_account"}' }).credential,
+    'Paste a complete Google service-account key. Missing: project_id, client_email, private_key, token_uri.',
+  )
+  assert.equal(
+    validateLLMModelForm({ ...base, credentialMode: 'api-key', credential: 'ya29.oauth-token' }).credential,
+    'Enter a Gemini API key, not an OAuth or JWT token.',
+  )
 })

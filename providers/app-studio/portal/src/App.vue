@@ -60,7 +60,16 @@ import {
   parseAssistantInterrupt,
   type ProjectAssistantInterruptView,
 } from './assistantInterrupt'
-import { validateLLMBaseURL } from './llmSettingsValidation'
+import {
+  hasLLMModelFormErrors,
+  validateLLMModelForm,
+  type LLMCredentialMode,
+} from './llmSettingsValidation'
+import {
+  inferLLMProviderPreset,
+  llmProviderSelection,
+  type LLMProviderPreset,
+} from './llmDiscovery'
 import AssistantActionLog from './AssistantActionLog.vue'
 import AssistantExecDetails from './AssistantExecDetails.vue'
 import {
@@ -279,6 +288,7 @@ import type {
   ProjectAssistantFollowUpQuestionOption,
   ProjectAssistantUIInterruptRequest,
   ProjectProviderBinding,
+  ProjectLLMDiscoveredModel,
   ProjectLLMSettings,
   ProjectMessage,
   ProjectPromotionReadiness,
@@ -400,7 +410,14 @@ interface WorkbenchLauncherItem {
   providerTool?: ProviderTool
 }
 
-type LLMCredentialMode = 'api-key' | 'service-account-json'
+interface LLMEditorSnapshot {
+  name: string
+  provider: string
+  credentialMode: LLMCredentialMode
+  baseURL: string
+  model: string
+  apiKey: string
+}
 type ProjectMessageViewStatus = 'interrupted'
 type ProjectAssistantComponentValue = ProjectAssistantUIComponent['component']
 interface ProjectAssistantSurface {
@@ -867,6 +884,7 @@ const llmName = ref('')
 const llmEditingModelID = ref<string | null>(null)
 const selectedLLMModelID = ref('')
 const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
+const llmProviderPreset = ref<LLMProviderPreset>('openai')
 const llmBaseURL = ref('https://api.openai.com/v1')
 const llmModel = ref(OPENAI_DEFAULT_MODEL)
 const llmApiKey = ref('')
@@ -875,10 +893,17 @@ const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
 const llmActionError = ref<string | null>(null)
 const llmEditorOpen = ref(false)
+const llmEditorBaseline = ref<LLMEditorSnapshot | null>(null)
+const llmValidationAttempted = ref(false)
 const llmCreateRouteSession = ref(false)
 const llmSettingsLoading = ref(false)
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
+const llmDiscoveredModels = ref<ProjectLLMDiscoveredModel[]>([])
+const llmDiscoveryLoading = ref(false)
+const llmDiscoveryError = ref<string | null>(null)
+const llmDiscoveryStatus = ref<string | null>(null)
+let llmDiscoverySerial = 0
 const messagesRef = ref<HTMLDivElement | null>(null)
 const expandedMessageTimestampID = ref<string | null>(null)
 const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
@@ -1172,6 +1197,8 @@ function invalidateProjectContextState() {
   llmSaving.value = false
   llmEditorOpen.value = false
   llmEditingModelID.value = null
+  llmEditorBaseline.value = null
+  llmValidationAttempted.value = false
   selectedLLMModelID.value = ''
   providersLoading.value = false
   createReadinessLoading.value = false
@@ -1609,8 +1636,12 @@ const productionSummaryTarget = computed(() => {
   return previewURL || 'Project has no deployable preview URL yet.'
 })
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
+const isCustomLLMProvider = computed(() => llmProviderPreset.value === 'custom')
 const isGoogleServiceAccountMode = computed(() =>
   isGoogleGeminiProvider.value && llmCredentialMode.value === 'service-account-json',
+)
+const llmCredentialRequired = computed(() =>
+  !llmEditingModelID.value || llmSettings.value?.models.find((saved) => saved.id === llmEditingModelID.value)?.configured === false,
 )
 const llmBaseURLPlaceholder = computed(() =>
   isGoogleServiceAccountMode.value ? GOOGLE_CLOUD_BASE_URL : isGoogleGeminiProvider.value ? GEMINI_BASE_URL : 'Base URL',
@@ -1619,13 +1650,55 @@ const llmApiKeyPlaceholder = computed(() =>
   isGoogleServiceAccountMode.value ? 'Service account JSON' : isGoogleGeminiProvider.value ? 'Gemini API key' : 'API key',
 )
 const llmApiKeyHint = computed(() =>
-  isGoogleServiceAccountMode.value
-    ? 'Paste the Google service-account JSON key. Faros exchanges it for a short-lived OAuth token.'
-    : isGoogleGeminiProvider.value
-      ? 'Paste a Gemini API key string, not an OAuth/JWT token.'
-      : '',
+  llmEditingModelID.value && !llmCredentialRequired.value && !llmApiKey.value.trim()
+    ? 'Leave blank to keep the current credential.'
+    : isGoogleServiceAccountMode.value
+      ? 'Paste the complete Google service-account JSON key. Faros exchanges it for a short-lived OAuth token.'
+      : isGoogleGeminiProvider.value
+        ? 'Paste a Gemini API key string, not an OAuth or JWT token.'
+        : 'Stored for this workspace and never returned to the browser.',
 )
-const llmBaseURLError = computed(() => validateLLMBaseURL(llmProvider.value, llmBaseURL.value))
+const llmProviderGuidance = computed(() =>
+  llmProviderPreset.value === 'openai'
+    ? 'Uses OpenAI’s standard API endpoint.'
+    : isGoogleGeminiProvider.value
+    ? 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.'
+    : 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
+)
+const llmModelHint = computed(() =>
+  isGoogleServiceAccountMode.value
+    ? 'Use the exact Vertex AI model identifier, including its publisher prefix.'
+    : 'Use the exact model identifier shown by your provider.',
+)
+const llmFormValidation = computed(() => validateLLMModelForm({
+  name: llmName.value,
+  provider: llmProvider.value,
+  credentialMode: llmCredentialMode.value,
+  baseURL: llmBaseURL.value,
+  model: llmModel.value,
+  credential: llmApiKey.value,
+  credentialRequired: !llmEditingModelID.value || llmSettings.value?.models.find((saved) => saved.id === llmEditingModelID.value)?.configured === false,
+  editingModelID: llmEditingModelID.value,
+  existingModels: llmSettings.value?.models ?? [],
+}))
+const llmBaseURLError = computed(() => llmFormValidation.value.baseURL)
+const llmCanDiscover = computed(() => {
+  if (isGoogleServiceAccountMode.value || llmBaseURLError.value) return false
+  if (llmApiKey.value.trim()) return true
+  const saved = llmSettings.value?.models.find((model) => model.id === llmEditingModelID.value)
+  if (!saved?.configured) return false
+  const savedProvider = inferLLMProvider(saved.provider, saved.baseURL).trim().toLowerCase()
+  const sameProvider = savedProvider === llmProvider.value.trim().toLowerCase()
+  const sameBaseURL = saved.baseURL.trim().replace(/\/+$/, '') === llmBaseURL.value.trim().replace(/\/+$/, '')
+  return sameProvider && sameBaseURL
+})
+const llmNameError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.name : '')
+const llmModelError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.model : '')
+const llmCredentialError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.credential : '')
+const llmEditorDirty = computed(() => {
+  const baseline = llmEditorBaseline.value
+  return baseline !== null && JSON.stringify(currentLLMEditorSnapshot()) !== JSON.stringify(baseline)
+})
 interface LandingStarterPrompt {
   id: string
   label: string
@@ -3705,17 +3778,58 @@ function isGoogleCloudBaseURL(baseURL: string): boolean {
   return baseURL.trim().toLowerCase().replace(/\/+$/, '').startsWith('https://aiplatform.googleapis.com/')
 }
 
-function selectLLMProvider(provider: string) {
-  if (provider === llmProvider.value) return
-  llmProvider.value = provider
+function currentLLMEditorSnapshot(): LLMEditorSnapshot {
+  return {
+    name: llmName.value,
+    provider: llmProvider.value,
+    credentialMode: llmCredentialMode.value,
+    baseURL: llmBaseURL.value,
+    model: llmModel.value,
+    apiKey: llmApiKey.value,
+  }
+}
+
+function clearLLMDiscovery() {
+  llmDiscoverySerial += 1
+  llmDiscoveryLoading.value = false
+  llmDiscoveredModels.value = []
+  llmDiscoveryError.value = null
+  llmDiscoveryStatus.value = null
+}
+
+function selectLLMProvider(preset: LLMProviderPreset) {
+  if (preset === llmProviderPreset.value) return
+  const selection = llmProviderSelection(preset, llmBaseURL.value)
+  llmProviderPreset.value = preset
+  llmProvider.value = selection.provider
   llmCredentialMode.value = 'api-key'
-  if (provider === GOOGLE_AI_STUDIO_PROVIDER) {
-    llmBaseURL.value = GEMINI_BASE_URL
+  llmApiKey.value = ''
+  llmValidationAttempted.value = false
+  clearLLMDiscovery()
+  llmBaseURL.value = selection.baseURL
+  if (preset === 'google') {
     llmModel.value = GEMINI_DEFAULT_MODEL
     return
   }
-  llmBaseURL.value = 'https://api.openai.com/v1'
-  llmModel.value = OPENAI_DEFAULT_MODEL
+  llmModel.value = preset === 'openai' ? OPENAI_DEFAULT_MODEL : ''
+}
+
+function updateLLMCredentialMode(mode: LLMCredentialMode) {
+  if (mode === llmCredentialMode.value) return
+  llmCredentialMode.value = mode
+  llmApiKey.value = ''
+  llmValidationAttempted.value = false
+  clearLLMDiscovery()
+}
+
+function updateLLMBaseURL(value: string) {
+  llmBaseURL.value = value
+  clearLLMDiscovery()
+}
+
+function updateLLMAPIKey(value: string) {
+  llmApiKey.value = value
+  clearLLMDiscovery()
 }
 
 function openLLMEditor(modelID?: string) {
@@ -3727,11 +3841,52 @@ function openLLMEditor(modelID?: string) {
   llmName.value = saved?.name ?? ''
   const provider = inferLLMProvider(saved?.provider ?? OPENAI_COMPATIBLE_PROVIDER, saved?.baseURL ?? 'https://api.openai.com/v1')
   llmProvider.value = provider
+  llmProviderPreset.value = inferLLMProviderPreset(provider, saved?.baseURL ?? 'https://api.openai.com/v1')
   llmCredentialMode.value = isGoogleCloudBaseURL(saved?.baseURL ?? '') ? 'service-account-json' : 'api-key'
   llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? '', llmCredentialMode.value)
   llmModel.value = normalizeLLMModelInput(provider, saved?.model ?? '', llmCredentialMode.value)
   llmApiKey.value = ''
+  llmValidationAttempted.value = false
+  clearLLMDiscovery()
   llmEditorOpen.value = true
+  llmEditorBaseline.value = currentLLMEditorSnapshot()
+}
+
+async function discoverLLMModels() {
+  if (!llmCanDiscover.value || llmDiscoveryLoading.value) return
+  const serial = ++llmDiscoverySerial
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  const requestRoute = routePath.value
+  llmDiscoveryLoading.value = true
+  llmDiscoveryError.value = null
+  llmDiscoveryStatus.value = null
+  try {
+    const result = await api.discoverLLMModels(props.ctx, {
+      provider: llmProvider.value,
+      baseURL: llmBaseURL.value,
+      ...(llmApiKey.value.trim() ? { apiKey: llmApiKey.value } : {}),
+      ...(llmEditingModelID.value ? { existingModelID: llmEditingModelID.value } : {}),
+    })
+    if (serial !== llmDiscoverySerial || contextFingerprint !== appContextFingerprint(props.ctx) || requestRoute !== routePath.value) return
+    llmDiscoveredModels.value = result.models
+    const selectable = result.models.filter((model) => model.compatibility !== 'unsuitable').length
+    const unavailable = result.models.length - selectable
+    const total = result.models.length
+    llmDiscoveryStatus.value = total > 0
+      ? `${total} model${total === 1 ? '' : 's'} found${unavailable > 0 ? `; ${unavailable} marked unavailable for chat` : ''}.`
+      : 'No models were found. You can still enter a model ID manually.'
+  } catch (e) {
+    if (serial !== llmDiscoverySerial || contextFingerprint !== appContextFingerprint(props.ctx) || requestRoute !== routePath.value) return
+    llmDiscoveredModels.value = []
+    llmDiscoveryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (serial === llmDiscoverySerial) llmDiscoveryLoading.value = false
+  }
+}
+
+function selectDiscoveredLLMModel(model: ProjectLLMDiscoveredModel) {
+  llmModel.value = model.id
+  if (!llmName.value.trim()) llmName.value = model.name
 }
 
 function openNewLLMModelEditor() {
@@ -3750,8 +3905,14 @@ function openModelEditor(modelID?: string) {
   openNewLLMModelEditor()
 }
 
-function cancelLLMEditor() {
+async function cancelLLMEditor() {
   if (llmSaving.value) return
+  if (llmEditorDirty.value && !(await confirmDialog({
+    title: 'Discard model changes?',
+    message: 'Your unsaved model configuration changes will be lost.',
+    confirmLabel: 'Discard changes',
+    danger: true,
+  }))) return
   const routeOwnedCreation = isCreateModelRoute.value
   const returnRoute = routeOwnedCreation
     ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : MODELS_ROUTE)
@@ -3761,6 +3922,8 @@ function cancelLLMEditor() {
   llmActionError.value = null
   llmEditorOpen.value = false
   llmEditingModelID.value = null
+  llmEditorBaseline.value = null
+  llmValidationAttempted.value = false
   if (returnRoute) {
     modelsReturnRoute.value = ''
     props.navigate(returnRoute, { replace: true })
@@ -3780,7 +3943,11 @@ watch(
     }
     if (previous && llmCreateRouteSession.value) {
       llmCreateRouteSession.value = false
-      if (!llmEditingModelID.value) llmEditorOpen.value = false
+      if (!llmEditingModelID.value) {
+        llmEditorOpen.value = false
+        llmEditorBaseline.value = null
+        llmValidationAttempted.value = false
+      }
     }
   },
   { immediate: true, flush: 'sync' },
@@ -3861,7 +4028,8 @@ function normalizeLLMModelInput(provider: string, model: string, credentialMode:
 async function saveLLMSettings() {
   llmStatus.value = null
   llmActionError.value = null
-  if (llmBaseURLError.value) return
+  llmValidationAttempted.value = true
+  if (hasLLMModelFormErrors(llmFormValidation.value)) return
   const routeOwnedCreation = isCreateModelRoute.value && !llmEditingModelID.value
   const editingID = llmEditingModelID.value
   const returnRoute = routeOwnedCreation
@@ -3880,12 +4048,14 @@ async function saveLLMSettings() {
     if (llmApiKey.value.trim()) body.apiKey = llmApiKey.value.trim()
     const settings = editingID
       ? await api.patchLLMModel(mutationContext, editingID, body)
-      : await api.createLLMModel(mutationContext, body)
+      : await api.createLLMModel(mutationContext, { ...body, apiKey: llmApiKey.value.trim() })
     if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
-    llmStatus.value = editingID ? 'Model updated.' : 'Model added.'
+    llmStatus.value = editingID ? 'Model updated.' : 'Model connected.'
     llmEditorOpen.value = false
     llmEditingModelID.value = null
+    llmEditorBaseline.value = null
+    llmValidationAttempted.value = false
     if (returnRoute) {
       modelsReturnRoute.value = ''
       props.navigate(returnRoute, { replace: true })
@@ -3906,9 +4076,17 @@ async function deleteLLMModel(modelID: string) {
   }
   const saved = llmSettings.value?.models.find((model) => model.id === modelID)
   if (!saved) return
+  const fallbackDefault = saved.default
+    ? llmSettings.value?.models.find((model) => model.id !== modelID && model.configured)
+    : null
+  const deleteMessage = saved.default
+    ? fallbackDefault
+      ? `Existing runs keep their audit history. ${fallbackDefault.name} will become the default for new projects and turns.`
+      : 'Existing runs keep their audit history. No model will remain available for new projects or turns.'
+    : 'Existing runs keep their audit history, but this model will no longer be available for new turns.'
   if (!(await confirmDialog({
     title: `Delete ${saved.name}?`,
-    message: 'Existing runs keep their audit history, but this model will no longer be available for new turns.',
+    message: deleteMessage,
     danger: true,
     confirmLabel: 'Delete model',
   }))) return
@@ -7374,6 +7552,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     <div class="flex min-h-full w-full flex-col gap-4">
       <Tabs
         v-if="!isCreateModelRoute"
+        v-show="!llmEditorOpen"
         :tabs="appStudioSectionTabs"
         :active="isModelsRoute || isCreateModelRoute ? 'models' : 'projects'"
         aria-label="App Studio sections"
@@ -7829,8 +8008,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Models
         </button>
         <header v-if="isCreateModelRoute" class="k-create-header">
-          <h1 class="k-create-title">Add model</h1>
-          <p class="k-create-description">Configure the model credentials App Studio uses when creating and chatting in projects.</p>
+          <h1 class="k-create-title">Connect model</h1>
+          <p class="k-create-description">Add a credentialed model connection for project creation and chat.</p>
         </header>
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
@@ -9676,16 +9855,29 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :editing-model-i-d="llmEditingModelID"
             :name="llmName"
             :provider="llmProvider"
+            :provider-preset="llmProviderPreset"
             :credential-mode="llmCredentialMode"
             :base-u-r-l="llmBaseURL"
             :model="llmModel"
             :api-key="llmApiKey"
+            :name-error="llmNameError"
             :base-u-r-l-error="llmBaseURLError"
+            :model-error="llmModelError"
+            :credential-error="llmCredentialError"
+            :credential-required="llmCredentialRequired"
             :base-u-r-l-placeholder="llmBaseURLPlaceholder"
             :api-key-placeholder="llmApiKeyPlaceholder"
             :api-key-hint="llmApiKeyHint"
+            :provider-guidance="llmProviderGuidance"
+            :model-hint="llmModelHint"
             :google-provider="isGoogleGeminiProvider"
             :google-service-account-mode="isGoogleServiceAccountMode"
+            :custom-provider="isCustomLLMProvider"
+            :discovered-models="llmDiscoveredModels"
+            :discovery-loading="llmDiscoveryLoading"
+            :discovery-error="llmDiscoveryError"
+            :discovery-status="llmDiscoveryStatus"
+            :can-discover="llmCanDiscover"
             @retry="loadLLMSettings"
             @open-editor="openModelEditor"
             @cancel-editor="cancelLLMEditor"
@@ -9693,11 +9885,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @delete="deleteLLMModel"
             @set-default="setDefaultLLMModel"
             @select-provider="selectLLMProvider"
+            @discover="discoverLLMModels"
+            @select-discovered-model="selectDiscoveredLLMModel"
             @update:name="llmName = $event"
-            @update:credential-mode="llmCredentialMode = $event"
-            @update:base-u-r-l="llmBaseURL = $event"
+            @update:credential-mode="updateLLMCredentialMode"
+            @update:base-u-r-l="updateLLMBaseURL"
             @update:model="llmModel = $event"
-            @update:api-key="llmApiKey = $event"
+            @update:api-key="updateLLMAPIKey"
           />
 
           <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">

@@ -74,12 +74,15 @@ type Server struct {
 	// projectClientFor is an optional test seam for handlers that need a
 	// workspace-scoped Project client without opening a GraphQL listener.
 	// Production leaves it nil and uses clientFor's caller-scoped GraphQL path.
-	projectClientFor     func(identity) (*asclient.Client, error)
-	assistantRunManager  *projectAssistantRunManager
-	assistantSupervisor  *projectAssistantSupervisor
-	runSandboxManager    *projectAssistantSandboxManager
-	runSandboxConfig     CodingSandboxConfig
-	runSandboxConfigured bool
+	projectClientFor func(identity) (*asclient.Client, error)
+	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
+	// catalog requests. Production uses a redirect-denying bounded client.
+	llmDiscoveryHTTPClient *http.Client
+	assistantRunManager    *projectAssistantRunManager
+	assistantSupervisor    *projectAssistantSupervisor
+	runSandboxManager      *projectAssistantSandboxManager
+	runSandboxConfig       CodingSandboxConfig
+	runSandboxConfigured   bool
 	// codingSandboxResolver resolves a caller's organization-scoped BYO
 	// provider binding. Nil is fail-closed. Platform force mode never calls it.
 	codingSandboxResolver  func(context.Context, identity, workspace.Scope) (CodingSandboxEligibility, error)
@@ -272,6 +275,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/llm-settings/models/discover", s.discoverProjectLLMModels).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings/models", s.createProjectLLMModel).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.patchProjectLLMModel).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.deleteProjectLLMModel).Methods(http.MethodDelete)

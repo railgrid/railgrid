@@ -28,16 +28,29 @@ const baseProps = {
   editingModelID: null,
   name: '',
   provider: 'openai-compatible',
+  providerPreset: 'openai',
   credentialMode: 'api-key',
   baseURL: 'https://api.openai.com/v1',
   model: 'gpt-5.4',
   apiKey: '',
+  nameError: '',
   baseURLError: '',
+  modelError: '',
+  credentialError: '',
+  credentialRequired: true,
   baseURLPlaceholder: 'Base URL',
   apiKeyPlaceholder: 'API key',
   apiKeyHint: '',
+  providerGuidance: 'Use an OpenAI-compatible provider.',
+  modelHint: 'Use the provider model ID.',
   googleProvider: false,
   googleServiceAccountMode: false,
+  customProvider: false,
+  discoveredModels: [],
+  discoveryLoading: false,
+  discoveryError: null,
+  discoveryStatus: null,
+  canDiscover: false,
 }
 
 async function render(props = {}) {
@@ -63,7 +76,7 @@ test('presents multiple workspace models with explicit default and readiness sta
   assert.match(html, /aria-label="Model Gemini Fast"/)
   assert.match(html, /gpt-5\.4/)
   assert.match(html, /Default/)
-  assert.match(html, /Configured/)
+  assert.match(html, /Credential saved/)
   assert.match(html, /Needs credential/)
   assert.match(html, /Make default/)
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
@@ -73,8 +86,7 @@ test('uses an explicit empty state before opening the model form', async () => {
   const html = await render()
 
   assert.match(html, /No models configured/)
-  assert.match(html, /New model/)
-  assert.match(html, /Add model/)
+  assert.match(html, /Connect model/)
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
 })
 
@@ -91,11 +103,10 @@ test('route-owned model creation keeps the collection out of the form surface', 
     },
   })
 
-  assert.match(html, /aria-label="New model"/)
+  assert.match(html, /aria-label="Connect model"/)
   assert.match(html, /aria-label="Model configuration form"/)
-  assert.doesNotMatch(html, />New model</)
   assert.doesNotMatch(html, /aria-label="Model GPT High"/)
-  assert.doesNotMatch(html, />New model<\/button>/)
+  assert.doesNotMatch(html, />Connect model<\/button>/)
 })
 
 test('route-owned model creation keeps the form actionable when settings load fails', async () => {
@@ -118,23 +129,137 @@ test('renders a guided provider, endpoint, and credential form', async () => {
     editorOpen: true,
     name: 'Gemini Fast',
     provider: 'google-ai-studio',
+    providerPreset: 'google',
     credentialMode: 'service-account-json',
     baseURL: 'https://aiplatform.googleapis.com',
     model: 'google/gemini-3.5-flash',
     apiKeyPlaceholder: 'Service account JSON',
     apiKeyHint: 'Paste the Google service-account JSON key.',
+    providerGuidance: 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.',
+    modelHint: 'Use the exact Vertex AI model identifier, including its publisher prefix.',
     googleProvider: true,
     googleServiceAccountMode: true,
   })
 
   assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, /Provider preset/)
+  assert.match(html, /id="model-provider"/)
+  assert.match(html, /Use a Gemini API key for Google AI Studio/)
   assert.match(html, /Display name/)
   assert.match(html, /Credential method/)
   assert.match(html, /Vertex AI service account/)
-  assert.match(html, /Model endpoint/)
+  assert.match(html, /Find models/)
   assert.match(html, /Service account JSON/)
-  assert.match(html, /Add model/)
+  assert.match(html, /Connect model/)
+})
+
+test('offers known provider endpoints and keeps custom endpoints editable', async () => {
+  const openAI = await render({ editorOpen: true, providerPreset: 'openai', canDiscover: true })
+  assert.match(openAI, />OpenAI</)
+  assert.match(openAI, /https:\/\/api\.openai\.com\/v1/)
+  assert.doesNotMatch(openAI, /id="model-base-url"/)
+
+  const custom = await render({
+    editorOpen: true,
+    providerPreset: 'custom',
+    customProvider: true,
+    baseURL: 'https://gateway.example/v1',
+  })
+  assert.match(custom, /Custom OpenAI-compatible/)
+  assert.match(custom, /id="model-base-url"/)
+  assert.match(custom, /queries \/models/)
+})
+
+test('renders discovered suggestions while preserving manual model entry', async () => {
+  const html = await render({
+    editorOpen: true,
+    canDiscover: true,
+    discoveryStatus: '3 models found; 1 marked unavailable for chat.',
+    discoveredModels: [
+      { id: 'gpt-5.6', name: 'gpt-5.6', compatibility: 'recommended' },
+      { id: 'custom-chat', name: 'custom-chat', compatibility: 'available' },
+      { id: 'text-embedding-3-large', name: 'text-embedding-3-large', compatibility: 'unsuitable' },
+    ],
+  })
+
+  assert.match(html, /Recommended for App Studio/)
+  assert.match(html, /id="model-id"/)
+  assert.match(html, /aria-haspopup="listbox"/)
+  assert.doesNotMatch(html, /<datalist/)
+  assert.match(html, /search or enter an ID/)
+  assert.match(html, /3 models found; 1 marked unavailable for chat/)
+})
+
+test('keeps discovery failure separate from manual model validation', async () => {
+  const html = await render({
+    editorOpen: true,
+    discoveryError: 'Provider model discovery returned 401 Unauthorized.',
+  })
+
+  assert.match(html, /Provider model discovery returned 401 Unauthorized/)
+  assert.match(html, /You can still enter a model ID manually/)
+  assert.match(html, /id="model-id"/)
+})
+
+test('editing replaces the collection with one focused form', async () => {
+  const html = await render({
+    editorOpen: true,
+    editingModelID: 'gpt-high',
+    name: 'GPT High',
+    settings: {
+      provider: 'openai-compatible',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-5.4',
+      configured: true,
+      defaultModelID: 'gpt-high',
+      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+    },
+  })
+
+  assert.match(html, /Edit model/)
+  assert.match(html, /aria-label="Model configuration form"/)
+  assert.match(html, /class="k-create-surface"/)
+  assert.match(html, /Save changes/)
+  assert.doesNotMatch(html, /aria-label="Model GPT High"/)
+})
+
+test('associates field guidance and validation errors with their controls', async () => {
+  const html = await render({
+    editorOpen: true,
+    nameError: 'Enter a display name.',
+    modelError: 'Enter the provider’s exact model ID.',
+    credentialError: 'Enter a credential to connect this model.',
+  })
+
+  assert.match(html, /id="model-display-name"[^>]*aria-invalid="true"[^>]*aria-describedby="model-display-name-error"/)
+  assert.match(html, /id="model-id"[^>]*aria-invalid="true"[^>]*aria-describedby="model-id-error"/)
+  assert.match(html, /id="model-credential"[^>]*aria-invalid="true"[^>]*aria-describedby="model-credential-help"/)
+  assert.match(html, /id="model-display-name"[^>]*border-danger/)
+  assert.match(html, /id="model-id"[^>]*border-danger/)
+  assert.match(html, /Enter a credential to connect this model\./)
+})
+
+test('announces the active model mutation and disables competing card actions', async () => {
+  const editing = await render({
+    editorOpen: true,
+    editingModelID: 'gpt-high',
+    name: 'GPT High',
+    saving: true,
+  })
+  assert.match(editing, /aria-busy="true"/)
+  assert.match(editing, /Saving changes…/)
+
+  const collection = await render({
+    saving: true,
+    settings: {
+      provider: 'openai-compatible',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-5.4',
+      configured: true,
+      defaultModelID: 'gpt-high',
+      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+    },
+  })
+  assert.match(collection, /<button type="button"[^>]*disabled[^>]*>\s*<svg[^>]*>[\s\S]*?<\/svg> Edit/)
 })
 
 test('App Studio owns save state while the extracted surface owns presentation', async () => {
@@ -146,7 +271,8 @@ test('App Studio owns save state while the extracted surface owns presentation',
   assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
   assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
   assert.match(app, /<ModelsSettings[\s\S]*@save="saveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
-  assert.match(app, /function selectLLMProvider[\s\S]*llmBaseURL\.value = GEMINI_BASE_URL[\s\S]*llmBaseURL\.value = 'https:\/\/api\.openai\.com\/v1'/)
+  assert.match(app, /function selectLLMProvider[\s\S]*llmProviderSelection[\s\S]*llmProviderPreset\.value = preset/)
+  assert.match(app, /async function discoverLLMModels[\s\S]*api\.discoverLLMModels[\s\S]*existingModelID/)
   assert.match(app, /async function saveLLMSettings[\s\S]*api\.patchLLMModel[\s\S]*api\.createLLMModel/)
   assert.match(app, /async function deleteLLMModel[\s\S]*api\.deleteLLMModel/)
   assert.match(app, /catch \(e\)[\s\S]*llmActionError\.value = e instanceof Error/)
@@ -159,7 +285,7 @@ test('model creation replaces its route entry and nested navigation accepts repl
   ])
 
   assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*props\.navigate\(CREATE_MODEL_ROUTE\)/)
-  assert.match(app, /function cancelLLMEditor\(\)[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
+  assert.match(app, /async function cancelLLMEditor\(\)[\s\S]*Discard model changes\?[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app, /const routeOwnedCreation = isCreateModelRoute\.value && !llmEditingModelID\.value[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app, /const detail = \(e as CustomEvent<\{ path\?: unknown; replace\?: unknown \}>\)\.detail/)
   assert.match(app, /Nested provider tabs have one persisted descriptor rather than their own/)
@@ -211,7 +337,7 @@ test('uses the stored project-creation destination and Models fallback for route
   assert.match(app, /modelsReturnRoute\.value === CREATE_PROJECT_ROUTE \? CREATE_PROJECT_ROUTE : MODELS_ROUTE/)
   assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*if \(!modelsReturnRoute\.value && isCreateRoute\.value\) modelsReturnRoute\.value = CREATE_PROJECT_ROUTE/)
 
-  const cancelStart = app.indexOf('function cancelLLMEditor')
+  const cancelStart = app.indexOf('async function cancelLLMEditor')
   const saveStart = app.indexOf('async function saveLLMSettings')
   const saveEnd = app.indexOf('\nasync function deleteLLMModel', saveStart)
   assert.match(app.slice(cancelStart, saveStart), /const returnRoute = routeOwnedCreation[\s\S]*modelsReturnRoute\.value = ''[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)

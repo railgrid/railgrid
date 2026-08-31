@@ -484,6 +484,20 @@ export interface ProjectLLMSettings {
   models: ProjectLLMModelSettings[]
 }
 
+export type ProjectLLMModelCompatibility = 'recommended' | 'available' | 'unsuitable'
+
+export interface ProjectLLMDiscoveredModel {
+  id: string
+  name: string
+  compatibility: ProjectLLMModelCompatibility
+  capabilities?: string[]
+}
+
+export interface ProjectLLMModelDiscovery {
+  models: ProjectLLMDiscoveredModel[]
+  source: string
+}
+
 export interface ProviderChild {
   displayName: string
   builtinRoute: string

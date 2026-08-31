@@ -59,7 +59,7 @@ type CreateProjectLLMModelRequest struct {
 	Provider string `json:"provider,omitempty"`
 	BaseURL  string `json:"baseURL,omitempty"`
 	Model    string `json:"model"`
-	APIKey   string `json:"apiKey,omitempty"`
+	APIKey   string `json:"apiKey"`
 }
 
 type PatchProjectLLMModelRequest struct {
@@ -261,6 +261,37 @@ func normalizeProjectLLMModel(model *projectLLMModelSettings, runtime projectLLM
 	model.Settings.RetryBackoff = runtime.RetryBackoff
 	model.Settings.StreamIdleTimeout = runtime.StreamIdleTimeout
 	return normalizeProjectLLMSettings(&model.Settings)
+}
+
+func validateProjectLLMModelCredential(model projectLLMModelSettings) error {
+	if strings.TrimSpace(model.Settings.APIKey) == "" {
+		return newValidationError("a credential is required to connect this model")
+	}
+	return nil
+}
+
+func firstConfiguredProjectLLMModelID(models []projectLLMModelSettings) string {
+	var selected *projectLLMModelSettings
+	for _, model := range models {
+		if model.Archived || strings.TrimSpace(model.Settings.APIKey) == "" {
+			continue
+		}
+		if selected == nil || strings.ToLower(model.Name) < strings.ToLower(selected.Name) {
+			candidate := model
+			selected = &candidate
+		}
+	}
+	if selected == nil {
+		return ""
+	}
+	return selected.ID
+}
+
+func configuredProjectLLMDefaultModelID(registry projectLLMRegistry) string {
+	if model, found := registry.model(registry.DefaultModelID); found && strings.TrimSpace(model.Settings.APIKey) != "" {
+		return model.ID
+	}
+	return firstConfiguredProjectLLMModelID(registry.Models)
 }
 
 func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLMRegistry, error) {
@@ -477,10 +508,12 @@ func (s *Server) createProjectLLMModel(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	registry.Models = append(registry.Models, model)
-	if registry.DefaultModelID == "" {
-		registry.DefaultModelID = model.ID
+	if err := validateProjectLLMModelCredential(model); err != nil {
+		writeProjectError(w, err)
+		return
 	}
+	registry.Models = append(registry.Models, model)
+	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
 	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
 		writeProjectError(w, err)
 		return
@@ -538,10 +571,15 @@ func (s *Server) patchProjectLLMModel(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	if err := validateProjectLLMModelCredential(model); err != nil {
+		writeProjectError(w, err)
+		return
+	}
 	registry.Models[index].Archived = true
 	model.RevisionID = uuid.NewString()
 	model.Archived = false
 	registry.Models = append(registry.Models, model)
+	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
 	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
 		writeProjectError(w, err)
 		return
@@ -572,15 +610,7 @@ func (s *Server) deleteProjectLLMModel(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
 		return
 	}
-	if registry.DefaultModelID == id {
-		registry.DefaultModelID = ""
-		for _, model := range registry.Models {
-			if !model.Archived {
-				registry.DefaultModelID = model.ID
-				break
-			}
-		}
-	}
+	registry.DefaultModelID = configuredProjectLLMDefaultModelID(registry)
 	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
 		writeProjectError(w, err)
 		return
