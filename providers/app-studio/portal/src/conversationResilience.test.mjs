@@ -188,7 +188,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(appSource, /Connecting to preview…/)
   assert.match(appSource, /const assistantComposerStopControl = computed\(\(\) => assistantComposerStopControlState\(/)
   assert.match(appSource, /Loading provider catalog…/)
-  assert.match(appSource, /class="shimmer aspect-\[16\/9\]/)
+  assert.match(appSource, /v-else-if="projectIndexRoutePending"[\s\S]*Loading App Studio…/)
   assert.match(appSource, /:busy-action="publishingBusyAction"[\s\S]*:busy-target="publishingBusyTarget \?\? undefined"/)
 })
 

@@ -26,7 +26,6 @@ import {
   PanelLeft,
   PanelRight,
   Plus,
-  RefreshCw,
   Search,
   Send,
   Settings2,
@@ -135,6 +134,7 @@ import ModelPicker from './ModelPicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
 import AssistantMessageQueue from './AssistantMessageQueue.vue'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
+import DevelopmentPreviewToolbar from './DevelopmentPreviewToolbar.vue'
 import {
   ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS,
   assistantMessageQueueStorageKey,
@@ -683,10 +683,7 @@ const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
 const hasPendingReview = computed(() => pendingFollowUp.value !== null || pendingApproval.value !== null)
 const loading = ref(true)
 const projectsLoaded = ref(false)
-const projectInitialPending = computed(() =>
-  (loading.value || !projectsLoaded.value) && projects.value.length === 0,
-)
-const showProjectInitialLoading = useDelayedLoading(projectInitialPending)
+const emptyProjectRedirectPending = ref(false)
 const projectOpenLoading = ref(false)
 const threadHistoryLoading = ref(false)
 const selectingThreadID = ref('')
@@ -1463,6 +1460,12 @@ const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
 const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
 const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE)
+const projectIndexRoutePending = computed(() =>
+  isProjectIndexRoute.value &&
+  projects.value.length === 0 &&
+  (loading.value || !projectsLoaded.value || emptyProjectRedirectPending.value),
+)
+const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 const modelsReturnRoute = ref('')
@@ -2654,6 +2657,7 @@ onBeforeUnmount(() => {
 
 async function load() {
   const requestGuard = beginProjectRequest()
+  emptyProjectRedirectPending.value = false
   // Invalidate every assistant-thread operation before resetting its visible
   // latches. The request/context guards keep late responses harmless while a
   // replacement load establishes the new project/thread state.
@@ -2725,6 +2729,10 @@ async function load() {
       return
     }
     if (visibleProjectList.length === 0) {
+      // Keep the unresolved index behind the neutral loading gate until the
+      // host commits the canonical create route. Without this latch Vue can
+      // paint one empty Projects frame between list settlement and routing.
+      emptyProjectRedirectPending.value = true
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -2735,7 +2743,7 @@ async function load() {
       selected.value = null
       messages.value = []
       resetWorkbench()
-      props.navigate(CREATE_PROJECT_ROUTE)
+      props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
       return
     }
     const pathName = selectedNameFromPath.value
@@ -7662,6 +7670,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
+  <div v-else-if="projectIndexRoutePending" class="min-h-0 bg-surface text-text-primary">
+    <div
+      v-if="showProjectIndexRouteLoading"
+      class="k-delayed-loading flex min-h-[260px] items-center justify-center gap-2 text-[13px] text-text-muted"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+      <span>Loading App Studio…</span>
+    </div>
+  </div>
+
   <div v-else-if="!isBuilderVisible" class="min-h-0 bg-surface text-text-primary">
     <div class="flex min-h-full w-full flex-col gap-4">
       <Tabs
@@ -7734,26 +7755,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
 
         <template v-if="projectLayout === 'grid'">
-          <div
-            v-if="projectInitialPending"
-            class="k-delayed-loading grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8"
-            :role="showProjectInitialLoading ? 'status' : undefined"
-            :aria-live="showProjectInitialLoading ? 'polite' : undefined"
-            :aria-busy="showProjectInitialLoading ? 'true' : undefined"
-            :aria-hidden="showProjectInitialLoading ? undefined : 'true'"
-          >
-            <article v-for="skeleton in 6" :key="skeleton" class="overflow-hidden rounded-lg border border-border-subtle bg-surface-raised" aria-hidden="true">
-              <div class="shimmer aspect-[16/9] border-b border-border-subtle bg-surface" />
-              <div class="grid gap-2 p-3">
-                <div class="shimmer h-4 w-2/3 rounded bg-surface-overlay" />
-                <div class="shimmer h-3 w-full rounded bg-surface-overlay" />
-                <div class="shimmer h-3 w-4/5 rounded bg-surface-overlay" />
-                <div class="shimmer mt-2 h-3 w-1/3 rounded bg-surface-overlay" />
-              </div>
-            </article>
-          </div>
-
-          <div v-else-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8">
+          <div v-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8">
             <article
               v-for="project in filteredProjects"
               :key="`${project.name}:${project.uid ?? ''}`"
@@ -9073,58 +9075,20 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
         <div class="flex h-full min-h-[420px] flex-col gap-3">
-          <div class="flex min-w-0 items-center justify-between gap-3">
-            <div class="flex min-w-0 items-center gap-2">
-              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-                <AppWindow class="h-4 w-4 text-accent" :stroke-width="1.75" />
-              </div>
-              <div class="min-w-0">
-                <div class="truncate text-[13px] font-semibold text-text-primary">Development</div>
-                <div class="truncate text-[12px] text-text-muted">{{ developmentBinding?.provider || 'app-studio' }}</div>
-              </div>
-              <StatusBadge :status="developmentPreviewPhase" />
-            </div>
-            <div class="ml-auto flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                :class="developmentPreviewAnnotationMode
-                  ? 'border-accent/40 bg-accent-subtle text-accent'
-                  : 'border-border-subtle bg-surface text-text-secondary hover:bg-surface-hover hover:text-text-primary'"
-                :disabled="messageStreaming || !developmentPreviewCanAnnotate"
-                :aria-pressed="developmentPreviewAnnotationMode"
-                :title="developmentPreviewCanAnnotate ? (developmentPreviewAnnotationMode ? 'Stop annotating' : 'Annotate preview') : 'Annotation becomes available when the preview connects'"
-                @click="toggleDevelopmentPreviewAnnotation"
-              >
-                <span class="relative h-3.5 w-3.5 shrink-0">
-                  <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  <Plus class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-accent p-px text-on-accent" :stroke-width="2.5" />
-                </span>
-                {{ developmentPreviewAnnotationMode ? 'Annotating' : 'Annotate' }}
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!selected || !developmentBinding || messageStreaming || developmentSyncBusy"
-                title="Sync"
-                @click="syncDevelopmentPreview"
-              >
-                <Loader2 v-if="developmentSyncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Sync
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!selected || !developmentBinding || !developmentPreviewCanOpenInBrowser"
-                title="Open a separate browser tab for the development preview"
-                @click="openDevelopmentPreviewInBrowser"
-              >
-                <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ developmentPreviewOpenButtonLabel }}
-              </button>
-            </div>
-          </div>
+          <DevelopmentPreviewToolbar
+            :provider="developmentBinding?.provider || 'app-studio'"
+            :phase="developmentPreviewPhase"
+            :annotation-mode="developmentPreviewAnnotationMode"
+            :annotation-available="developmentPreviewCanAnnotate"
+            :annotation-disabled="messageStreaming || !developmentPreviewCanAnnotate"
+            :sync-busy="developmentSyncBusy"
+            :sync-disabled="!selected || !developmentBinding || messageStreaming || developmentSyncBusy"
+            :open-disabled="!selected || !developmentBinding || !developmentPreviewCanOpenInBrowser"
+            :open-label="developmentPreviewOpenButtonLabel"
+            @annotate="toggleDevelopmentPreviewAnnotation"
+            @sync="syncDevelopmentPreview"
+            @open-browser="openDevelopmentPreviewInBrowser"
+          />
           <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
             {{ developmentSyncError || developmentPreviewAuthorizationError }}
           </div>

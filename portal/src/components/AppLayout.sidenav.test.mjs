@@ -22,6 +22,7 @@ import * as ts from 'typescript'
 
 const components = path.dirname(new URL(import.meta.url).pathname)
 const appLayout = fs.readFileSync(path.join(components, 'AppLayout.vue'), 'utf8')
+const helpSupportModal = fs.readFileSync(path.join(components, 'HelpSupportModal.vue'), 'utf8')
 const providerNavOverflow = fs.readFileSync(path.join(components, 'ProviderNavOverflow.vue'), 'utf8')
 const accountMenu = fs.readFileSync(path.join(components, 'AccountAccessMenu.vue'), 'utf8')
 const sidebarExpansion = fs.readFileSync(path.join(components, '..', 'composables', 'useSidebarExpansion.ts'), 'utf8')
@@ -220,7 +221,10 @@ test('extracted shell ownership stays one-way and fences pointer lifecycles', ()
 })
 
 test('shell recovery and context status are present without claiming unconditional liveness', () => {
-  assert.ok((appLayout.match(/aria-label="Help — open Faros documentation"/g) ?? []).length >= 3)
+  assert.equal((appLayout.match(/aria-label="Open help and community"/g) ?? []).length, 3)
+  assert.equal((appLayout.match(/aria-controls="help-support-dialog"/g) ?? []).length, 3)
+  assert.equal((appLayout.match(/@click="showHelpModal = true"/g) ?? []).length, 3)
+  assert.match(appLayout, /<HelpSupportModal v-if="showHelpModal" @close="showHelpModal = false" \/>/)
   assert.ok((appLayout.match(/@click="retryProviderBindings"/g) ?? []).length >= 3)
   assert.match(appLayout, /providerBindingsStale = computed\(\(\) => providersStore\.bindingsStale\)/)
   assert.match(appLayout, /const contextStatus = computed<ContextStatus>/)
@@ -264,6 +268,32 @@ test('shell recovery and context status are present without claiming uncondition
   assert.doesNotMatch(appLayout, /shell-context-status[\s\S]{0,120}text-\[(?:7|8|9)px\] font-semibold uppercase tracking-widest/)
   assert.match(appLayout, /@media \(pointer: coarse\)/)
   assert.match(appLayout, /min-height: 44px/)
+})
+
+test('help modal prioritizes docs and keeps community support accessible', () => {
+  assert.match(helpSupportModal, /const docsURL = 'https:\/\/faros\.sh\/docs\/'/)
+  assert.match(helpSupportModal, /const discordURL = 'https:\/\/discord\.gg\/VjUA7zyhC'/)
+  assert.match(helpSupportModal, /const issuesURL = 'https:\/\/github\.com\/faroshq\/faros\/issues'/)
+  assert.match(helpSupportModal, /role="dialog"/)
+  assert.match(helpSupportModal, /id="help-support-dialog"/)
+  assert.match(helpSupportModal, /aria-modal="true"/)
+  assert.match(helpSupportModal, /aria-labelledby="help-support-title"/)
+  assert.match(helpSupportModal, /aria-describedby="help-support-description"/)
+  assert.match(helpSupportModal, /@click\.self="\$emit\('close'\)"/)
+  assert.match(helpSupportModal, /useEscapeKey\(\(\) => emit\('close'\)\)/)
+  assert.match(helpSupportModal, /nextTick\(\(\) => closeButton\.value\?\.focus\(\)\)/)
+  assert.match(helpSupportModal, /nextTick\(\(\) => target\?\.isConnected && target\.focus\(\)\)/)
+  assert.match(helpSupportModal, /event\.shiftKey && document\.activeElement === first/)
+  assert.match(helpSupportModal, /!event\.shiftKey && document\.activeElement === last/)
+
+  const docs = helpSupportModal.indexOf('Documentation')
+  const secondary = helpSupportModal.indexOf('More ways to get help')
+  const discord = helpSupportModal.indexOf('Discord community')
+  const issues = helpSupportModal.indexOf('GitHub issues')
+  assert.ok(docs >= 0 && docs < secondary && secondary < discord && discord < issues)
+  assert.equal((helpSupportModal.match(/target="_blank"/g) ?? []).length, 3)
+  assert.equal((helpSupportModal.match(/rel="noreferrer noopener"/g) ?? []).length, 3)
+  assert.doesNotMatch(helpSupportModal, /systems operational|Contact support|Troubleshooting/)
 })
 
 test('dock movement is learnable and account actions name the resulting placement', () => {

@@ -32,6 +32,7 @@
 @source "./ProjectIntegrations.vue";
 @source "./portalkit/StatusBadge.vue";
 @source "./ProjectHistory.vue";
+@source "./DevelopmentPreviewToolbar.vue";
 
 @theme inline {
   /* Sharp radius scale — plain values (not host pointers), mirroring the host
@@ -89,6 +90,15 @@ faros-provider-app-studio *::after {
    layout box to the provider while remaining descendants of the scoped root. */
 faros-provider-app-studio .app-studio-overlay-root {
   display: contents;
+}
+
+/* The preview toolbar sits at the top of a scroll container. Keep its shared
+   tooltips inside that viewport without using Tailwind's after:* variants,
+   which would replace attr(data-k-tip) with an empty generated content value. */
+.preview-toolbar [data-k-tip]::after {
+  content: attr(data-k-tip);
+  inset: calc(100% + 6px) 0 auto auto;
+  transform: none;
 }
 
 @keyframes app-studio-running-ripple {

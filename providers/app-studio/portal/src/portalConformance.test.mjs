@@ -38,15 +38,21 @@ test('keeps dashboard tile snapshots visible across background refresh failures'
   assert.match(dashboardTile, /generation !== contextGeneration/)
 })
 
-test('keeps project search and creation controls mounted during the initial list read', () => {
-  const headerStart = app.indexOf('<header v-if="isProjectIndexRoute"')
-  const galleryStart = app.indexOf('v-if="projectInitialPending"', headerStart)
-  assert.ok(headerStart >= 0 && galleryStart > headerStart)
-  const controls = app.slice(headerStart, galleryStart)
-  assert.match(controls, />\s*New project\s*</)
-  assert.match(controls, /placeholder="Search"/)
-  assert.doesNotMatch(controls, /v-if="projectsLoaded && projects\.length > 0"/)
-  assert.match(controls, /:disabled="loading \|\| !projectsLoaded"/)
+test('keeps the project index unpainted until the empty-project route decision settles', () => {
+  assert.match(app, /const projectIndexRoutePending = computed\(\(\) =>[\s\S]*isProjectIndexRoute\.value[\s\S]*projects\.value\.length === 0[\s\S]*emptyProjectRedirectPending\.value/)
+
+  const routeGateStart = app.indexOf('<div v-else-if="projectIndexRoutePending"')
+  const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"', routeGateStart)
+  assert.ok(routeGateStart >= 0 && landingStart > routeGateStart)
+  const routeGate = app.slice(routeGateStart, landingStart)
+  assert.match(routeGate, /v-if="showProjectIndexRouteLoading"/)
+  assert.match(routeGate, /Loading App Studio…/)
+  assert.doesNotMatch(routeGate, />Projects</)
+
+  const emptyListStart = app.indexOf('if (visibleProjectList.length === 0)')
+  const pathStart = app.indexOf('const pathName = selectedNameFromPath.value', emptyListStart)
+  const emptyList = app.slice(emptyListStart, pathStart)
+  assert.ok(emptyList.indexOf('emptyProjectRedirectPending.value = true') < emptyList.indexOf("props.navigate(CREATE_PROJECT_ROUTE, { replace: true })"))
 })
 
 test('presents Projects and Models through the shared tabs surface without a generic settings action', () => {

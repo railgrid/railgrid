@@ -8,11 +8,12 @@ import { useSidebarExpansion } from '@/composables/useSidebarExpansion'
 import { useNavigationDock } from '@/composables/useNavigationDock'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
+import HelpSupportModal from '@/components/HelpSupportModal.vue'
 import AccountAccessMenu from '@/components/AccountAccessMenu.vue'
 import ProviderNavOverflow from '@/components/ProviderNavOverflow.vue'
 import WorkspaceSwitcher from '@/components/WorkspaceSwitcher.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown, CircleHelp, ExternalLink, Loader2, RefreshCw, CircleAlert } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown, CircleHelp, Loader2, RefreshCw, CircleAlert } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -244,6 +245,7 @@ function retryWorkspaceHydration() {
 }
 
 const showCliModal = ref(false)
+const showHelpModal = ref(false)
 
 // --- Collapsible sidebar rail ---
 // The vertical dock defaults to a 56px icon rail so the canvas isn't taxed by
@@ -758,19 +760,20 @@ const contextStatus = computed<ContextStatus>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
-      <a
-        href="https://faros.sh/docs/"
-        target="_blank"
-        rel="noreferrer noopener"
-        aria-label="Help — open Faros documentation"
+      <button
+        type="button"
+        aria-label="Open help and community"
+        aria-haspopup="dialog"
+        aria-controls="help-support-dialog"
+        :aria-expanded="showHelpModal"
         class="shell-help mb-2 flex items-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
         :class="sidebarExpanded ? 'w-full gap-2 px-2.5 py-2' : 'h-8 w-8 justify-center p-0'"
         :title="sidebarExpanded ? undefined : 'Help'"
+        @click="showHelpModal = true"
       >
         <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
         <span v-if="sidebarExpanded" class="text-[11px] font-medium">Help</span>
-        <ExternalLink v-if="sidebarExpanded" class="ml-auto h-3 w-3 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
-      </a>
+      </button>
 
       <!-- Identity, access, and the infrequent organization context share one
            account flyout. Workspace remains the separate operating control. -->
@@ -888,17 +891,19 @@ const contextStatus = computed<ContextStatus>(() => {
           <RefreshCw class="h-3 w-3" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
         </button>
       </div>
-      <a
-        href="https://faros.sh/docs/"
-        target="_blank"
-        rel="noreferrer noopener"
-        aria-label="Help — open Faros documentation"
+      <button
+        type="button"
+        aria-label="Open help and community"
+        aria-haspopup="dialog"
+        aria-controls="help-support-dialog"
+        :aria-expanded="showHelpModal"
         class="shell-help flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
         title="Help"
+        @click="showHelpModal = true"
       >
         <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
         <span class="hidden xl:inline text-[10px] font-medium">Help</span>
-      </a>
+      </button>
       <AccountAccessMenu
         :show-platform-admin="adminStore.isAdmin === true"
         :show-undock="dockState.mode !== 'float'"
@@ -1073,17 +1078,19 @@ const contextStatus = computed<ContextStatus>(() => {
             <RefreshCw class="h-3 w-3" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
           </button>
         </div>
-        <a
-          href="https://faros.sh/docs/"
-          target="_blank"
-          rel="noreferrer noopener"
-          aria-label="Help — open Faros documentation"
+        <button
+          type="button"
+          aria-label="Open help and community"
+          aria-haspopup="dialog"
+          aria-controls="help-support-dialog"
+          :aria-expanded="showHelpModal"
           class="shell-help flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           title="Help"
+          @click="showHelpModal = true"
         >
           <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
           <span class="hidden 2xl:inline text-[10px] font-medium">Help</span>
-        </a>
+        </button>
         <AccountAccessMenu
           :show-platform-admin="adminStore.isAdmin === true"
           :show-undock="hasCustomPos && !isDragging"
@@ -1097,6 +1104,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
     <!-- CLI quickstart modal -->
     <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
+    <HelpSupportModal v-if="showHelpModal" @close="showHelpModal = false" />
 
   </div>
 </template>

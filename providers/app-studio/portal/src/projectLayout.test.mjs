@@ -13,14 +13,13 @@ test('defaults and persists the Projects layout through the shared browser prefe
   assert.match(app, /<LayoutSelector v-model="projectLayout"[^>]*aria-label="Project layout"/)
 })
 
-test('keeps the existing gallery as the grid branch and uses table loading geometry in list mode', () => {
+test('keeps the existing gallery as the grid branch after route resolution and uses the canonical table in list mode', () => {
   const branchStart = app.indexOf('<template v-if="projectLayout === \'grid\'">')
   const listStart = app.indexOf('<ResourceTable', branchStart)
   assert.ok(branchStart >= 0 && listStart > branchStart)
 
   const grid = app.slice(branchStart, listStart)
-  assert.match(grid, /v-if="projectInitialPending"/)
-  assert.match(grid, /:aria-hidden="showProjectInitialLoading \? undefined : 'true'"/)
+  assert.doesNotMatch(grid, /projectInitialPending|showProjectInitialLoading|shimmer/)
   assert.match(grid, /v-for="project in filteredProjects"/)
   assert.match(grid, /v-if="projectThumbnailURLs\[project\.name\]"/)
   assert.match(grid, /@click="enterProject\(project\)"/)

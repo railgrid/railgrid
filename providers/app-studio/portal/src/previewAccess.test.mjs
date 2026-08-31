@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const previewToolbar = await readFile(new URL('./DevelopmentPreviewToolbar.vue', import.meta.url), 'utf8')
 
 function functionSource(name, nextName) {
   const start = app.indexOf(`async function ${name}`)
@@ -28,11 +29,9 @@ test('shows development access in Project Settings only for compatible templates
   assert.match(selector, /option value="public">Anyone with link/)
   assert.match(selector, /developmentPreviewAccessBusy \|\| !developmentPreviewAccessConverged/)
 
-  const toolbarStart = app.indexOf('v-else-if="activeWorkbenchTab?.kind === \'preview\'"')
-  const toolbarEnd = app.indexOf('{{ developmentPreviewOpenButtonLabel }}', toolbarStart)
-  const toolbar = app.slice(toolbarStart, toolbarEnd)
-  assert.doesNotMatch(toolbar, /Development preview access/)
-  assert.doesNotMatch(toolbar, /developmentPreviewAccessConfigurable/)
+  assert.match(app, /<DevelopmentPreviewToolbar/)
+  assert.doesNotMatch(previewToolbar, /Development preview access/)
+  assert.doesNotMatch(previewToolbar, /developmentPreviewAccessConfigurable/)
 })
 
 test('requires confirmation before public access and not when returning to private', () => {
