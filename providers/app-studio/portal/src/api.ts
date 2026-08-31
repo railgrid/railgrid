@@ -105,10 +105,12 @@ function baseURL(ctx: FarosContext | null): string {
 
 interface ProjectAPIRequestOptions {
   timeoutMS?: number
+  timeoutMessage?: string
 }
 
 const ASSISTANT_THREAD_PAGE_SIZE = 500
 const MAX_ASSISTANT_THREAD_PAGES = 100
+const PREVIEW_CONSOLE_TIMEOUT_MESSAGE = 'preview console request timed out'
 
 async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
@@ -130,7 +132,7 @@ async function request<T>(ctx: FarosContext | null, method: string, path: string
     })
     text = await res.text()
   } catch (error) {
-    if (timedOut) throw new ProjectAPIRequestError('preview console request timed out', 408)
+    if (timedOut) throw new ProjectAPIRequestError(options.timeoutMessage || 'request timed out', 408)
     throw error
   } finally {
     if (timeout !== undefined) window.clearTimeout(timeout)
@@ -848,6 +850,16 @@ export const api = {
     return request<ProjectLLMSettings>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models`, body)
   },
 
+  async testLLMConnection(
+    ctx: FarosContext | null,
+    body: { provider?: string; baseURL?: string; model: string; apiKey: string },
+  ): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/test`, body, {
+      timeoutMS: 35_000,
+      timeoutMessage: 'model connection test timed out',
+    })
+  },
+
   async patchLLMModel(
     ctx: FarosContext | null,
     modelID: string,
@@ -1082,7 +1094,7 @@ export const api = {
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions`,
       { generation, protocolVersion: 1, portalInstanceID },
-      { timeoutMS: 8_000 },
+      { timeoutMS: 8_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
     )
   },
 
@@ -1099,7 +1111,7 @@ export const api = {
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}/events`,
       { generation, protocolVersion: 1, droppedCount, events },
-      { timeoutMS: 5_000 },
+      { timeoutMS: 5_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
     )
   },
 
@@ -1113,7 +1125,7 @@ export const api = {
       'DELETE',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}`,
       undefined,
-      { timeoutMS: 3_000 },
+      { timeoutMS: 3_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
     )
   },
 }

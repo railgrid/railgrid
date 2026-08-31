@@ -11,7 +11,7 @@ const vite = await createServer({
   cacheDir: '/tmp/faros-vite-app-studio-models',
   configFile: false,
   plugins: [vue()],
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false },
 })
 const { default: ModelsSettings } = await vite.ssrLoadModule('/src/ModelsSettings.vue')
 test.after(async () => vite.close())
@@ -51,6 +51,11 @@ const baseProps = {
   discoveryError: null,
   discoveryStatus: null,
   canDiscover: false,
+  testing: false,
+  testStatus: null,
+  testError: null,
+  requireConnectionTest: false,
+  connectionTested: false,
 }
 
 async function render(props = {}) {
@@ -150,6 +155,7 @@ test('renders a guided provider, endpoint, and credential form', async () => {
   assert.match(html, /Find models/)
   assert.match(html, /Service account JSON/)
   assert.match(html, /Connect model/)
+  assert.match(html, /Test connection/)
 })
 
 test('offers known provider endpoints and keeps custom endpoints editable', async () => {
@@ -260,6 +266,23 @@ test('announces the active model mutation and disables competing card actions', 
     },
   })
   assert.match(collection, /<button type="button"[^>]*disabled[^>]*>\s*<svg[^>]*>[\s\S]*?<\/svg> Edit/)
+})
+
+test('first-time setup requires a verified model response before save and finish', async () => {
+  const html = await render({ creationRoute: true, name: 'OpenAI', apiKey: 'test-key', requireConnectionTest: true })
+  assert.match(html, /Test connection/)
+  assert.match(html, /Save and finish/)
+  assert.match(html, /<button class="k-btn k-btn--primary" disabled>[\s\S]*Save and finish/)
+
+  const verified = await render({
+    creationRoute: true,
+    name: 'OpenAI',
+    apiKey: 'test-key',
+    requireConnectionTest: true,
+    connectionTested: true,
+    testStatus: 'Connection verified. The model responded successfully.',
+  })
+  assert.match(verified, /Connection verified\. The model responded successfully\./)
 })
 
 test('App Studio owns save state while the extracted surface owns presentation', async () => {

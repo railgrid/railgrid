@@ -65,6 +65,8 @@ test('App preview automatically shares console evidence without a capture contro
   assert.match(apiSource, /timeoutMS: 8_000/)
   assert.match(apiSource, /timeoutMS: 5_000/)
   assert.match(apiSource, /timeoutMS: 3_000/)
+  assert.equal((apiSource.match(/timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE/g) ?? []).length, 3)
+  assert.match(apiSource, /PREVIEW_CONSOLE_TIMEOUT_MESSAGE = 'preview console request timed out'/)
 
   const recoveryStart = appSource.indexOf('function scheduleDevelopmentPreviewRecovery()')
 	  const recoveryEnd = appSource.indexOf('function handleDevelopmentPreviewVisibilityChange()', recoveryStart)

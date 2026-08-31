@@ -37,6 +37,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einoschema "github.com/cloudwego/eino/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -1922,6 +1923,54 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 	}
 	return nil
 }
+
+func verifyProjectLLMConnection(ctx context.Context, settings projectLLMSettings) error {
+	model, err := newProjectEinoChatModel(ctx, settings)
+	if err != nil {
+		if errors.Is(err, errProjectLLMNotConfigured) {
+			return newValidationError("credential cannot be empty")
+		}
+		return err
+	}
+	response, err := model.Generate(ctx, []*einoschema.Message{
+		einoschema.UserMessage("Reply with OK to confirm this model connection."),
+	})
+	if err != nil {
+		return classifyProjectLLMConnectionTestError(ctx, err)
+	}
+	if response == nil {
+		return errors.New("AI model connection failed: provider returned no response")
+	}
+	return nil
+}
+
+func classifyProjectLLMConnectionTestError(ctx context.Context, err error) error {
+	wrapped := fmt.Errorf("AI model connection failed: %w", err)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestTimeout, Err: wrapped}
+	}
+	var apiErr *einoopenai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode >= 400 && apiErr.HTTPStatusCode < 500 {
+		return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestRejected, Err: wrapped}
+	}
+	return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestUpstream, Err: wrapped}
+}
+
+type projectLLMConnectionTestErrorKind string
+
+const (
+	projectLLMConnectionTestRejected projectLLMConnectionTestErrorKind = "rejected"
+	projectLLMConnectionTestUpstream projectLLMConnectionTestErrorKind = "upstream"
+	projectLLMConnectionTestTimeout  projectLLMConnectionTestErrorKind = "timeout"
+)
+
+type projectLLMConnectionTestError struct {
+	Kind projectLLMConnectionTestErrorKind
+	Err  error
+}
+
+func (e *projectLLMConnectionTestError) Error() string { return e.Err.Error() }
+func (e *projectLLMConnectionTestError) Unwrap() error { return e.Err }
 
 func validateProjectLLMBaseURL(provider, raw string) error {
 	if strings.EqualFold(strings.TrimSpace(provider), projectLLMProviderGoogle) {

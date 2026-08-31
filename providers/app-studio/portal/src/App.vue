@@ -164,6 +164,7 @@ import {
   type ProjectDeletionIdentity,
 } from './projectDeletion'
 import NewProjectWizard from './NewProjectWizard.vue'
+import FirstTimeSetup from './FirstTimeSetup.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
 import {
   ConversationRunController,
@@ -480,6 +481,7 @@ const appStudioSectionTabs = [
 ] as const
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
+const CODE_PROVIDER_CATALOG_URL = '/providers'
 const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
@@ -890,6 +892,11 @@ const llmModel = ref(OPENAI_DEFAULT_MODEL)
 const llmApiKey = ref('')
 const llmCredentialMode = ref<LLMCredentialMode>('api-key')
 const llmSaving = ref(false)
+const llmTesting = ref(false)
+const llmTestStatus = ref<string | null>(null)
+const llmTestError = ref<string | null>(null)
+const llmTestedFingerprint = ref('')
+let llmConnectionTestSerial = 0
 const llmStatus = ref<string | null>(null)
 const llmActionError = ref<string | null>(null)
 const llmEditorOpen = ref(false)
@@ -904,6 +911,8 @@ const llmDiscoveryLoading = ref(false)
 const llmDiscoveryError = ref<string | null>(null)
 const llmDiscoveryStatus = ref<string | null>(null)
 let llmDiscoverySerial = 0
+const setupSessionActive = ref(false)
+const setupCompletionVisible = ref(false)
 const messagesRef = ref<HTMLDivElement | null>(null)
 const expandedMessageTimestampID = ref<string | null>(null)
 const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
@@ -1109,6 +1118,9 @@ function invalidateProjectContextState() {
   releaseLoadSerial += 1
   historyLoadSerial += 1
   invalidateLLMModelMutationState()
+  invalidateLLMConnectionTest()
+  setupSessionActive.value = false
+  setupCompletionVisible.value = false
 
   clearInitializationRetry()
   clearProjectThumbnailURLs()
@@ -1454,6 +1466,10 @@ const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 const modelsReturnRoute = ref('')
+const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : 'Models')
+const llmCreateDescription = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE
+  ? 'Connect and verify the model App Studio will use for project creation and chat.'
+  : 'Configure the model credentials App Studio uses when creating and chatting in projects.')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
   (
@@ -1545,7 +1561,7 @@ const assistantComposerStopDisabled = computed(() => assistantComposerStopContro
 const configuredLLMModels = computed(() => (llmSettings.value?.models ?? []).filter((model) => model.configured))
 const selectedLLMModel = computed(() => configuredLLMModels.value.find((model) => model.id === selectedLLMModelID.value) ?? configuredLLMModels.value[0])
 const llmConfigured = computed(() => configuredLLMModels.value.length > 0)
-const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(prompt.value, createReadiness.value) && (llmSettings.value?.configured ?? false))
+const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
 const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
   llmConfigured.value &&
@@ -1613,14 +1629,40 @@ const createSetupItemsForPrompt = computed(() => createSetupItems({
   llmConfigured: llmConfigured.value,
   checkingGit: createReadinessChecking.value,
 }))
-const createSetupLoading = computed(() => createReadinessChecking.value || llmSettingsLoading.value)
+const llmSettingsChecking = computed(() => llmSettingsLoading.value || (!!props.ctx?.token && llmSettings.value === null && !llmSettingsError.value))
+const createSetupLoading = computed(() => createReadinessChecking.value || llmSettingsChecking.value)
 const createPromptSubmitTitle = computed(() => {
   if (createSetupLoading.value) return 'Checking workspace setup'
   if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before preparing a project'
   return prompt.value.trim() ? 'Prepare project for review' : 'Describe what you want to build'
 })
-const createSetupVisible = computed(() => !createSetupLoading.value && (createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value))
+const createSetupVisible = computed(() => createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value || !!llmSettingsError.value)
 const createSetupErrorMessage = computed(() => createReadinessError.value || llmSettingsError.value || '')
+const firstTimeSetupVisible = computed(() => isCreateRoute.value && (createSetupLoading.value || createSetupVisible.value || setupCompletionVisible.value))
+const setupModelName = computed(() => selectedLLMModel.value?.model || llmSettings.value?.model || '')
+
+watch([isCreateRoute, createSetupLoading, createSetupVisible], ([onCreateRoute, loadingSetup, setupVisible]) => {
+  if (!onCreateRoute || loadingSetup) return
+  if (setupVisible) {
+    setupSessionActive.value = true
+    setupCompletionVisible.value = false
+  } else if (setupSessionActive.value) {
+    setupCompletionVisible.value = true
+  }
+}, { immediate: true })
+
+async function finishFirstTimeSetup() {
+  setupSessionActive.value = false
+  setupCompletionVisible.value = false
+  await nextTick()
+  promptRef.value?.focus()
+}
+
+function leaveFirstTimeSetup() {
+  setupSessionActive.value = false
+  setupCompletionVisible.value = false
+  props.navigate('')
+}
 function deleteProjectMessage(project: Project): string {
   const projectName = project.displayName || project.name
   const repositoryName = project.repository?.name || project.repository?.ref
@@ -2284,6 +2326,11 @@ const developmentPreviewUnavailableMessage = computed(() => {
   return developmentPreviewReadinessMessage.value || 'Development instance is not ready.'
 })
 
+function handleCreateSetupWake() {
+  if (!isCreateRoute.value || createSetupLoading.value || !firstTimeSetupVisible.value) return
+  void Promise.all([loadCreateReadiness(), loadLLMSettings()])
+}
+
 onMounted(() => {
   appComponentMounted = true
   void nextTick(observeSplitRegion)
@@ -2302,6 +2349,9 @@ onMounted(() => {
   window.addEventListener('focus', reloadActiveAssistantConversation)
   window.addEventListener('online', reloadActiveAssistantConversation)
   window.addEventListener('pageshow', reloadActiveAssistantConversation)
+  window.addEventListener('focus', handleCreateSetupWake)
+  window.addEventListener('online', handleCreateSetupWake)
+  window.addEventListener('pageshow', handleCreateSetupWake)
   document.addEventListener('pointerdown', handleLandingImportOutside)
   document.addEventListener('keydown', handleLandingImportEscape)
   document.addEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
@@ -2590,6 +2640,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', reloadActiveAssistantConversation)
   window.removeEventListener('online', reloadActiveAssistantConversation)
   window.removeEventListener('pageshow', reloadActiveAssistantConversation)
+  window.removeEventListener('focus', handleCreateSetupWake)
+  window.removeEventListener('online', handleCreateSetupWake)
+  window.removeEventListener('pageshow', handleCreateSetupWake)
   document.removeEventListener('pointerdown', handleLandingImportOutside)
   document.removeEventListener('keydown', handleLandingImportEscape)
   document.removeEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
@@ -3834,6 +3887,7 @@ function updateLLMAPIKey(value: string) {
 
 function openLLMEditor(modelID?: string) {
   invalidateLLMModelMutationState()
+  invalidateLLMConnectionTest()
   llmStatus.value = null
   llmActionError.value = null
   const saved = llmSettings.value?.models.find((model) => model.id === modelID)
@@ -4025,11 +4079,36 @@ function normalizeLLMModelInput(provider: string, model: string, credentialMode:
   return credentialMode === 'service-account-json' ? GOOGLE_CLOUD_DEFAULT_MODEL : GEMINI_DEFAULT_MODEL
 }
 
+const llmConnectionFingerprint = computed(() => JSON.stringify([
+  llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmApiKey.value.trim(),
+]))
+const llmConnectionTested = computed(() => Boolean(llmTestedFingerprint.value) && llmTestedFingerprint.value === llmConnectionFingerprint.value)
+const llmConnectionTestRequired = computed(() => isCreateModelRoute.value && modelsReturnRoute.value === CREATE_PROJECT_ROUTE && setupSessionActive.value)
+
+function invalidateLLMConnectionTest() {
+  llmConnectionTestSerial += 1
+  llmTesting.value = false
+  llmTestStatus.value = null
+  llmTestError.value = null
+  llmTestedFingerprint.value = ''
+}
+
+watch(llmConnectionFingerprint, () => {
+  if (!llmTestedFingerprint.value || llmConnectionTested.value) return
+  llmTestStatus.value = null
+  llmTestError.value = null
+  llmTestedFingerprint.value = ''
+})
+
 async function saveLLMSettings() {
   llmStatus.value = null
   llmActionError.value = null
   llmValidationAttempted.value = true
   if (hasLLMModelFormErrors(llmFormValidation.value)) return
+  if (llmConnectionTestRequired.value && !llmConnectionTested.value) {
+    llmTestError.value = 'Test this connection before saving it for the workspace.'
+    return
+  }
   const routeOwnedCreation = isCreateModelRoute.value && !llmEditingModelID.value
   const editingID = llmEditingModelID.value
   const returnRoute = routeOwnedCreation
@@ -4057,6 +4136,7 @@ async function saveLLMSettings() {
     llmEditorBaseline.value = null
     llmValidationAttempted.value = false
     if (returnRoute) {
+      if (returnRoute === CREATE_PROJECT_ROUTE && setupSessionActive.value) setupCompletionVisible.value = true
       modelsReturnRoute.value = ''
       props.navigate(returnRoute, { replace: true })
     }
@@ -4065,6 +4145,40 @@ async function saveLLMSettings() {
     llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
+  }
+}
+
+async function testLLMConnection() {
+  llmTestStatus.value = null
+  llmTestError.value = null
+  if (llmBaseURLError.value) return
+  if (!llmModel.value.trim()) {
+    llmTestError.value = 'Enter a model ID before testing the connection.'
+    return
+  }
+  if (!llmApiKey.value.trim()) {
+    llmTestError.value = 'Enter a credential before testing the connection.'
+    return
+  }
+  const serial = ++llmConnectionTestSerial
+  const fingerprint = llmConnectionFingerprint.value
+  llmTesting.value = true
+  try {
+    const result = await api.testLLMConnection(props.ctx, {
+      provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
+      baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
+      model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
+      apiKey: llmApiKey.value.trim(),
+    })
+    if (serial !== llmConnectionTestSerial || fingerprint !== llmConnectionFingerprint.value) return
+    if (!result.ok) throw new Error('The provider did not confirm this connection.')
+    llmTestedFingerprint.value = fingerprint
+    llmTestStatus.value = 'Connection verified. The model responded successfully.'
+  } catch (e) {
+    if (serial !== llmConnectionTestSerial || fingerprint !== llmConnectionFingerprint.value) return
+    llmTestError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (serial === llmConnectionTestSerial) llmTesting.value = false
   }
 }
 
@@ -7767,10 +7881,28 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-else-if="showNewProjectComposer">
         <main
           class="flex min-h-0 flex-1 justify-center py-4"
-          :class="wizardOpen ? 'items-start' : 'items-center'"
+          :class="wizardOpen || firstTimeSetupVisible ? 'items-start' : 'items-center'"
         >
           <section class="w-full max-w-[1060px]">
-            <template v-if="wizardOpen">
+            <template v-if="firstTimeSetupVisible">
+              <FirstTimeSetup
+                :readiness="createReadiness"
+                :llm-configured="llmConfigured"
+                :llm-model="setupModelName"
+                :loading="createSetupLoading"
+                :git-error="createReadinessError || ''"
+                :llm-error="llmSettingsError || ''"
+                :completion="setupCompletionVisible"
+                :code-connections-url="CODE_CONNECTIONS_URL"
+                :code-catalog-url="CODE_PROVIDER_CATALOG_URL"
+                @connect-model="openSettings"
+                @retry="onWizardSetupRetry"
+                @finish="finishFirstTimeSetup"
+                @back="leaveFirstTimeSetup"
+              />
+            </template>
+
+            <template v-else-if="wizardOpen">
               <NewProjectWizard
                 :ctx="props.ctx"
                 :initial-prompt="prompt"
@@ -8005,11 +8137,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isCreateModelRoute ? 'k-create-page pb-6' : 'min-h-0 pb-6'">
         <button v-if="isCreateModelRoute" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
-          <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Models
+          <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ llmCreateReturnLabel }}
         </button>
         <header v-if="isCreateModelRoute" class="k-create-header">
-          <h1 class="k-create-title">Connect model</h1>
-          <p class="k-create-description">Add a credentialed model connection for project creation and chat.</p>
+          <h1 class="k-create-title">{{ llmConnectionTestRequired ? 'Connect an AI model' : 'Connect model' }}</h1>
+          <p class="k-create-description">{{ llmConnectionTestRequired ? llmCreateDescription : 'Add a credentialed model connection for project creation and chat.' }}</p>
         </header>
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
@@ -9878,10 +10010,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :discovery-error="llmDiscoveryError"
             :discovery-status="llmDiscoveryStatus"
             :can-discover="llmCanDiscover"
+            :testing="llmTesting"
+            :test-status="llmTestStatus"
+            :test-error="llmTestError"
+            :require-connection-test="llmConnectionTestRequired"
+            :connection-tested="llmConnectionTested"
             @retry="loadLLMSettings"
             @open-editor="openModelEditor"
             @cancel-editor="cancelLLMEditor"
             @save="saveLLMSettings"
+            @test="testLLMConnection"
             @delete="deleteLLMModel"
             @set-default="setDefaultLLMModel"
             @select-provider="selectLLMProvider"

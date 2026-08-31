@@ -43,6 +43,11 @@ const props = defineProps<{
   discoveryError: string | null
   discoveryStatus: string | null
   canDiscover: boolean
+  testing: boolean
+  testStatus: string | null
+  testError: string | null
+  requireConnectionTest: boolean
+  connectionTested: boolean
 }>()
 
 const recommendedDiscoveredModels = computed(() => props.discoveredModels.filter((model) => model.compatibility === 'recommended').slice(0, 4))
@@ -52,6 +57,7 @@ const emit = defineEmits<{
   openEditor: [modelID?: string]
   cancelEditor: []
   save: []
+  test: []
   delete: [modelID: string]
   setDefault: [modelID: string]
   selectProvider: [provider: LLMProviderPreset]
@@ -105,6 +111,8 @@ const emit = defineEmits<{
       </div>
       <div v-if="actionError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ actionError }}</div>
       <div v-else-if="status" class="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success" role="status" aria-live="polite">{{ status }}</div>
+      <div v-if="testError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ testError }}</div>
+      <div v-else-if="testStatus" class="flex items-center gap-2 rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success" role="status" aria-live="polite"><Check class="h-3.5 w-3.5" :stroke-width="2" />{{ testStatus }}</div>
 
       <div v-if="settings?.models.length && !creationRoute && !editorOpen" class="grid gap-3 sm:grid-cols-2">
         <article
@@ -278,10 +286,16 @@ const emit = defineEmits<{
 
         </div>
         <footer class="k-create-actions">
-          <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="emit('cancelEditor')">Cancel</button>
-          <button class="k-btn k-btn--primary" :disabled="saving">
+          <button type="button" class="k-btn k-btn--ghost" :disabled="saving || testing" @click="emit('cancelEditor')">Cancel</button>
+          <button type="button" class="k-btn k-btn--ghost" :disabled="saving || testing || !model.trim() || !apiKey.trim() || Boolean(baseURLError)" @click="emit('test')">
+            <Loader2 v-if="testing" class="h-4 w-4 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
+            <Check v-else-if="connectionTested" class="h-4 w-4 text-success" :stroke-width="2" />
+            <RefreshCw v-else class="h-4 w-4" :stroke-width="1.75" />
+            {{ testing ? 'Testing…' : connectionTested ? 'Connection verified' : 'Test connection' }}
+          </button>
+          <button class="k-btn k-btn--primary" :disabled="saving || testing || (requireConnectionTest && !connectionTested)">
             <Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.75" /><Check v-else class="h-4 w-4" :stroke-width="1.75" />
-            {{ saving ? (editingModelID && !creationRoute ? 'Saving changes…' : 'Connecting model…') : (editingModelID && !creationRoute ? 'Save changes' : 'Connect model') }}
+            {{ saving ? (editingModelID && !creationRoute ? 'Saving changes…' : 'Connecting model…') : requireConnectionTest ? 'Save and finish' : (editingModelID && !creationRoute ? 'Save changes' : 'Connect model') }}
           </button>
         </footer>
       </form>

@@ -19,6 +19,9 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,6 +30,104 @@ import (
 	einoschema "github.com/cloudwego/eino/schema"
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
+
+func TestVerifyProjectLLMConnectionCallsConfiguredModel(t *testing.T) {
+	var sawRequest bool
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("request path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q, want bearer credential", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		if !strings.Contains(string(body), "Reply with OK") {
+			t.Errorf("request body did not contain connection prompt: %s", body)
+		}
+		sawRequest = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"connection-test","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`)
+	}))
+	defer provider.Close()
+
+	err := verifyProjectLLMConnection(context.Background(), projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  provider.URL + "/v1",
+		Model:    "test-model",
+		APIKey:   "test-key",
+	})
+	if err != nil {
+		t.Fatalf("verifyProjectLLMConnection returned error: %v", err)
+	}
+	if !sawRequest {
+		t.Fatal("configured model was not called")
+	}
+}
+
+func TestVerifyProjectLLMConnectionClassifiesProviderRejection(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`)
+	}))
+	defer provider.Close()
+
+	err := verifyProjectLLMConnection(context.Background(), projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  provider.URL + "/v1",
+		Model:    "test-model",
+		APIKey:   "invalid-key",
+	})
+	var connectionErr *projectLLMConnectionTestError
+	if !errors.As(err, &connectionErr) {
+		t.Fatalf("verifyProjectLLMConnection error = %T %v, want projectLLMConnectionTestError", err, err)
+	}
+	if connectionErr.Kind != projectLLMConnectionTestRejected {
+		t.Fatalf("connection error kind = %q, want %q", connectionErr.Kind, projectLLMConnectionTestRejected)
+	}
+}
+
+func TestVerifyProjectLLMConnectionClassifiesTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	err := classifyProjectLLMConnectionTestError(ctx, context.DeadlineExceeded)
+	var connectionErr *projectLLMConnectionTestError
+	if !errors.As(err, &connectionErr) {
+		t.Fatalf("verifyProjectLLMConnection error = %T %v, want projectLLMConnectionTestError", err, err)
+	}
+	if connectionErr.Kind != projectLLMConnectionTestTimeout {
+		t.Fatalf("connection error kind = %q, want %q", connectionErr.Kind, projectLLMConnectionTestTimeout)
+	}
+}
+
+func TestWriteProjectLLMConnectionTestErrorUsesActionableStatuses(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       projectLLMConnectionTestErrorKind
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "rejected", kind: projectLLMConnectionTestRejected, wantStatus: http.StatusUnprocessableEntity, wantBody: "InvalidConnection"},
+		{name: "upstream", kind: projectLLMConnectionTestUpstream, wantStatus: http.StatusBadGateway, wantBody: "BadGateway"},
+		{name: "timeout", kind: projectLLMConnectionTestTimeout, wantStatus: http.StatusGatewayTimeout, wantBody: "Model connection test timed out"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writeProjectLLMConnectionTestError(recorder, &projectLLMConnectionTestError{Kind: tt.kind, Err: errors.New("provider failure")})
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, tt.wantStatus)
+			}
+			if !strings.Contains(recorder.Body.String(), tt.wantBody) {
+				t.Fatalf("body = %s, want %q", recorder.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
 
 func TestProjectToolCallTerminalStatusPreservesCanceledSpellings(t *testing.T) {
 	for _, spelling := range []string{"canceled", "cancelled"} {

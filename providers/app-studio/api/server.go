@@ -276,6 +276,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/llm-settings/models/discover", s.discoverProjectLLMModels).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/llm-settings/test", s.testProjectLLMConnection).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings/models", s.createProjectLLMModel).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.patchProjectLLMModel).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.deleteProjectLLMModel).Methods(http.MethodDelete)

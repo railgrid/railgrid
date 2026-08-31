@@ -18,7 +18,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -88,9 +87,22 @@ type ProjectCreateReadinessView struct {
 
 type ProjectCreateGitConnectionReadiness struct {
 	Ready         bool   `json:"ready"`
+	Status        string `json:"status"`
 	ConnectionRef string `json:"connectionRef,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
+
+const (
+	projectCreateGitStatusReady             = "ready"
+	projectCreateGitStatusProviderMissing   = "provider-missing"
+	projectCreateGitStatusConnectionMissing = "connection-missing"
+	projectCreateGitStatusValidating        = "validating"
+	projectCreateGitStatusFailed            = "failed"
+
+	codeConnectionReasonCredentialUnavailable = "CredentialUnavailable"
+	codeConnectionReasonProviderNotFound      = "ProviderNotFound"
+	codeConnectionReasonValidationFailed      = "ValidationFailed"
+)
 
 type codeResourceGetter func(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error)
 type codeResourceLister func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
@@ -213,25 +225,61 @@ func repositoryAdopted(repo *unstructured.Unstructured) bool {
 }
 
 func projectCreateReadiness(ctx context.Context, c *asclient.Client) (ProjectCreateReadinessView, error) {
-	connectionRef, err := selectCodeConnection(ctx, c, "")
+	gitConnection, err := inspectCodeConnectionReadiness(ctx, c)
 	if err != nil {
-		var validationErr *ValidationError
-		if errors.As(err, &validationErr) {
-			return ProjectCreateReadinessView{
-				GitConnection: ProjectCreateGitConnectionReadiness{
-					Ready:   false,
-					Message: err.Error(),
-				},
-			}, nil
-		}
 		return ProjectCreateReadinessView{}, err
 	}
-	return ProjectCreateReadinessView{
-		GitConnection: ProjectCreateGitConnectionReadiness{
-			Ready:         true,
-			ConnectionRef: connectionRef,
-		},
-	}, nil
+	return ProjectCreateReadinessView{GitConnection: gitConnection}, nil
+}
+
+func inspectCodeConnectionReadiness(ctx context.Context, c *asclient.Client) (ProjectCreateGitConnectionReadiness, error) {
+	list, err := c.Resource(codeConnectionResource, "").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if codeProviderResourceMissing(err) {
+			return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusProviderMissing, Message: "Enable the Code provider before creating App Studio projects"}, nil
+		}
+		return ProjectCreateGitConnectionReadiness{}, fmt.Errorf("list Code connections: %w", err)
+	}
+	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].GetName() < list.Items[j].GetName() })
+	for i := range list.Items {
+		if unstructuredConditionTrue(&list.Items[i], codeConditionValidated) {
+			return ProjectCreateGitConnectionReadiness{Ready: true, Status: projectCreateGitStatusReady, ConnectionRef: list.Items[i].GetName()}, nil
+		}
+	}
+	if len(list.Items) == 0 {
+		return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusConnectionMissing, Message: "You need to connect to a Git account before you can continue"}, nil
+	}
+	var firstFailure *ProjectCreateGitConnectionReadiness
+	hasPending := false
+	for i := range list.Items {
+		status, reason, message, found := unstructuredCondition(&list.Items[i], codeConditionValidated)
+		observedGeneration, observed, _ := unstructured.NestedInt64(list.Items[i].Object, "status", "observedGeneration")
+		if !found || status != string(metav1.ConditionFalse) || !observed || observedGeneration < list.Items[i].GetGeneration() {
+			hasPending = true
+			continue
+		}
+		switch reason {
+		case codeConnectionReasonProviderNotFound, codeConnectionReasonValidationFailed:
+			if firstFailure == nil {
+				if strings.TrimSpace(message) == "" {
+					message = "The Git connection could not be validated. Review its credential and try again."
+				}
+				firstFailure = &ProjectCreateGitConnectionReadiness{
+					Status:        projectCreateGitStatusFailed,
+					ConnectionRef: list.Items[i].GetName(),
+					Message:       message,
+				}
+			}
+		case codeConnectionReasonCredentialUnavailable:
+			hasPending = true
+		default:
+			hasPending = true
+		}
+	}
+	if firstFailure != nil && !hasPending {
+		return *firstFailure, nil
+	}
+	return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusValidating, Message: "Your Git connection is still validating"}, nil
 }
 
 func selectCodeConnection(ctx context.Context, c *asclient.Client, requested string) (string, error) {
@@ -246,22 +294,14 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		return requested, nil
 	}
 
-	list, err := c.Resource(codeConnectionResource, "").List(ctx, metav1.ListOptions{})
+	readiness, err := inspectCodeConnectionReadiness(ctx, c)
 	if err != nil {
-		return "", codeProviderRequestError("list Code connections", err)
+		return "", err
 	}
-	sort.Slice(list.Items, func(i, j int) bool {
-		return list.Items[i].GetName() < list.Items[j].GetName()
-	})
-	for i := range list.Items {
-		if unstructuredConditionTrue(&list.Items[i], codeConditionValidated) {
-			return list.Items[i].GetName(), nil
-		}
+	if readiness.Ready {
+		return readiness.ConnectionRef, nil
 	}
-	if len(list.Items) == 0 {
-		return "", newValidationError("You need to connect to a Git account before you can continue")
-	}
-	return "", newValidationError("wait for a Code connection to validate before creating an App Studio project")
+	return "", newValidationError(readiness.Message)
 }
 
 func repositoryName(ctx context.Context, c *asclient.Client, requested, displayName string) (string, error) {
@@ -437,12 +477,19 @@ func codeProviderRequestError(op string, err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "server could not find the requested resource") ||
-		strings.Contains(msg, "the server doesn't have a resource type") {
+	if codeProviderResourceMissing(err) {
 		return newValidationError("enable the Code provider before creating App Studio projects")
 	}
 	return fmt.Errorf("%s: %w", op, err)
+}
+
+func codeProviderResourceMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "server could not find the requested resource") ||
+		strings.Contains(msg, "the server doesn't have a resource type")
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, condType string) bool {

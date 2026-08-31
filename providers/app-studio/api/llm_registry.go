@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -56,6 +57,13 @@ type ProjectLLMModelView struct {
 
 type CreateProjectLLMModelRequest struct {
 	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+	BaseURL  string `json:"baseURL,omitempty"`
+	Model    string `json:"model"`
+	APIKey   string `json:"apiKey"`
+}
+
+type TestProjectLLMConnectionRequest struct {
 	Provider string `json:"provider,omitempty"`
 	BaseURL  string `json:"baseURL,omitempty"`
 	Model    string `json:"model"`
@@ -519,6 +527,44 @@ func (s *Server) createProjectLLMModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, registry.view())
+}
+
+func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requireProjectClient(w, r); !ok {
+		return
+	}
+	var request TestProjectLLMConnectionRequest
+	if !decodeStrictJSON(w, r, &request) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := verifyProjectLLMConnection(ctx, projectLLMSettings{
+		Provider: request.Provider,
+		BaseURL:  request.BaseURL,
+		Model:    request.Model,
+		APIKey:   request.APIKey,
+	}); err != nil {
+		writeProjectLLMConnectionTestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func writeProjectLLMConnectionTestError(w http.ResponseWriter, err error) {
+	var connectionErr *projectLLMConnectionTestError
+	if !errors.As(err, &connectionErr) {
+		writeProjectError(w, err)
+		return
+	}
+	switch connectionErr.Kind {
+	case projectLLMConnectionTestRejected:
+		writeStatus(w, http.StatusUnprocessableEntity, "InvalidConnection", connectionErr.Error())
+	case projectLLMConnectionTestTimeout:
+		writeStatus(w, http.StatusGatewayTimeout, "GatewayTimeout", "Model connection test timed out before the provider responded.")
+	default:
+		writeStatus(w, http.StatusBadGateway, "BadGateway", connectionErr.Error())
+	}
 }
 
 func (s *Server) patchProjectLLMModel(w http.ResponseWriter, r *http.Request) {

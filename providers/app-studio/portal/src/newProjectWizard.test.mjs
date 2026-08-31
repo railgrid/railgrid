@@ -2,12 +2,15 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
+import vue from '@vitejs/plugin-vue'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
   appType: 'custom',
   cacheDir: '/tmp/faros-vite-new-project-wizard',
+  configFile: false,
+  plugins: [vue()],
   server: { middlewareMode: true, hmr: false },
 })
 const { default: NewProjectWizard } = await vite.ssrLoadModule('/src/NewProjectWizard.vue')
@@ -142,13 +145,13 @@ test('provider styles define their own spacing scale for standalone utility layo
 })
 
 test('App replaces the landing composer with the wizard and wires cancel to restore the exact prompt focus', () => {
-  const wizardBlock = appSource.match(/<template v-if="wizardOpen">[\s\S]*?<\/template>/)?.[0]
+  const wizardBlock = appSource.match(/<template v-else-if="wizardOpen">[\s\S]*?<\/template>/)?.[0]
   assert.ok(wizardBlock, 'wizard must occupy the landing surface when open')
   assert.match(wizardBlock, /<NewProjectWizard/)
   assert.match(wizardBlock, /:initial-prompt="prompt"/)
   assert.match(wizardBlock, /@cancel="onWizardCancel"/)
   assert.match(appSource, /<template v-else>\s*<div[\s\S]*?<form[\s\S]*v-if="!wizardOpen"/)
-  assert.match(appSource, /:class="wizardOpen \? 'items-start' : 'items-center'"/)
+  assert.match(appSource, /:class="wizardOpen \|\| firstTimeSetupVisible \? 'items-start' : 'items-center'"/)
 
   const cancelFunction = appSource.match(/async function onWizardCancel\(\) \{([\s\S]*?)\n\}/)?.[1]
   assert.ok(cancelFunction, 'cancel handler must remain explicit')
