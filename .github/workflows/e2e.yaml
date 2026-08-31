@@ -42,7 +42,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       # These suites build the provider binaries and assert on their behaviour,
       # so they must exercise THIS commit's provider-sdk, not the last published
@@ -80,7 +80,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -148,7 +148,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -208,7 +208,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -279,7 +279,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -351,7 +351,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: go.mod
 
       - name: Install kind
         uses: helm/kind-action@v1

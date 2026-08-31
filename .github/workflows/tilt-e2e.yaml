@@ -70,7 +70,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.26.1
+          go-version-file: faros/go.mod
           cache-dependency-path: faros/go.sum
 
       # Node + npm are needed by `make build-portal` (vite), which the Tilt
