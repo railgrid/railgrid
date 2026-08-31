@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { Copy, Check, Download, AlertTriangle, ExternalLink, ChevronRight } from 'lucide-vue-next'
+import { Copy, Check, Download, AlertTriangle, ExternalLink, ChevronRight, ArrowUpCircle } from 'lucide-vue-next'
 import type { OrgProviderRegistration } from '@/stores/orgProviders'
 
 // Renders the credential + Helm steps the hub generated for one self-hosted
@@ -21,6 +21,13 @@ const copied = ref<string | null>(null)
 const unresolvedValues = computed(
   () => props.registration.instructions?.values?.filter((v) => v.unresolved) ?? [],
 )
+
+// The hub decides whether an upgrade is due (installed vs. published chart
+// version); this component only needs the verdict plus the rendered command.
+const upgrade = computed(() => {
+  const step = props.registration.instructions?.upgrade
+  return props.registration.provider.upgradeAvailable && step ? step : null
+})
 
 // html: false is load-bearing, not a style choice. valuesDoc comes from a
 // CatalogEntry, and for an org-owned provider that entry is written by whoever
@@ -68,6 +75,48 @@ function downloadKubeconfig() {
 
 <template>
   <div class="space-y-4">
+    <!-- Upgrade, shown first and only when one is due. A running install needs
+         none of the steps below — the namespace, credential Secret, and values
+         all survive from the original install — so the one command is the whole
+         path, and burying it under the install steps would read as "reinstall". -->
+    <section
+      v-if="upgrade"
+      class="rounded-lg border border-accent/40 bg-accent/5 p-4"
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h4 class="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+            <ArrowUpCircle class="h-4 w-4 text-accent" :stroke-width="2" />
+            {{ upgrade.title }}
+            <span
+              v-if="registration.provider.installedChartVersion && registration.provider.availableChartVersion"
+              class="font-mono text-[10px] font-normal text-text-muted"
+            >
+              v{{ registration.provider.installedChartVersion }} &rarr;
+              v{{ registration.provider.availableChartVersion }}
+            </span>
+          </h4>
+          <p v-if="upgrade.description" class="mt-0.5 text-[11px] text-text-muted">{{ upgrade.description }}</p>
+        </div>
+        <button
+          type="button"
+          class="k-btn k-btn--ghost inline-flex flex-shrink-0 items-center gap-1 px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent"
+          @click="copy('upgrade', upgrade.command)"
+        >
+          <component :is="copied === 'upgrade' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+          Copy
+        </button>
+      </div>
+      <pre
+        class="mt-3 overflow-x-auto rounded-md border border-border-subtle bg-surface-base p-3 font-mono text-[10px] leading-relaxed text-text-secondary"
+      >{{ upgrade.command }}</pre>
+      <p class="mt-2 text-[11px] text-text-muted">
+        To change values at the same time, add <code class="font-mono text-text-secondary">--set</code> flags
+        (or a values file) to this command — see the chart values reference below. The install
+        steps that follow are for a fresh install and are not part of an upgrade.
+      </p>
+    </section>
+
     <!-- Credential. Step 1 of the flow even though the commands come after:
          nothing else works without the file on disk. -->
     <section class="rounded-lg border border-border-subtle bg-surface-overlay/60 p-4">

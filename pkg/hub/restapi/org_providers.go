@@ -177,6 +177,19 @@ type OrgProviderView struct {
 	Version       string `json:"version,omitempty"`
 	APIExportName string `json:"apiExportName,omitempty"`
 	Ready         bool   `json:"ready"`
+
+	// InstalledChartVersion is the Helm chart version the Org's copy is running,
+	// read from the selfHosting recipe its chart registered — the chart stamps
+	// its own version there, so this tracks what was actually installed.
+	InstalledChartVersion string `json:"installedChartVersion,omitempty"`
+	// AvailableChartVersion is the chart version the platform's copy of the same
+	// provider currently publishes — what an upgrade would move to. Empty when
+	// the provider has no platform counterpart (an Org-authored provider).
+	AvailableChartVersion string `json:"availableChartVersion,omitempty"`
+	// UpgradeAvailable is true when the installed and available versions are
+	// both known and differ. The hub owns the comparison so the portal cannot
+	// drift from however "needs an upgrade" is defined later.
+	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`
 }
 
 // RegisterOrgProviderResponse carries the install credential back exactly once
@@ -621,6 +634,21 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 	view.Version = prov.Version
 	view.APIExportName = prov.APIExportName
 	view.Ready = prov.Ready()
+
+	// Upgrade signal: what the Org's chart stamped into its own recipe versus
+	// what the platform's copy of the same provider publishes now. Get (not
+	// GetForOrg) is deliberate — the Org's copy shadows the platform one in
+	// org-scoped resolution, and the platform entry is exactly the thing being
+	// compared against.
+	if prov.SelfHosting != nil {
+		view.InstalledChartVersion = prov.SelfHosting.ChartVersion
+	}
+	if platform, ok := h.mgr.providers.Get(ws.Name); ok && platform.SelfHosting.Installable() {
+		view.AvailableChartVersion = platform.SelfHosting.ChartVersion
+	}
+	view.UpgradeAvailable = view.InstalledChartVersion != "" &&
+		view.AvailableChartVersion != "" &&
+		view.InstalledChartVersion != view.AvailableChartVersion
 	return view
 }
 

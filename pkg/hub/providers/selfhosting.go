@@ -86,10 +86,15 @@ type InstallInstructions struct {
 	ChartVersion  string `json:"chartVersion,omitempty"`
 	// KubeconfigFilename is what the instructions assume the credential was
 	// saved as, relative to the working directory.
-	KubeconfigFilename string          `json:"kubeconfigFilename"`
-	Steps              []InstallStep   `json:"steps"`
-	Values             []ResolvedValue `json:"values,omitempty"`
-	DocsURL            string          `json:"docsURL,omitempty"`
+	KubeconfigFilename string        `json:"kubeconfigFilename"`
+	Steps              []InstallStep `json:"steps"`
+	// Upgrade is the single command that moves an already-installed copy to
+	// ChartVersion while keeping the values the release was installed with.
+	// Rendered separately from Steps because an upgrade needs none of them:
+	// the namespace, Secret, and values all survive from the original install.
+	Upgrade *InstallStep    `json:"upgrade,omitempty"`
+	Values  []ResolvedValue `json:"values,omitempty"`
+	DocsURL string          `json:"docsURL,omitempty"`
 	// ValuesDoc is the chart's values reference in Markdown, carried inline by
 	// the provider so the portal can render it without leaving the install
 	// panel and without reaching the internet.
@@ -316,6 +321,25 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 				"use needs cluster-admin in the target cluster.",
 			Command: helm.String(),
 		},
+	}
+
+	// The upgrade path deliberately does not repeat the --set flags:
+	// --reuse-values carries forward whatever the release was actually
+	// installed with, including anything the operator set by hand that these
+	// instructions never knew about. Re-listing values here would clobber
+	// those local edits with the hub's current defaults.
+	upgrade := &strings.Builder{}
+	fmt.Fprintf(upgrade, "helm upgrade %s %s", release, chartRef)
+	if out.ChartVersion != "" {
+		fmt.Fprintf(upgrade, " --version %s", out.ChartVersion)
+	}
+	fmt.Fprintf(upgrade, " \\\n  --namespace %s \\\n  --reuse-values", namespace)
+	out.Upgrade = &InstallStep{
+		Title: "Upgrade the provider",
+		Description: "For an existing install only. --reuse-values keeps the values the release was " +
+			"installed with — including any you set by hand — and the namespace and credential Secret " +
+			"stay as they are. Run it with the same cluster credentials as the install.",
+		Command: upgrade.String(),
 	}
 	return out
 }

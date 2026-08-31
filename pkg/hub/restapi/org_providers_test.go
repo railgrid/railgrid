@@ -22,6 +22,7 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/hub/tenant"
 	"github.com/faroshq/faros/pkg/kcppaths"
 )
@@ -32,6 +33,9 @@ import (
 // refused install from leaving a live credential behind.
 type fakeOrgProviderOps struct {
 	targets []kcp.EdgeInstallTarget
+	// workspaces is what ListOrgProviderWorkspaces returns — the providers the
+	// org already registered.
+	workspaces []kcp.OrgProviderWorkspace
 	// registered records EnsureOrgProviderWorkspace calls.
 	registered []string
 	// recordedEdges maps "org/provider" → "workspace/edge" as stamped by
@@ -55,7 +59,7 @@ func (f *fakeOrgProviderOps) EnsureOrgProviderWorkspace(_ context.Context, _, na
 }
 
 func (f *fakeOrgProviderOps) ListOrgProviderWorkspaces(context.Context, string) ([]kcp.OrgProviderWorkspace, error) {
-	return nil, nil
+	return f.workspaces, nil
 }
 
 func (f *fakeOrgProviderOps) GetOrgProviderWorkspace(context.Context, string, string) (*kcp.OrgProviderWorkspace, error) {
@@ -377,6 +381,89 @@ func TestListWorkspaces_ExcludesOrgProvidersContainer(t *testing.T) {
 		if ws.UUID == kcppaths.OrgProvidersWorkspaceName {
 			t.Fatalf("workspace list leaked the org-providers container: %+v", got.Items)
 		}
+	}
+}
+
+// The upgrade signal compares the chart version the Org's copy registered (its
+// chart stamps its own version into its CatalogEntry recipe) against the chart
+// version the platform's copy publishes now. The hub owns the comparison so the
+// portal only renders the verdict.
+func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
+	selfHosting := func(chartVersion string) *providers.SelfHosting {
+		return &providers.SelfHosting{
+			Supported:    true,
+			ChartRepo:    "oci://ghcr.io/faroshq/charts",
+			ChartName:    "faros-edges-provider",
+			ChartVersion: chartVersion,
+		}
+	}
+	for _, tc := range []struct {
+		name          string
+		installed     string
+		platform      string
+		wantUpgrade   bool
+		wantAvailable string
+	}{
+		{name: "behind the platform", installed: "0.5.0", platform: "0.6.0", wantUpgrade: true, wantAvailable: "0.6.0"},
+		{name: "up to date", installed: "0.6.0", platform: "0.6.0", wantUpgrade: false, wantAvailable: "0.6.0"},
+		{name: "no platform counterpart", installed: "0.5.0", platform: "", wantUpgrade: false, wantAvailable: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{
+				ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+				Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+			}
+			alice := &tenancyv1alpha1.User{
+				ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+				Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+			}
+			mgr, _, _ := newTestManager(t, org, alice)
+			mgr.WithOrgProviders(&fakeOrgProviderOps{
+				workspaces: []kcp.OrgProviderWorkspace{{Name: "edges", Cluster: "cl-1", Phase: "Ready"}},
+			}, &fakeCredMinter{})
+
+			registry := providers.NewRegistry()
+			registry.Upsert(providers.Provider{
+				Name: "edges", OrgUUID: "org-a", Version: "1.2.0",
+				EndpointsValid: true, SelfHosting: selfHosting(tc.installed),
+			})
+			if tc.platform != "" {
+				registry.Upsert(providers.Provider{
+					Name: "edges", Version: "1.3.0",
+					EndpointsValid: true, SelfHosting: selfHosting(tc.platform),
+				})
+			}
+			mgr.WithProviderRegistry(registry)
+
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + "/api/orgs/org-a/providers")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: got %d, want 200", resp.StatusCode)
+			}
+			var got ListResponse[OrgProviderView]
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(got.Items) != 1 {
+				t.Fatalf("items: got %d, want 1 (%+v)", len(got.Items), got.Items)
+			}
+			view := got.Items[0]
+			if view.UpgradeAvailable != tc.wantUpgrade {
+				t.Errorf("upgradeAvailable: got %v, want %v (%+v)", view.UpgradeAvailable, tc.wantUpgrade, view)
+			}
+			if view.InstalledChartVersion != tc.installed {
+				t.Errorf("installedChartVersion: got %q, want %q", view.InstalledChartVersion, tc.installed)
+			}
+			if view.AvailableChartVersion != tc.wantAvailable {
+				t.Errorf("availableChartVersion: got %q, want %q", view.AvailableChartVersion, tc.wantAvailable)
+			}
+		})
 	}
 }
 

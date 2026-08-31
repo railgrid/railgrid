@@ -7,7 +7,7 @@ import { confirmDialog } from '@/portalkit/confirm'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
-import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
+import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
@@ -432,11 +432,12 @@ function dependencyNotice(p: ProviderDTO): string {
           <div class="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 class="text-base font-semibold text-text-primary">
-                Install {{ activeRegistration.provider.name }}
+                {{ activeRegistration.provider.upgradeAvailable ? 'Upgrade' : 'Install' }}
+                {{ activeRegistration.provider.name }}
               </h2>
               <p class="mt-0.5 text-[11px] text-text-muted">
-                Run these in the cluster where you want
-                {{ activeRegistration.provider.name }} to run.
+                Run these in the cluster where
+                {{ activeRegistration.provider.upgradeAvailable ? `${activeRegistration.provider.name} is running` : `you want ${activeRegistration.provider.name} to run` }}.
               </p>
             </div>
             <button
@@ -480,9 +481,17 @@ function dependencyNotice(p: ProviderDTO): string {
                   >
                     {{ p.registered ? 'Installed' : 'Awaiting install' }}
                   </span>
+                  <span
+                    v-if="p.upgradeAvailable"
+                    class="rounded-sm border border-warning/30 bg-warning-subtle px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning"
+                  >
+                    Update available
+                  </span>
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
-                  {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span>
+                  {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span><span
+                    v-if="p.upgradeAvailable && p.installedChartVersion && p.availableChartVersion"
+                  > · chart v{{ p.installedChartVersion }} &rarr; v{{ p.availableChartVersion }}</span>
                 </p>
                 <!-- The gap between "workspace exists" and "chart installed" is
                      where a half-finished install sits; say so explicitly. -->
@@ -490,8 +499,25 @@ function dependencyNotice(p: ProviderDTO): string {
                   The workspace is ready but the provider has not registered itself yet.
                   Run the install steps, then this flips to Installed.
                 </p>
+                <p v-else-if="p.upgradeAvailable" class="mt-1 text-[11px] text-text-muted">
+                  A newer chart is published. Upgrade shows one command that keeps the
+                  Helm values you installed with.
+                </p>
               </div>
               <div class="flex items-center gap-2">
+                <!-- Upgrade opens the same instructions panel; the panel leads
+                     with the upgrade command when the hub says one is due. -->
+                <button
+                  v-if="p.upgradeAvailable"
+                  type="button"
+                  class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:opacity-60"
+                  :disabled="!!selfHostBusy[p.name]"
+                  @click="showInstructions(p.name)"
+                >
+                  <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                  <ArrowUpCircle v-else class="h-3 w-3" :stroke-width="2" />
+                  Upgrade
+                </button>
                 <button
                   type="button"
                   class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-60"

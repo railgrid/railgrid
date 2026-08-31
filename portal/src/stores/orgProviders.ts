@@ -34,6 +34,9 @@ export interface InstallInstructions {
   chartVersion?: string
   kubeconfigFilename: string
   steps: InstallStep[]
+  // One command that moves an existing install to chartVersion while keeping
+  // the values it was installed with (helm --reuse-values).
+  upgrade?: InstallStep
   values?: ResolvedValue[]
   docsURL?: string
   // The chart's values reference in Markdown, carried inline by the provider so
@@ -56,6 +59,12 @@ export interface OrgProvider {
   version?: string
   apiExportName?: string
   ready: boolean
+  // Chart version the org's copy is running vs. what the platform's copy of
+  // the same provider publishes now. The hub owns the comparison; the UI only
+  // renders upgradeAvailable.
+  installedChartVersion?: string
+  availableChartVersion?: string
+  upgradeAvailable?: boolean
 }
 
 // Registration is the credential plus the steps that use it. The credential is

@@ -73,6 +73,36 @@ func TestRenderInstallInstructions(t *testing.T) {
 	}
 }
 
+func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
+	got := RenderInstallInstructions(baseSelfHosting(), baseOptions())
+
+	if got.Upgrade == nil {
+		t.Fatal("want an upgrade step, got nil")
+	}
+	cmd := got.Upgrade.Command
+	for _, want := range []string{
+		"helm upgrade quickstart oci://ghcr.io/faroshq/charts/faros-quickstart-provider",
+		"--version 0.1.4",
+		"--namespace faros-provider-quickstart",
+		"--reuse-values",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("upgrade command missing %q\ngot:\n%s", want, cmd)
+		}
+	}
+	// --install would create a release where none exists; the upgrade path is
+	// for an existing install only, and a typo'd release name should fail loudly
+	// rather than quietly install a second copy with no values.
+	if strings.Contains(cmd, "--install") {
+		t.Errorf("upgrade command must not carry --install:\n%s", cmd)
+	}
+	// --set flags would clobber values the operator changed by hand since the
+	// install; --reuse-values is the whole point of the separate command.
+	if strings.Contains(cmd, "--set") {
+		t.Errorf("upgrade command must not carry --set flags:\n%s", cmd)
+	}
+}
+
 func TestRenderInstallInstructionsResolvesIdentityHash(t *testing.T) {
 	sh := baseSelfHosting()
 	sh.RequiredValues = []SelfHostingValue{
