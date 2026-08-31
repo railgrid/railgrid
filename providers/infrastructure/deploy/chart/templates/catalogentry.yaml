@@ -96,7 +96,7 @@ data:
             builtinRoute: instances
       backend:
         url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/healthz"
+        healthPath: "/readyz"
       # Reference-only. The APIExport + its dynamically-generated schemas + the bind
       # grant are created by this chart's init container (provider `init`); the hub
       # no longer provisions.

@@ -39,6 +39,8 @@ type Deps struct {
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
 	OAuth            OAuthMounter // /oauth/github/* connect flow; may be nil
+	// Readiness serves /readyz. Nil omits the route.
+	Readiness http.Handler
 }
 
 // Server is the wired-up HTTP server.
@@ -51,6 +53,12 @@ func New(d Deps) *Server {
 	s := &Server{mux: http.NewServeMux()}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
+	// Readiness is separate from liveness on purpose: a provider that cannot
+	// reach its virtual workspace still serves this API and still reconciles
+	// its own workspace, so restarting it would remove the work it is doing.
+	if d.Readiness != nil {
+		s.mux.Handle("/readyz", d.Readiness)
+	}
 
 	if d.MCP != nil {
 		s.mux.Handle("/mcp", d.MCP)

@@ -37,6 +37,9 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	"github.com/faroshq/provider-sdk/vwhealth"
+
+	"github.com/faroshq/provider-infrastructure/install"
 	"github.com/faroshq/provider-infrastructure/mcpserver"
 	"github.com/faroshq/provider-infrastructure/server"
 	"github.com/faroshq/provider-infrastructure/tenant"
@@ -155,6 +158,12 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		log.Fatalf("portal embed: %v", err)
 	}
 
+	// Report virtual-workspace reachability as readiness. Started before the
+	// server so /readyz answers from a real probe rather than a default as soon
+	// as it is reachable.
+	vwState := &vwhealth.Readiness{}
+	go vwhealth.Watch(ctx, kcpConfig, install.APIExportName, vwState, vwhealth.DefaultInterval)
+
 	srv := server.New(server.Deps{
 		MCP:              mcpHandler,
 		DataPlane:        dataPlaneHandler,
@@ -162,6 +171,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,
+		Readiness:        vwState.Check,
 	})
 
 	httpSrv := &http.Server{

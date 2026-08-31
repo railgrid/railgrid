@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/faroshq/provider-sdk/vwhealth"
 	"log"
 	"net/http"
 	"os"
@@ -93,6 +94,12 @@ func runServe() {
 	// host + TLS (every tenant request authenticates with the CALLER's own
 	// bearer token). nil config => REST/MCP-only dev.
 	kcpConfig, kcpErr := loadControllerConfig()
+
+	// Reachability of the APIExport virtual workspace, reported as readiness.
+	// A provider that cannot reach it keeps serving and keeps reconciling its
+	// own workspace, and silently does nothing in tenant workspaces — see
+	// provider-sdk/vwhealth.
+	vwState := &vwhealth.Readiness{}
 	if kcpErr != nil {
 		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
 	}
@@ -142,6 +149,7 @@ func runServe() {
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,
+		Readiness:        vwhealth.Handler(vwState),
 		OAuth:            oauthHandler,
 	})
 
@@ -152,6 +160,7 @@ func runServe() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	go vwhealth.Watch(ctx, kcpConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
 	defer stop()
 
 	go func() {

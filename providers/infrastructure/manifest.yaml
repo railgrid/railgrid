@@ -84,7 +84,7 @@ spec:
         builtinRoute: instances
   backend:
     url: "http://localhost:8082"
-    healthPath: "/healthz"
+    healthPath: "/readyz"
   apiExport:
     name: "infrastructure.providers.faros.sh"
     # secrets get/list/watch with tenantScoped: true is what lets the

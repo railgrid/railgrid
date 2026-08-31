@@ -36,12 +36,23 @@ type Deps struct {
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
+
+	// Readiness reports why the provider cannot do its job, or nil when it
+	// can. Nil func means "always ready", which is what a provider with
+	// nothing to check should pass.
+	//
+	// Deliberately separate from /healthz: liveness must stay unconditional.
+	// A provider whose virtual workspace is unreachable still serves its API
+	// and still reconciles Templates, so failing liveness would crash-loop a
+	// process that is doing most of its work.
+	Readiness func() error
 }
 
 // Server is the wired-up HTTP server. Implements http.Handler so
 // main() can install it under a net/http.Server directly.
 type Server struct {
-	mux *http.ServeMux
+	mux       *http.ServeMux
+	readiness func() error
 }
 
 // New composes the mux. Route order: /healthz first, then /mcp +
@@ -51,10 +62,12 @@ type Server struct {
 // wins for path patterns, so this order is illustrative — not load-bearing.
 func New(d Deps) *Server {
 	s := &Server{
-		mux: http.NewServeMux(),
+		mux:       http.NewServeMux(),
+		readiness: d.Readiness,
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
+	s.mux.HandleFunc("/readyz", s.handleReadyz)
 
 	// Templates + instances are NOT served here: the portal and tenants
 	// read/write them as CRDs directly against kcp (projected via the
@@ -106,5 +119,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleReadyz reports whether the provider can actually do its job, as opposed
+// to merely being alive. 503 with the reason in the body, so whatever reads it —
+// the hub's backend health check, a kubelet probe, a human with curl — gets the
+// same explanation.
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.readiness != nil {
+		if err := s.readiness(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "unready", "reason": err.Error()})
+			return
+		}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

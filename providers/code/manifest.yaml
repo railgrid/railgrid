@@ -37,7 +37,7 @@ spec:
         builtinRoute: packages
   backend:
     url: "http://localhost:8083"
-    healthPath: "/healthz"
+    healthPath: "/readyz"
   apiExport:
     name: "code.providers.faros.sh"
     # The controllers read each Connection's PAT Secret AND write the generated
