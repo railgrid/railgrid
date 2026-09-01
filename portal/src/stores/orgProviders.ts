@@ -59,11 +59,12 @@ export interface OrgProvider {
   version?: string
   apiExportName?: string
   ready: boolean
-  // Chart version the org's copy is running vs. what the platform's copy of
-  // the same provider publishes now. The hub owns the comparison; the UI only
-  // renders upgradeAvailable.
-  installedChartVersion?: string
-  availableChartVersion?: string
+  // What the org's copy runs vs. the baseline of what the platform's managed
+  // copy runs now (chart versions when both entries carry one, the entries'
+  // spec.version otherwise). The hub owns the comparison; the UI only renders
+  // upgradeAvailable.
+  installedVersion?: string
+  availableVersion?: string
   upgradeAvailable?: boolean
 }
 

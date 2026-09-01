@@ -384,10 +384,13 @@ func TestListWorkspaces_ExcludesOrgProvidersContainer(t *testing.T) {
 	}
 }
 
-// The upgrade signal compares the chart version the Org's copy registered (its
-// chart stamps its own version into its CatalogEntry recipe) against the chart
-// version the platform's copy publishes now. The hub owns the comparison so the
-// portal only renders the verdict.
+// The upgrade signal measures the Org's copy against the baseline of what the
+// platform ("managed") copy of the same provider runs now — BYO installs are
+// never upgraded automatically, so this verdict is the only thing telling an
+// Org its copy fell behind. Chart versions are compared when both entries carry
+// one; entries registered from an embedded manifest (the infrastructure
+// operator) have none, and fall back to the entries' spec.version. The hub owns
+// the comparison so the portal only renders the verdict.
 func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 	selfHosting := func(chartVersion string) *providers.SelfHosting {
 		return &providers.SelfHosting{
@@ -398,15 +401,48 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name          string
-		installed     string
-		platform      string
-		wantUpgrade   bool
-		wantAvailable string
+		name            string
+		orgChart        string
+		platformChart   string
+		orgVersion      string
+		platformVersion string
+		hasPlatform     bool
+		wantUpgrade     bool
+		wantInstalled   string
+		wantAvailable   string
 	}{
-		{name: "behind the platform", installed: "0.5.0", platform: "0.6.0", wantUpgrade: true, wantAvailable: "0.6.0"},
-		{name: "up to date", installed: "0.6.0", platform: "0.6.0", wantUpgrade: false, wantAvailable: "0.6.0"},
-		{name: "no platform counterpart", installed: "0.5.0", platform: "", wantUpgrade: false, wantAvailable: ""},
+		{
+			name: "behind the platform", hasPlatform: true,
+			orgChart: "0.5.0", platformChart: "0.6.0",
+			orgVersion: "1.2.0", platformVersion: "1.3.0",
+			wantUpgrade: true, wantInstalled: "0.5.0", wantAvailable: "0.6.0",
+		},
+		{
+			name: "up to date", hasPlatform: true,
+			orgChart: "0.6.0", platformChart: "0.6.0",
+			orgVersion: "1.3.0", platformVersion: "1.3.0",
+			wantUpgrade: false, wantInstalled: "0.6.0", wantAvailable: "0.6.0",
+		},
+		{
+			// The infrastructure-operator shape: registered from an embedded
+			// manifest, so no chart version on either side — spec.version is
+			// the only signal.
+			name: "manifest-registered falls back to spec.version", hasPlatform: true,
+			orgVersion: "v0.1.12", platformVersion: "v0.1.16",
+			wantUpgrade: true, wantInstalled: "v0.1.12", wantAvailable: "v0.1.16",
+		},
+		{
+			// Mixed metadata must not compare apples to oranges: the org copy
+			// carries a chart version, the platform entry does not.
+			name: "mixed chart metadata falls back to spec.version", hasPlatform: true,
+			orgChart:   "0.5.0",
+			orgVersion: "1.3.0", platformVersion: "1.3.0",
+			wantUpgrade: false, wantInstalled: "1.3.0", wantAvailable: "1.3.0",
+		},
+		{
+			name: "no platform counterpart", orgChart: "0.5.0", orgVersion: "1.2.0",
+			wantUpgrade: false, wantInstalled: "", wantAvailable: "",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			org := &tenancyv1alpha1.Organization{
@@ -424,13 +460,13 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 
 			registry := providers.NewRegistry()
 			registry.Upsert(providers.Provider{
-				Name: "edges", OrgUUID: "org-a", Version: "1.2.0",
-				EndpointsValid: true, SelfHosting: selfHosting(tc.installed),
+				Name: "edges", OrgUUID: "org-a", Version: tc.orgVersion,
+				EndpointsValid: true, SelfHosting: selfHosting(tc.orgChart),
 			})
-			if tc.platform != "" {
+			if tc.hasPlatform {
 				registry.Upsert(providers.Provider{
-					Name: "edges", Version: "1.3.0",
-					EndpointsValid: true, SelfHosting: selfHosting(tc.platform),
+					Name: "edges", Version: tc.platformVersion,
+					EndpointsValid: true, SelfHosting: selfHosting(tc.platformChart),
 				})
 			}
 			mgr.WithProviderRegistry(registry)
@@ -457,11 +493,11 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 			if view.UpgradeAvailable != tc.wantUpgrade {
 				t.Errorf("upgradeAvailable: got %v, want %v (%+v)", view.UpgradeAvailable, tc.wantUpgrade, view)
 			}
-			if view.InstalledChartVersion != tc.installed {
-				t.Errorf("installedChartVersion: got %q, want %q", view.InstalledChartVersion, tc.installed)
+			if view.InstalledVersion != tc.wantInstalled {
+				t.Errorf("installedVersion: got %q, want %q", view.InstalledVersion, tc.wantInstalled)
 			}
-			if view.AvailableChartVersion != tc.wantAvailable {
-				t.Errorf("availableChartVersion: got %q, want %q", view.AvailableChartVersion, tc.wantAvailable)
+			if view.AvailableVersion != tc.wantAvailable {
+				t.Errorf("availableVersion: got %q, want %q", view.AvailableVersion, tc.wantAvailable)
 			}
 		})
 	}

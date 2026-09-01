@@ -178,14 +178,16 @@ type OrgProviderView struct {
 	APIExportName string `json:"apiExportName,omitempty"`
 	Ready         bool   `json:"ready"`
 
-	// InstalledChartVersion is the Helm chart version the Org's copy is running,
-	// read from the selfHosting recipe its chart registered — the chart stamps
-	// its own version there, so this tracks what was actually installed.
-	InstalledChartVersion string `json:"installedChartVersion,omitempty"`
-	// AvailableChartVersion is the chart version the platform's copy of the same
-	// provider currently publishes — what an upgrade would move to. Empty when
-	// the provider has no platform counterpart (an Org-authored provider).
-	AvailableChartVersion string `json:"availableChartVersion,omitempty"`
+	// InstalledVersion is the version the Org's copy is running, and
+	// AvailableVersion is what the platform's copy of the same provider runs
+	// now — the pair the upgrade verdict compared. Chart versions from the
+	// selfHosting recipe when both sides carry one; otherwise the entries'
+	// spec.version, because not every provider stamps a chart version — the
+	// infrastructure operator registers from its embedded manifest, which has
+	// no chart to read one from. AvailableVersion is empty when the provider
+	// has no installable platform counterpart (an Org-authored provider).
+	InstalledVersion string `json:"installedVersion,omitempty"`
+	AvailableVersion string `json:"availableVersion,omitempty"`
 	// UpgradeAvailable is true when the installed and available versions are
 	// both known and differ. The hub owns the comparison so the portal cannot
 	// drift from however "needs an upgrade" is defined later.
@@ -635,20 +637,38 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 	view.APIExportName = prov.APIExportName
 	view.Ready = prov.Ready()
 
-	// Upgrade signal: what the Org's chart stamped into its own recipe versus
-	// what the platform's copy of the same provider publishes now. Get (not
-	// GetForOrg) is deliberate — the Org's copy shadows the platform one in
-	// org-scoped resolution, and the platform entry is exactly the thing being
-	// compared against.
+	// Upgrade signal: what the Org's copy registered versus what the platform's
+	// copy of the same provider runs now. Get (not GetForOrg) is deliberate —
+	// the Org's copy shadows the platform one in org-scoped resolution, and the
+	// platform entry is exactly the thing being compared against. Gated on the
+	// platform recipe being installable because that is also what makes the
+	// rendered upgrade command exist.
+	platform, ok := h.mgr.providers.Get(ws.Name)
+	if !ok || !platform.SelfHosting.Installable() {
+		return view
+	}
+	// Prefer chart versions (what `helm upgrade --version` actually moves), but
+	// only when BOTH entries carry one — comparing a chart version against a
+	// provider version is apples to oranges. Providers registered from an
+	// embedded manifest rather than the chart's own template (the
+	// infrastructure operator) carry no chart version at all, and for those the
+	// entries' spec.version is the only signal there is.
+	installed, available := "", ""
 	if prov.SelfHosting != nil {
-		view.InstalledChartVersion = prov.SelfHosting.ChartVersion
+		installed = prov.SelfHosting.ChartVersion
 	}
-	if platform, ok := h.mgr.providers.Get(ws.Name); ok && platform.SelfHosting.Installable() {
-		view.AvailableChartVersion = platform.SelfHosting.ChartVersion
+	if platform.SelfHosting != nil {
+		available = platform.SelfHosting.ChartVersion
 	}
-	view.UpgradeAvailable = view.InstalledChartVersion != "" &&
-		view.AvailableChartVersion != "" &&
-		view.InstalledChartVersion != view.AvailableChartVersion
+	if installed == "" || available == "" {
+		installed, available = prov.Version, platform.Version
+	}
+	if installed == "" || available == "" {
+		return view
+	}
+	view.InstalledVersion = installed
+	view.AvailableVersion = available
+	view.UpgradeAvailable = installed != available
 	return view
 }
 
