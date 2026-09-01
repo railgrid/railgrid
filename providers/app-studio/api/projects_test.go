@@ -47,6 +47,20 @@ func TestProjectInitialBootstrapPromptDigestDoesNotExposePrompt(t *testing.T) {
 	}
 }
 
+func TestProjectFinalizersForCreateRequireAttachmentStore(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
+	finalizers := server.projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"})
+	if len(finalizers) != 1 || finalizers[0] != store.AttachmentStorageFinalizer {
+		t.Fatalf("project creation finalizers = %v, want attachment cleanup finalizer", finalizers)
+	}
+	if got := (&Server{}).projectFinalizersForCreate(identity{orgUUID: "org", workspaceUUID: "workspace"}); len(got) != 0 {
+		t.Fatalf("project creation finalizers without attachment store = %v, want none", got)
+	}
+	if got := server.projectFinalizersForCreate(identity{orgUUID: "org"}); len(got) != 0 {
+		t.Fatalf("project creation finalizers without workspace scope = %v, want none", got)
+	}
+}
+
 func TestWriteProjectErrorMapsPreflightOutageToRetryableBadGateway(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeProjectError(recorder, fmt.Errorf("%w: upstream returned 500", errProjectCreatePreflightUnavailable))

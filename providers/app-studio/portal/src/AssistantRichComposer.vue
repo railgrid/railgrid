@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { FileText, Image, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
+import { api, isProjectAPINotFoundError } from './api'
 import AssistantCommandPalette from './AssistantCommandPalette.vue'
+import AssistantAttachmentPreview from './AssistantAttachmentPreview.vue'
+import AssistantAttachmentTextPreview from './AssistantAttachmentTextPreview.vue'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
 import {
   assistantComposerPlainContent,
@@ -12,8 +15,21 @@ import {
   type AssistantComposerState,
 } from './assistantCommandPalette'
 import { assistantResourceSelectionKey } from './assistantResources'
+import {
+  ASSISTANT_ATTACHMENT_ACCEPT,
+  ASSISTANT_LARGE_PASTE_BYTES,
+  assistantAttachmentIsImage,
+  assistantAttachmentValidationError,
+  assistantAttachmentIsSupported,
+  assistantAttachmentPart,
+  projectAssistantAttachmentReceipt,
+  type AssistantAttachmentStatus,
+} from './assistantAttachments'
+import { useDismissibleAddMenu } from './useDismissibleAddMenu'
+import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
 import type {
   FarosContext,
+  ProjectAssistantAttachmentReceipt,
   ProjectAssistantContentPart,
   ProjectAssistantContextResource,
   ProjectAssistantRunMode,
@@ -26,6 +42,7 @@ const MAX_CHIPS = 8
 const props = withDefaults(defineProps<{
   modelValue: string
   contentParts?: ProjectAssistantContentPart[]
+  projectName: string
   skills: ProjectAssistantSkill[]
   selectedSkills?: ProjectAssistantSkill[]
   selectedResources?: ProjectAssistantContextResource[]
@@ -56,15 +73,21 @@ const emit = defineEmits<{
   'update:contentParts': [value: ProjectAssistantContentPart[]]
   'update:selectedSkills': [value: ProjectAssistantSkill[]]
   'update:selectedResources': [value: ProjectAssistantContextResource[]]
+  'update:attachmentsPending': [value: boolean]
   state: [value: AssistantComposerState]
   submit: [value: AssistantComposerState, intent: 'queue' | 'steer']
   selectMode: [mode: ProjectAssistantRunMode]
 }>()
 
+const rootRef = ref<HTMLDivElement | null>(null)
+const addMenuRootRef = ref<HTMLDivElement | null>(null)
+const attachmentMenuTriggerRef = ref<HTMLButtonElement | null>(null)
 const editorRef = ref<HTMLDivElement | null>(null)
 const commandPaletteOpen = ref(false)
 const commandPaletteFromSlash = ref(false)
 const commandPaletteQuery = ref('')
+const attachmentMenuOpen = ref(false)
+const attachmentInputRef = ref<HTMLInputElement | null>(null)
 const composing = ref(false)
 const suppressNextInput = ref(false)
 const lastRenderedSignature = ref('')
@@ -74,9 +97,128 @@ const localParts = ref<ProjectAssistantContentPart[]>([])
 const localSkills = ref<ProjectAssistantSkill[]>([])
 const localResources = ref<ProjectAssistantContextResource[]>([])
 
+interface AssistantAttachmentChip {
+  clientID: string
+  file?: File
+  receipt?: ProjectAssistantAttachmentReceipt
+  /** Project that accepted the upload; cleanup must not follow a later route. */
+  projectName?: string
+  /** The accepted turn now owns this receipt; the composer must not delete it. */
+  committed?: boolean
+  status: AssistantAttachmentStatus
+  error?: string
+  retryAction?: 'upload' | 'delete'
+  controller?: AbortController
+}
+
+const attachmentChips = ref<AssistantAttachmentChip[]>([])
+
+const { waitForPicker, restorePickerFocus } = useAssistantFilePickerFocus(() => {
+  const editor = editorRef.value
+  if (editor && editor.contentEditable !== 'false') return editor
+  return attachmentMenuTriggerRef.value
+})
+
 const localAnnotations = computed(() => localParts.value
   .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
   .map((part) => part.annotation))
+
+const attachmentChipsPending = computed(() => attachmentChips.value.some((chip) => chip.status !== 'ready'))
+
+function attachmentLabel(chip: AssistantAttachmentChip): string {
+  return chip.receipt?.filename || chip.file?.name || 'attachment'
+}
+
+function attachmentCleanupIDs(chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt'>): string[] {
+  return [...new Set([chip.receipt?.id, chip.clientID].filter((id): id is string => Boolean(id?.trim())))]
+}
+
+/** Best-effort cleanup for cancelled or ambiguously failed draft uploads. */
+async function bestEffortDeleteAttachment(
+  chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt'>,
+  projectName: string,
+): Promise<void> {
+  if (!projectName) return
+  for (const attachmentID of attachmentCleanupIDs(chip)) {
+    try {
+      await api.deleteAssistantAttachment(props.ctx, projectName, attachmentID)
+    } catch {
+      // A 409 is expected when the receipt was bound by an accepted turn:
+      // bound attachment bytes are immutable. A 404 is expected when a draft
+      // already expired or was removed. Network failures are also swallowed;
+      // lifecycle cleanup must never replace a useful retry with an ambiguous
+      // error state.
+    }
+  }
+}
+
+/**
+ * Release browser-owned candidates without treating immutable receipts as a
+ * lifecycle failure. The project captured on each chip is authoritative when
+ * a route switch has already changed props.projectName.
+ */
+function cleanupAttachmentChips(chips: readonly AssistantAttachmentChip[], fallbackProjectName: string) {
+  for (const chip of chips) {
+    chip.controller?.abort()
+    // App commits receipts at the POST acceptance boundary before clearing its
+    // contentParts prop. They are no longer browser-owned, even if the server
+    // has not finished binding them when a route/unmount cleanup runs.
+    if (chip.committed) continue
+    if (chip.status === 'deleting') continue
+    void bestEffortDeleteAttachment(chip, chip.projectName || fallbackProjectName)
+  }
+}
+
+function isAttachmentAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === 'AbortError'
+    : error instanceof Error && error.name === 'AbortError'
+}
+
+function attachmentStatusLabel(chip: Pick<AssistantAttachmentChip, 'status' | 'retryAction'>): string {
+  if (chip.status === 'staged') return 'Ready to attach'
+  if (chip.status === 'uploading') return 'Uploading'
+  if (chip.status === 'deleting') return 'Removing'
+  if (chip.status === 'error') return chip.retryAction === 'delete' ? 'Removal failed' : chip.retryAction === 'upload' ? 'Upload failed' : 'Cannot attach'
+  return 'Ready'
+}
+
+useDismissibleAddMenu({
+  open: attachmentMenuOpen,
+  root: addMenuRootRef,
+  trigger: attachmentMenuTriggerRef,
+  onClose: closeAttachmentMenu,
+})
+
+function emitAttachmentPending() {
+  emit('update:attachmentsPending', attachmentChipsPending.value)
+}
+
+function reconcileAttachmentChips(parts: readonly ProjectAssistantContentPart[]) {
+  const receipts = parts
+    .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'attachment' }> => part.type === 'attachment')
+    .map((part) => part.attachment)
+  const receiptIDs = new Set(receipts.map((receipt) => receipt.id))
+  // `contentParts` can be cleared before the project watcher runs (for
+  // example, when accepted-submit state is reset). A receipt handed to an
+  // accepted turn is no longer browser-owned and must not be deleted while the
+  // server finishes binding it. Unsubmitted ready drafts still get a
+  // best-effort cleanup here before they leave the local chip set.
+  for (const chip of attachmentChips.value) {
+    if (chip.status === 'ready' && !chip.committed && chip.receipt && !receiptIDs.has(chip.receipt.id)) {
+      void bestEffortDeleteAttachment(chip, chip.projectName || props.projectName)
+    }
+  }
+  const retained = attachmentChips.value.filter((chip) => chip.status !== 'ready' || (chip.receipt && receiptIDs.has(chip.receipt.id)))
+  const knownIDs = new Set(retained.flatMap((chip) => chip.receipt ? [chip.receipt.id] : []))
+  for (const receipt of receipts) {
+    if (knownIDs.has(receipt.id)) continue
+    retained.push({ clientID: `receipt:${receipt.id}`, receipt, projectName: props.projectName, status: 'ready' })
+    knownIDs.add(receipt.id)
+  }
+  attachmentChips.value = retained
+  emitAttachmentPending()
+}
 
 const selectedSkillIDs = computed(() => localSkills.value.map((skill) => skill.id))
 
@@ -105,7 +247,7 @@ function normalizedParts(): ProjectAssistantContentPart[] {
   return props.modelValue ? [{ type: 'text', text: props.modelValue }] : []
 }
 
-function createChip(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' }>): HTMLSpanElement {
+function createChip(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' | 'attachment' }>): HTMLSpanElement {
   const chip = document.createElement('span')
   chip.dataset.assistantChip = chipKind(part)
   if (part.type === 'skill') chip.dataset.skillID = part.skillID
@@ -139,7 +281,12 @@ function renderParts(
   editor.replaceChildren()
   for (const part of parts) {
     if (part.type === 'text') editor.append(document.createTextNode(part.text))
-    else if (part.type !== 'annotation') editor.append(createChip(part))
+    // Attachment receipts render in the adjacent receipt row; only editable
+    // skill/resource parts become contenteditable chips. The old equivalent
+    // was: if (part.type !== 'annotation') editor.append(createChip(part))
+    else if (part.type !== 'annotation') {
+      if (part.type !== 'attachment') editor.append(createChip(part))
+    }
   }
   if (!editor.childNodes.length) editor.append(document.createTextNode(''))
   lastRenderedSignature.value = stateSignature(content, parts, skills, resources)
@@ -221,11 +368,13 @@ function partsFromDOM(): ProjectAssistantContentPart[] {
       }
     }
   }
-  // Preview annotations are attachments, not editable prose. Keep them out of
-  // the contenteditable DOM so caret movement and chip deletion remain
-  // predictable, then append their stable descriptors to the submitted turn.
+  // Preview annotations and uploaded receipts are attachments, not editable
+  // prose. Keep them out of the contenteditable DOM so caret movement and
+  // chip deletion remain predictable, then append stable descriptors to the
+  // submitted turn.
   for (const part of localParts.value) {
     if (part.type === 'annotation') append(part)
+    else if (part.type === 'attachment') append(part)
   }
   return parts
 }
@@ -275,7 +424,13 @@ function emitState(): AssistantComposerState {
   emit('update:contentParts', parts)
   emit('update:selectedSkills', [...localSkills.value])
   emit('update:selectedResources', [...localResources.value])
-  const state: AssistantComposerState = { content, contentParts: parts as AssistantComposerPart[], skills: [...localSkills.value], contextResources: [...localResources.value] }
+  const state: AssistantComposerState = {
+    content,
+    contentParts: parts as AssistantComposerPart[],
+    skills: [...localSkills.value],
+    contextResources: [...localResources.value],
+    attachmentsPending: attachmentChipsPending.value,
+  }
   emit('state', state)
   return state
 }
@@ -413,12 +568,260 @@ function closePalette(restoreFocus = true) {
   if (restoreFocus) focusEditor()
 }
 
+function closeAttachmentMenu() {
+  attachmentMenuOpen.value = false
+}
+
 function openPalette() {
   if (props.disabled || props.activeRun) return
+  closeAttachmentMenu()
   saveSelection()
   commandPaletteFromSlash.value = false
   commandPaletteQuery.value = ''
   commandPaletteOpen.value = true
+}
+
+function toggleAttachmentMenu() {
+  if (props.disabled || props.activeRun) return
+  closePalette(false)
+  attachmentMenuOpen.value = !attachmentMenuOpen.value
+}
+
+function openAttachmentPicker() {
+  if (props.disabled || props.activeRun) return
+  closeAttachmentMenu()
+  const input = attachmentInputRef.value
+  if (!input) return
+  input.value = ''
+  waitForPicker()
+  input.click()
+}
+
+function attachmentError(file: File, message: string): AssistantAttachmentChip {
+  return {
+    clientID: `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    file,
+    status: 'error',
+    error: message,
+  }
+}
+
+function appendAttachmentError(file: File, message: string) {
+  if (attachmentChips.value.length >= MAX_ASSISTANT_COMPOSER_PARTS) return
+  attachmentChips.value = [...attachmentChips.value, attachmentError(file, message)]
+  emitAttachmentPending()
+}
+
+async function uploadAttachment(file: File, existingClientID?: string, allowWhileInactive = false) {
+  // Capture the project before any await. A route switch can clear the chips
+  // and update props while the upload is in flight; cleanup must still target
+  // the project that accepted the original upload request.
+  const projectName = props.projectName
+  if ((props.disabled || props.activeRun) && !allowWhileInactive) return
+  if (!projectName.trim()) {
+    appendAttachmentError(file, 'Select a project before adding an attachment.')
+    return
+  }
+  if (!assistantAttachmentIsSupported(file)) {
+    appendAttachmentError(file, 'Only PNG, JPEG, WebP screenshots and .txt or .md files can be attached.')
+    return
+  }
+  const existingChip = existingClientID
+    ? attachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
+    : undefined
+  const clientID = existingClientID || `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  const validationCandidates = existingChip
+    ? attachmentChips.value.filter((candidate) => candidate.clientID !== existingClientID)
+    : attachmentChips.value
+  const sharedValidationError = assistantAttachmentValidationError(file, validationCandidates)
+  if (sharedValidationError) {
+    appendAttachmentError(file, sharedValidationError)
+    return
+  }
+  const unresolvedCount = attachmentChips.value.filter((candidate) => candidate.clientID !== clientID && candidate.status !== 'ready').length
+  if (localParts.value.length + unresolvedCount >= MAX_ASSISTANT_COMPOSER_PARTS) {
+    appendAttachmentError(file, `A turn can contain at most ${MAX_ASSISTANT_COMPOSER_PARTS} content parts.`)
+    return
+  }
+  const controller = new AbortController()
+  const chip: AssistantAttachmentChip = existingChip || { clientID, file, projectName, status: 'uploading', retryAction: 'upload', controller }
+  chip.file = file
+  chip.projectName = projectName
+  chip.committed = false
+  chip.status = 'uploading'
+  chip.error = undefined
+  chip.retryAction = 'upload'
+  chip.controller = controller
+  if (!existingChip) attachmentChips.value = [...attachmentChips.value, chip]
+  emitAttachmentPending()
+  try {
+    const receipt = projectAssistantAttachmentReceipt(await api.uploadAssistantAttachment(props.ctx, projectName, file, controller.signal, clientID))
+    if (!receipt) throw new Error('The attachment upload returned an invalid receipt.')
+    if (props.projectName !== projectName) {
+      void bestEffortDeleteAttachment({ ...chip, receipt }, projectName)
+      return
+    }
+    const current = attachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    if (!current) {
+      void bestEffortDeleteAttachment({ ...chip, receipt }, projectName)
+      return
+    }
+    current.receipt = receipt
+    current.status = 'ready'
+    current.controller = undefined
+    current.error = undefined
+    current.retryAction = undefined
+    localParts.value = [...localParts.value, assistantAttachmentPart(receipt)]
+    emitState()
+  } catch (error) {
+    const current = attachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    if (isAttachmentAbortError(error)) {
+      void bestEffortDeleteAttachment(chip, projectName)
+      if (current && props.projectName === projectName) {
+        current.status = 'staged'
+        current.controller = undefined
+        current.error = undefined
+        current.retryAction = undefined
+        emitAttachmentPending()
+      }
+      return
+    }
+    // Preserve the File candidate after an ambiguous response. The server may
+    // have created a draft even when the browser received an error.
+    void bestEffortDeleteAttachment(chip, projectName)
+    if (!current || props.projectName !== projectName) return
+    current.status = 'error'
+    current.controller = undefined
+    current.error = error instanceof Error ? error.message : 'Attachment upload failed.'
+    current.retryAction = 'upload'
+    emitAttachmentPending()
+  }
+}
+
+interface UnavailableAttachmentRecovery {
+  recovered: number
+  removed: number
+  unresolved: number
+}
+
+/**
+ * Replace precise server-rejected receipts with fresh uploads from the
+ * browser-owned File candidates. Receipt-only chips cannot be reconstructed,
+ * so they are removed and the parent leaves the authored prompt ready for an
+ * explicit reattach. This method intentionally does not submit a turn.
+ */
+async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Promise<UnavailableAttachmentRecovery> {
+  const requestedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  if (!requestedIDs.size) return { recovered: 0, removed: 0, unresolved: 0 }
+  const projectName = props.projectName
+  let recovered = 0
+  let removed = 0
+  let unresolved = 0
+
+  for (const chip of [...attachmentChips.value]) {
+    const receiptID = chip.receipt?.id.trim() || ''
+    if (!receiptID || !requestedIDs.has(receiptID)) continue
+    const previousReceiptID = receiptID
+    const replacementFile = chip.file
+    localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== previousReceiptID)
+    if (!replacementFile) {
+      attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+      removed += 1
+      emitState()
+      continue
+    }
+
+    chip.receipt = undefined
+    chip.status = 'staged'
+    chip.error = undefined
+    chip.retryAction = undefined
+    chip.controller = undefined
+    emitState()
+    await uploadAttachment(replacementFile, chip.clientID, true)
+    if (props.projectName !== projectName) return { recovered, removed, unresolved: unresolved + 1 }
+    const replacement = attachmentChips.value.find((candidate) => candidate.clientID === chip.clientID)
+    if (replacement?.status === 'ready' && replacement.receipt) recovered += 1
+    else unresolved += 1
+  }
+  return { recovered, removed, unresolved }
+}
+
+/**
+ * Transfer selected receipts to the accepted turn before the host clears its
+ * contentParts prop. This is intentionally an exposed imperative seam: the
+ * host's POST acceptance continuation is the only layer that knows when a
+ * submission crossed the durable boundary.
+ */
+function commitAttachments(receiptIDs: readonly string[]) {
+  const committedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  if (!committedIDs.size) return
+  for (const chip of attachmentChips.value) {
+    if (chip.status === 'ready' && chip.receipt && committedIDs.has(chip.receipt.id)) chip.committed = true
+  }
+}
+
+function handleAttachmentInput(event: Event) {
+  const input = event.target instanceof HTMLInputElement ? event.target : null
+  const files = input?.files ? Array.from(input.files) : []
+  void (async () => {
+    for (const file of files) await uploadAttachment(file)
+  })()
+  if (input) input.value = ''
+  restorePickerFocus()
+}
+
+function retryAttachment(chip: AssistantAttachmentChip) {
+  if (chip.status === 'uploading' || chip.status === 'deleting') return
+  if (!chip.retryAction) return
+  if (chip.retryAction === 'delete') {
+    void removeAttachment(chip)
+    return
+  }
+  if (!chip.file) return
+  // Keep the stable client identity across retries so a lost upload response
+  // cannot turn one browser candidate into multiple server drafts.
+  chip.status = 'staged'
+  chip.error = undefined
+  chip.retryAction = undefined
+  emitAttachmentPending()
+  void uploadAttachment(chip.file, chip.clientID)
+}
+
+async function removeAttachment(chip: AssistantAttachmentChip) {
+  if (chip.status === 'uploading') {
+    chip.controller?.abort()
+    void bestEffortDeleteAttachment(chip, props.projectName)
+    attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+    emitAttachmentPending()
+    return
+  }
+  if (chip.status === 'deleting') return
+  if (!chip.receipt) void bestEffortDeleteAttachment(chip, props.projectName)
+  if (chip.receipt) {
+    chip.status = 'deleting'
+    chip.error = undefined
+    chip.retryAction = undefined
+    emitAttachmentPending()
+    try {
+      await api.deleteAssistantAttachment(props.ctx, props.projectName, chip.receipt.id)
+    } catch (error) {
+      if (isProjectAPINotFoundError(error)) {
+        // DELETE is idempotent from the composer perspective: an expired or
+        // already-removed draft is no longer present and can leave the UI.
+      } else {
+        chip.status = 'error'
+        chip.error = error instanceof Error ? error.message : 'Attachment removal failed.'
+        chip.retryAction = 'delete'
+        emitAttachmentPending()
+        return
+      }
+    }
+  }
+  if (chip.receipt) {
+    localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== chip.receipt?.id)
+  }
+  attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+  emitState()
 }
 
 function detectSlash() {
@@ -440,7 +843,7 @@ function detectSlash() {
   saveSelection()
 }
 
-function replaceSlashWithPart(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' }>) {
+function replaceSlashWithPart(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' | 'attachment' }>) {
   const token = slashTokenRef.value
   let start = token?.start
   let end = token?.end
@@ -573,8 +976,21 @@ function handleInput() {
 
 function handlePaste(event: ClipboardEvent) {
   event.preventDefault()
+  const image = Array.from(event.clipboardData?.items || [])
+    .find((item) => item.kind === 'file' && item.type.trim().toLowerCase().startsWith('image/'))
+    ?.getAsFile()
+  if (image) {
+    void uploadAttachment(image.name ? image : new File([image], 'clipboard.png', { type: image.type || 'image/png' }))
+    closePalette(false)
+    return
+  }
   const text = event.clipboardData?.getData('text/plain') || ''
   if (!text) return
+  if (new TextEncoder().encode(text).byteLength > ASSISTANT_LARGE_PASTE_BYTES) {
+    void uploadAttachment(new File([text], 'pasted-text.txt', { type: 'text/plain' }))
+    closePalette(false)
+    return
+  }
   const offsets = selectionOffsets()
   if (!offsets) return
   const [start] = offsets
@@ -618,6 +1034,7 @@ function syncFromProps() {
   const signature = stateSignature(props.modelValue, parts, nextSkills, nextResources)
   localSkills.value = nextSkills
   localResources.value = nextResources
+  reconcileAttachmentChips(parts)
   if (signature !== lastRenderedSignature.value) {
     localParts.value = parts
     renderParts(parts, props.modelValue, nextSkills, nextResources)
@@ -625,8 +1042,17 @@ function syncFromProps() {
 }
 
 watch(() => [props.modelValue, partSignature(props.contentParts), props.selectedSkills.map((skill) => skill.id).join(','), props.selectedResources.map(assistantResourceSelectionKey).join(',')], syncFromProps)
+watch(() => props.projectName, (current, previous) => {
+  if (current === previous) return
+  cleanupAttachmentChips(attachmentChips.value, previous)
+  attachmentChips.value = []
+  emitAttachmentPending()
+})
 watch(() => [props.disabled, props.activeRun], ([disabled, active]) => {
-  if (disabled || active) closePalette(false)
+  if (disabled || active) {
+    closePalette(false)
+    closeAttachmentMenu()
+  }
 })
 
 onMounted(() => {
@@ -636,13 +1062,20 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', saveSelection)
+  cleanupAttachmentChips(attachmentChips.value, props.projectName)
 })
 
-defineExpose({ focus: () => focusEditor(false), openPalette, closePalette })
+defineExpose({
+  focus: () => focusEditor(false),
+  openPalette,
+  closePalette,
+  recoverUnavailableAttachments,
+  commitAttachments,
+})
 </script>
 
 <template>
-  <div class="relative min-h-[72px]">
+  <div ref="rootRef" class="relative min-h-[72px]">
     <AssistantCommandPalette
       :open="commandPaletteOpen"
       :command-query="commandPaletteQuery"
@@ -656,6 +1089,66 @@ defineExpose({ focus: () => focusEditor(false), openPalette, closePalette })
       @select-resource="chooseResource"
       @select-mode="selectMode"
     />
+    <div v-if="attachmentChips.length" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
+      <template v-for="chip in attachmentChips" :key="chip.clientID">
+        <AssistantAttachmentPreview
+          v-if="chip.file && assistantAttachmentIsImage(chip.file)"
+          :file="chip.file"
+          :label="attachmentLabel(chip)"
+          :status="chip.status"
+          :error="chip.error"
+          :retryable="chip.status === 'error' && !!chip.retryAction"
+          :retry-action="chip.retryAction"
+          @retry="retryAttachment(chip)"
+          @remove="removeAttachment(chip)"
+        />
+        <div
+          v-else
+          class="flex min-w-0 max-w-full flex-col items-stretch rounded-sm border px-2 py-1 text-[11px] font-mono"
+          :class="chip.status === 'error'
+            ? 'border-danger/40 bg-danger-subtle text-danger'
+            : chip.status === 'ready'
+              ? 'border-accent/30 bg-accent/10 text-accent'
+              : 'border-border-subtle bg-surface-raised text-text-secondary'"
+          :title="chip.error || attachmentStatusLabel(chip)"
+        >
+          <div class="flex min-w-0 items-center gap-1.5">
+            <Loader2 v-if="chip.status === 'uploading' || chip.status === 'deleting'" class="h-3 w-3 shrink-0 animate-spin" :stroke-width="1.75" />
+            <Image v-else-if="chip.receipt?.contentType.startsWith('image/') || (chip.file && assistantAttachmentIsImage(chip.file))" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <span class="max-w-48 truncate">{{ attachmentLabel(chip) }}</span>
+            <span class="text-[10px] opacity-75">{{ attachmentStatusLabel(chip) }}</span>
+            <div class="ml-auto flex shrink-0 items-center gap-0.5">
+              <button
+                v-if="chip.status === 'error' && chip.retryAction"
+                type="button"
+                class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                :aria-label="chip.retryAction === 'delete' ? 'Retry attachment removal' : 'Retry attachment upload'"
+                :title="chip.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
+                @click="retryAttachment(chip)"
+              >
+                <RotateCcw class="h-3 w-3" :stroke-width="1.75" />
+              </button>
+              <button
+                v-if="chip.status !== 'deleting'"
+                type="button"
+                class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                aria-label="Remove attachment"
+                title="Remove attachment"
+                @click="removeAttachment(chip)"
+              >
+                <X class="h-3 w-3" :stroke-width="1.75" />
+              </button>
+            </div>
+          </div>
+          <AssistantAttachmentTextPreview
+            v-if="chip.file && !assistantAttachmentIsImage(chip.file)"
+            :file="chip.file"
+            :label="attachmentLabel(chip)"
+          />
+        </div>
+      </template>
+    </div>
     <div v-if="localAnnotations.length" class="relative z-10 px-3 pt-2.5">
       <AssistantMessageAnnotations
         :annotations="localAnnotations"
@@ -684,20 +1177,52 @@ defineExpose({ focus: () => focusEditor(false), openPalette, closePalette })
       @click="handleClick"
       @focus="saveSelection"
     />
+    <input
+      ref="attachmentInputRef"
+      type="file"
+      class="hidden"
+      :accept="ASSISTANT_ATTACHMENT_ACCEPT"
+      multiple
+      @change="handleAttachmentInput"
+    />
     <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-2">
       <div class="flex min-w-0 items-center gap-0.5">
-        <button
-          type="button"
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
-          :disabled="disabled"
-          title="Add skill, resource, or command"
-          aria-label="Open slash commands"
-          aria-haspopup="dialog"
-          :aria-expanded="commandPaletteOpen"
-          @click="openPalette"
-        >
-          <Plus class="h-4 w-4" :stroke-width="1.75" />
-        </button>
+        <div ref="addMenuRootRef" class="contents">
+          <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 z-30 min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">
+            <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Add</div>
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              role="menuitem"
+              @click="openAttachmentPicker"
+            >
+              <Paperclip class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Files
+            </button>
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              role="menuitem"
+              @click="openPalette"
+            >
+              <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Skill, resource, or command
+            </button>
+          </div>
+          <button
+            ref="attachmentMenuTriggerRef"
+            type="button"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+            :disabled="disabled"
+            title="Add files, skill, resource, or command"
+            aria-label="Add files or open slash commands"
+            aria-haspopup="menu"
+            :aria-expanded="attachmentMenuOpen"
+            @click="toggleAttachmentMenu"
+          >
+            <Plus class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </div>
         <slot name="controls" />
       </div>
       <div class="ml-auto min-w-0 shrink">

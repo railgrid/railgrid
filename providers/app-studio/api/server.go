@@ -47,10 +47,15 @@ import (
 // Provider Action invocation retains certificate validation; workspaces stores
 // project files owned by App Studio; and assistantEngine runs project turns.
 type Server struct {
-	gql        *tenant.GraphQLClient
-	store      store.Store
-	workspaces *workspace.FileStore
-	hubBase    string
+	gql   *tenant.GraphQLClient
+	store store.Store
+	// attachments is a separate capability so message-only test stores remain
+	// valid. Production wires the same Postgres/encrypted store for both.
+	attachments              store.AttachmentStore
+	attachmentsInStore       bool
+	attachmentDraftRetention time.Duration
+	workspaces               *workspace.FileStore
+	hubBase                  string
 	// actionsExternalURL is the externally reachable hub origin used by
 	// development workloads for the Provider Actions exchange and SDK base
 	// URL. It is deliberately separate from hubBase, which may be an internal
@@ -166,6 +171,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 	s := &Server{
 		gql:                      gql,
 		store:                    msgStore,
+		attachmentDraftRetention: store.DefaultAttachmentDraftRetention,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXTERNAL_URL")),
@@ -174,6 +180,10 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 		projectThumbnailContext:  thumbnailContext,
 		projectThumbnailCancel:   thumbnailCancel,
+	}
+	if attachmentStore, ok := msgStore.(store.AttachmentStore); ok {
+		s.attachments = attachmentStore
+		s.attachmentsInStore = true
 	}
 	s.publishingHTTPClient = newPublishingHTTPClient()
 	s.assistantEngine = NewEinoAssistantEngine(s)
@@ -285,6 +295,10 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/thumbnail", s.getProjectThumbnail).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/attachments", s.listProjectAssistantAttachments).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/attachments", s.createProjectAssistantAttachment).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/attachments/{attachment}", s.getProjectAssistantAttachment).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/attachments/{attachment}", s.deleteProjectAssistantAttachment).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/threads", s.listProjectAssistantThreads).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/skills", s.getProjectAssistantSkills).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/skills/detail", s.getProjectAssistantSkillDetailByID).Methods(http.MethodGet)
@@ -355,6 +369,29 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
+}
+
+// ConfigureAttachmentDraftRetention changes the expiry applied to explicitly
+// draft uploads. Non-draft receipts remain durable until project deletion.
+func (s *Server) ConfigureAttachmentDraftRetention(retention time.Duration) {
+	if s == nil || retention <= 0 {
+		return
+	}
+	s.mu.Lock()
+	s.attachmentDraftRetention = retention
+	s.mu.Unlock()
+}
+
+func (s *Server) attachmentRetention() time.Duration {
+	if s == nil {
+		return store.DefaultAttachmentDraftRetention
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.attachmentDraftRetention <= 0 {
+		return store.DefaultAttachmentDraftRetention
+	}
+	return s.attachmentDraftRetention
 }
 
 // clientFor builds a workspace-scoped client acting as the caller, talking to

@@ -204,7 +204,9 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 		return ErrAssistantThreadConflict
 	}
 	turns := s.assistantTurns[scope][threadID]
+	turnIDs := make(map[string]struct{}, len(turns))
 	for _, turn := range turns {
+		turnIDs[turn.ID] = struct{}{}
 		if !assistantTurnStatusTerminal(turn.Status) {
 			return ErrAssistantThreadActive
 		}
@@ -242,6 +244,19 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 			} else {
 				s.conversationItems[scope] = filtered
 			}
+		}
+	}
+	// Bound attachment bytes are owned by the durable turn, not by the
+	// thread projection. Delete them in the same in-memory critical section so
+	// conversation deletion cannot leave retained blobs behind.
+	if attachments := s.attachments[scope]; len(attachments) > 0 {
+		for attachmentID, attachment := range attachments {
+			if _, owned := turnIDs[attachment.BindingID]; owned {
+				delete(attachments, attachmentID)
+			}
+		}
+		if len(attachments) == 0 {
+			delete(s.attachments, scope)
 		}
 	}
 	delete(s.assistantTurns[scope], threadID)

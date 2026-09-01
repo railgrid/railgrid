@@ -19,7 +19,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	cryptoRand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1041,3 +1043,159 @@ func (s *encryptedStore) decryptAssistantRunEvent(scope Scope, event *AssistantR
 	run := AssistantRun{ID: event.RunID}
 	return s.decryptAssistantRunBlob(scope, &run, assistantRunEventBlobLabel(*event), &event.Payload)
 }
+
+func (s *encryptedStore) CreateAttachment(ctx context.Context, scope Scope, attachment Attachment) (Attachment, error) {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return Attachment{}, fmt.Errorf("inner store does not support attachments")
+	}
+	prepared, err := prepareAttachment(scope, attachment)
+	if err != nil {
+		return Attachment{}, err
+	}
+	aead := s.keys[s.active]
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
+		return Attachment{}, fmt.Errorf("generate attachment nonce: %w", err)
+	}
+	prepared.Data = append(nonce, aead.Seal(nil, nonce, prepared.Data, attachmentAAD(scope, prepared))...)
+	prepared.DataEncrypted = true
+	prepared.DataKeyID = s.active
+	return attachmentStore.CreateAttachment(ctx, scope, prepared)
+}
+
+func (s *encryptedStore) GetAttachment(ctx context.Context, scope Scope, id string) (Attachment, error) {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return Attachment{}, ErrAttachmentNotFound
+	}
+	attachment, err := attachmentStore.GetAttachment(ctx, scope, id)
+	if err != nil || !attachment.DataEncrypted {
+		return attachment, err
+	}
+	aead := s.keys[attachment.DataKeyID]
+	if aead == nil {
+		return Attachment{}, fmt.Errorf("attachment uses unknown encryption key %q", attachment.DataKeyID)
+	}
+	if len(attachment.Data) < aead.NonceSize() {
+		return Attachment{}, fmt.Errorf("encrypted attachment is too short")
+	}
+	nonce, ciphertext := attachment.Data[:aead.NonceSize()], attachment.Data[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, attachmentAAD(scope, attachment))
+	if err != nil {
+		return Attachment{}, fmt.Errorf("decrypt attachment: %w", err)
+	}
+	if int64(len(plaintext)) != attachment.SizeBytes {
+		return Attachment{}, fmt.Errorf("decrypted attachment size does not match receipt")
+	}
+	digest := sha256.Sum256(plaintext)
+	if !strings.EqualFold(attachment.SHA256, hex.EncodeToString(digest[:])) {
+		return Attachment{}, fmt.Errorf("decrypted attachment sha256 does not match receipt")
+	}
+	attachment.Data = plaintext
+	attachment.DataEncrypted = false
+	attachment.DataKeyID = ""
+	return attachment, nil
+}
+
+func (s *encryptedStore) ListAttachments(ctx context.Context, scope Scope) ([]Attachment, error) {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return nil, nil
+	}
+	return attachmentStore.ListAttachments(ctx, scope)
+}
+
+func (s *encryptedStore) BindAttachment(ctx context.Context, scope Scope, receipt AttachmentReceipt, actor string) (Attachment, error) {
+	bound, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt}, actor, "legacy:"+strings.TrimSpace(receipt.ID))
+	if err != nil {
+		return Attachment{}, err
+	}
+	return bound[0], nil
+}
+
+func (s *encryptedStore) BindAttachments(ctx context.Context, scope Scope, receipts []AttachmentReceipt, actor, bindingID string) ([]Attachment, error) {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return nil, ErrAttachmentNotFound
+	}
+	verified := make([]Attachment, 0, len(receipts))
+	for _, receipt := range receipts {
+		attachment, err := VerifyAttachmentReceipt(ctx, s, scope, receipt, actor)
+		if err != nil {
+			return nil, err
+		}
+		verified = append(verified, attachment)
+	}
+	if _, err := attachmentStore.BindAttachments(ctx, scope, receipts, actor, bindingID); err != nil {
+		return nil, err
+	}
+	// Do not perform a fallible read after the inner store commits the batch.
+	// Verification above already returned the plaintext objects; project the
+	// committed lifecycle fields onto those copies so success/failure remains
+	// aligned with the atomic storage boundary.
+	for index := range verified {
+		verified[index].Draft = false
+		verified[index].BindingID = bindingID
+		verified[index].DraftExpiresAt = verified[index].ExpiresAt
+		verified[index].ExpiresAt = nil
+	}
+	return verified, nil
+}
+
+func (s *encryptedStore) RollbackAttachmentBinding(ctx context.Context, scope Scope, bindingID string) error {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return ErrAttachmentNotFound
+	}
+	return attachmentStore.RollbackAttachmentBinding(ctx, scope, bindingID)
+}
+
+func (s *encryptedStore) DeleteAttachment(ctx context.Context, scope Scope, id, actor string) error {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return ErrAttachmentNotFound
+	}
+	return attachmentStore.DeleteAttachment(ctx, scope, id, actor)
+}
+
+func (s *encryptedStore) DeleteProjectAttachments(ctx context.Context, scope Scope) error {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return nil
+	}
+	return attachmentStore.DeleteProjectAttachments(ctx, scope)
+}
+
+func (s *encryptedStore) DeleteExpiredAttachments(ctx context.Context, before time.Time) (int64, error) {
+	attachmentStore, ok := s.inner.(AttachmentStore)
+	if !ok {
+		return 0, nil
+	}
+	return attachmentStore.DeleteExpiredAttachments(ctx, before)
+}
+
+func (s *encryptedStore) ConfigureAttachmentQuota(quota AttachmentQuota) error {
+	configurer, ok := s.inner.(AttachmentQuotaConfigurer)
+	if !ok {
+		return nil
+	}
+	return configurer.ConfigureAttachmentQuota(quota)
+}
+
+func (s *encryptedStore) ReconcileAttachmentBindings(ctx context.Context) error {
+	reconciler, ok := s.inner.(AttachmentBindingReconciler)
+	if !ok {
+		return nil
+	}
+	return reconciler.ReconcileAttachmentBindings(ctx)
+}
+
+func attachmentAAD(scope Scope, attachment Attachment) []byte {
+	return []byte(strings.Join([]string{
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		attachment.ID, attachment.SHA256,
+	}, "\x00"))
+}
+
+var _ AttachmentStore = (*encryptedStore)(nil)

@@ -69,6 +69,10 @@ type projectAssistantRunRequest struct {
 	SelectedSkills           []projectAssistantSkillReceipt
 	SelectedContextResources []projectAssistantContextResourceReceipt
 	ContentParts             []projectAssistantContentPart
+	// AttachmentReader resolves server-issued receipts only at model/tool
+	// time. The receipt itself is durable metadata; raw bytes never enter a
+	// thread item or checkpoint.
+	AttachmentReader projectAssistantAttachmentReader
 	// InitialApprovedPlan is a run-local grant derived from the explicit
 	// prompt that created a fresh Project. It is never saved as a cross-turn
 	// plan grant; checkpoints retain it only while this initial run is active.

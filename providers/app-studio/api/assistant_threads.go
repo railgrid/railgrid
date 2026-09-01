@@ -52,6 +52,7 @@ const (
 	assistantThreadEventUserMessage           = "userMessage"
 	assistantThreadEventAssistantMessageDelta = "agentMessageDelta"
 	assistantThreadEventDynamicToolCall       = "dynamicToolCall"
+	assistantThreadEventModelInput            = "modelInput"
 	assistantThreadEventPlan                  = "plan"
 )
 
@@ -551,8 +552,16 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 			writeProjectError(w, registryErr)
 			return
 		}
+		if projectAssistantContentPartsContainImageAttachment(request.ContentParts) && !projectAssistantCapabilitiesForModel(selected.Settings).VisionToolResults {
+			writeProjectError(w, newValidationError("the selected model does not support image attachments"))
+			return
+		}
 		request.ModelID = selected.ID
 		request.modelRevisionID = selected.RevisionID
+	}
+	if err := s.verifyProjectAssistantContentPartAttachments(r.Context(), id, project, request.ContentParts); err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
 	}
 	initialBootstrap := false
 	if !replay && request.continuationOfTurnID == "" && request.CollaborationMode != store.AssistantRunModeReview {
@@ -593,8 +602,9 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		ContextResources: contextResources, ContextResourceReceipts: selectedContextResources,
 		ContentParts: request.ContentParts,
 	},
-		func(created store.AssistantRun, assistant store.Message, transcriptEmpty bool) error {
+		func(created store.AssistantRun, assistant store.Message, transcriptEmpty bool) (callbackErr error) {
 			start := &projectAssistantStreamStart{
+				ThreadID:      thread.ID,
 				SkillSnapshot: &skillSnapshot, SelectedSkills: cloneProjectAssistantSkillReceipts(selectedSkills),
 				SelectedContextResources: cloneProjectAssistantContextResourceReceipts(selectedContextResources),
 				ContentParts:             cloneProjectAssistantContentParts(request.ContentParts),
@@ -626,15 +636,45 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				return createErr
 			}
 			canonicalTurn = createdTurn
+			if canonicalTurn.ID != created.ID {
+				// A client-message collision with an unrelated generic run must
+				// never make this run mutate the existing turn's attachment owner.
+				return fmt.Errorf("assistant turn identity %q does not match durable run %q", canonicalTurn.ID, created.ID)
+			}
+			bindingID := canonicalTurn.ID
+			attachmentBindingCommitted := false
+			defer func() {
+				if attachmentBindingCommitted {
+					return
+				}
+				cleanupCtx, cancel := detachedProjectPersistenceContext(r.Context())
+				defer cancel()
+				if rollbackErr := s.rollbackProjectAssistantAttachmentBinding(cleanupCtx, id, project, bindingID); rollbackErr != nil {
+					callbackErr = errors.Join(callbackErr, fmt.Errorf("rollback project attachment binding: %w", rollbackErr))
+				}
+			}()
+			// The turn is the durable owner of retained attachment bytes. Create
+			// it before binding so a crash cannot leave an immutable attachment
+			// pointing only at a generic run that the conversation cannot recover.
+			if err := s.bindProjectAssistantContentPartAttachmentsForRun(r.Context(), id, project, request.ContentParts, bindingID); err != nil {
+				if terminalErr := s.terminalizeProjectAssistantTurnStartFailure(r.Context(), scope, canonicalTurn, err); terminalErr != nil {
+					return errors.Join(err, terminalErr)
+				}
+				return err
+			}
 			if generateThreadTitle {
 				s.startAssistantThreadTitleGeneration(c, scope, id, thread, request.Content)
 			}
 			if err := s.projectAssistantSupervisor().Start(r.Context(), scope, created, assistant, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
 				s.runProjectAssistantWorker(ctx, accumulator, r, id, c, project, created, start)
 			}); err != nil {
+				if terminalErr := s.terminalizeProjectAssistantTurnStartFailure(r.Context(), scope, canonicalTurn, err); terminalErr != nil {
+					return errors.Join(err, terminalErr)
+				}
 				return err
 			}
 			s.startAssistantThreadMirror(scope, thread.ID, canonicalTurn, created)
+			attachmentBindingCommitted = true
 			return nil
 		})
 	if err != nil {
@@ -644,9 +684,26 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	if !started.Started {
 		canonicalTurn, err = s.store.FindAssistantTurnByClientUserMessageID(r.Context(), scope, thread.ID, request.ClientUserMessageID)
 		if errors.Is(err, store.ErrAssistantTurnNotFound) {
-			canonicalTurn, err = s.repairProjectAssistantThreadTurn(r.Context(), scope, thread, request, started.Run)
+			var recoveredThread store.AssistantThread
+			recoveredThread, canonicalTurn, err = s.findProjectAssistantTurnAcrossThreads(r.Context(), scope, id.user, request.ClientUserMessageID, thread.ID)
+			if err == nil {
+				// The generic idempotency record may have been created from a
+				// different thread during a first-project replay. Return and repair
+				// that canonical thread rather than attaching the run to this new
+				// request's thread.
+				thread = recoveredThread
+			} else if errors.Is(err, store.ErrAssistantTurnNotFound) {
+				canonicalTurn, err = s.repairProjectAssistantThreadTurn(r.Context(), scope, thread, request, started.Run)
+			}
 		}
 		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+		// A provider restart can leave a durable turn and its generic run while
+		// the attachment batch was not committed. Binding is idempotent and is
+		// intentionally retried after canonical-turn recovery.
+		if err := s.bindProjectAssistantContentPartAttachmentsForRun(r.Context(), id, project, request.ContentParts, canonicalTurn.ID); err != nil {
 			s.writeAssistantThreadError(w, err)
 			return
 		}
@@ -664,6 +721,56 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	}
 	thread, _ = s.store.GetAssistantThread(r.Context(), scope, thread.ID)
 	writeJSON(w, http.StatusAccepted, assistantThreadTurnStartResponse{Thread: thread, Turn: canonicalTurn, ContinuationOfTurnID: request.continuationOfTurnID})
+}
+
+// findProjectAssistantTurnAcrossThreads resolves the canonical turn for an
+// idempotent client message across all of the actor's threads. A replay can
+// arrive with a freshly created thread after the original request committed
+// its generic run; creating a second turn in that fresh thread would strand
+// the original transcript and its attachment ownership.
+func (s *Server) findProjectAssistantTurnAcrossThreads(ctx context.Context, scope store.Scope, actorID, clientUserMessageID, preferredThreadID string) (store.AssistantThread, store.AssistantTurn, error) {
+	actorID = strings.TrimSpace(actorID)
+	clientUserMessageID = strings.TrimSpace(clientUserMessageID)
+	preferredThreadID = strings.TrimSpace(preferredThreadID)
+	if actorID == "" || clientUserMessageID == "" {
+		return store.AssistantThread{}, store.AssistantTurn{}, store.ErrAssistantTurnNotFound
+	}
+	if preferredThreadID != "" {
+		if turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, preferredThreadID, clientUserMessageID); err == nil {
+			thread, threadErr := s.store.GetAssistantThread(ctx, scope, preferredThreadID)
+			if threadErr != nil {
+				return store.AssistantThread{}, store.AssistantTurn{}, threadErr
+			}
+			return thread, turn, nil
+		} else if !errors.Is(err, store.ErrAssistantTurnNotFound) {
+			return store.AssistantThread{}, store.AssistantTurn{}, err
+		}
+	}
+
+	cursor := ""
+	for {
+		page, err := s.store.ListAssistantThreads(ctx, scope, actorID, true, 100, cursor)
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, err
+		}
+		for _, candidate := range page.Items {
+			if candidate.ID == preferredThreadID {
+				continue
+			}
+			turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, candidate.ID, clientUserMessageID)
+			if err == nil {
+				return candidate, turn, nil
+			}
+			if !errors.Is(err, store.ErrAssistantTurnNotFound) {
+				return store.AssistantThread{}, store.AssistantTurn{}, err
+			}
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return store.AssistantThread{}, store.AssistantTurn{}, store.ErrAssistantTurnNotFound
 }
 
 // repairProjectAssistantThreadTurn reconstructs the canonical thread boundary
@@ -723,6 +830,43 @@ func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope sto
 		return s.store.GetAssistantTurn(ctx, scope, thread.ID, created.ID)
 	}
 	return created, nil
+}
+
+// terminalizeProjectAssistantTurnStartFailure closes the canonical turn when
+// the provider-specific startup boundary fails after CreateAssistantTurn has
+// committed it. Generic run compensation cannot do this because the thread
+// projection has its own durable row and event stream. Keeping both terminal
+// transitions in the failure path makes retries and deletion observe the same
+// failed turn rather than a permanently active one.
+func (s *Server) terminalizeProjectAssistantTurnStartFailure(ctx context.Context, scope store.Scope, turn store.AssistantTurn, startErr error) error {
+	if s == nil || s.store == nil || turn.ID == "" {
+		return nil
+	}
+	switch turn.Status {
+	case store.AssistantTurnStatusCompleted, store.AssistantTurnStatusInterrupted, store.AssistantTurnStatusFailed:
+		return nil
+	}
+	if startErr == nil {
+		startErr = errors.New("assistant turn startup failed")
+	}
+	turn.Status = store.AssistantTurnStatusFailed
+	turn.Error = projectAssistantRunErrorJSON(startErr, "internal_server_error")
+	turn.UpdatedAt = time.Now().UTC()
+	payload, err := json.Marshal(map[string]any{"turn": turn})
+	if err != nil {
+		return fmt.Errorf("encode failed assistant turn: %w", err)
+	}
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	if err := s.saveAssistantTurnWithEvent(persistCtx, scope, turn, store.AssistantThreadEvent{
+		ThreadID: turn.ThreadID,
+		TurnID:   turn.ID,
+		Type:     assistantThreadEventTurnFailed,
+		Payload:  payload,
+	}); err != nil {
+		return fmt.Errorf("terminalize assistant turn after startup failure: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) activeProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {
@@ -1012,13 +1156,19 @@ func (s *Server) reconcileProjectAssistantThreadTurn(ctx context.Context, scope 
 	release := s.acquireAssistantThreadProjectionLock(scope, turn.ThreadID, turn.ID)
 	defer release()
 
-	if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, turn.ID); err != nil {
+	if err := s.reconcileOrphanedProjectAssistantRunForProjection(ctx, scope, turn.ID); err != nil {
 		return err
 	}
 	run, err := s.store.GetAssistantRun(ctx, scope, turn.ID)
 	if err != nil || !assistantRunTerminal(run.Status) {
 		return err
 	}
+	// Canonical terminalization is part of the recovery boundary. Do not let a
+	// canceled HTTP request strand the turn after the generic run has already
+	// been closed.
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	ctx = persistCtx
 	current, err := s.store.GetAssistantTurn(ctx, scope, turn.ThreadID, turn.ID)
 	if err != nil || current.Status != store.AssistantTurnStatusInProgress {
 		return err
@@ -1248,6 +1398,8 @@ func materializeAssistantThreadItems(events []store.AssistantThreadEvent) []assi
 				switch items[index].Type {
 				case "approval", "input":
 					items[index].Status = "completed"
+				case assistantThreadEventModelInput:
+					repairMaterializedAssistantModelInput(&items[index], terminalStatus)
 				case assistantThreadEventAssistantMessage:
 					if items[index].Phase == "commentary" {
 						items[index].Status = "completed"
@@ -1259,6 +1411,10 @@ func materializeAssistantThreadItems(events []store.AssistantThreadEvent) []assi
 					}
 				}
 			}
+			if items[index].Type == assistantThreadEventModelInput &&
+				items[index].Status != "in_progress" && assistantThreadModelInputItemIsInProgress(items[index]) {
+				repairMaterializedAssistantModelInput(&items[index], terminalStatus)
+			}
 			if items[index].Type == assistantThreadEventAssistantMessage && items[index].Phase == "" &&
 				(items[index].Status == "completed" || items[index].Status == "failed" || items[index].Status == "interrupted") {
 				items[index].Phase = "final_answer"
@@ -1266,6 +1422,62 @@ func materializeAssistantThreadItems(events []store.AssistantThreadEvent) []assi
 		}
 	}
 	return items
+}
+
+func assistantThreadModelInputItemIsInProgress(item assistantThreadItem) bool {
+	if item.Status == "in_progress" {
+		return true
+	}
+	var action projectAssistantActionFeedItem
+	if len(item.Data) == 0 || json.Unmarshal(item.Data, &action) != nil {
+		return false
+	}
+	return action.Status == projectAssistantActionFeedStatusRunning ||
+		action.Status == projectAssistantActionFeedStatusRetrying ||
+		action.Status == projectAssistantActionFeedStatusWaiting
+}
+
+// repairMaterializedAssistantModelInput closes a model-input item when its
+// turn reached a terminal event before the provider callback could publish a
+// terminal image result. A completed turn is still treated as failed here:
+// without accepted provider evidence it must never be presented as viewed.
+func repairMaterializedAssistantModelInput(item *assistantThreadItem, terminalStatus string) {
+	if item == nil {
+		return
+	}
+	actionStatus := projectAssistantActionFeedStatusFailed
+	threadStatus := "failed"
+	title := "Image view failed"
+	if terminalStatus == "interrupted" {
+		actionStatus = projectAssistantActionFeedStatusCanceled
+		threadStatus = "canceled"
+		title = "Image view canceled"
+	}
+	item.Status = threadStatus
+	item.Content = title
+
+	var action projectAssistantActionFeedItem
+	if len(item.Data) > 0 {
+		_ = json.Unmarshal(item.Data, &action)
+	}
+	if action.ID == "" {
+		action.ID = projectAssistantActionPublicID(item.ID)
+	}
+	if action.Kind == "" {
+		action.Kind = projectAssistantActionFeedItemInspect
+	}
+	action.MediaKind = projectAssistantActionFeedMediaImage
+	action.Status = actionStatus
+	action.Title = title
+	action.Outcome = ""
+	action.Severity = projectAssistantActionFeedItemSeverity(actionStatus)
+	action.Diagnostic = nil
+	if actionStatus == projectAssistantActionFeedStatusFailed {
+		action.Diagnostic = projectAssistantActionFeedDiagnostic(action.ID, "assistant turn ended before the image was accepted")
+	}
+	if data, err := json.Marshal(action); err == nil {
+		item.Data = data
+	}
 }
 
 // assistantThreadItemWithMessagePresentation carries the durable presentation

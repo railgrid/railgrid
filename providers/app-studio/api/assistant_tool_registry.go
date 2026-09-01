@@ -130,7 +130,7 @@ func (s *Server) projectAssistantToolRegistry() projectAssistantToolRegistry {
 }
 
 func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegistry {
-	tools := append(projectAssistantSkillTools(),
+	tools := append(projectAssistantSkillTools(), projectAssistantAttachmentTool(),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolDefineInitialProjectPlan,

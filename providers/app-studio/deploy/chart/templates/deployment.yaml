@@ -194,6 +194,14 @@ spec:
             - name: APP_STUDIO_MESSAGE_RETENTION
               value: {{ .Values.store.messageRetention | quote }}
             {{- end }}
+            {{- if .Values.store.attachmentDraftRetention }}
+            - name: APP_STUDIO_ATTACHMENT_DRAFT_RETENTION
+              value: {{ .Values.store.attachmentDraftRetention | quote }}
+            {{- end }}
+            {{- if ne (toString .Values.store.attachmentWorkspaceQuotaBytes) "" }}
+            - name: APP_STUDIO_ATTACHMENT_WORKSPACE_QUOTA_BYTES
+              value: {{ .Values.store.attachmentWorkspaceQuotaBytes | quote }}
+            {{- end }}
             {{- if .Values.store.messageEncryptionKeysSecretRef.name }}
             - name: APP_STUDIO_MESSAGE_ENCRYPTION_KEYS
               valueFrom:

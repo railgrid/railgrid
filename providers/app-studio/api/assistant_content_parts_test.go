@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
@@ -496,5 +497,34 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 	}
 	if strings.Contains(string(items[0].Data), "uid-orders") || strings.Contains(string(items[0].Data), "resourceVersion") || strings.Contains(string(items[0].Data), "catalogDigest") {
 		t.Fatalf("repaired projection exposed private receipt fields: %s", items[0].Data)
+	}
+}
+
+func TestProjectAssistantReplayFindsCanonicalTurnAcrossThreads(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	canonical, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-canonical", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-replay", ActorID: "alice", CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+		ID: "turn-canonical", ThreadID: canonical.ID, ActorID: "alice", ClientUserMessageID: "first-project-request",
+		Mode: store.AssistantRunModeDefault, Status: store.AssistantTurnStatusCompleted, CreatedAt: now, UpdatedAt: now,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredThread, recoveredTurn, err := server.findProjectAssistantTurnAcrossThreads(ctx, scope, "alice", turn.ClientUserMessageID, "thread-replay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredThread.ID != canonical.ID || recoveredTurn.ID != turn.ID || recoveredTurn.ThreadID != canonical.ID {
+		t.Fatalf("replay recovered thread/turn = %#v/%#v", recoveredThread, recoveredTurn)
 	}
 }

@@ -143,6 +143,55 @@ test('first-send thread creation cannot mutate state after an App unmount or req
   assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!firstSendIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantAnnotationDraft/)
 })
 
+test('first-project retries reissue an unconfirmed retained thread ID and fence its response', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('))
+  assert.match(startPath, /const requestedThreadID = submission\.threadID \|\| `thread-\$\{crypto\.randomUUID\(\)\}`/)
+  assert.match(startPath, /const createdThread = await api\.createAssistantThread\(props\.ctx, projectName, undefined, requestedThreadID\)[\s\S]*if \(!current\(\)\) return[\s\S]*thread = createdThread/)
+  assert.doesNotMatch(startPath, /status: 'idle' as const/)
+})
+
+test('attachment recovery is fenced after every asynchronous stale-receipt step', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const upload = appSource.slice(appSource.indexOf('async function uploadPreProjectAttachment'), appSource.indexOf('async function recoverPreProjectAttachmentReceipts'))
+  const recovery = appSource.slice(appSource.indexOf('async function recoverPreProjectAttachmentReceipts'), appSource.indexOf('async function ensurePreProjectAttachmentsUploaded'))
+  assert.match(upload, /if \(isCurrent && !isCurrent\(\)\) \{[\s\S]*bestEffortDeletePreProjectAttachment/)
+  assert.match(upload, /if \(!present \|\| \(isCurrent && !isCurrent\(\)\)\) return false/)
+  assert.match(recovery, /await bestEffortDeletePreProjectAttachment[\s\S]*if \(isCurrent && !isCurrent\(\)\) return/)
+  assert.match(appSource, /ensurePreProjectAttachmentsUploaded\(projectName, current\)/)
+  assert.match(appSource, /startPreProjectAssistantTurn\(projectName, submission, thread\.id, current\)/)
+})
+
+test('regular send adopts the canonical thread returned by the start response', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
+  const startResponse = sendMessage.indexOf('startPostAccepted = true')
+  const projection = sendMessage.indexOf('const userItem', startResponse)
+  assert.ok(startResponse >= 0 && projection > startResponse, 'start response and projection boundaries must remain explicit')
+  const acceptedStart = sendMessage.slice(startResponse, projection)
+  assert.match(acceptedStart, /const requestedThreadID = thread\.id/)
+  assert.match(acceptedStart, /const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID/)
+  assert.match(acceptedStart, /candidate\.id !== canonicalThreadID && candidate\.id !== requestedThreadID/)
+  assert.match(acceptedStart, /activeAssistantThreadID\.value = canonicalThreadID/)
+  assert.match(acceptedStart, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), canonicalThreadID\)/)
+  assert.match(acceptedStart, /listAssistantThreadItems\(props\.ctx, projectName, canonicalThreadID\)/)
+  assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID\)/)
+})
+
+test('regular receipt failures recover through the composer without replaying a changed turn', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
+  assert.match(appSource, /recoverUnavailableAttachments/)
+  assert.match(sendMessage, /recoverUnavailableAssistantAttachmentSend\(projectName, content, turnContentParts, firstSendIsCurrent\)/)
+  assert.match(sendMessage, /if \(attachmentRecovery\.stale \|\| attachmentRecovery\.candidateCount > 0\) return false/)
+  const recoveryStart = appSource.indexOf('async function recoverUnavailableAssistantAttachmentSend')
+  const recoveryEnd = appSource.indexOf('\n\nwatch(', recoveryStart)
+  assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)
+  assert.doesNotMatch(appSource.slice(recoveryStart, recoveryEnd), /startAssistantTurn|startAssistantReview/)
+  assert.match(appSource.slice(recoveryStart, recoveryEnd), /attached file was refreshed[\s\S]*send again/)
+  assert.match(appSource.slice(recoveryStart, recoveryEnd), /Reattach it and send again/)
+})
+
 test('App keeps central loading surfaces honest while project state hydrates', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const productionLoadingSource = await readFile(new URL('./ProductionSettingsLoadingShell.vue', import.meta.url), 'utf8')
@@ -414,6 +463,54 @@ test('first-project retry reuses the created project and durable request identit
   )
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-1', content: 'ship it' }), true)
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-2', content: 'different' }), false)
+})
+
+test('first-project retry also retains the server thread identity', () => {
+  const pending = state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high')
+  const bound = state.firstProjectSubmissionWithThread(
+    state.firstProjectSubmissionWithProject(pending, 'demo'),
+    'thread-1',
+  )
+  assert.equal(bound.clientRequestID, 'request-1')
+  assert.equal(bound.projectName, 'demo')
+  assert.equal(bound.threadID, 'thread-1')
+  assert.equal(state.firstProjectStartPlan(bound).createProject, false)
+})
+
+test('first-project startup rotates identity only for a pre-acceptance HTTP 5xx', async () => {
+  const pending = state.firstProjectSubmissionWithThread(
+    state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high'), 'demo'),
+    'thread-1',
+  )
+  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 503 }, false), true)
+  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 500 }, true), false)
+  assert.equal(state.shouldRotateFirstProjectRequestID({ status: 409 }, false), false)
+  assert.equal(state.shouldRotateFirstProjectRequestID(new TypeError('network lost'), false), false)
+  const rotated = state.firstProjectSubmissionWithClientRequestID(pending, 'request-2')
+  assert.deepEqual(rotated, { ...pending, clientRequestID: 'request-2' })
+
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('))
+  assert.match(startPath, /let startPostAttempted = false/)
+  assert.match(startPath, /let startPostAccepted = false/)
+  assert.match(startPath, /startPostAttempted = true[\s\S]*const canonical = await startPreProjectAssistantTurn/)
+  assert.match(startPath, /const canonical = await startPreProjectAssistantTurn[\s\S]*startPostAccepted = true[\s\S]*clearPreProjectAttachments\(true\)/)
+  assert.match(startPath, /e instanceof ProjectAPIRequestError && startPostAttempted && shouldRotateFirstProjectRequestID\(e, startPostAccepted\)/)
+  assert.match(startPath, /firstProjectSubmissionWithClientRequestID\(submission, crypto\.randomUUID\(\)\)/)
+})
+
+test('first-project attachment retry remains current on the project-less create route', () => {
+  const pending = state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('Use the attached files as context for this project.', 'request-1', 'gpt-high'), 'demo')
+  assert.equal(state.firstProjectSubmissionCanRetryFromCreateRoute(pending, 4, 4, 'demo', ''), true)
+  assert.equal(state.firstProjectSubmissionCanRetryFromCreateRoute(pending, 4, 5, 'demo', ''), false)
+  assert.equal(state.firstProjectSubmissionCanRetryFromCreateRoute(pending, 4, 4, 'other', ''), false)
+  assert.equal(state.firstProjectSubmissionCanRetryFromCreateRoute(pending, 4, 4, 'demo', 'other'), false)
+})
+
+test('attachment-only project input gets a neutral planning prompt without changing authored text', () => {
+  assert.equal(state.projectCreationPrompt('', 0), '')
+  assert.equal(state.projectCreationPrompt('  ', 1), state.ATTACHMENT_ONLY_PROJECT_PROMPT)
+  assert.equal(state.projectCreationPrompt('  Build the app  ', 1), 'Build the app')
 })
 
 test('first-project pending submission matches the project/message handoff into normal send', () => {

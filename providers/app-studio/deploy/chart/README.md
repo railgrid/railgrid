@@ -69,6 +69,8 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `store.databaseURLSecretRef.key` | `database-url` |  |
 | `store.inMemoryMessageStore` | `false` |  |
 | `store.messageRetention` | `""` | Retention window understood by Go's time.ParseDuration, e.g. "720h". |
+| `store.attachmentDraftRetention` | `"24h"` | Explicit draft attachment uploads expire after this duration; turn admission promotes bound receipts to retained storage. |
+| `store.attachmentWorkspaceQuotaBytes` | `1073741824` | Maximum attachment bytes across all Projects in a workspace. Bound attachments remain counted while their owning conversation exists; `0` disables this workspace limit. Draft-only per-project abuse limits remain provider defaults. |
 | `store.messageEncryptionKeysSecretRef.name` | `""` |  |
 | `store.messageEncryptionKeysSecretRef.key` | `keys` |  |
 | `workspace` |  | App Studio project workspaces. The provider stores checked-out/generated project files here so the agent can list, read, search, and later mutate them. The workspace is a CACHE of git plus in-flight edits: a replica that adopts a project rebuilds the tree from the last commit, so the default is a… |

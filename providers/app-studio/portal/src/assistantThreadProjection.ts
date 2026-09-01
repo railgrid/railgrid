@@ -84,7 +84,8 @@ export function assistantContentPartsFromThreadItem(item: ProjectAssistantThread
     part.type === 'text' ||
     (part.type === 'skill' && (!skillIDs.size || skillIDs.has(part.skillID))) ||
     (part.type === 'resource' && part.resourceIndex < resources.length) ||
-    (part.type === 'annotation' && Boolean(part.annotation.comment && part.annotation.documentID)),
+    (part.type === 'annotation' && Boolean(part.annotation.comment && part.annotation.documentID)) ||
+    (part.type === 'attachment' && Boolean(part.attachment.id && part.attachment.filename)),
   )
 }
 
@@ -277,15 +278,32 @@ function itemAssistantMessageID(item: ProjectAssistantThreadItem): string {
 }
 
 /**
- * Dynamic-tool item IDs are scoped to an assistant segment in the durable
- * thread mirror (for example, `tool-<segment>-<provider-call>`), while the
- * action payload deliberately keeps the provider's raw call ID. Use the raw
- * payload identity whenever it is present so item.started/item.completed
- * updates replace one action instead of rendering duplicate rows.
+ * Activity item IDs are scoped to an assistant segment in the durable thread
+ * mirror (for example, `tool-<segment>-<provider-call>`), while the action
+ * payload deliberately keeps its raw identity. Use the raw payload identity
+ * whenever it is present so item.started/item.completed updates replace one
+ * action instead of rendering duplicate rows.
  */
 export function assistantThreadItemIdentity(item: ProjectAssistantThreadItem): string {
   const dataID = item.data && typeof item.data.id === 'string' ? item.data.id.trim() : ''
   return dataID || item.id
+}
+
+/**
+ * Upsert one model activity item into its owning assistant action feed. Both
+ * dynamic tools and server-owned model-input evidence use this path; the
+ * item type is intentionally not rewritten into a tool type.
+ */
+export function upsertAssistantActionFeed(current: unknown, item: ProjectAssistantThreadItem): unknown {
+  if ((item.type !== 'dynamicToolCall' && item.type !== 'modelInput') || !item.data) return current
+  const actions = Array.isArray(current) ? [...current] : []
+  const identity = assistantThreadItemIdentity(item)
+  const actionIndex = actions.findIndex((action) =>
+    typeof action === 'object' && action !== null && (action as { id?: string }).id === identity,
+  )
+  if (actionIndex >= 0) actions[actionIndex] = item.data
+  else actions.push(item.data)
+  return actions
 }
 
 function itemRevision(item: ProjectAssistantThreadItem): number {
@@ -497,13 +515,8 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
     if (index === undefined) continue
     const message = result[index]
     const metadata = { ...(message.metadata ?? {}) }
-    if (item.type === 'dynamicToolCall' && item.data) {
-      const actions = Array.isArray(metadata.assistantActionFeed) ? [...metadata.assistantActionFeed] : []
-      const identity = assistantThreadItemIdentity(item)
-      const existing = actions.findIndex((action) => typeof action === 'object' && action !== null && (action as { id?: string }).id === identity)
-      if (existing >= 0) actions[existing] = item.data
-      else actions.push(item.data)
-      metadata.assistantActionFeed = actions
+    if ((item.type === 'dynamicToolCall' || item.type === 'modelInput') && item.data) {
+      metadata.assistantActionFeed = upsertAssistantActionFeed(metadata.assistantActionFeed, item)
     } else if (item.type === 'plan' && item.data) {
       // A plan item is replaced in place by the thread mirror today, but
       // older stores can return every accepted snapshot. Keep the newest

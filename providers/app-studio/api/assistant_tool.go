@@ -24,6 +24,7 @@ import (
 	"net/http"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -85,7 +86,7 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetPreviewConsoleLogs,
 		projectToolGetRuntimeLogs, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolExecCommand, projectToolPromoteProject, projectToolRebuildProject:
 		return projectAssistantToolBundleRuntime
-	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep:
+	case projectToolLS, projectToolReadFile, projectToolReadAttachment, projectToolGlob, projectToolGrep:
 		return projectAssistantToolBundleWorkspaceRead
 	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 		return projectAssistantToolBundleEdit
@@ -129,7 +130,12 @@ type projectAssistantToolCallRequest struct {
 	AssistantRunID       string
 	InitialBuild         bool
 	RunState             *projectEinoAssistantRunState
-	Arguments            map[string]any
+	// Conversation carries the durable metadata-only history for tools that
+	// need to address a receipt selected on an earlier user turn.
+	Conversation     []chatMessage
+	AttachmentReader projectAssistantAttachmentReader
+	AttachmentScope  store.Scope
+	Arguments        map[string]any
 }
 
 func refreshProjectToolSnapshot(current, updated *aiv1alpha1.Project) {

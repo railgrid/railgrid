@@ -304,6 +304,110 @@ func TestProjectAssistantThreadSnapshotScopesReusedActionIDPerSegment(t *testing
 	}
 }
 
+func TestProjectAssistantThreadSnapshotMirrorsImageModelInputWithoutDuplicateAfterReload(t *testing.T) {
+	inner := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, inner, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	thread := store.AssistantThread{ID: "thread-image-model-input", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
+	if _, err := inner.CreateAssistantThread(context.Background(), scope, thread, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn := store.AssistantTurn{ID: "turn-image-model-input", ThreadID: thread.ID, Mode: store.AssistantRunModeDefault}
+	run := store.AssistantRun{ID: turn.ID, ActiveMessageID: "assistant-image-model-input", Status: store.AssistantRunStatusRunning}
+	action := projectAssistantActionFeedItem{
+		ID: "feed-image-model-input", Kind: projectAssistantActionFeedItemInspect,
+		MediaKind: projectAssistantActionFeedMediaImage, Status: projectAssistantActionFeedStatusRunning,
+		Title: "Viewing image", Target: "screen.png", Severity: projectAssistantActionFeedSeverityNormal, Sequence: 1,
+	}
+	snapshot := func(action projectAssistantActionFeedItem) projectAssistantRunSnapshot {
+		return projectAssistantRunSnapshot{Run: run, Message: store.Message{
+			ID:       run.ActiveMessageID,
+			Metadata: map[string]any{projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{action}},
+		}}
+	}
+	state := assistantThreadMirrorState{actionStatuses: map[string]string{}}
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &state, snapshot(action)); err != nil {
+		t.Fatal(err)
+	}
+	modelInputID := assistantThreadModelInputItemID(run.ActiveMessageID, action.ID)
+	events, err := inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, modelInputID); got != 1 {
+		t.Fatalf("model-input started events = %d, want one: %#v", got, events)
+	}
+	var started assistantThreadItem
+	for _, event := range events {
+		if event.ItemID != modelInputID || event.Type != assistantThreadEventItemStarted {
+			continue
+		}
+		var envelope struct {
+			Item assistantThreadItem `json:"item"`
+		}
+		if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		started = envelope.Item
+	}
+	if started.Type != assistantThreadEventModelInput || started.Status != "in_progress" {
+		t.Fatalf("started model-input item = %#v", started)
+	}
+
+	// A fresh mirror process must reconstruct the model-input status and avoid
+	// appending another item.started event when it observes the same snapshot.
+	reloaded, err := server.loadAssistantThreadMirrorState(context.Background(), scope, thread.ID, run.ActiveMessageID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.actionStatuses[modelInputID] != projectAssistantActionFeedStatusRunning {
+		t.Fatalf("reloaded model-input status = %#v", reloaded.actionStatuses)
+	}
+	eventCount := len(events)
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &reloaded, snapshot(action)); err != nil {
+		t.Fatal(err)
+	}
+	events, err = inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != eventCount {
+		t.Fatalf("reloaded running model-input snapshot appended duplicate: before=%d after=%d", eventCount, len(events))
+	}
+
+	action.Status = projectAssistantActionFeedStatusSucceeded
+	action.Title = "Viewed image"
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &reloaded, snapshot(action)); err != nil {
+		t.Fatal(err)
+	}
+	modelInputEvents, err := inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAssistantThreadMirrorTestEvents(modelInputEvents, assistantThreadEventItemCompleted, modelInputID); got != 1 {
+		t.Fatalf("model-input completed events = %d, want one: %#v", got, modelInputEvents)
+	}
+	items := materializeAssistantThreadItems(modelInputEvents)
+	var terminal *assistantThreadItem
+	for i := range items {
+		if items[i].ID == modelInputID {
+			terminal = &items[i]
+			break
+		}
+	}
+	if terminal == nil || terminal.Type != assistantThreadEventModelInput || terminal.Status != "completed" {
+		t.Fatalf("reloaded terminal model-input item = %#v", terminal)
+	}
+	var terminalAction projectAssistantActionFeedItem
+	if err := json.Unmarshal(terminal.Data, &terminalAction); err != nil {
+		t.Fatal(err)
+	}
+	if terminalAction.Title != "Viewed image" || terminalAction.MediaKind != projectAssistantActionFeedMediaImage {
+		t.Fatalf("terminal model-input action = %#v", terminalAction)
+	}
+}
+
 func TestProjectAssistantThreadSnapshotMirrorsAcceptedProgressAsTypedCommentary(t *testing.T) {
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)
@@ -1098,6 +1202,64 @@ func TestProjectAssistantStartFailureCompensatesAndRepairsCanonicalTurn(t *testi
 	items := materializeAssistantThreadItems(events)
 	if len(items) == 0 || !strings.Contains(string(items[0].Data), `"id":"project:alpha"`) || strings.Contains(string(items[0].Data), "skill-digest") {
 		t.Fatalf("repaired user item skill data = %#v", items)
+	}
+}
+
+func TestProjectAssistantStartFailureDoesNotProjectImageReceipt(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, inner, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	receipt := attachmentReceiptForTest("image-start-failure", "screen.png", "image/png", []byte("image bytes"))
+	startErr := errors.New("provider turn startup failed")
+	started, err := server.startProjectAssistantRunDurablyWithModeAndSkills(
+		ctx,
+		scope,
+		"alice",
+		"inspect this image",
+		"start-failure-image",
+		store.AssistantRunModeDefault,
+		projectAssistantDurableSkillSelection{ContentParts: []projectAssistantContentPart{projectAssistantContentPartAttachment(receipt)}},
+		func(store.AssistantRun, store.Message, bool) error { return startErr },
+	)
+	if !errors.Is(err, startErr) {
+		t.Fatalf("start error = %v, want %v", err, startErr)
+	}
+	if started.Run.Status != store.AssistantRunStatusFailed {
+		t.Fatalf("compensated run status = %q, want failed", started.Run.Status)
+	}
+
+	projection, err := loadProjectAssistantConversationProjection(ctx, inner, scope)
+	if err != nil {
+		t.Fatalf("load failed-start projection: %v", err)
+	}
+	if len(projection.messages) != 0 {
+		t.Fatalf("failed-start projection = %#v, want failed user item omitted", projection.messages)
+	}
+
+	items, err := inner.ListAssistantConversationItems(ctx, scope, 0, 10)
+	if err != nil {
+		t.Fatalf("list raw conversation items: %v", err)
+	}
+	if len(items) != 2 || items[0].Type != projectAssistantConversationUser || items[1].Type != projectAssistantConversationStartFailure {
+		t.Fatalf("failed-start raw conversation items = %#v, want user plus scrub marker", items)
+	}
+	var rawUser chatMessage
+	if err := json.Unmarshal(items[0].Payload, &rawUser); err != nil {
+		t.Fatalf("decode raw user item: %v", err)
+	}
+	if len(rawUser.Attachments) != 1 || rawUser.Attachments[0].ID != receipt.ID {
+		t.Fatalf("raw failed-start receipt = %#v, want durable receipt retained as append-only evidence", rawUser.Attachments)
+	}
+	if err := appendProjectAssistantConversationMessage(ctx, inner, scope, "run-later", "message-later", projectAssistantConversationUser, chatMessage{Role: "user", Content: "later successful turn"}); err != nil {
+		t.Fatalf("append later successful user item: %v", err)
+	}
+	projection, err = loadProjectAssistantConversationProjection(ctx, inner, scope)
+	if err != nil {
+		t.Fatalf("reload after later successful turn: %v", err)
+	}
+	if len(projection.messages) != 1 || projection.messages[0].Content != "later successful turn" {
+		t.Fatalf("projection after later successful turn = %#v, want only later user item", projection.messages)
 	}
 }
 

@@ -2,6 +2,7 @@ import type {
   ProjectAssistantActionDiagnostic,
   ProjectAssistantActionFeedItem,
   ProjectAssistantActionKind,
+  ProjectAssistantActionMediaKind,
   ProjectAssistantActionSeverity,
   ProjectAssistantActionStatus,
   ProjectAssistantDiagnosticCategory,
@@ -16,7 +17,8 @@ const kinds = new Set<ProjectAssistantActionKind>(['inspect', 'clarify', 'edit',
 const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected', 'canceled', 'retrying', 'recovered'])
 const severities = new Set<ProjectAssistantActionSeverity>(['normal', 'attention', 'error'])
 const diagnosticCategories = new Set<ProjectAssistantDiagnosticCategory>(['timeout', 'permission', 'validation', 'runtime', 'provider', 'unknown'])
-const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'recoveryOf', 'diagnostic', 'exec'])
+const mediaKinds = new Set<ProjectAssistantActionMediaKind>(['image'])
+const itemKeys = new Set(['id', 'kind', 'mediaKind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'recoveryOf', 'diagnostic', 'exec'])
 const diagnosticKeys = new Set(['category', 'message', 'referenceID', 'code', 'operation', 'path', 'guidance'])
 const textEncoder = new TextEncoder()
 
@@ -58,6 +60,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
   if (!isRecord(value) || !hasOnlyKeys(value, itemKeys)) return undefined
   if (!boundedString(value.id, 120, true)
     || !kinds.has(value.kind as ProjectAssistantActionKind)
+    || (value.mediaKind !== undefined && !mediaKinds.has(value.mediaKind as ProjectAssistantActionMediaKind))
     || !statuses.has(value.status as ProjectAssistantActionStatus)
     || !boundedString(value.title, 160, true)
     || !severities.has(value.severity as ProjectAssistantActionSeverity)
@@ -77,11 +80,14 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
   return {
     id: value.id,
     kind: value.kind as ProjectAssistantActionKind,
+    ...(value.mediaKind ? { mediaKind: value.mediaKind as ProjectAssistantActionMediaKind } : {}),
     status: value.status as ProjectAssistantActionStatus,
     title: value.title,
     severity: value.severity as ProjectAssistantActionSeverity,
     ...(value.target ? { target: value.target as string } : {}),
-    ...(value.outcome ? { outcome: value.outcome as string } : {}),
+    // Image progress is already self-explanatory. Suppress legacy persisted
+    // outcome copy so both old and new threads render simply as "Viewed image".
+    ...(value.outcome && value.mediaKind !== 'image' ? { outcome: value.outcome as string } : {}),
     ...(value.count !== undefined ? { count: value.count as number } : {}),
     ...(value.groupKey ? { groupKey: value.groupKey as string } : {}),
     ...(value.groupTitle ? { groupTitle: value.groupTitle as string } : {}),

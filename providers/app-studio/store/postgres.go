@@ -17,12 +17,15 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -38,6 +41,8 @@ const projectThumbnailSchemaVersion = "project-thumbnail-v1"
 const projectThumbnailEncryptionSchemaVersion = "project-thumbnail-encryption-v2"
 const projectThumbnailOrderSchemaVersion = "project-thumbnail-order-v3"
 const projectThumbnailVariantSchemaVersion = "project-thumbnail-variant-v4"
+const attachmentSchemaVersion = "project-attachments-v1"
+const attachmentLifecycleSchemaVersion = "project-attachments-lifecycle-v2"
 
 const lockMessageSchemaMigrations = `SELECT pg_advisory_xact_lock(870408091945886937)`
 
@@ -49,7 +54,9 @@ const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studi
 // PostgresStore stores App Studio messages in Postgres with tenant-scoped
 // primary keys and cursor pagination.
 type PostgresStore struct {
-	db *sql.DB
+	db              *sql.DB
+	attachmentQuota AttachmentQuota
+	quotaMu         sync.RWMutex
 }
 
 // OpenPostgres opens a Postgres-backed store, initializes the schema, and
@@ -67,7 +74,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 	db.SetMaxIdleConns(4)
 	db.SetMaxOpenConns(8)
 
-	store := &PostgresStore{db: db}
+	store := &PostgresStore{db: db, attachmentQuota: DefaultAttachmentQuota()}
 	if err := store.EnsureSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -84,6 +91,55 @@ func (s *PostgresStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+// ConfigureAttachmentQuota applies startup admission limits to the durable
+// backend. Existing rows are never deleted when a smaller quota is configured;
+// the limit applies to subsequent uploads.
+func (s *PostgresStore) ConfigureAttachmentQuota(quota AttachmentQuota) error {
+	if err := validateAttachmentQuota(quota); err != nil {
+		return err
+	}
+	s.quotaMu.Lock()
+	s.attachmentQuota = quota
+	s.quotaMu.Unlock()
+	return nil
+}
+
+func (s *PostgresStore) attachmentQuotaValue() AttachmentQuota {
+	s.quotaMu.RLock()
+	defer s.quotaMu.RUnlock()
+	return s.attachmentQuota
+}
+
+// ReconcileAttachmentBindings repairs the crash window between generic run
+// persistence and canonical turn creation. A retained attachment is valid
+// only when its binding ID names a durable turn in the same project scope.
+func (s *PostgresStore) ReconcileAttachmentBindings(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE app_studio_attachments AS attachment
+		SET draft = true,
+			expires_at = COALESCE(attachment.draft_expires_at, attachment.created_at + INTERVAL '24 hours'),
+			draft_expires_at = NULL,
+			binding_id = ''
+		WHERE attachment.draft = false
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM app_studio_assistant_turns AS turn
+			WHERE turn.org_uuid = attachment.org_uuid
+			  AND turn.workspace_uuid = attachment.workspace_uuid
+			  AND turn.project_name = attachment.project_name
+			  AND turn.project_uid = attachment.project_uid
+			  AND turn.turn_id = attachment.binding_id
+		  )
+	`)
+	if err != nil {
+		return fmt.Errorf("reconcile attachment bindings: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
@@ -137,10 +193,46 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, replicaClaimSchemaVersion, replicaClaimSchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersion(ctx, tx, attachmentSchemaVersion, attachmentSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersion(ctx, tx, attachmentLifecycleSchemaVersion, attachmentLifecycleSchemaStatements()...); err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema migration: %w", err)
 	}
 	return nil
+}
+
+func attachmentSchemaStatements() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS app_studio_attachments (
+			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
+			attachment_id text NOT NULL, actor_id text NOT NULL, filename text NOT NULL,
+			content_type text NOT NULL CHECK (content_type IN ('image/png','image/jpeg','image/webp','text/plain','text/markdown')),
+			size_bytes bigint NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 8388608), sha256 text NOT NULL CHECK (sha256 ~ '^[0-9a-fA-F]{64}$'),
+			attachment_bytes bytea NOT NULL, data_encrypted boolean NOT NULL DEFAULT false, data_key_id text NOT NULL DEFAULT '',
+			draft boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL, expires_at timestamptz,
+			CHECK ((draft AND expires_at IS NOT NULL) OR (NOT draft AND expires_at IS NULL)),
+			PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, attachment_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS app_studio_attachments_expiry_idx
+			ON app_studio_attachments (expires_at)
+			WHERE draft = true AND expires_at IS NOT NULL`,
+	}
+}
+
+func attachmentLifecycleSchemaStatements() []string {
+	return []string{
+		`ALTER TABLE app_studio_attachments ADD COLUMN IF NOT EXISTS binding_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_studio_attachments ADD COLUMN IF NOT EXISTS draft_expires_at timestamptz`,
+		`CREATE TABLE IF NOT EXISTS app_studio_attachment_deleted_projects (
+			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
+			deleted_at timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid)
+		)`,
+	}
 }
 
 func projectThumbnailSchemaStatements() []string {
@@ -1140,6 +1232,9 @@ func (s *PostgresStore) DeleteProjectMessages(ctx context.Context, scope Scope) 
 		return fmt.Errorf("begin delete project assistant data: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM app_studio_assistant_approval_preferences
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
@@ -1195,6 +1290,18 @@ func (s *PostgresStore) DeleteProjectMessages(ctx context.Context, scope Scope) 
 		return fmt.Errorf("delete project messages: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO app_studio_attachment_deleted_projects (org_uuid, workspace_uuid, project_name, project_uid)
+		VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID); err != nil {
+		return fmt.Errorf("close project attachment storage: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM app_studio_attachments
+		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID); err != nil {
+		return fmt.Errorf("delete project attachments: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID); err != nil {
@@ -1206,6 +1313,456 @@ func (s *PostgresStore) DeleteProjectMessages(ctx context.Context, scope Scope) 
 	return nil
 }
 
+func (s *PostgresStore) CreateAttachment(ctx context.Context, scope Scope, attachment Attachment) (Attachment, error) {
+	if s == nil || s.db == nil {
+		return Attachment{}, fmt.Errorf("postgres store is nil")
+	}
+	prepared, err := prepareAttachment(scope, attachment)
+	if err != nil {
+		return Attachment{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Attachment{}, fmt.Errorf("begin create attachment: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return Attachment{}, err
+	}
+	var deleted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM app_studio_attachment_deleted_projects
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+	)`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID).Scan(&deleted); err != nil {
+		return Attachment{}, fmt.Errorf("check attachment project lifecycle: %w", err)
+	}
+	if deleted {
+		return Attachment{}, ErrAttachmentProjectDeleted
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2
+			AND draft=true AND expires_at IS NOT NULL AND expires_at <= now()
+	`, scope.OrgUUID, scope.WorkspaceUUID); err != nil {
+		return Attachment{}, fmt.Errorf("delete expired workspace attachments before quota check: %w", err)
+	}
+	var workspaceBytes int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(sum(size_bytes), 0)
+		FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2
+	`, scope.OrgUUID, scope.WorkspaceUUID).Scan(&workspaceBytes); err != nil {
+		return Attachment{}, fmt.Errorf("measure workspace attachment quota: %w", err)
+	}
+	var draftCount int64
+	var draftBytes int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*), COALESCE(sum(size_bytes), 0)
+		FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND draft=true
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID).Scan(&draftCount, &draftBytes); err != nil {
+		return Attachment{}, fmt.Errorf("measure project draft attachment quota: %w", err)
+	}
+	quota := s.attachmentQuotaValue()
+	if (quota.WorkspaceMaxBytes > 0 && workspaceBytes+prepared.SizeBytes > quota.WorkspaceMaxBytes) ||
+		(prepared.Draft && ((quota.DraftProjectMaxCount > 0 && draftCount+1 > int64(quota.DraftProjectMaxCount)) ||
+			(quota.DraftProjectMaxBytes > 0 && draftBytes+prepared.SizeBytes > quota.DraftProjectMaxBytes))) {
+		return Attachment{}, ErrAttachmentQuotaExceeded
+	}
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO app_studio_attachments (
+			org_uuid, workspace_uuid, project_name, project_uid, attachment_id, actor_id, filename,
+			content_type, size_bytes, sha256, attachment_bytes, data_encrypted, data_key_id, draft, created_at, expires_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (org_uuid, workspace_uuid, project_name, project_uid, attachment_id) DO NOTHING
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, prepared.ID, prepared.ActorID,
+		prepared.Filename, prepared.ContentType, prepared.SizeBytes, prepared.SHA256, prepared.Data,
+		prepared.DataEncrypted, prepared.DataKeyID, prepared.Draft, prepared.CreatedAt, prepared.ExpiresAt)
+	if err != nil {
+		return Attachment{}, fmt.Errorf("create attachment: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return Attachment{}, fmt.Errorf("count created attachment: %w", err)
+	} else if count != 1 {
+		return Attachment{}, ErrAttachmentConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return Attachment{}, fmt.Errorf("commit create attachment: %w", err)
+	}
+	return prepared, nil
+}
+
+func lockPostgresAttachmentScope(ctx context.Context, tx *sql.Tx, scope Scope) error {
+	// Keep the workspace lock first and the project lock second. The workspace
+	// key is unchanged from the first workspace-quota rollout, so replicas from
+	// that rollout still serialize with current replicas. The project key is a
+	// NUL-safe replacement for the pre-workspace key; that key was sent as a
+	// PostgreSQL text parameter and lib/pq/Postgres reject it before hashing.
+	// There is therefore no usable old project lock to acquire. Holding the two
+	// current lock domains in this order prevents current replicas from
+	// deadlocking while checking aggregate and project-local quotas.
+	workspaceKey := postgresAttachmentWorkspaceLockKey(scope)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceKey); err != nil {
+		return fmt.Errorf("lock workspace attachment scope: %w", err)
+	}
+	projectKey := postgresAttachmentProjectLockKey(scope)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, projectKey); err != nil {
+		return fmt.Errorf("lock project attachment scope: %w", err)
+	}
+	return nil
+}
+
+// postgresAttachmentProjectLockKey returns a deterministic signed bigint for
+// the current project-local quota lock. The historical implementation joined
+// the scope with NUL bytes and passed the result as PostgreSQL text; that is
+// rejected by lib/pq/Postgres, so successful old uploads never entered a
+// project lock that current code can share. Length-prefixing also keeps
+// malformed identifiers unambiguous without putting user-controlled text in
+// the SQL parameter.
+func postgresAttachmentProjectLockKey(scope Scope) int64 {
+	hash := sha256.New()
+	for _, part := range []string{"app-studio-attachment-project", scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(part))
+	}
+	digest := hash.Sum(nil)
+	return int64(binary.BigEndian.Uint64(digest[:8]))
+}
+
+// postgresAttachmentWorkspaceLockKey returns a deterministic signed bigint
+// for a workspace lock without sending user-controlled text to PostgreSQL.
+// Length-prefixing keeps adjacent fields unambiguous even if a malformed
+// caller supplies embedded NUL bytes; the SQL parameter is always an int64.
+func postgresAttachmentWorkspaceLockKey(scope Scope) int64 {
+	hash := sha256.New()
+	for _, part := range []string{scope.OrgUUID, scope.WorkspaceUUID} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(part))
+	}
+	digest := hash.Sum(nil)
+	return int64(binary.BigEndian.Uint64(digest[:8]))
+}
+
+// lockPostgresAssistantThread serializes operations that use the advisory
+// thread lock. Callers that also need the attachment scope must acquire that
+// scope first (workspace, then project, then thread) so retention and explicit
+// thread deletion cannot wait on one another in opposite orders.
+func lockPostgresAssistantThread(ctx context.Context, tx *sql.Tx, scope Scope, threadID string) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, assistantThreadLockKey(scope, threadID)); err != nil {
+		return fmt.Errorf("lock assistant thread: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetAttachment(ctx context.Context, scope Scope, id string) (Attachment, error) {
+	if s == nil || s.db == nil {
+		return Attachment{}, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return Attachment{}, err
+	}
+	id = strings.TrimSpace(id)
+	var attachment Attachment
+	var expiresAt, draftExpiresAt sql.NullTime
+	var bindingID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT attachment_id, actor_id, filename, content_type, size_bytes, sha256,
+			attachment_bytes, data_encrypted, data_key_id, draft, created_at, expires_at,
+			binding_id, draft_expires_at
+		FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND attachment_id=$5
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, id).Scan(
+		&attachment.ID, &attachment.ActorID, &attachment.Filename, &attachment.ContentType, &attachment.SizeBytes,
+		&attachment.SHA256, &attachment.Data, &attachment.DataEncrypted, &attachment.DataKeyID, &attachment.Draft,
+		&attachment.CreatedAt, &expiresAt, &bindingID, &draftExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Attachment{}, ErrAttachmentNotFound
+	}
+	if err != nil {
+		return Attachment{}, fmt.Errorf("get attachment: %w", err)
+	}
+	attachment.ProjectName, attachment.ProjectUID = scope.ProjectName, scope.ProjectUID
+	attachment.BindingID = bindingID
+	if expiresAt.Valid {
+		expires := expiresAt.Time.UTC()
+		attachment.ExpiresAt = &expires
+	}
+	if draftExpiresAt.Valid {
+		expires := draftExpiresAt.Time.UTC()
+		attachment.DraftExpiresAt = &expires
+	}
+	if attachmentExpired(attachment, time.Now()) {
+		return Attachment{}, ErrAttachmentNotFound
+	}
+	if err := validateStoredAttachmentData(attachment); err != nil {
+		return Attachment{}, err
+	}
+	return cloneAttachment(attachment), nil
+}
+
+func (s *PostgresStore) ListAttachments(ctx context.Context, scope Scope) ([]Attachment, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT attachment_id, actor_id, filename, content_type, size_bytes, sha256,
+			data_encrypted, data_key_id, draft, created_at, expires_at,
+			binding_id, draft_expires_at
+		FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND (draft=false OR expires_at IS NULL OR expires_at > now())
+		ORDER BY created_at DESC, attachment_id DESC
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID)
+	if err != nil {
+		return nil, fmt.Errorf("list attachments: %w", err)
+	}
+	defer rows.Close()
+	attachments := make([]Attachment, 0)
+	for rows.Next() {
+		var attachment Attachment
+		var expiresAt, draftExpiresAt sql.NullTime
+		var bindingID string
+		if err := rows.Scan(&attachment.ID, &attachment.ActorID, &attachment.Filename, &attachment.ContentType,
+			&attachment.SizeBytes, &attachment.SHA256, &attachment.DataEncrypted, &attachment.DataKeyID,
+			&attachment.Draft, &attachment.CreatedAt, &expiresAt, &bindingID, &draftExpiresAt); err != nil {
+			return nil, fmt.Errorf("scan attachment: %w", err)
+		}
+		attachment.ProjectName, attachment.ProjectUID = scope.ProjectName, scope.ProjectUID
+		attachment.BindingID = bindingID
+		if expiresAt.Valid {
+			expires := expiresAt.Time.UTC()
+			attachment.ExpiresAt = &expires
+		}
+		if draftExpiresAt.Valid {
+			expires := draftExpiresAt.Time.UTC()
+			attachment.DraftExpiresAt = &expires
+		}
+		attachments = append(attachments, attachment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list attachments: %w", err)
+	}
+	return attachments, nil
+}
+
+func (s *PostgresStore) BindAttachment(ctx context.Context, scope Scope, receipt AttachmentReceipt, actor string) (Attachment, error) {
+	bound, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt}, actor, "legacy:"+strings.TrimSpace(receipt.ID))
+	if err != nil {
+		return Attachment{}, err
+	}
+	return bound[0], nil
+}
+
+func (s *PostgresStore) BindAttachments(ctx context.Context, scope Scope, receipts []AttachmentReceipt, actor, bindingID string) ([]Attachment, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	actor, bindingID = strings.TrimSpace(actor), strings.TrimSpace(bindingID)
+	if actor == "" || bindingID == "" || len(receipts) == 0 {
+		return nil, fmt.Errorf("attachment actor, binding ID, and receipts are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin bind attachments: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	bound := make([]Attachment, 0, len(receipts))
+	for _, receipt := range receipts {
+		id := strings.TrimSpace(receipt.ID)
+		if _, duplicate := seen[id]; duplicate {
+			return nil, ErrAttachmentReceiptMismatch
+		}
+		seen[id] = struct{}{}
+		var attachment Attachment
+		var expiresAt, draftExpiresAt sql.NullTime
+		err := tx.QueryRowContext(ctx, `
+			SELECT attachment_id, actor_id, filename, content_type, size_bytes, sha256,
+				attachment_bytes, data_encrypted, data_key_id, draft, created_at, expires_at,
+				binding_id, draft_expires_at
+			FROM app_studio_attachments
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND attachment_id=$5
+			FOR UPDATE
+		`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, id).Scan(
+			&attachment.ID, &attachment.ActorID, &attachment.Filename, &attachment.ContentType, &attachment.SizeBytes,
+			&attachment.SHA256, &attachment.Data, &attachment.DataEncrypted, &attachment.DataKeyID, &attachment.Draft,
+			&attachment.CreatedAt, &expiresAt, &attachment.BindingID, &draftExpiresAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrAttachmentNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get attachment for binding: %w", err)
+		}
+		attachment.ProjectName, attachment.ProjectUID = scope.ProjectName, scope.ProjectUID
+		if expiresAt.Valid {
+			expires := expiresAt.Time.UTC()
+			attachment.ExpiresAt = &expires
+		}
+		if draftExpiresAt.Valid {
+			expires := draftExpiresAt.Time.UTC()
+			attachment.DraftExpiresAt = &expires
+		}
+		if attachmentExpired(attachment, time.Now()) {
+			return nil, ErrAttachmentNotFound
+		}
+		if err := validateStoredAttachmentData(attachment); err != nil {
+			return nil, err
+		}
+		if err := validateAttachmentReceipt(attachment, receipt, actor); err != nil {
+			return nil, err
+		}
+		if !attachment.Draft && attachment.BindingID != "" && attachment.BindingID != bindingID {
+			return nil, ErrAttachmentConflict
+		}
+		bound = append(bound, attachment)
+	}
+	for i := range bound {
+		if !bound[i].Draft {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE app_studio_attachments
+			SET draft=false, draft_expires_at=expires_at, expires_at=NULL, binding_id=$7
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND attachment_id=$5
+				AND actor_id=$6 AND draft=true
+		`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, bound[i].ID, actor, bindingID); err != nil {
+			return nil, fmt.Errorf("bind attachment batch: %w", err)
+		}
+		bound[i].Draft = false
+		bound[i].BindingID = bindingID
+		bound[i].DraftExpiresAt = bound[i].ExpiresAt
+		bound[i].ExpiresAt = nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit bind attachments: %w", err)
+	}
+	return bound, nil
+}
+
+func (s *PostgresStore) RollbackAttachmentBinding(ctx context.Context, scope Scope, bindingID string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	bindingID = strings.TrimSpace(bindingID)
+	if bindingID == "" {
+		return fmt.Errorf("attachment binding ID is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rollback attachment binding: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE app_studio_attachments
+		SET draft=true, expires_at=draft_expires_at, draft_expires_at=NULL, binding_id=''
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND binding_id=$5
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, bindingID); err != nil {
+		return fmt.Errorf("rollback attachment binding: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rollback attachment binding: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteAttachment(ctx context.Context, scope Scope, id, actor string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	id, actor = strings.TrimSpace(id), strings.TrimSpace(actor)
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND attachment_id=$5
+			AND actor_id=$6 AND draft=true
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, id, actor)
+	if err != nil {
+		return fmt.Errorf("delete attachment: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("count deleted attachment: %w", err)
+	} else if count == 0 {
+		attachment, getErr := s.GetAttachment(ctx, scope, id)
+		if getErr != nil {
+			return getErr
+		}
+		if attachment.ActorID != actor {
+			return ErrAttachmentForbidden
+		}
+		return ErrAttachmentImmutable
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteProjectAttachments(ctx context.Context, scope Scope) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete project attachments: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO app_studio_attachment_deleted_projects (org_uuid, workspace_uuid, project_name, project_uid)
+		VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID); err != nil {
+		return fmt.Errorf("close project attachment storage: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID); err != nil {
+		return fmt.Errorf("delete project attachments: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete project attachments: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteExpiredAttachments(ctx context.Context, before time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("postgres store is nil")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM app_studio_attachments
+		WHERE draft=true AND expires_at IS NOT NULL AND expires_at <= $1
+	`, before.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("delete expired attachments: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count expired attachments: %w", err)
+	}
+	return count, nil
+}
+
 func (s *PostgresStore) DeleteMessagesOlderThan(ctx context.Context, before time.Time) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("postgres store is nil")
@@ -1215,6 +1772,83 @@ func (s *PostgresStore) DeleteMessagesOlderThan(ctx context.Context, before time
 		return 0, fmt.Errorf("begin delete stale assistant data: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// A thread projection is one canonical transcript. Materialize the stale
+	// candidate set before taking any row locks, then lock and re-check every
+	// candidate in deterministic scope order. The scope locks must be acquired
+	// before the generic message/run deletes below: otherwise a concurrent
+	// DeleteAssistantThread could hold the scope lock while waiting on a row
+	// lock already taken by this transaction, and this transaction could then
+	// wait on that scope lock.
+	rows, err := tx.QueryContext(ctx, `SELECT thread.org_uuid, thread.workspace_uuid, thread.project_name, thread.project_uid, thread.thread_id
+		FROM app_studio_assistant_threads AS thread
+		WHERE thread.updated_at < $1
+		  AND thread.status <> 'active'
+		  AND NOT EXISTS (
+			SELECT 1 FROM app_studio_assistant_turns AS active_turn
+			WHERE active_turn.org_uuid = thread.org_uuid
+			  AND active_turn.workspace_uuid = thread.workspace_uuid
+			  AND active_turn.project_name = thread.project_name
+			  AND active_turn.project_uid = thread.project_uid
+			  AND active_turn.thread_id = thread.thread_id
+			  AND active_turn.status = 'in_progress'
+		  )
+		ORDER BY thread.org_uuid, thread.workspace_uuid, thread.project_name, thread.project_uid, thread.thread_id`, before.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("select stale assistant thread candidates: %w", err)
+	}
+	type assistantThreadRetentionCandidate struct {
+		scope    Scope
+		threadID string
+	}
+	candidates := make([]assistantThreadRetentionCandidate, 0)
+	for rows.Next() {
+		var candidate assistantThreadRetentionCandidate
+		if err := rows.Scan(&candidate.scope.OrgUUID, &candidate.scope.WorkspaceUUID, &candidate.scope.ProjectName, &candidate.scope.ProjectUID, &candidate.threadID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan stale assistant thread candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate stale assistant thread candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale assistant thread candidates: %w", err)
+	}
+	lockedCandidates := make([]assistantThreadRetentionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if err := lockPostgresAttachmentScope(ctx, tx, candidate.scope); err != nil {
+			return 0, fmt.Errorf("lock stale assistant thread attachment scope: %w", err)
+		}
+		if err := lockPostgresAssistantThread(ctx, tx, candidate.scope, candidate.threadID); err != nil {
+			return 0, fmt.Errorf("lock stale assistant thread: %w", err)
+		}
+		var lockedThreadID string
+		err := tx.QueryRowContext(ctx, `SELECT thread.thread_id
+			FROM app_studio_assistant_threads AS thread
+			WHERE thread.org_uuid=$1 AND thread.workspace_uuid=$2 AND thread.project_name=$3 AND thread.project_uid=$4
+			  AND thread.thread_id=$5 AND thread.updated_at < $6 AND thread.status <> 'active'
+			  AND NOT EXISTS (
+				SELECT 1 FROM app_studio_assistant_turns AS active_turn
+				WHERE active_turn.org_uuid=thread.org_uuid
+				  AND active_turn.workspace_uuid=thread.workspace_uuid
+				  AND active_turn.project_name=thread.project_name
+				  AND active_turn.project_uid=thread.project_uid
+				  AND active_turn.thread_id=thread.thread_id
+				  AND active_turn.status='in_progress'
+			  )
+			FOR UPDATE`, candidate.scope.OrgUUID, candidate.scope.WorkspaceUUID, candidate.scope.ProjectName,
+			candidate.scope.ProjectUID, candidate.threadID, before.UTC()).Scan(&lockedThreadID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("re-check stale assistant thread candidate: %w", err)
+		}
+		candidate.threadID = lockedThreadID
+		lockedCandidates = append(lockedCandidates, candidate)
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM app_studio_messages AS message
 		WHERE message.created_at < $1
 		  AND NOT EXISTS (
@@ -1256,23 +1890,20 @@ func (s *PostgresStore) DeleteMessagesOlderThan(ctx context.Context, before time
 	if err != nil {
 		return 0, fmt.Errorf("count deleted assistant runs: %w", err)
 	}
-	// A thread projection is one canonical transcript.  Remove old idle or
-	// archived projections only when no in-progress turn remains; active turns
-	// must survive retention so a refresh can still resume them.  The FK
-	// cascade removes the associated turns and thread events atomically.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_assistant_threads AS thread
-		WHERE thread.updated_at < $1
-		  AND thread.status <> 'active'
-		  AND NOT EXISTS (
-			SELECT 1 FROM app_studio_assistant_turns AS active_turn
-			WHERE active_turn.org_uuid = thread.org_uuid
-			  AND active_turn.workspace_uuid = thread.workspace_uuid
-			  AND active_turn.project_name = thread.project_name
-			  AND active_turn.project_uid = thread.project_uid
-			  AND active_turn.thread_id = thread.thread_id
-			  AND active_turn.status = 'in_progress'
-		  )`, before.UTC()); err != nil {
-		return 0, fmt.Errorf("delete stale assistant threads: %w", err)
+	for _, candidate := range lockedCandidates {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_attachments AS attachment
+			USING app_studio_assistant_turns AS turn
+			WHERE attachment.org_uuid=$1 AND attachment.workspace_uuid=$2 AND attachment.project_name=$3 AND attachment.project_uid=$4
+			  AND turn.org_uuid=$1 AND turn.workspace_uuid=$2 AND turn.project_name=$3 AND turn.project_uid=$4
+			  AND turn.thread_id=$5 AND attachment.binding_id=turn.turn_id`, candidate.scope.OrgUUID, candidate.scope.WorkspaceUUID,
+			candidate.scope.ProjectName, candidate.scope.ProjectUID, candidate.threadID); err != nil {
+			return 0, fmt.Errorf("delete stale assistant thread attachments: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_assistant_threads
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5`, candidate.scope.OrgUUID,
+			candidate.scope.WorkspaceUUID, candidate.scope.ProjectName, candidate.scope.ProjectUID, candidate.threadID); err != nil {
+			return 0, fmt.Errorf("delete stale assistant thread: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit delete stale assistant data: %w", err)
@@ -1469,3 +2100,4 @@ func scanAssistantRunEvent(row interface {
 }
 
 var _ Store = (*PostgresStore)(nil)
+var _ AttachmentStore = (*PostgresStore)(nil)

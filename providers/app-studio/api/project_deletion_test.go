@@ -18,11 +18,14 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/gorilla/mux"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -30,6 +33,19 @@ import (
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 )
+
+type failOnceProjectDeleteStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failOnceProjectDeleteStore) DeleteProjectMessages(ctx context.Context, scope store.Scope) error {
+	if s.fail {
+		s.fail = false
+		return errors.New("temporary attachment cleanup failure")
+	}
+	return s.Store.DeleteProjectMessages(ctx, scope)
+}
 
 func TestProjectViewProjectsImmutableUIDAndDeletionMetadata(t *testing.T) {
 	deletionTimestamp := metav1.Now()
@@ -103,4 +119,47 @@ func TestDeleteProjectRequiresAndForwardsExpectedUID(t *testing.T) {
 		return
 	}
 	t.Fatal("matching UID did not issue a Project delete")
+}
+
+func TestDeleteProjectRetriesCleanupForTerminatingProject(t *testing.T) {
+	dyn := publishingTestDynamic(publishingTestProject("demo", "project-current", ""))
+	dyn.PrependReactor("delete", "projects", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		object, err := dyn.Tracker().Get(asclient.ProjectGVR, "", "demo")
+		if err != nil {
+			return true, nil, err
+		}
+		project := object.DeepCopyObject()
+		accessor, err := meta.Accessor(project)
+		if err != nil {
+			return true, nil, err
+		}
+		now := metav1.Now()
+		accessor.SetDeletionTimestamp(&now)
+		return true, nil, dyn.Tracker().Update(asclient.ProjectGVR, project, "")
+	})
+	client := asclient.NewFromDynamic(dyn)
+	backend := &failOnceProjectDeleteStore{Store: store.NewMemoryStore(), fail: true}
+	server := &Server{store: backend, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	router := mux.NewRouter()
+	server.Register(router)
+
+	first := publishingDo(t, router, http.MethodDelete, "/api/projects/demo?uid=project-current", "")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("first cleanup status = %d: %s, want 500", first.Code, first.Body.String())
+	}
+	terminating, err := client.Projects().Get(context.Background(), "demo", metav1.GetOptions{})
+	if err != nil || terminating.DeletionTimestamp == nil || len(terminating.Finalizers) == 0 {
+		t.Fatalf("terminating project after cleanup failure = %#v, %v", terminating, err)
+	}
+	second := publishingDo(t, router, http.MethodDelete, "/api/projects/demo?uid=project-current", "")
+	if second.Code != http.StatusNoContent {
+		t.Fatalf("retry cleanup status = %d: %s, want 204", second.Code, second.Body.String())
+	}
+	cleaned, err := client.Projects().Get(context.Background(), "demo", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaned.Finalizers) != 0 {
+		t.Fatalf("cleanup finalizer after retry = %v", cleaned.Finalizers)
+	}
 }

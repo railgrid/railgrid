@@ -17,6 +17,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,73 @@ func TestMaterializeAssistantThreadItemsPreservesTypedCommentaryAndTerminalPhase
 	}
 	if terminal == nil || terminal.Content != "Here is the answer." || terminal.Status != "completed" {
 		t.Fatalf("terminal item = %#v", terminal)
+	}
+}
+
+func TestMaterializeAssistantThreadItemsRepairsUnfinishedImageModelInputOnTerminalReload(t *testing.T) {
+	action := projectAssistantActionFeedItem{
+		ID:        "feed-image-reload",
+		Kind:      projectAssistantActionFeedItemInspect,
+		MediaKind: projectAssistantActionFeedMediaImage,
+		Status:    projectAssistantActionFeedStatusRunning,
+		Title:     "Viewing image",
+		Target:    "screen.png",
+		Severity:  projectAssistantActionFeedSeverityNormal,
+		Sequence:  1,
+	}
+	actionData, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name              string
+		terminalEventType string
+		wantItemStatus    string
+		wantActionStatus  string
+		wantTitle         string
+	}{
+		{name: "completed turn without accepted image result", terminalEventType: assistantThreadEventTurnCompleted, wantItemStatus: "failed", wantActionStatus: projectAssistantActionFeedStatusFailed, wantTitle: "Image view failed"},
+		{name: "failed turn", terminalEventType: assistantThreadEventTurnFailed, wantItemStatus: "failed", wantActionStatus: projectAssistantActionFeedStatusFailed, wantTitle: "Image view failed"},
+		{name: "interrupted turn", terminalEventType: assistantThreadEventTurnInterrupted, wantItemStatus: "canceled", wantActionStatus: projectAssistantActionFeedStatusCanceled, wantTitle: "Image view canceled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := assistantThreadItem{
+				ID: "model-input-assistant-feed-image-reload", TurnID: "turn-image-reload", Type: assistantThreadEventModelInput,
+				Status: "in_progress", Content: "Viewing image", Data: actionData,
+			}
+			itemPayload, marshalErr := json.Marshal(map[string]any{"item": item})
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			events := []store.AssistantThreadEvent{
+				{TurnID: item.TurnID, Sequence: 1, Type: assistantThreadEventItemStarted, ItemID: item.ID, Payload: itemPayload},
+				{TurnID: item.TurnID, Sequence: 2, Type: test.terminalEventType, Payload: []byte(`{}`)},
+			}
+			items := materializeAssistantThreadItems(events)
+			if len(items) != 1 {
+				t.Fatalf("materialized terminal items = %#v", items)
+			}
+			got := items[0]
+			if got.Status != test.wantItemStatus || got.Content != test.wantTitle {
+				t.Fatalf("materialized image item = %#v, want status=%q title=%q", got, test.wantItemStatus, test.wantTitle)
+			}
+			var gotAction projectAssistantActionFeedItem
+			if err := json.Unmarshal(got.Data, &gotAction); err != nil {
+				t.Fatal(err)
+			}
+			if gotAction.Status != test.wantActionStatus || gotAction.Title != test.wantTitle || gotAction.MediaKind != projectAssistantActionFeedMediaImage {
+				t.Fatalf("materialized image action = %#v", gotAction)
+			}
+			if gotAction.Title == "Viewed image" || gotAction.Outcome != "" {
+				t.Fatalf("terminal image action falsely claims viewed: %#v", gotAction)
+			}
+			// Re-materializing after a reload is deterministic and does not
+			// resurrect the in-progress synthetic item.
+			reloaded := materializeAssistantThreadItems(events)
+			if len(reloaded) != 1 || reloaded[0].Status != test.wantItemStatus || reloaded[0].Content != test.wantTitle {
+				t.Fatalf("reloaded image item = %#v", reloaded)
+			}
+		})
 	}
 }
 
@@ -255,5 +324,59 @@ func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) 
 	}
 	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: second.ID, Type: assistantThreadEventTurnCompleted}) {
 		t.Fatal("current turn terminal event did not end stream")
+	}
+}
+
+func TestTerminalizeProjectAssistantTurnStartFailureClosesCanonicalTurn(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	thread := store.AssistantThread{ID: "thread-start-failure", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
+	if _, err := messages.CreateAssistantThread(ctx, scope, thread, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+		ID:                  "turn-start-failure",
+		ThreadID:            thread.ID,
+		ActorID:             thread.ActorID,
+		ClientUserMessageID: "client-start-failure",
+		Mode:                store.AssistantRunModeDefault,
+		ApprovalMode:        store.AssistantApprovalModeOnRequest,
+		Status:              store.AssistantTurnStatusInProgress,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}, []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, CreatedAt: now}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startErr := errors.New("attachment binding failed")
+	if err := server.terminalizeProjectAssistantTurnStartFailure(ctx, scope, turn, startErr); err != nil {
+		t.Fatalf("terminalize canonical turn: %v", err)
+	}
+	got, err := messages.GetAssistantTurn(ctx, scope, thread.ID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.AssistantTurnStatusFailed {
+		t.Fatalf("canonical turn status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(string(got.Error), startErr.Error()) {
+		t.Fatalf("canonical turn error = %s, want startup cause", got.Error)
+	}
+	updatedThread, err := messages.GetAssistantThread(ctx, scope, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedThread.Status != store.AssistantThreadStatusIdle {
+		t.Fatalf("thread status = %q, want idle after failed turn", updatedThread.Status)
+	}
+	events, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventTurnFailed, ""); got != 1 {
+		t.Fatalf("failed turn events = %d, want one: %#v", got, events)
 	}
 }

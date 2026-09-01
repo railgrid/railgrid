@@ -129,6 +129,7 @@ export function assistantRunExpectedServerContent(
     if (part.type === 'text') return part.text
     if (part.type === 'skill') return `[@skill:${part.skillID.trim()}]`
     if (part.type === 'annotation') return assistantAnnotationModelText(part.annotation)
+    if (part.type === 'attachment') return `[@attachment:${part.attachment.id.trim()}]`
     const canonicalIndex = originalToCanonical.get(part.resourceIndex)
     const resource = canonicalIndex === undefined ? undefined : resources[canonicalIndex]
     if (!resource) return ''
@@ -148,6 +149,20 @@ export interface PendingFirstProjectSubmission {
   clientRequestID: string
   projectName: string
   modelID: string
+  /** The server-owned thread to replay when the first start response is lost. */
+  threadID?: string
+}
+
+/**
+ * A project may be started from attachments alone. The planning endpoint still
+ * requires text, so use an explicit neutral description that records what the
+ * user actually supplied without inventing a product requirement.
+ */
+export const ATTACHMENT_ONLY_PROJECT_PROMPT = 'Use the attached files as context for this project.'
+
+export function projectCreationPrompt(content: string, attachmentCount: number): string {
+  const trimmed = content.trim()
+  return trimmed || (attachmentCount > 0 ? ATTACHMENT_ONLY_PROJECT_PROMPT : '')
 }
 
 export function newFirstProjectSubmission(content: string, clientRequestID: string, modelID = ''): PendingFirstProjectSubmission {
@@ -156,6 +171,26 @@ export function newFirstProjectSubmission(content: string, clientRequestID: stri
 
 export function firstProjectSubmissionWithProject(submission: PendingFirstProjectSubmission, projectName: string): PendingFirstProjectSubmission {
   return { ...submission, projectName }
+}
+
+export function firstProjectSubmissionWithThread(submission: PendingFirstProjectSubmission, threadID: string): PendingFirstProjectSubmission {
+  return { ...submission, threadID }
+}
+
+export function firstProjectSubmissionWithClientRequestID(submission: PendingFirstProjectSubmission, clientRequestID: string): PendingFirstProjectSubmission {
+  return { ...submission, clientRequestID }
+}
+
+/**
+ * A received 5xx means the startup request reached the server but was
+ * rejected before this client observed durable acceptance. Rotate only that
+ * explicit failure boundary; transport failures remain ambiguous and must
+ * replay with the original idempotency identity.
+ */
+export function shouldRotateFirstProjectRequestID(error: unknown, startPostAccepted: boolean): boolean {
+  if (startPostAccepted || !error || typeof error !== 'object') return false
+  const status = (error as { status?: unknown }).status
+  return typeof status === 'number' && status >= 500 && status < 600
 }
 
 export function firstProjectStartPlan(submission: PendingFirstProjectSubmission) {
@@ -201,6 +236,25 @@ export function firstProjectSubmissionMatches(submission: PendingFirstProjectSub
 export function firstProjectSubmissionIsCurrent(submission: PendingFirstProjectSubmission, generation: number, currentGeneration: number, selectedProject: string, routeProject: string, draftProject: string): boolean {
 	return generation === currentGeneration && selectedProject === (submission.projectName || draftProject) &&
 		(routeProject === submission.projectName || (!submission.projectName && routeProject === ''))
+}
+
+/**
+ * The create route is also the recovery surface for a project that was
+ * created before its first attachment/turn was accepted. Its URL has no
+ * project segment, but the selected project still proves which pending
+ * submission owns the retry.
+ */
+export function firstProjectSubmissionCanRetryFromCreateRoute(
+  submission: PendingFirstProjectSubmission,
+  generation: number,
+  currentGeneration: number,
+  selectedProject: string,
+  routeProject: string,
+): boolean {
+	return generation === currentGeneration &&
+		Boolean(submission.projectName) &&
+		selectedProject === submission.projectName &&
+		routeProject === ''
 }
 
 export function normalizeAssistantRunStatus(status: unknown): AssistantRun['status'] | undefined {

@@ -247,12 +247,17 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
 	}
+	attachments, ok := deps.Store.(store.AttachmentStore)
+	if !ok {
+		return fmt.Errorf("project controller: message store does not support attachment lifecycle cleanup")
+	}
 
 	if err := (&project.Reconciler{
 		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
 		Busy:        deps.Busy,
 		Owns:        deps.Owns,
+		Attachments: attachments,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
 	}).SetupWithManager(mgr); err != nil {

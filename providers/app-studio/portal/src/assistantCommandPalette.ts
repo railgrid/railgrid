@@ -1,8 +1,10 @@
 import type {
   ProjectAssistantAnnotation,
+  ProjectAssistantAttachmentReceipt,
   ProjectAssistantContextResource,
   ProjectAssistantSkill,
 } from './types'
+import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 
 export type AssistantSlashCommandID = 'skill' | 'resource' | 'plan' | 'review' | 'default'
 
@@ -78,6 +80,7 @@ export type AssistantComposerPart =
   | { type: 'skill'; skillID: string }
   | { type: 'resource'; resourceIndex: number }
   | { type: 'annotation'; annotation: ProjectAssistantAnnotation }
+  | { type: 'attachment'; attachment: ProjectAssistantAttachmentReceipt }
 
 export interface AssistantComposerState {
   /** Plain user prose with chip labels omitted. */
@@ -86,6 +89,8 @@ export interface AssistantComposerState {
   /** Deterministic, bounded selections used by the existing API contract. */
   skills: ProjectAssistantSkill[]
   contextResources: ProjectAssistantContextResource[]
+  /** Uploads in progress or failed must be resolved before submitting. */
+  attachmentsPending?: boolean
 }
 
 export const MAX_ASSISTANT_COMPOSER_PARTS = 64
@@ -331,6 +336,10 @@ function validPart(part: unknown): AssistantComposerPart | null {
   if (raw.type === 'annotation') {
     const annotation = validAnnotation(raw.annotation)
     if (annotation) return { type: 'annotation', annotation }
+  }
+  if (raw.type === 'attachment') {
+    const attachment = projectAssistantAttachmentReceipt(raw.attachment)
+    if (attachment) return { type: 'attachment', attachment }
   }
   return null
 }

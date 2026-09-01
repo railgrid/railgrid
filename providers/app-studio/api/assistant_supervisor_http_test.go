@@ -722,6 +722,35 @@ func TestProjectAssistantProgressSnapshotKeepsHiddenActionSequenceWhenItFails(t 
 	}
 }
 
+func TestProjectAssistantDurableMetadataModelInputSequencesDoNotCollideWithToolCalls(t *testing.T) {
+	state := &projectAssistantDurableMetadataState{}
+	state.upsertModelInput(projectAssistantModelInputEvent{
+		ID:      "image-input-screen",
+		Ordinal: 1,
+		Status:  "started",
+	})
+	if len(state.modelInputs) != 1 || state.modelInputs[0].Sequence != 1 {
+		t.Fatalf("started image input = %#v, want canonical sequence 1", state.modelInputs)
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:       "tool-read",
+		Name:     projectToolReadFile,
+		Status:   "succeeded",
+		Sequence: 1, // An upstream sequence must not collide with the image.
+	})
+	if len(state.toolCalls) != 1 || state.toolCalls[0].Sequence != 2 {
+		t.Fatalf("tool activity = %#v, want canonical sequence 2", state.toolCalls)
+	}
+	state.upsertModelInput(projectAssistantModelInputEvent{
+		ID:      "image-input-screen",
+		Ordinal: 2, // A later provider call must retain the image action sequence.
+		Status:  "completed",
+	})
+	if len(state.modelInputs) != 1 || state.modelInputs[0].Sequence != 1 || state.modelInputs[0].Status != projectAssistantActionFeedStatusSucceeded {
+		t.Fatalf("completed image input = %#v, want same sequence 1 and succeeded status", state.modelInputs)
+	}
+}
+
 func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshots(t *testing.T) {
 	valid := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"}}}
 	tooMany := projectAssistantPlanSnapshot{Steps: make([]projectAssistantPlanStep, projectEinoAssistantTodoProgressMaxItems+1)}

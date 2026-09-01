@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components"
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -38,6 +39,40 @@ import (
 )
 
 const projectEinoAssistantCompactionTestMessages = 128
+
+func TestProjectEinoAssistantCompactionTokenCounterAccountsForHistoricalImages(t *testing.T) {
+	receipt := attachmentReceiptForTest("image-token-estimate", "screen.png", "image/png", []byte("image"))
+	messages, err := projectChatMessagesToEino([]chatMessage{{
+		Role: "user", Content: "inspect this", Attachments: []projectAssistantAttachmentReceipt{receipt},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutImage, err := projectEinoAssistantCompactionTokenCounter(context.Background(), &summarization.TokenCounterInput{
+		Messages: []*schema.Message{schema.UserMessage("inspect this")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage, err := projectEinoAssistantCompactionTokenCounter(context.Background(), &summarization.TokenCounterInput{Messages: messages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta := withImage - withoutImage; delta < projectEinoAssistantHistoricalImageTokenEstimate {
+		t.Fatalf("historical image token delta = %d, want at least %d", delta, projectEinoAssistantHistoricalImageTokenEstimate)
+	}
+}
+
+func TestProjectEinoAssistantCompactionTokenCounterRejectsMalformedHistoricalReceipt(t *testing.T) {
+	message := schema.UserMessage("")
+	message.Extra = map[string]any{
+		projectAssistantHistoricalAttachmentMessageKey: true,
+		projectAssistantAttachmentMessageReceiptsKey:   []any{map[string]any{"id": "missing-fields"}},
+	}
+	if _, err := projectEinoAssistantCompactionTokenCounter(context.Background(), &summarization.TokenCounterInput{Messages: []*schema.Message{schema.UserMessage("inspect this"), message}}); err == nil {
+		t.Fatal("malformed historical receipt was silently accepted by compaction token counter")
+	}
+}
 
 type projectEinoAssistantCompactionTestModel struct {
 	input          []*schema.Message

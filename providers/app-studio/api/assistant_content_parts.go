@@ -29,11 +29,14 @@ import (
 
 const (
 	projectAssistantMaxContentParts           = 64
+	projectAssistantMaxAttachmentsPerTurn     = 8
+	projectAssistantMaxAttachmentBytesPerTurn = 20 << 20
 	projectAssistantMaxContentPartBytes       = 64 << 10
 	projectAssistantContentPartTextType       = "text"
 	projectAssistantContentPartSkillType      = "skill"
 	projectAssistantContentPartResourceType   = "resource"
 	projectAssistantContentPartAnnotationType = "annotation"
+	projectAssistantContentPartAttachmentType = "attachment"
 
 	projectAssistantMaxAnnotationIDBytes         = 128
 	projectAssistantMaxAnnotationCommentBytes    = 2048
@@ -65,17 +68,19 @@ const (
 // missing scalar/object fields from valid zero values while keeping the
 // internal representation convenient for callers and canonical projections.
 type projectAssistantContentPart struct {
-	Type          string                      `json:"type"`
-	Text          string                      `json:"text,omitempty"`
-	SkillID       string                      `json:"skillID,omitempty"`
-	ResourceIndex int                         `json:"resourceIndex,omitempty"`
-	Annotation    *projectAssistantAnnotation `json:"annotation,omitempty"`
+	Type          string                             `json:"type"`
+	Text          string                             `json:"text,omitempty"`
+	SkillID       string                             `json:"skillID,omitempty"`
+	ResourceIndex int                                `json:"resourceIndex,omitempty"`
+	Annotation    *projectAssistantAnnotation        `json:"annotation,omitempty"`
+	Attachment    *projectAssistantAttachmentReceipt `json:"attachment,omitempty"`
 
 	decoded          bool
 	textSet          bool
 	skillIDSet       bool
 	resourceIndexSet bool
 	annotationSet    bool
+	attachmentSet    bool
 }
 
 // projectAssistantAnnotation is the server-owned, bounded representation of
@@ -448,6 +453,16 @@ func (p *projectAssistantContentPart) UnmarshalJSON(raw []byte) error {
 			}
 			p.Annotation = &annotation
 			p.annotationSet = true
+		case "attachment":
+			if projectAssistantJSONNull(value) {
+				return fmt.Errorf("content part attachment must be an object")
+			}
+			var attachment projectAssistantAttachmentReceipt
+			if err := json.Unmarshal(value, &attachment); err != nil {
+				return err
+			}
+			p.Attachment = &attachment
+			p.attachmentSet = true
 		default:
 			return fmt.Errorf("unknown content part field %q", key)
 		}
@@ -466,6 +481,8 @@ func (p projectAssistantContentPart) MarshalJSON() ([]byte, error) {
 		fields["resourceIndex"] = p.ResourceIndex
 	case projectAssistantContentPartAnnotationType:
 		fields["annotation"] = p.Annotation
+	case projectAssistantContentPartAttachmentType:
+		fields["attachment"] = p.Attachment
 	default:
 		// Preserve the type in diagnostics/projections. Validation rejects this
 		// value before a durable write, but marshaling remains deterministic.
@@ -481,6 +498,9 @@ func (p projectAssistantContentPart) MarshalJSON() ([]byte, error) {
 		if p.annotationSet || p.Annotation != nil {
 			fields["annotation"] = p.Annotation
 		}
+		if p.attachmentSet || p.Attachment != nil {
+			fields["attachment"] = p.Attachment
+		}
 	}
 	return json.Marshal(fields)
 }
@@ -493,6 +513,7 @@ func cloneProjectAssistantContentParts(in []projectAssistantContentPart) []proje
 	for index, part := range in {
 		out[index] = part
 		out[index].Annotation = cloneProjectAssistantAnnotation(part.Annotation)
+		out[index].Attachment = cloneProjectAssistantAttachmentReceipt(part.Attachment)
 	}
 	return out
 }
@@ -550,6 +571,14 @@ func projectAssistantContentPartFromAnnotation(annotation projectAssistantAnnota
 		Type:          projectAssistantContentPartAnnotationType,
 		Annotation:    cloneProjectAssistantAnnotation(&annotation),
 		annotationSet: true,
+	}
+}
+
+func projectAssistantContentPartAttachment(attachment projectAssistantAttachmentReceipt) projectAssistantContentPart {
+	return projectAssistantContentPart{
+		Type:          projectAssistantContentPartAttachmentType,
+		Attachment:    cloneProjectAssistantAttachmentReceipt(&attachment),
+		attachmentSet: true,
 	}
 }
 
@@ -896,6 +925,8 @@ func normalizeProjectAssistantContentParts(
 	seenSkills := make(map[string]struct{}, len(selectedSkills))
 	seenResources := make(map[int]struct{}, len(selectedResources))
 	seenAnnotations := make(map[string]struct{})
+	seenAttachments := make(map[string]struct{})
+	attachmentBytes := int64(0)
 	var derived strings.Builder
 	for _, original := range raw {
 		part := original
@@ -908,12 +939,13 @@ func normalizeProjectAssistantContentParts(
 			part.skillIDSet = part.skillIDSet || part.SkillID != ""
 			part.resourceIndexSet = part.resourceIndexSet || part.ResourceIndex != 0 || part.Type == projectAssistantContentPartResourceType
 			part.annotationSet = part.annotationSet || part.Annotation != nil || part.Type == projectAssistantContentPartAnnotationType
+			part.attachmentSet = part.attachmentSet || part.Attachment != nil || part.Type == projectAssistantContentPartAttachmentType
 		}
 		var canonical projectAssistantContentPart
 		switch part.Type {
 		case projectAssistantContentPartTextType:
-			if part.skillIDSet || part.resourceIndexSet || part.annotationSet || part.SkillID != "" || part.ResourceIndex != 0 || part.Annotation != nil {
-				return nil, nil, "", newValidationError("text content parts cannot include skillID, resourceIndex, or annotation")
+			if part.skillIDSet || part.resourceIndexSet || part.annotationSet || part.attachmentSet || part.SkillID != "" || part.ResourceIndex != 0 || part.Annotation != nil || part.Attachment != nil {
+				return nil, nil, "", newValidationError("text content parts cannot include skillID, resourceIndex, annotation, or attachment")
 			}
 			if !utf8.ValidString(part.Text) {
 				return nil, nil, "", newValidationError("text content parts must be valid UTF-8")
@@ -929,8 +961,8 @@ func normalizeProjectAssistantContentParts(
 			}
 			derived.WriteString(part.Text)
 		case projectAssistantContentPartSkillType:
-			if part.textSet || part.resourceIndexSet || part.annotationSet || part.Text != "" || part.ResourceIndex != 0 || part.Annotation != nil {
-				return nil, nil, "", newValidationError("skill content parts cannot include text, resourceIndex, or annotation")
+			if part.textSet || part.resourceIndexSet || part.annotationSet || part.attachmentSet || part.Text != "" || part.ResourceIndex != 0 || part.Annotation != nil || part.Attachment != nil {
+				return nil, nil, "", newValidationError("skill content parts cannot include text, resourceIndex, annotation, or attachment")
 			}
 			id := strings.TrimSpace(part.SkillID)
 			if id == "" {
@@ -949,8 +981,8 @@ func normalizeProjectAssistantContentParts(
 			derived.WriteString(id)
 			derived.WriteByte(']')
 		case projectAssistantContentPartResourceType:
-			if part.textSet || part.skillIDSet || part.annotationSet || part.Text != "" || part.SkillID != "" || part.Annotation != nil {
-				return nil, nil, "", newValidationError("resource content parts cannot include text, skillID, or annotation")
+			if part.textSet || part.skillIDSet || part.annotationSet || part.attachmentSet || part.Text != "" || part.SkillID != "" || part.Annotation != nil || part.Attachment != nil {
+				return nil, nil, "", newValidationError("resource content parts cannot include text, skillID, annotation, or attachment")
 			}
 			if !part.resourceIndexSet {
 				return nil, nil, "", newValidationError("resource content parts require resourceIndex")
@@ -978,8 +1010,8 @@ func normalizeProjectAssistantContentParts(
 			derived.WriteString(strings.TrimSpace(ref.ResourceRef.Name))
 			derived.WriteByte(']')
 		case projectAssistantContentPartAnnotationType:
-			if part.textSet || part.skillIDSet || part.resourceIndexSet || part.Text != "" || part.SkillID != "" || part.ResourceIndex != 0 {
-				return nil, nil, "", newValidationError("annotation content parts cannot include text, skillID, or resourceIndex")
+			if part.textSet || part.skillIDSet || part.resourceIndexSet || part.attachmentSet || part.Text != "" || part.SkillID != "" || part.ResourceIndex != 0 || part.Attachment != nil {
+				return nil, nil, "", newValidationError("annotation content parts cannot include text, skillID, resourceIndex, or attachment")
 			}
 			if !part.annotationSet || part.Annotation == nil {
 				return nil, nil, "", newValidationError("annotation content parts require annotation")
@@ -995,6 +1027,31 @@ func normalizeProjectAssistantContentParts(
 			canonical = projectAssistantContentPartFromAnnotation(*annotation)
 			parts = append(parts, canonical)
 			derived.WriteString(projectAssistantAnnotationModelText(annotation))
+		case projectAssistantContentPartAttachmentType:
+			if part.textSet || part.skillIDSet || part.resourceIndexSet || part.annotationSet || part.Text != "" || part.SkillID != "" || part.ResourceIndex != 0 || part.Annotation != nil {
+				return nil, nil, "", newValidationError("attachment content parts cannot include text, skillID, resourceIndex, or annotation")
+			}
+			if !part.attachmentSet || part.Attachment == nil {
+				return nil, nil, "", newValidationError("attachment content parts require attachment")
+			}
+			attachment, attachmentErr := normalizeProjectAssistantAttachmentReceipt(part.Attachment)
+			if attachmentErr != nil {
+				return nil, nil, "", attachmentErr
+			}
+			canonical = projectAssistantContentPartAttachment(*attachment)
+			if _, exists := seenAttachments[attachment.ID]; exists {
+				return nil, nil, "", newValidationError(fmt.Sprintf("duplicate attachment id %q", attachment.ID))
+			}
+			seenAttachments[attachment.ID] = struct{}{}
+			if len(seenAttachments) > projectAssistantMaxAttachmentsPerTurn {
+				return nil, nil, "", newValidationError(fmt.Sprintf("contentParts must contain at most %d attachments", projectAssistantMaxAttachmentsPerTurn))
+			}
+			attachmentBytes += attachment.SizeBytes
+			if attachmentBytes > projectAssistantMaxAttachmentBytesPerTurn {
+				return nil, nil, "", newValidationError(fmt.Sprintf("contentParts attachments must total at most %d bytes", projectAssistantMaxAttachmentBytesPerTurn))
+			}
+			parts = append(parts, canonical)
+			derived.WriteString(projectAssistantAttachmentModelText(attachment))
 		default:
 			return nil, nil, "", newValidationError(fmt.Sprintf("unknown content part type %q", part.Type))
 		}

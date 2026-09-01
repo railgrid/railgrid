@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import MarkdownIt from 'markdown-it'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import {
   AppWindow,
   ArrowLeft,
@@ -37,7 +37,7 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
-import { api, isProjectAPIInitializingError, ProjectAPIRequestError } from './api'
+import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError } from './api'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import LayoutSelector from './portalkit/LayoutSelector.vue'
@@ -89,7 +89,6 @@ import {
   assistantContentPartsFromThreadItem,
   assistantContextResourcesFromThreadItem,
   assistantSkillsFromThreadItem,
-  assistantThreadItemIdentity,
   assistantThreadItemToRun,
   assistantThreadItemsToMessages,
   assistantThreadItemsToRuns,
@@ -98,6 +97,7 @@ import {
   maxAssistantThreadSequence,
   projectAssistantSkills,
   projectAssistantContextResources,
+  upsertAssistantActionFeed,
 } from './assistantThreadProjection'
 import {
   assistantThreadFocusStorageKey,
@@ -132,8 +132,10 @@ import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import ModelPicker from './ModelPicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
+import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
 import AssistantMessageQueue from './AssistantMessageQueue.vue'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
+import AssistantMessageAttachments from './AssistantMessageAttachments.vue'
 import DevelopmentPreviewToolbar from './DevelopmentPreviewToolbar.vue'
 import {
   ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS,
@@ -152,6 +154,15 @@ import {
   updateAssistantComposerAnnotation,
   type AssistantComposerState,
 } from './assistantCommandPalette'
+import {
+  assistantAttachmentPart,
+  assistantAttachmentErrorMessage,
+  assistantAttachmentReceiptsMatch,
+  isAssistantAttachmentReceiptUnavailableError,
+  projectAssistantAttachmentReceipt,
+  staleAssistantAttachmentClientIDs,
+  type AssistantStagedAttachment,
+} from './assistantAttachments'
 import { assistantResourceSelectionKey } from './assistantResources'
 import {
   publishingAccessSelection,
@@ -179,14 +190,19 @@ import {
   assistantRunTerminal,
   firstProjectStartPlan,
   firstProjectSubmissionAccepted,
+  firstProjectSubmissionCanRetryFromCreateRoute,
   firstProjectSubmissionIsCurrent,
   firstProjectSubmissionMatches,
+  firstProjectSubmissionWithClientRequestID,
   firstProjectSubmissionWithProject,
+  firstProjectSubmissionWithThread,
   mergeConversationSnapshot,
   newFirstProjectSubmission,
   normalizeAssistantRunStatus,
+  shouldRotateFirstProjectRequestID,
   normalizeSnapshotMessage,
   orderConversationMessages,
+  projectCreationPrompt,
   replaceOptimisticUserMessage,
   reconcileAssistantRunInterrupt,
   reconcileAssistantRunTerminal,
@@ -715,14 +731,39 @@ const deletingProjectUID = ref('')
 const projectDeletionError = ref<string | null>(null)
 const projectDeletionRetry = ref<(() => void) | null>(null)
 const prompt = ref('')
+// Files cannot be uploaded until the project has a server identity. Keep the
+// browser-owned candidates outside the rich-composer parts so landing/wizard
+// unmounts never discard them, then bind each receipt to the created project.
+const preProjectAttachments = shallowRef<AssistantStagedAttachment[]>([])
+const preProjectAttachmentError = computed(() => assistantAttachmentErrorMessage(preProjectAttachments.value))
+let preProjectAttachmentProjectName = ''
+const preProjectAttachmentControllers = new Map<string, AbortController>()
 const selectedTurnSkills = ref<ProjectAssistantSkill[]>([])
 const selectedTurnResources = ref<ProjectAssistantContextResource[]>([])
 const assistantComposerParts = ref<ProjectAssistantContentPart[]>([])
+const assistantComposerAttachmentsPending = ref(false)
 const landingImportOpen = ref(false)
 const landingImportPopoverRef = ref<HTMLElement | null>(null)
 const landingImportDialogRef = ref<HTMLElement | null>(null)
 const landingImportTriggerRef = ref<HTMLButtonElement | null>(null)
-const assistantComposerRef = ref<{ focus: () => void; openPalette: () => void; closePalette: (restoreFocus?: boolean) => void } | null>(null)
+interface AssistantAttachmentRecoveryCounts {
+  recovered: number
+  removed: number
+  unresolved: number
+}
+
+interface AssistantAttachmentRecoveryResult extends AssistantAttachmentRecoveryCounts {
+  candidateCount: number
+  stale: boolean
+}
+
+const assistantComposerRef = ref<{
+  focus: () => void
+  openPalette: () => void
+  closePalette: (restoreFocus?: boolean) => void
+  recoverUnavailableAttachments?: (receiptIDs: readonly string[]) => Promise<AssistantAttachmentRecoveryCounts>
+  commitAttachments?: (receiptIDs: readonly string[]) => void
+} | null>(null)
 const threadRailRef = ref<{
   open?: () => void
   openAndFocus?: () => void
@@ -916,7 +957,7 @@ const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
 const assistantDurationNowMs = ref(Date.now())
 const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespace: 'app-studio' })
 const assistantPlanAnnouncement = ref('')
-const promptRef = ref<HTMLTextAreaElement | null>(null)
+const promptRef = ref<{ focus: () => void; setSelectionRange: (start: number, end: number) => void } | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const splitRegionRef = ref<HTMLDivElement | null>(null)
 const splitResizeDividerRef = ref<HTMLElement | null>(null)
@@ -1071,6 +1112,250 @@ function clearPendingFirstProjectSubmission() {
   pendingFirstProjectSubmission = null
 }
 
+function updatePreProjectAttachment(clientID: string, patch: Partial<AssistantStagedAttachment>, isCurrent?: () => boolean): boolean {
+  if (isCurrent && !isCurrent()) return false
+  const current = preProjectAttachments.value.find((attachment) => attachment.clientID === clientID)
+  if (!current) return false
+  preProjectAttachments.value = preProjectAttachments.value.map((attachment) =>
+    attachment.clientID === clientID ? { ...attachment, ...patch } : attachment,
+  )
+  return true
+}
+
+function attachmentCleanupIDs(attachment: Pick<AssistantStagedAttachment, 'clientID' | 'receipt'>): string[] {
+  return [...new Set([attachment.receipt?.id, attachment.clientID].filter((id): id is string => Boolean(id?.trim())))]
+}
+
+/** Best-effort draft cleanup; an absent receipt is already in the desired state. */
+async function bestEffortDeletePreProjectAttachment(
+  attachment: Pick<AssistantStagedAttachment, 'clientID' | 'receipt'>,
+  projectName: string,
+): Promise<void> {
+  if (!projectName) return
+  for (const attachmentID of attachmentCleanupIDs(attachment)) {
+    try {
+      await api.deleteAssistantAttachment(props.ctx, projectName, attachmentID)
+    } catch {
+      // Cleanup runs after cancellation or an ambiguous upload response. The
+      // retained File remains the recovery source, so cleanup must never turn
+      // an uncertain server state into a destructive UI error.
+    }
+  }
+}
+
+function clearPreProjectAttachments(preserveCommitted = false) {
+  const candidates = [...preProjectAttachments.value]
+  for (const controller of preProjectAttachmentControllers.values()) controller.abort()
+  preProjectAttachmentControllers.clear()
+  for (const candidate of candidates) {
+    const projectName = candidate.projectName || preProjectAttachmentProjectName
+    // A successful start promotes these receipts to the turn atomically. Do
+    // not delete them when clearing the browser-side draft after that boundary.
+    if (projectName && (!preserveCommitted || candidate.status !== 'ready')) {
+      void bestEffortDeletePreProjectAttachment(candidate, projectName)
+    }
+  }
+  preProjectAttachments.value = []
+  preProjectAttachmentProjectName = ''
+}
+
+function stagePreProjectAttachment(attachment: AssistantStagedAttachment) {
+  preProjectAttachments.value = [...preProjectAttachments.value, attachment]
+}
+
+async function uploadPreProjectAttachment(clientID: string, projectName: string, isCurrent?: () => boolean): Promise<boolean> {
+  if (isCurrent && !isCurrent()) return false
+  const attachment = preProjectAttachments.value.find((candidate) => candidate.clientID === clientID)
+  if (!attachment) return false
+  if (attachment.receipt && attachment.projectName === projectName && attachment.status === 'ready') return true
+  if (attachment.receipt && attachment.projectName && attachment.projectName !== projectName) {
+    updatePreProjectAttachment(clientID, {
+      status: 'error',
+      error: 'This attachment belongs to another project. Remove it and add it again.',
+      retryable: false,
+      retryAction: undefined,
+    })
+    return false
+  }
+  if (attachment.status === 'error' && !attachment.retryable) return false
+  const controller = new AbortController()
+  preProjectAttachmentControllers.set(clientID, controller)
+  updatePreProjectAttachment(clientID, {
+    projectName,
+    status: 'uploading',
+    error: undefined,
+    retryable: false,
+    retryAction: undefined,
+  })
+  try {
+    const receipt = projectAssistantAttachmentReceipt(await api.uploadAssistantAttachment(props.ctx, projectName, attachment.file, controller.signal, attachment.clientID))
+    if (!receipt) throw new Error('The attachment upload returned an invalid receipt.')
+    if (isCurrent && !isCurrent()) {
+      void bestEffortDeletePreProjectAttachment({ ...attachment, receipt }, projectName)
+      return false
+    }
+    if (!preProjectAttachments.value.some((candidate) => candidate.clientID === clientID)) {
+      void bestEffortDeletePreProjectAttachment({ ...attachment, receipt }, projectName)
+      return false
+    }
+    updatePreProjectAttachment(clientID, {
+      receipt,
+      projectName,
+      status: 'ready',
+      error: undefined,
+      retryable: false,
+      retryAction: undefined,
+    })
+    return true
+  } catch (uploadError) {
+    const present = preProjectAttachments.value.some((candidate) => candidate.clientID === clientID)
+    const cleanupAttachment = { ...attachment, projectName }
+    if (isAbortError(uploadError)) {
+      void bestEffortDeletePreProjectAttachment(cleanupAttachment, projectName)
+      if (present) {
+        updatePreProjectAttachment(clientID, {
+          status: 'staged',
+          error: undefined,
+          retryable: false,
+          retryAction: undefined,
+        }, isCurrent)
+      }
+      return false
+    }
+    // A failed fetch can still have committed a draft before its response was
+    // lost. Use both the server receipt (when available) and stable client ID,
+    // but keep the File candidate visible for a retry.
+    void bestEffortDeletePreProjectAttachment(cleanupAttachment, projectName)
+    if (!present || (isCurrent && !isCurrent())) return false
+    const detail = uploadError instanceof Error ? uploadError.message : 'Attachment upload failed.'
+    updatePreProjectAttachment(clientID, {
+      projectName,
+      status: 'error',
+      error: detail,
+      retryable: true,
+      retryAction: 'upload',
+    }, isCurrent)
+    return false
+  } finally {
+    if (preProjectAttachmentControllers.get(clientID) === controller) preProjectAttachmentControllers.delete(clientID)
+  }
+}
+
+async function recoverPreProjectAttachmentReceipts(projectName: string, force = false, isCurrent?: () => boolean): Promise<void> {
+  if (isCurrent && !isCurrent()) return
+  const ready = preProjectAttachments.value.filter((candidate) =>
+    candidate.projectName === projectName && candidate.status === 'ready' && candidate.receipt,
+  )
+  if (!ready.length) return
+  let listed: Awaited<ReturnType<typeof api.listAssistantAttachments>>
+  try {
+    listed = await api.listAssistantAttachments(props.ctx, projectName)
+  } catch {
+    // A normal list outage is ambiguous, so retain ready receipts. A precise
+    // start error opts into a forced re-upload because the server has already
+    // told us that the receipt cannot be consumed.
+    if (!force) return
+    listed = []
+  }
+  if (isCurrent && !isCurrent()) return
+  const staleIDs = force
+    ? ready.map((candidate) => candidate.clientID)
+    : staleAssistantAttachmentClientIDs(ready, listed)
+  for (const clientID of staleIDs) {
+    if (isCurrent && !isCurrent()) return
+    const candidate = preProjectAttachments.value.find((attachment) => attachment.clientID === clientID)
+    if (!candidate) continue
+    await bestEffortDeletePreProjectAttachment(candidate, projectName)
+    if (isCurrent && !isCurrent()) return
+    updatePreProjectAttachment(clientID, {
+      receipt: undefined,
+      projectName,
+      status: 'staged',
+      error: undefined,
+      retryable: false,
+      retryAction: undefined,
+    }, isCurrent)
+  }
+}
+
+async function ensurePreProjectAttachmentsUploaded(projectName: string, isCurrent?: () => boolean): Promise<boolean> {
+  if (isCurrent && !isCurrent()) return false
+  preProjectAttachmentProjectName = projectName
+  await recoverPreProjectAttachmentReceipts(projectName, false, isCurrent)
+  if (isCurrent && !isCurrent()) return false
+  const candidates = [...preProjectAttachments.value]
+  let allReady = true
+  for (const candidate of candidates) {
+    if (candidate.receipt && candidate.projectName === projectName && candidate.status === 'ready') continue
+    if (
+      (candidate.status === 'error' && candidate.retryAction === 'delete') ||
+      candidate.status === 'deleting' ||
+      candidate.status === 'uploading'
+    ) {
+      allReady = false
+      continue
+    }
+    if (!(await uploadPreProjectAttachment(candidate.clientID, projectName, isCurrent))) allReady = false
+    if (isCurrent && !isCurrent()) return false
+  }
+  return allReady && preProjectAttachments.value.every((candidate) =>
+    candidate.projectName === projectName && candidate.status === 'ready' && Boolean(candidate.receipt),
+  )
+}
+
+async function removePreProjectAttachment(clientID: string) {
+  const attachment = preProjectAttachments.value.find((candidate) => candidate.clientID === clientID)
+  if (!attachment || attachment.status === 'deleting') return
+  const controller = preProjectAttachmentControllers.get(clientID)
+  if (controller) {
+    controller.abort()
+    preProjectAttachmentControllers.delete(clientID)
+  }
+  const projectName = attachment.projectName || preProjectAttachmentProjectName
+  if (controller || attachment.status === 'uploading') {
+    void bestEffortDeletePreProjectAttachment(attachment, projectName)
+    preProjectAttachments.value = preProjectAttachments.value.filter((candidate) => candidate.clientID !== clientID)
+    return
+  }
+  if (!attachment.receipt || !attachment.projectName) {
+    if (projectName) void bestEffortDeletePreProjectAttachment(attachment, projectName)
+    preProjectAttachments.value = preProjectAttachments.value.filter((candidate) => candidate.clientID !== clientID)
+    return
+  }
+  updatePreProjectAttachment(clientID, { status: 'deleting', error: undefined, retryable: false, retryAction: undefined })
+  try {
+    await api.deleteAssistantAttachment(props.ctx, attachment.projectName, attachment.receipt.id)
+    preProjectAttachments.value = preProjectAttachments.value.filter((candidate) => candidate.clientID !== clientID)
+  } catch (removeError) {
+    if (isProjectAPINotFoundError(removeError)) {
+      preProjectAttachments.value = preProjectAttachments.value.filter((candidate) => candidate.clientID !== clientID)
+      return
+    }
+    const detail = removeError instanceof Error ? removeError.message : 'Attachment removal failed.'
+    updatePreProjectAttachment(clientID, {
+      status: 'error',
+      error: detail,
+      retryable: true,
+      retryAction: 'delete',
+    })
+  }
+}
+
+async function retryPreProjectAttachment(clientID: string) {
+  const attachment = preProjectAttachments.value.find((candidate) => candidate.clientID === clientID)
+  if (!attachment || attachment.status === 'uploading' || attachment.status === 'deleting') return
+  if (attachment.retryAction === 'delete') {
+    await removePreProjectAttachment(clientID)
+    return
+  }
+  const projectName = preProjectAttachmentProjectName || pendingFirstProjectSubmission?.projectName || ''
+  if (!projectName) {
+    updatePreProjectAttachment(clientID, { status: 'staged', error: undefined, retryable: false, retryAction: undefined })
+    return
+  }
+  await uploadPreProjectAttachment(clientID, projectName)
+}
+
 function invalidateLLMModelMutationState() {
   llmModelMutationGeneration += 1
   // A route/context transition owns the replacement busy state. The previous
@@ -1155,7 +1440,8 @@ function invalidateProjectContextState() {
   conversationStatus.value = ''
   reviewPanelHold.value = null
   clearSelectedTurnAttachments()
-  landingImportOpen.value = false
+  clearPreProjectAttachments()
+  closeLandingImportPopover()
   projectOpenLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   threadHistoryLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   loading.value = hasToken
@@ -1468,6 +1754,15 @@ const projectIndexRoutePending = computed(() =>
 const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
+
+// The create flow can have a durable project (or an ambiguous project-create
+// response) before its first attachment or assistant turn is accepted. Keep
+// that submission while the host is on the create route so navigating back to
+// ~new retries the same project/request instead of creating a duplicate.
+function shouldKeepProjectBoundFirstSubmission(): boolean {
+  return isCreateRoute.value && Boolean(pendingFirstProjectSubmission?.content)
+}
+
 const modelsReturnRoute = ref('')
 const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : 'Models')
 const llmCreateDescription = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE
@@ -1564,12 +1859,14 @@ const assistantComposerStopDisabled = computed(() => assistantComposerStopContro
 const configuredLLMModels = computed(() => (llmSettings.value?.models ?? []).filter((model) => model.configured))
 const selectedLLMModel = computed(() => configuredLLMModels.value.find((model) => model.id === selectedLLMModelID.value) ?? configuredLLMModels.value[0])
 const llmConfigured = computed(() => configuredLLMModels.value.length > 0)
-const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
+const createPromptContent = computed(() => projectCreationPrompt(prompt.value, preProjectAttachments.value.length))
+const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(createPromptContent.value, createReadiness.value) && llmConfigured.value)
 const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
   llmConfigured.value &&
   !assistantStopRequested.value &&
   (prompt.value.trim().length > 0 || (!messageStreaming.value && assistantComposerHasChipContent.value)) &&
+  !assistantComposerAttachmentsPending.value &&
   (!messageStreaming.value || activeAssistantRun?.status === 'running') &&
   !assistantResumeBusy.value &&
   !conversationInteractionBusy.value &&
@@ -2376,7 +2673,7 @@ watch(
     }
     projectDeletionError.value = null
     projectDeletionRetry.value = null
-    landingImportOpen.value = false
+    closeLandingImportPopover()
     invalidateLLMModelMutationState()
     // A route change can leave the previous project's stream mounted until
     // the replacement project has hydrated. Detach that stream immediately,
@@ -2521,7 +2818,11 @@ watch(
 )
 
 watch(selectedNameFromPath, (projectName) => {
-  if (pendingFirstProjectSubmission && projectName !== pendingFirstProjectSubmission.projectName) clearPendingFirstProjectSubmission()
+  if (
+    pendingFirstProjectSubmission &&
+    projectName !== pendingFirstProjectSubmission.projectName &&
+    !shouldKeepProjectBoundFirstSubmission()
+  ) clearPendingFirstProjectSubmission()
 })
 
 watch(
@@ -2715,7 +3016,10 @@ async function load() {
     projectsLoaded.value = true
     initializing.value = false
     if (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value) {
-	  clearPendingFirstProjectSubmission()
+      // A project can exist even when its first attachment upload or turn
+      // start failed. Keep that submission bound to the project so returning
+      // to ~new can retry uploads without creating a second project.
+      if (!shouldKeepProjectBoundFirstSubmission()) clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -2748,10 +3052,14 @@ async function load() {
     }
     const pathName = selectedNameFromPath.value
     if (pathName) {
-	  if (pendingFirstProjectSubmission && pathName !== pendingFirstProjectSubmission.projectName) clearPendingFirstProjectSubmission()
+      if (
+        pendingFirstProjectSubmission &&
+        pathName !== pendingFirstProjectSubmission.projectName &&
+        !shouldKeepProjectBoundFirstSubmission()
+      ) clearPendingFirstProjectSubmission()
       await openProject(pathName, false, requestGuard)
     } else {
-	  clearPendingFirstProjectSubmission()
+      if (!shouldKeepProjectBoundFirstSubmission()) clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -4033,7 +4341,7 @@ async function applyLandingStarterPrompt(starter: LandingStarterPrompt) {
 async function openNewProjectComposer() {
   prompt.value = ''
   error.value = null
-  landingImportOpen.value = false
+  closeLandingImportPopover()
   wizardOpen.value = false
   props.navigate(CREATE_PROJECT_ROUTE)
   await nextTick()
@@ -4255,8 +4563,11 @@ async function setDefaultLLMModel(modelID: string) {
 }
 
 async function createProjectFromPrompt() {
-  const content = prompt.value.trim()
+  const content = projectCreationPrompt(prompt.value, preProjectAttachments.value.length)
   if (!content) return
+  // Keep the derived planning input visible in the wizard. It is deliberately
+  // neutral: the only claim made is that attachments were supplied as context.
+  if (!prompt.value.trim()) prompt.value = content
   // Submitting the landing idea hands off to one stable project-details
   // surface. The actual create still runs from onWizardCreate, which re-checks
   // setup before using the durable project/thread path below.
@@ -4305,14 +4616,54 @@ async function ensureCreateSetupReady(): Promise<boolean> {
   return false
 }
 
+function preProjectStartContentParts(projectName: string, content: string): ProjectAssistantContentPart[] {
+  const attachmentParts = preProjectAttachments.value
+    .filter((attachment) => attachment.projectName === projectName && attachment.status === 'ready' && attachment.receipt)
+    .map((attachment) => assistantAttachmentPart(attachment.receipt!))
+  return attachmentParts.length
+    ? [{ type: 'text' as const, text: content }, ...attachmentParts]
+    : []
+}
+
+/** Start once, then recover expired receipts and replay the same request once. */
+async function startPreProjectAssistantTurn(
+  projectName: string,
+  submission: ReturnType<typeof newFirstProjectSubmission>,
+  threadID: string,
+  isCurrent?: () => boolean,
+): Promise<Awaited<ReturnType<typeof api.startAssistantTurn>>> {
+  const startPlan = firstProjectStartPlan(submission)
+  const start = () => {
+    const contentParts = preProjectStartContentParts(projectName, startPlan.content)
+    return api.startAssistantTurn(props.ctx, projectName, threadID, {
+      content: startPlan.content,
+      clientUserMessageID: startPlan.clientRequestID,
+      modelID: startPlan.modelID,
+      collaborationMode: 'default',
+      ...(contentParts.length ? { contentParts } : {}),
+    })
+  }
+  try {
+    return await start()
+  } catch (error) {
+    if (!isAssistantAttachmentReceiptUnavailableError(error)) throw error
+    await recoverPreProjectAttachmentReceipts(projectName, true, isCurrent)
+    if (isCurrent && !isCurrent()) throw error
+    if (!await ensurePreProjectAttachmentsUploaded(projectName, isCurrent)) throw error
+    if (isCurrent && !isCurrent()) throw error
+    return start()
+  }
+}
+
 async function createProjectAndStartConversation(
   content: string,
   createOverrides?: { templateName?: string; displayName?: string },
 ) {
-  const pendingProjectName = pendingFirstProjectSubmission?.content === content ? pendingFirstProjectSubmission.projectName : ''
-  const retry = Boolean(pendingProjectName && pendingFirstProjectSubmission?.modelID === selectedLLMModelID.value)
+  const pendingForContent = pendingFirstProjectSubmission?.content === content ? pendingFirstProjectSubmission : null
+  const pendingProjectName = pendingForContent?.projectName ?? ''
+  const retry = Boolean(pendingForContent && pendingForContent.modelID === selectedLLMModelID.value)
   let submission = retry
-    ? pendingFirstProjectSubmission!
+    ? pendingForContent!
     : firstProjectSubmissionWithProject(
         newFirstProjectSubmission(content, crypto.randomUUID(), selectedLLMModelID.value),
         pendingProjectName,
@@ -4323,6 +4674,8 @@ async function createProjectAndStartConversation(
   const draftName = `draft-${Date.now()}`
   const description = landingStarterPrompts.find((starter) => starter.prompt === content.trim())?.description ?? ''
   let acceptedRun = false
+	let startPostAttempted = false
+	let startPostAccepted = false
 	let projectName = submission.projectName
   busy.value = true
   messageStreaming.value = true
@@ -4335,13 +4688,26 @@ async function createProjectAndStartConversation(
     messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', content, createdAt: now }]
   }
 
-  const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && firstProjectSubmissionIsCurrent(
-    submission,
-    generation,
-    projectCreateGeneration,
-    selected.value?.name ?? '',
-    selectedNameFromPath.value,
-    draftName,
+  const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && (
+    firstProjectSubmissionIsCurrent(
+      submission,
+      generation,
+      projectCreateGeneration,
+      selected.value?.name ?? '',
+      selectedNameFromPath.value,
+      draftName,
+    ) || firstProjectSubmissionCanRetryFromCreateRoute(
+      submission,
+      generation,
+      projectCreateGeneration,
+      selected.value?.name ?? '',
+      selectedNameFromPath.value,
+    ) || (
+      generation === projectCreateGeneration &&
+      submission.projectName !== '' &&
+      !selected.value &&
+      isCreateRoute.value
+    )
   )
 
   try {
@@ -4366,6 +4732,7 @@ async function createProjectAndStartConversation(
       projectName = created.name
       submission = firstProjectSubmissionWithProject(submission, projectName)
       pendingFirstProjectSubmission = submission
+      preProjectAttachmentProjectName = projectName
       selected.value = created
       activeProjectContextFingerprint = appContextFingerprint(props.ctx)
       initializeWorkbenchForNewProject(projectName)
@@ -4373,20 +4740,75 @@ async function createProjectAndStartConversation(
       props.navigate(encodeURIComponent(projectName))
     }
 
+    if (submission.projectName && (!selected.value || selected.value.name !== projectName)) {
+      const existing = projects.value.find((project) => project.name === projectName) ?? await api.getProject(props.ctx, projectName)
+      if (!current()) return
+      selected.value = existing
+      activeProjectContextFingerprint = appContextFingerprint(props.ctx)
+    }
+
+    if (!(await ensurePreProjectAttachmentsUploaded(projectName, current))) {
+      if (!current()) return
+      prompt.value = content
+      // Keep the failed candidates visible on the shared pre-project surface;
+      // the pending submission still names this project, so retry skips create.
+      props.navigate(CREATE_PROJECT_ROUTE)
+      return
+    }
     const startPlan = firstProjectStartPlan(submission)
-    const thread = await api.createAssistantThread(props.ctx, projectName)
+    // Bind a stable thread identity before the POST. If the response is lost,
+    // the next attempt can address the same server thread without creating a
+    // second one; the backend accepts an explicit thread ID on creation.
+    let thread = submission.threadID
+      ? assistantThreads.value.find((candidate) => candidate.id === submission.threadID)
+      : undefined
+    if (!thread) {
+      // A retained ID is only a request identity until the server returns the
+      // row. Reissue the idempotent create on retry instead of fabricating a
+      // local thread that the subsequent start request cannot find.
+      const requestedThreadID = submission.threadID || `thread-${crypto.randomUUID()}`
+      submission = firstProjectSubmissionWithThread(submission, requestedThreadID)
+      pendingFirstProjectSubmission = submission
+      const createdThread = await api.createAssistantThread(props.ctx, projectName, undefined, requestedThreadID)
+      if (!current()) return
+      thread = createdThread
+    }
+    // The explicit ID is a request identity, not a promise that the server
+    // will keep it. Persist the response's thread immediately so a later
+    // start/replay addresses the server-owned row even if it canonicalizes
+    // or aliases the requested ID.
+    if (submission.threadID !== thread.id) {
+      submission = firstProjectSubmissionWithThread(submission, thread.id)
+      pendingFirstProjectSubmission = submission
+    }
     if (!current()) return
-    assistantThreads.value = [thread]
+    assistantThreads.value = [thread, ...assistantThreads.value.filter((candidate) => candidate.id !== thread?.id)]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
-    const canonical = await api.startAssistantTurn(props.ctx, projectName, thread.id, {
-      content: startPlan.content,
-      clientUserMessageID: startPlan.clientRequestID,
-      modelID: startPlan.modelID,
-      collaborationMode: 'default',
-    })
-    replaceAssistantThread(canonical.thread)
-    const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
+    startPostAttempted = true
+    const canonical = await startPreProjectAssistantTurn(projectName, submission, thread.id, current)
+    // A resolved start response is the durable acceptance boundary. Any
+    // projection/history failure after this point must replay this same
+    // client request rather than manufacture a new turn.
+    startPostAccepted = true
+    if (!current()) return
+    // The POST response is the durable acceptance boundary. A later history
+    // projection failure must not make these receipts look sendable again.
+    clearPreProjectAttachments(true)
+    const canonicalThreadID = canonical.thread.id.trim() || thread.id
+    submission = firstProjectSubmissionWithThread(submission, canonicalThreadID)
+    pendingFirstProjectSubmission = submission
+    if (canonicalThreadID !== thread.id) {
+      assistantThreads.value = [
+        canonical.thread,
+        ...assistantThreads.value.filter((candidate) => candidate.id !== canonicalThreadID && candidate.id !== thread?.id),
+      ]
+    } else {
+      replaceAssistantThread(canonical.thread)
+    }
+    activeAssistantThreadID.value = canonicalThreadID
+    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), canonicalThreadID)
+    const items = await api.listAssistantThreadItems(props.ctx, projectName, canonicalThreadID)
     activeAssistantThreadSequence = maxAssistantThreadSequence(items)
     const projected = assistantThreadItemsToMessages(items, projectName)
     const user = projected.find((message) => message.role === 'user' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')?.id)
@@ -4418,7 +4840,16 @@ async function createProjectAndStartConversation(
     }
   } catch (e) {
     if (!current()) return
+    if (e instanceof ProjectAPIRequestError && startPostAttempted && shouldRotateFirstProjectRequestID(e, startPostAccepted)) {
+      submission = firstProjectSubmissionWithClientRequestID(submission, crypto.randomUUID())
+      pendingFirstProjectSubmission = submission
+    }
     if (isAbortError(e)) {
+      if (!acceptedRun && preProjectAttachments.value.length) {
+        prompt.value = content
+        props.navigate(CREATE_PROJECT_ROUTE)
+        return
+      }
       if (projectName) {
         // The request that created the Project has ended; a route change only
         // detaches this view. The durable run is recovered on project entry.
@@ -4431,6 +4862,11 @@ async function createProjectAndStartConversation(
       return
     }
     if (handleProjectAPIInitializing(e)) {
+      if (preProjectAttachments.value.length) {
+        prompt.value = content
+        props.navigate(CREATE_PROJECT_ROUTE)
+        return
+      }
       selected.value = null
       messages.value = []
       prompt.value = content
@@ -4439,7 +4875,9 @@ async function createProjectAndStartConversation(
     }
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
-    if (!projectName) {
+    if (!acceptedRun && preProjectAttachments.value.length) {
+      props.navigate(CREATE_PROJECT_ROUTE)
+    } else if (!projectName) {
       selected.value = null
       messages.value = []
       props.navigate(CREATE_PROJECT_ROUTE)
@@ -4710,6 +5148,10 @@ function updateAssistantComposerParts(parts: ProjectAssistantContentPart[]) {
   persistCurrentAssistantAnnotationDraft()
 }
 
+function updateAssistantComposerAttachmentsPending(pending: boolean) {
+  assistantComposerAttachmentsPending.value = pending
+}
+
 function updateAssistantComposerSkills(skills: ProjectAssistantSkill[]) {
   selectedTurnSkills.value = skills.slice(0, 8)
 }
@@ -4724,6 +5166,7 @@ function submitAssistantComposer(state?: AssistantComposerState, intent: 'queue'
     assistantComposerParts.value = state.contentParts as ProjectAssistantContentPart[]
     selectedTurnSkills.value = state.skills.slice(0, 8)
     selectedTurnResources.value = state.contextResources.slice(0, 8)
+    assistantComposerAttachmentsPending.value = Boolean(state.attachmentsPending)
   }
   void sendMessage(intent)
 }
@@ -4736,6 +5179,12 @@ function clearSelectedTurnAttachments() {
   selectedTurnSkills.value = []
   selectedTurnResources.value = []
   assistantComposerParts.value = []
+  assistantComposerAttachmentsPending.value = false
+}
+
+function commitAttachments(parts: readonly ProjectAssistantContentPart[]) {
+  const receiptIDs = parts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
+  assistantComposerRef.value?.commitAttachments?.(receiptIDs)
 }
 
 function persistCurrentAssistantAnnotationDraft(parts: readonly ProjectAssistantContentPart[] = assistantComposerParts.value) {
@@ -4758,6 +5207,102 @@ function replaceAssistantComposerText(value: string) {
   prompt.value = value
   assistantComposerParts.value = [{ type: 'text', text: value }]
   persistCurrentAssistantAnnotationDraft()
+}
+
+/**
+ * A precise receipt failure means the browser's current structured payload is
+ * no longer sendable. The rich composer owns original File objects when the
+ * user attached them in this session, so App can refresh those receipts and
+ * clear receipt-only candidates while leaving the authored prompt intact.
+ * This is a recovery boundary, not an automatic replay: changing content
+ * parts after a rejected POST must never create a second accepted turn.
+ */
+async function recoverUnavailableAssistantAttachmentReceipts(
+  projectName: string,
+  parts: readonly ProjectAssistantContentPart[],
+  isCurrent?: () => boolean,
+): Promise<AssistantAttachmentRecoveryResult> {
+  const attachmentParts = parts.filter((part): part is Extract<ProjectAssistantContentPart, { type: 'attachment' }> => part.type === 'attachment')
+  const empty = (stale = false): AssistantAttachmentRecoveryResult => ({
+    recovered: 0,
+    removed: 0,
+    unresolved: 0,
+    candidateCount: 0,
+    stale,
+  })
+  if (!attachmentParts.length) return empty()
+  if (isCurrent && !isCurrent()) return empty(true)
+
+  let listed: Awaited<ReturnType<typeof api.listAssistantAttachments>> = []
+  try {
+    listed = await api.listAssistantAttachments(props.ctx, projectName)
+  } catch {
+    // The failed start is already precise. If listing is unavailable, treat
+    // every receipt in this rejected payload as a recovery candidate; the
+    // composer reuses stable client IDs, so a valid draft remains idempotent.
+  }
+  if (isCurrent && !isCurrent()) return { ...empty(), stale: true }
+
+  const staleParts = attachmentParts.filter((part) => !listed.some((receipt) => assistantAttachmentReceiptsMatch(part.attachment, receipt)))
+  if (!staleParts.length) return empty()
+  if (isCurrent && !isCurrent()) return { ...empty(), candidateCount: staleParts.length, stale: true }
+
+  const staleIDs = new Set(staleParts.map((part) => part.attachment.id))
+  const recover = assistantComposerRef.value?.recoverUnavailableAttachments
+  if (recover) {
+    let result: AssistantAttachmentRecoveryCounts
+    try {
+      result = await recover([...staleIDs])
+    } catch {
+      // Keep the rejected prompt and candidate state visible. The composer
+      // owns its retry controls and will expose any upload failure there.
+      result = { recovered: 0, removed: 0, unresolved: staleParts.length }
+    }
+    if (isCurrent && !isCurrent()) return { ...empty(), candidateCount: staleParts.length, stale: true }
+    // A host may briefly render a composer that cannot reconcile a hydrated
+    // receipt-only chip. Count any unaccounted receipt as unresolved so the
+    // caller never silently retries the rejected turn with stale parts.
+    const recovered = Math.max(0, result.recovered)
+    const removed = Math.max(0, result.removed)
+    const unresolved = Math.max(0, result.unresolved, staleParts.length - recovered - removed)
+    return { recovered, removed, unresolved, candidateCount: staleParts.length, stale: false }
+  } else {
+    // Keep a defensive fallback for a host rendering an older composer bundle.
+    // It clears only receipts proven stale; no turn replay occurs here.
+    const recoveredParts = parts.filter((part) => part.type !== 'attachment' || !staleIDs.has(part.attachment.id))
+    assistantComposerParts.value = [...recoveredParts]
+    assistantComposerAttachmentsPending.value = false
+    persistCurrentAssistantAnnotationDraft(recoveredParts)
+    return { recovered: 0, removed: staleParts.length, unresolved: 0, candidateCount: staleParts.length, stale: false }
+  }
+}
+
+async function recoverUnavailableAssistantAttachmentSend(
+  projectName: string,
+  content: string,
+  parts: readonly ProjectAssistantContentPart[],
+  isCurrent: () => boolean,
+): Promise<AssistantAttachmentRecoveryResult> {
+  const recovery = await recoverUnavailableAssistantAttachmentReceipts(projectName, parts, isCurrent)
+  if (recovery.stale || !isCurrent()) return recovery.stale ? recovery : { ...recovery, stale: true }
+  if (recovery.candidateCount === 0) return recovery
+  pendingMessageSubmission = null
+  prompt.value = content
+  if (recovery.recovered > 0 && recovery.removed === 0 && recovery.unresolved === 0) {
+    error.value = recovery.recovered === 1
+      ? 'The attached file was refreshed. Review it and send again.'
+      : 'The attached files were refreshed. Review them and send again.'
+  } else if (recovery.recovered > 0) {
+    error.value = 'Some attached files were refreshed; reattach unavailable files and send again.'
+  } else if (recovery.unresolved > 0 && recovery.removed === 0) {
+    error.value = 'Some attached files could not be refreshed. Reattach them and send again.'
+  } else {
+    error.value = recovery.removed === 1
+      ? 'The attached file is no longer available. Reattach it and send again.'
+      : 'Some attached files are no longer available. Reattach them and send again.'
+  }
+  messageStreaming.value = false
+  return recovery
 }
 
 watch(() => selected.value?.name ?? '', (current, previous) => {
@@ -6292,6 +6837,10 @@ async function requestDeleteProject(project: Project) {
 async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promise<boolean> {
   const content = prompt.value.trim()
   const activeLiveRun = Boolean(messageStreaming.value && activeAssistantRun?.id && !assistantRunTerminal(activeAssistantRun.status))
+  if (assistantComposerAttachmentsPending.value) {
+    error.value = 'Resolve attachment uploads before sending (retry or remove the failed attachment).'
+    return false
+  }
   if (activeLiveRun && activeRunIntent === 'queue') {
     if (!content || conversationInteractionBusy.value || llmSettingsLoading.value || assistantResumeBusy.value) return false
     if (assistantComposerParts.value.some((part) => part.type !== 'text') || selectedTurnSkills.value.length || selectedTurnResources.value.length) {
@@ -6308,6 +6857,10 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     return true
   }
   const steeringActiveRun = activeLiveRun && activeAssistantRun?.status === 'running' && activeRunIntent === 'steer'
+  if (steeringActiveRun && assistantComposerParts.value.some((part) => part.type === 'attachment')) {
+    error.value = 'Attachments can be sent after the current response finishes. Steer messages are text only.'
+    return false
+  }
   const hasStructuredContent = !steeringActiveRun && assistantComposerParts.value.some((part) => part.type !== 'text')
   if ((!content && !hasStructuredContent) || !selected.value || !llmConfigured.value || conversationInteractionBusy.value || llmSettingsLoading.value || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return false
   const projectName = selected.value.name
@@ -6421,13 +6974,25 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
             ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
           })
       startPostAccepted = true
+      const requestedThreadID = thread.id
+      const canonicalThreadID = canonical.thread.id.trim() || requestedThreadID
       // The POST response is the acceptance boundary. Later projection or
       // stream setup failures must not make already-consumed attachments look
       // available for a second turn.
-      clearStoredAssistantAnnotationDraft(projectName, thread.id)
+      clearStoredAssistantAnnotationDraft(projectName, requestedThreadID)
+      commitAttachments(turnContentParts)
       clearSelectedTurnAttachments()
-      replaceAssistantThread(canonical.thread)
-      const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
+      if (canonicalThreadID !== requestedThreadID) {
+        assistantThreads.value = [
+          canonical.thread,
+          ...assistantThreads.value.filter((candidate) => candidate.id !== canonicalThreadID && candidate.id !== requestedThreadID),
+        ]
+      } else {
+        replaceAssistantThread(canonical.thread)
+      }
+      activeAssistantThreadID.value = canonicalThreadID
+      persistAssistantThreadFocus(assistantThreadFocusScope(projectName), canonicalThreadID)
+      const items = await api.listAssistantThreadItems(props.ctx, projectName, canonicalThreadID)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
       const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
       const assistantItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')
@@ -6476,6 +7041,12 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       return true
     }
     if (e instanceof ProjectAPIRequestError && e.status === 409) {
+      if (isAssistantAttachmentReceiptUnavailableError(e) && turnContentParts.some((part) => part.type === 'attachment')) {
+        // A receipt rejection is a pre-acceptance failure, not an active-run
+        // conflict. Reconcile it before attempting normal conflict recovery.
+        const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, firstSendIsCurrent)
+        if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
+      }
       let recoveredSameRequest = false
       try {
         const recovered = await recoverAssistantConversation(projectName)
@@ -6488,6 +7059,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
           recoveredSameRequest = true
           pendingMessageSubmission = null
           clearStoredAssistantAnnotationDraft(projectName, activeAssistantThreadID.value)
+          commitAttachments(turnContentParts)
           clearSelectedTurnAttachments()
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
@@ -6506,6 +7078,13 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         error.value = detail ? `Could not recover the active assistant run: ${detail}` : 'Could not recover the active assistant run. Your prompt is preserved.'
       }
       return recoveredSameRequest
+    }
+    if (isAssistantAttachmentReceiptUnavailableError(e) && turnContentParts.some((part) => part.type === 'attachment')) {
+      // The start POST was rejected before acceptance. Reconcile stale
+      // receipts into the composer while preserving the authored prompt; do
+      // not replay this request with a changed payload or risk two turns.
+      const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, firstSendIsCurrent)
+      if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
     }
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
@@ -6921,13 +7500,8 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const next = [...messages.value]
       const assistant = next[assistantIndex]
       const metadata = { ...(assistant.metadata ?? {}) }
-      if (rawItem.type === 'dynamicToolCall' && rawItem.data) {
-        const actions = Array.isArray(metadata.assistantActionFeed) ? [...metadata.assistantActionFeed] : []
-        const identity = assistantThreadItemIdentity(rawItem)
-        const actionIndex = actions.findIndex((action) => typeof action === 'object' && action !== null && (action as { id?: string }).id === identity)
-        if (actionIndex >= 0) actions[actionIndex] = rawItem.data
-        else actions.push(rawItem.data)
-        metadata.assistantActionFeed = actions
+      if ((rawItem.type === 'dynamicToolCall' || rawItem.type === 'modelInput') && rawItem.data) {
+        metadata.assistantActionFeed = upsertAssistantActionFeed(metadata.assistantActionFeed, rawItem)
       } else if (rawItem.type === 'plan' && rawItem.data) {
         if (assistantPlanEventIsNewer(metadata, rawItem, event)) {
           const version = assistantPlanEventVersion(rawItem, event)
@@ -7526,7 +8100,8 @@ function assistantContentPartsForMessage(message: ProjectMessageView): ProjectAs
     part.type === 'text' ||
     (part.type === 'skill' && (!skillIDs.size || skillIDs.has(part.skillID))) ||
     (part.type === 'resource' && part.resourceIndex >= 0 && part.resourceIndex < resources.length) ||
-    (part.type === 'annotation' && Boolean(part.annotation.comment && part.annotation.documentID)),
+    (part.type === 'annotation' && Boolean(part.annotation.comment && part.annotation.documentID)) ||
+    (part.type === 'attachment' && Boolean(part.attachment.id && part.attachment.filename)),
   )
 }
 
@@ -7536,9 +8111,16 @@ function assistantAnnotationsForMessage(message: ProjectMessageView): ProjectAss
     .map((part) => part.annotation)
 }
 
+function assistantAttachmentsForMessage(message: ProjectMessageView) {
+  return assistantContentPartsForMessage(message)
+    .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'attachment' }> => part.type === 'attachment')
+    .map((part) => part.attachment)
+}
+
 function userMessageHasVisibleContent(message: ProjectMessageView): boolean {
   const parts = assistantContentPartsForMessage(message)
-  if (parts.length) return parts.some((part) => part.type !== 'annotation')
+  // Legacy visibility was: if (parts.length) return parts.some((part) => part.type !== 'annotation')
+  if (parts.length) return parts.some((part) => part.type !== 'annotation' && part.type !== 'attachment')
   return Boolean(message.content)
 }
 
@@ -7914,8 +8496,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 :setup-error="createSetupErrorMessage"
                 :setup-loading="createSetupLoading"
                 :code-connections-url="CODE_CONNECTIONS_URL"
+                :attachments="preProjectAttachments"
+                :attachment-error="preProjectAttachmentError"
                 @create="onWizardCreate"
                 @cancel="onWizardCancel"
+                @add-attachment="stagePreProjectAttachment"
+                @remove-attachment="removePreProjectAttachment"
+                @retry-attachment="retryPreProjectAttachment"
                 @setup-action="onWizardSetupAction"
                 @retry-setup="onWizardSetupRetry"
               />
@@ -7963,116 +8550,119 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <label for="landing-project-prompt" class="sr-only">
                 Describe what you want to build
               </label>
-              <div v-if="!wizardOpen" class="relative flex min-h-[132px] flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm transition focus-within:border-accent/50">
-                <textarea
-                  id="landing-project-prompt"
-                  ref="promptRef"
-                  v-model="prompt"
-                  class="min-h-[72px] w-full flex-1 resize-none border-0 bg-transparent px-5 pb-12 pt-4 text-[16px] leading-7 text-text-primary outline-none placeholder:text-text-secondary md:text-[14px]"
-                  placeholder="Describe what you want to build…"
-                  :disabled="busy"
-                  @keydown.ctrl.enter.prevent="createProjectFromPrompt"
-                  @keydown.meta.enter.prevent="createProjectFromPrompt"
-                />
-                <div class="absolute bottom-2 left-1.5 right-2 flex min-w-0 items-center gap-2">
-                  <div class="flex min-w-0 items-center gap-0.5">
-                    <div ref="landingImportPopoverRef" class="relative shrink-0">
-                      <button
-                        ref="landingImportTriggerRef"
-                        type="button"
-                        class="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
-                        :disabled="busy"
-                        data-k-tip="Import an existing repository"
-                        aria-label="Import an existing repository"
-                        aria-haspopup="dialog"
-                        aria-controls="landing-import-popover"
-                        :aria-expanded="landingImportOpen"
-                        @click="toggleLandingImport"
-                      >
-                        <Plus class="h-4 w-4" :stroke-width="1.75" />
-                      </button>
-                      <div
-                        v-if="landingImportOpen"
-                        ref="landingImportDialogRef"
-                        id="landing-import-popover"
-                        role="dialog"
-                        aria-label="Import an existing repository"
-                        tabindex="-1"
-                        class="absolute bottom-9 left-0 z-50 w-[min(360px,calc(100vw-2rem))] rounded-lg border border-border-default bg-surface-overlay p-3 text-left shadow-xl sm:w-[360px]"
-                        aria-live="polite"
-                      >
-                        <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
-                          <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
-                          Import repository
+              <AssistantPreProjectComposer
+                v-if="!wizardOpen"
+                ref="promptRef"
+                v-model="prompt"
+                input-id="landing-project-prompt"
+                :attachments="preProjectAttachments"
+                :error="preProjectAttachmentError"
+                :disabled="busy"
+                @add-attachment="stagePreProjectAttachment"
+                @remove-attachment="removePreProjectAttachment"
+                @retry-attachment="retryPreProjectAttachment"
+                @close-menu="closeLandingImportPopover"
+                @submit="createProjectFromPrompt"
+              >
+                <template #menu>
+                  <div ref="landingImportPopoverRef" class="relative grid gap-1">
+                    <button
+                      ref="landingImportTriggerRef"
+                      type="button"
+                      role="menuitem"
+                      class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+                      :disabled="busy"
+                      data-k-tip="Import an existing repository"
+                      aria-label="Import an existing repository"
+                      aria-haspopup="dialog"
+                      aria-controls="landing-import-popover"
+                      :aria-expanded="landingImportOpen"
+                      @click="toggleLandingImport"
+                    >
+                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      Import repository
+                    </button>
+                    <div
+                      v-if="landingImportOpen"
+                      ref="landingImportDialogRef"
+                      id="landing-import-popover"
+                      role="dialog"
+                      aria-label="Import an existing repository"
+                      tabindex="-1"
+                      class="grid w-[min(360px,calc(100vw-2rem))] gap-2 border-t border-border-subtle px-2 pb-1 pt-2 text-left"
+                      aria-live="polite"
+                    >
+                      <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+                        <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        Import repository
+                      </div>
+                      <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status" aria-busy="true">
+                        <div class="shimmer h-8 w-full rounded-md bg-surface" />
+                        <div class="text-[12px] text-text-secondary">Loading repositories…</div>
+                      </div>
+                      <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="grid gap-2 text-[12px] text-danger" role="alert">
+                        <span>{{ importRepositoriesError }}</span>
+                        <button type="button" class="w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                      </div>
+                      <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
+                        <span>No unclaimed repositories available.</span>
+                        <button type="button" class="w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
+                      </div>
+                      <div v-else class="grid gap-2">
+                        <div v-if="importRepositoriesLoading" class="flex items-center gap-2 text-[11px] text-text-secondary" role="status" aria-busy="true">
+                          <Loader2 class="h-3.5 w-3.5 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+                          Updating repositories…
                         </div>
-                        <div v-if="importRepositoriesLoading && importRepositories.length === 0" class="grid gap-2" role="status" aria-busy="true">
-                          <div class="shimmer h-8 w-full rounded-md bg-surface" />
-                          <div class="text-[12px] text-text-secondary">Loading repositories…</div>
-                        </div>
-                        <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="grid gap-2 text-[12px] text-danger" role="alert">
+                        <div v-if="importRepositoriesError" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
                           <span>{{ importRepositoriesError }}</span>
-                          <button type="button" class="w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                          <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
                         </div>
-                        <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
-                          <span>No unclaimed repositories available.</span>
-                          <button type="button" class="w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
-                        </div>
-                        <div v-else class="grid gap-2">
-                          <div v-if="importRepositoriesLoading" class="flex items-center gap-2 text-[11px] text-text-secondary" role="status" aria-busy="true">
-                            <Loader2 class="h-3.5 w-3.5 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-                            Updating repositories…
-                          </div>
-                          <div v-if="importRepositoriesError" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
-                            <span>{{ importRepositoriesError }}</span>
-                            <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
-                          </div>
-                          <label for="landing-import-repository" class="text-[11px] font-medium text-text-secondary">Choose a repository</label>
-                          <select
-                            id="landing-import-repository"
-                            v-model="importSelectedRepository"
-                            class="h-9 min-w-0 w-full rounded-md border border-border-default bg-surface px-2.5 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[12px]"
-                            :disabled="importRepositoriesLoading || importBusy"
-                          >
-                            <option value="" disabled>Select a repository…</option>
-                            <option v-for="repo in importRepositories" :key="repo.ref" :value="repo.ref">
-                              {{ repo.name || repo.ref }}
-                            </option>
-                          </select>
-                          <button
-                            type="button"
-                            class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
-                            :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
-                            @click="importRepositoryProject"
-                          >
-                            <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
-                            Import project
-                          </button>
-                        </div>
-                        <div v-if="importError" class="mt-2 rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
-                          {{ importError }}
-                        </div>
+                        <label for="landing-import-repository" class="text-[11px] font-medium text-text-secondary">Choose a repository</label>
+                        <select
+                          id="landing-import-repository"
+                          v-model="importSelectedRepository"
+                          class="h-9 min-w-0 w-full rounded-md border border-border-default bg-surface px-2.5 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[12px]"
+                          :disabled="importRepositoriesLoading || importBusy"
+                        >
+                          <option value="" disabled>Select a repository…</option>
+                          <option v-for="repo in importRepositories" :key="repo.ref" :value="repo.ref">
+                            {{ repo.name || repo.ref }}
+                          </option>
+                        </select>
+                        <button
+                          type="button"
+                          class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
+                          :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
+                          @click="importRepositoryProject"
+                        >
+                          <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
+                          Import project
+                        </button>
+                      </div>
+                      <div v-if="importError" class="rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
+                        {{ importError }}
                       </div>
                     </div>
                   </div>
-                  <div class="ml-auto flex min-w-0 shrink items-center justify-end gap-1">
-                    <ModelPicker
-                      :models="configuredLLMModels"
-                      :selected-i-d="selectedLLMModel?.id || ''"
-                      :disabled="busy || llmSettingsLoading"
-                      @select="selectedLLMModelID = $event"
-                    />
-                    <button
-                      type="submit"
-                      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                      :disabled="busy || !canStartProjectFromPrompt"
-                      :title="createPromptSubmitTitle"
-                      aria-label="Prepare project for review"
-                    >
-                      <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                </template>
+                <template #actions>
+                  <ModelPicker
+                    :models="configuredLLMModels"
+                    :selected-i-d="selectedLLMModel?.id || ''"
+                    :disabled="busy || llmSettingsLoading"
+                    @select="selectedLLMModelID = $event"
+                  />
+                  <button
+                    type="submit"
+                    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    :disabled="busy || !canStartProjectFromPrompt"
+                    :title="createPromptSubmitTitle"
+                    aria-label="Prepare project for review"
+                  >
+                    <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
+                  </button>
+                </template>
+              </AssistantPreProjectComposer>
               <div v-if="createSetupLoading" class="mt-3 flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-[12px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
                 <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
                 Checking workspace setup…
@@ -8388,6 +8978,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 v-if="message.role === 'user'"
                 class="flex max-w-[86%] flex-col items-end gap-1 sm:max-w-[72%]"
               >
+                <AssistantMessageAttachments
+                  :attachments="assistantAttachmentsForMessage(message)"
+                  :ctx="props.ctx"
+                  :project-name="message.projectID"
+                />
                 <AssistantMessageAnnotations
                   :annotations="assistantAnnotationsForMessage(message)"
                   :current-document-id="developmentPreviewAnnotationDocumentID"
@@ -8745,6 +9340,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               ref="assistantComposerRef"
               v-model="prompt"
               :content-parts="assistantComposerParts"
+              :project-name="selected?.name || ''"
               :skills="assistantSkills"
               :selected-skills="selectedTurnSkills"
               :selected-resources="selectedTurnResources"
@@ -8758,6 +9354,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :active-run="messageStreaming"
               :queueing-enabled="assistantQueueingEnabled"
               @update:content-parts="updateAssistantComposerParts"
+              @update:attachments-pending="updateAssistantComposerAttachmentsPending"
               @update:selected-skills="updateAssistantComposerSkills"
               @update:selected-resources="updateAssistantComposerResources"
               @select-mode="selectAssistantResponseMode"

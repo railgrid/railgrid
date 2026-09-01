@@ -197,6 +197,31 @@ test('keeps active work visible with semantic group labels', async () => {
   assert.match(html, /animate-spin/)
 })
 
+test('renders image model-input actions with image-specific group labels and icon', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const viewing = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-image-viewing',
+    items: [{
+      id: 'image-view-1', kind: 'inspect', mediaKind: 'image', status: 'running',
+      title: 'Viewing image', target: 'screen.png', severity: 'normal', sequence: 1,
+    }],
+  }))
+  assert.match(viewing, /Viewing image/)
+  assert.doesNotMatch(viewing, /Inspecting the project/)
+  assert.match(viewing, /lucide-image/)
+
+  const viewed = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-image-viewed',
+    items: [{
+      id: 'image-view-1', kind: 'inspect', mediaKind: 'image', status: 'succeeded',
+      title: 'Viewed image', target: 'screen.png', severity: 'normal', sequence: 1,
+    }],
+  }))
+  assert.match(viewed, /Viewed image/)
+  assert.doesNotMatch(viewed, /Inspected the project/)
+  assert.match(viewed, /lucide-image/)
+})
+
 test('aligns group headers and child actions while bounding long call chains with a fade', async () => {
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const html = await renderToString(createSSRApp(AssistantActionLog, {

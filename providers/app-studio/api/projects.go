@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -421,9 +422,11 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		}
 	}
 	now := metav1.Now()
+	finalizers := s.projectFinalizersForCreate(id)
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name:       name,
+			Finalizers: finalizers,
 			// Bridge to the workspace/store keyspace: the Project reconciler
 			// only knows the cluster, but workspace scopes are keyed by the
 			// org/workspace UUIDs the hub derives from the tenant path.
@@ -506,6 +509,24 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		}
 	}
 	return updated, nil
+}
+
+// projectFinalizersForCreate protects the short interval between a Project
+// create response and its first controller reconcile. API-created Projects
+// already know their tenant annotations, so installing the attachment
+// finalizer here ensures a direct delete cannot bypass blob cleanup. Projects
+// created through KCP do not get a finalizer until the controller has verified
+// the same scope.
+func (s *Server) projectFinalizersForCreate(id identity) []string {
+	if s == nil || strings.TrimSpace(id.orgUUID) == "" || strings.TrimSpace(id.workspaceUUID) == "" {
+		return nil
+	}
+	if s.attachments == nil {
+		if _, ok := s.store.(store.AttachmentStore); !ok {
+			return nil
+		}
+	}
+	return []string{store.AttachmentStorageFinalizer}
 }
 
 func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name string, inferred bool) (*projectTemplateInfo, error) {
@@ -793,6 +814,16 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	const attachmentCleanupFinalizer = store.AttachmentStorageFinalizer
+	if !slices.Contains(p.Finalizers, attachmentCleanupFinalizer) {
+		next := p.DeepCopy()
+		next.Finalizers = append(next.Finalizers, attachmentCleanupFinalizer)
+		p, err = c.Projects().Update(r.Context(), next, metav1.UpdateOptions{})
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+	}
 	uid := p.UID
 	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{
 		Preconditions: &metav1.Preconditions{UID: &uid},
@@ -803,9 +834,40 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
 		if err := s.store.DeleteProjectMessages(cleanupCtx, messageScope); err != nil {
-			klog.FromContext(r.Context()).Error(err, "delete project messages", "project", name)
+			cancelCleanup()
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "delete project assistant data: "+err.Error())
+			return
 		}
 		cancelCleanup()
+	}
+	// Attachment storage is an optional capability layered beside the message
+	// store. The normal production wiring uses one store and the call above is
+	// atomic with message cleanup; keep this explicit fallback for tests or
+	// deployments that provide a separate attachment backend.
+	if s.attachments != nil && !s.attachmentsInStore {
+		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
+		if err := s.attachments.DeleteProjectAttachments(cleanupCtx, messageScope); err != nil {
+			cancelCleanup()
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "delete project attachments: "+err.Error())
+			return
+		}
+		cancelCleanup()
+	}
+	current, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			writeProjectError(w, err)
+			return
+		}
+		current = nil
+	}
+	if current != nil && slices.Contains(current.Finalizers, attachmentCleanupFinalizer) {
+		next := current.DeepCopy()
+		next.Finalizers = slices.DeleteFunc(next.Finalizers, func(value string) bool { return value == attachmentCleanupFinalizer })
+		if _, err := c.Projects().Update(r.Context(), next, metav1.UpdateOptions{}); err != nil {
+			writeProjectError(w, err)
+			return
+		}
 	}
 	if thumbnailStore, ok := s.projectThumbnailStore(); ok {
 		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
@@ -981,6 +1043,9 @@ func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope s
 }
 
 type projectAssistantStreamStart struct {
+	// ThreadID lets the model boundary recover the latest prior image receipt
+	// without placing thread routing state in the provider-facing request.
+	ThreadID                 string
 	InitialApprovedPlan      *projectAssistantApprovedPlan
 	SkillSnapshot            *appskills.Snapshot
 	SelectedSkills           []projectAssistantSkillReceipt
@@ -1297,6 +1362,9 @@ func applyProjectAssistantActionFeedUpdate(actions []projectAssistantActionFeedI
 func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFeedItem) projectAssistantActionFeedItem {
 	if next.Kind == "" {
 		next.Kind = existing.Kind
+	}
+	if next.MediaKind == "" {
+		next.MediaKind = existing.MediaKind
 	}
 	if next.Status == "" {
 		next.Status = existing.Status

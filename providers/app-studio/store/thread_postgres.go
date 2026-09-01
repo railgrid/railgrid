@@ -269,7 +269,13 @@ func (s *PostgresStore) DeleteAssistantThread(ctx context.Context, scope Scope, 
 		return fmt.Errorf("begin delete assistant thread: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, assistantThreadLockKey(scope, threadID)); err != nil {
+	// Serialize attachment quota/binding mutations for this workspace while
+	// deleting the owning conversation. This also makes the attachment cascade
+	// part of the same lifecycle boundary as the turn deletion.
+	if err := lockPostgresAttachmentScope(ctx, tx, scope); err != nil {
+		return err
+	}
+	if err := lockPostgresAssistantThread(ctx, tx, scope, threadID); err != nil {
 		return fmt.Errorf("lock assistant thread deletion: %w", err)
 	}
 	var owner string
@@ -295,6 +301,13 @@ func (s *PostgresStore) DeleteAssistantThread(ctx context.Context, scope Scope, 
 	}
 	turns := `SELECT turn_id FROM app_studio_assistant_turns
 		WHERE org_uuid=$5 AND workspace_uuid=$6 AND project_name=$7 AND project_uid=$8 AND thread_id=$9`
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+		  AND binding_id IN (`+turns+`)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID); err != nil {
+		return fmt.Errorf("delete assistant thread attachments: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_messages AS message
 		USING app_studio_assistant_runs AS run
 		WHERE run.org_uuid=$1 AND run.workspace_uuid=$2 AND run.project_name=$3 AND run.project_uid=$4

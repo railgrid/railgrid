@@ -135,12 +135,23 @@ export interface ProjectAssistantAnnotationPin {
   anchor?: ProjectAssistantAnnotationAnchor
 }
 
+/** Immutable server receipt referenced by an assistant attachment content part. */
+export interface ProjectAssistantAttachmentReceipt {
+  id: string
+  filename: string
+  contentType: string
+  sizeBytes: number
+  sha256: string
+  createdAt: string
+}
+
 /** Canonical rich-composer content parts persisted on user thread items. */
 export type ProjectAssistantContentPart =
   | { type: 'text'; text: string }
   | { type: 'skill'; skillID: string }
   | { type: 'resource'; resourceIndex: number }
   | { type: 'annotation'; annotation: ProjectAssistantAnnotation }
+  | { type: 'attachment'; attachment: ProjectAssistantAttachmentReceipt }
 
 export interface ProjectAssistantSkillResource {
   path: string
@@ -268,6 +279,7 @@ export interface ProjectAssistantRunStart {
 }
 
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
+export type ProjectAssistantActionMediaKind = 'image'
 export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected' | 'canceled' | 'retrying' | 'recovered'
 export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
 export type ProjectAssistantDiagnosticCategory = 'timeout' | 'permission' | 'validation' | 'runtime' | 'provider' | 'unknown'
@@ -305,6 +317,7 @@ export interface ProjectAssistantExecDisclosure {
 export interface ProjectAssistantActionFeedItem {
   id: string
   kind: ProjectAssistantActionKind
+  mediaKind?: ProjectAssistantActionMediaKind
   status: ProjectAssistantActionStatus
   title: string
   target?: string

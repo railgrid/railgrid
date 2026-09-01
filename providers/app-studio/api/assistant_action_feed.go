@@ -45,6 +45,7 @@ const (
 	projectAssistantActionFeedItemCommit  = "commit"
 	projectAssistantActionFeedItemPlan    = "plan"
 	projectAssistantActionFeedItemOther   = "other"
+	projectAssistantActionFeedMediaImage  = "image"
 )
 
 const (
@@ -68,6 +69,7 @@ const (
 type projectAssistantActionFeedItem struct {
 	ID         string                            `json:"id"`
 	Kind       string                            `json:"kind"`
+	MediaKind  string                            `json:"mediaKind,omitempty"`
 	Status     string                            `json:"status"`
 	Title      string                            `json:"title"`
 	Target     string                            `json:"target,omitempty"`
@@ -80,6 +82,33 @@ type projectAssistantActionFeedItem struct {
 	RecoveryOf string                            `json:"recoveryOf,omitempty"`
 	Diagnostic *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
 	Exec       *projectAssistantExecMetadata     `json:"exec,omitempty"`
+}
+
+func projectAssistantActionFeedItemFromModelInput(event projectAssistantModelInputEvent) projectAssistantActionFeedItem {
+	status := projectAssistantActionFeedStatusRunning
+	switch strings.TrimSpace(event.Status) {
+	case "completed", "succeeded":
+		status = projectAssistantActionFeedStatusSucceeded
+	case "failed", "error":
+		status = projectAssistantActionFeedStatusFailed
+	}
+	item := projectAssistantActionFeedItem{
+		ID:        projectAssistantActionPublicID(event.ID),
+		Kind:      projectAssistantActionFeedItemInspect,
+		MediaKind: projectAssistantActionFeedMediaImage,
+		Status:    status,
+		Title:     "Viewing image",
+		Target:    projectAssistantActionSafeTarget(event.Filename),
+		Severity:  projectAssistantActionFeedItemSeverity(status),
+	}
+	switch status {
+	case projectAssistantActionFeedStatusSucceeded:
+		item.Title = "Viewed image"
+	case projectAssistantActionFeedStatusFailed:
+		item.Title = "Image view failed"
+		item.Diagnostic = projectAssistantActionFeedDiagnostic(event.ID, event.Error)
+	}
+	return item
 }
 
 type projectAssistantActionDiagnostic struct {

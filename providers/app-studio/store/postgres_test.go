@@ -400,6 +400,178 @@ func TestPostgresRetentionProtectsActiveMessagesAndConversationHighWaterMark(t *
 	}
 }
 
+func TestPostgresRetentionDoesNotDeleteAttachmentWhenThreadIsRevived(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+	schemaName := fmt.Sprintf("app_studio_retention_attachment_race_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer cleanupDB.Close()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+
+	schemaDSN := postgresDSNWithSearchPath(t, dsn, schemaName)
+	store, err := OpenPostgres(ctx, schemaDSN)
+	if err != nil {
+		t.Fatalf("OpenPostgres: %v", err)
+	}
+	defer store.Close()
+	scope := Scope{OrgUUID: "org-retention-race", WorkspaceUUID: "workspace-retention-race", ProjectName: "demo", ProjectUID: "project-retention-race"}
+	old := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	thread, err := store.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-retention-race", ActorID: "alice", CreatedAt: old, UpdatedAt: old}, nil)
+	if err != nil {
+		t.Fatalf("CreateAssistantThread: %v", err)
+	}
+	turn, err := store.CreateAssistantTurn(ctx, scope, AssistantTurn{ID: "turn-retention-race", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-retention-race", Status: AssistantTurnStatusCompleted, CreatedAt: old, UpdatedAt: old}, nil)
+	if err != nil {
+		t.Fatalf("CreateAssistantTurn: %v", err)
+	}
+	thread.Status, thread.UpdatedAt = AssistantThreadStatusIdle, old
+	if _, err := store.UpdateAssistantThread(ctx, scope, thread); err != nil {
+		t.Fatalf("make thread stale: %v", err)
+	}
+	expires := time.Now().UTC().Add(time.Hour)
+	attachment := attachmentTestRecord(old, true, &expires)
+	attachment.ID = "retention-race-attachment"
+	if _, err := store.CreateAttachment(ctx, scope, attachment); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+	receipt := AttachmentReceipt{ID: attachment.ID, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes, SHA256: attachment.SHA256, CreatedAt: attachment.CreatedAt}
+	if _, err := store.BindAttachments(ctx, scope, []AttachmentReceipt{receipt}, "alice", turn.ID); err != nil {
+		t.Fatalf("BindAttachments: %v", err)
+	}
+
+	holdDB, err := sql.Open("postgres", schemaDSN)
+	if err != nil {
+		t.Fatalf("open lock-holder postgres: %v", err)
+	}
+	defer holdDB.Close()
+	holdTx, err := holdDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin lock-holder transaction: %v", err)
+	}
+	defer func() { _ = holdTx.Rollback() }()
+	if _, err := holdTx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, postgresAttachmentWorkspaceLockKey(scope)); err != nil {
+		t.Fatalf("hold workspace attachment lock: %v", err)
+	}
+	if _, err := holdTx.ExecContext(ctx, `SELECT thread_id FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 FOR UPDATE`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, thread.ID); err != nil {
+		t.Fatalf("hold thread row lock: %v", err)
+	}
+
+	retentionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	retentionDone := make(chan error, 1)
+	go func() {
+		_, retentionErr := store.DeleteMessagesOlderThan(retentionCtx, old.Add(time.Hour))
+		retentionDone <- retentionErr
+	}()
+	// Let retention build its candidate set and wait on the held thread row.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := holdTx.ExecContext(ctx, `UPDATE app_studio_assistant_threads SET status='active',updated_at=$6
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, thread.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("revive held thread: %v", err)
+	}
+	if err := holdTx.Commit(); err != nil {
+		t.Fatalf("commit revived thread: %v", err)
+	}
+	if err := <-retentionDone; err != nil {
+		t.Fatalf("DeleteMessagesOlderThan: %v", err)
+	}
+	if _, err := store.GetAssistantThread(ctx, scope, thread.ID); err != nil {
+		t.Fatalf("revived thread after retention = %v, want present", err)
+	}
+	if _, err := store.GetAttachment(ctx, scope, attachment.ID); err != nil {
+		t.Fatalf("attachment after thread revival race = %v, want present", err)
+	}
+}
+
+func TestPostgresAttachmentLifecycleExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	schemaName := fmt.Sprintf("app_studio_attachment_lifecycle_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer cleanupDB.Close()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	scope := attachmentTestScope()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	expires := now.Add(time.Hour)
+	first := attachmentTestRecord(now, true, &expires)
+	second := attachmentTestRecord(now.Add(time.Microsecond), true, &expires)
+	second.ID, second.Filename = "att-postgres-second", "second.png"
+	for _, attachment := range []Attachment{first, second} {
+		if _, err := s.CreateAttachment(ctx, scope, attachment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt := func(attachment Attachment) AttachmentReceipt {
+		return AttachmentReceipt{ID: attachment.ID, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes, SHA256: attachment.SHA256, CreatedAt: attachment.CreatedAt}
+	}
+	bad := receipt(second)
+	bad.SHA256 = strings.Repeat("0", 64)
+	if _, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt(first), bad}, "alice", "run-bad"); !errors.Is(err, ErrAttachmentReceiptMismatch) {
+		t.Fatalf("invalid batch error = %v", err)
+	}
+	if got, _ := s.GetAttachment(ctx, scope, first.ID); !got.Draft {
+		t.Fatal("rejected batch partially promoted an attachment")
+	}
+	if _, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt(first), receipt(second)}, "alice", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAttachment(ctx, scope, first.ID, "alice"); !errors.Is(err, ErrAttachmentImmutable) {
+		t.Fatalf("delete bound attachment error = %v", err)
+	}
+	if err := s.RollbackAttachmentBinding(ctx, scope, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetAttachment(ctx, scope, first.ID); !got.Draft {
+		t.Fatal("rollback did not restore draft")
+	}
+	if err := s.DeleteProjectAttachments(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAttachment(ctx, scope, first); !errors.Is(err, ErrAttachmentProjectDeleted) {
+		t.Fatalf("create after deletion error = %v", err)
+	}
+}
+
 func postgresDSNWithSearchPath(t *testing.T, dsn, schemaName string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)

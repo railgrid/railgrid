@@ -192,6 +192,37 @@ func runServe() {
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true" ||
 			hubInsecure,
 	)
+	attachmentRetention := parseRetention(os.Getenv("APP_STUDIO_ATTACHMENT_DRAFT_RETENTION"))
+	if attachmentRetention <= 0 {
+		attachmentRetention = store.DefaultAttachmentDraftRetention
+	}
+	apiServer.ConfigureAttachmentDraftRetention(attachmentRetention)
+	if quotaConfigurer, ok := msgStore.(store.AttachmentQuotaConfigurer); ok {
+		quota := store.DefaultAttachmentQuota()
+		quotaRaw := strings.TrimSpace(os.Getenv("APP_STUDIO_ATTACHMENT_WORKSPACE_QUOTA_BYTES"))
+		if quotaRaw == "" {
+			// Keep the shorter name as a compatibility alias for early chart
+			// values and local deployments.
+			quotaRaw = strings.TrimSpace(os.Getenv("APP_STUDIO_ATTACHMENT_WORKSPACE_QUOTA"))
+		}
+		if quotaRaw != "" {
+			quota.WorkspaceMaxBytes, err = store.ParseAttachmentQuotaBytes(quotaRaw)
+			if err != nil {
+				log.Fatalf("attachment workspace quota: %v", err)
+			}
+		}
+		if err := quotaConfigurer.ConfigureAttachmentQuota(quota); err != nil {
+			log.Fatalf("configure attachment quota: %v", err)
+		}
+	}
+	if bindingReconciler, ok := msgStore.(store.AttachmentBindingReconciler); ok {
+		if err := bindingReconciler.ReconcileAttachmentBindings(ctx); err != nil {
+			log.Fatalf("reconcile attachment bindings: %v", err)
+		}
+	}
+	if attachmentStore, ok := msgStore.(store.AttachmentStore); ok {
+		go runAttachmentRetention(ctx, attachmentStore, attachmentRetention)
+	}
 	apiServer.ConfigureCodingSandbox(sandboxConfig)
 	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
 	// Preview inspection drives the workspace's shared browser (the Studio's
@@ -455,6 +486,25 @@ func runRetention(ctx context.Context, msgStore store.Store, retention time.Dura
 			cutoff := time.Now().Add(-retention)
 			if _, err := msgStore.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
 				log.Printf("App Studio retention cleanup failed (cutoff %s): %v", cutoff, err)
+			}
+		}
+	}
+}
+
+func runAttachmentRetention(ctx context.Context, attachmentStore store.AttachmentStore, retention time.Duration) {
+	interval := retention / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := attachmentStore.DeleteExpiredAttachments(ctx, time.Now().UTC()); err != nil {
+				log.Printf("App Studio attachment retention cleanup failed: %v", err)
 			}
 		}
 	}

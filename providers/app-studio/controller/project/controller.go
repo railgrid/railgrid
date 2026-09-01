@@ -52,6 +52,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/bindings"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -91,6 +92,11 @@ type Reconciler struct {
 	// Workspace is the shared on-disk project file store (nil disables
 	// commit convergence).
 	Workspace *workspace.FileStore
+	// Attachments owns the durable project attachment scope. The controller adds
+	// its finalizer only after the Project's tenant scope and UID are available;
+	// API-created Projects carry the finalizer from creation time so an immediate
+	// direct KCP delete still has a cleanup owner.
+	Attachments store.AttachmentStore
 	// Busy reports whether an assistant turn currently owns the project's
 	// workspace — commits wait for idle.
 	Busy func(workspace.Scope) bool
@@ -165,6 +171,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, fmt.Errorf("converging development preview access policy: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+	if r.Attachments != nil && !controllerutil.ContainsFinalizer(&p, store.AttachmentStorageFinalizer) {
+		// A Project created directly through KCP may not carry the API layer's
+		// org/workspace annotations. Do not add a finalizer that this controller
+		// cannot later use to identify the attachment storage scope.
+		if _, ok := attachmentScopeForProject(&p); ok {
+			controllerutil.AddFinalizer(&p, store.AttachmentStorageFinalizer)
+			if err := c.Update(ctx, &p); err != nil {
+				return ctrl.Result{}, fmt.Errorf("adding attachment storage finalizer: %w", err)
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	bound := providerBindings(&p)
@@ -560,46 +578,86 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 // infrastructure provider's template owns the runtime namespace and
 // garbage-collects every materialized workload when the instance goes away.
 func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha1.Project, clusterName string) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(p, finalizer) {
+	instanceFinalizer := controllerutil.ContainsFinalizer(p, finalizer)
+	attachmentFinalizer := controllerutil.ContainsFinalizer(p, store.AttachmentStorageFinalizer)
+	if !instanceFinalizer && !attachmentFinalizer {
 		return ctrl.Result{}, nil
 	}
-	if bound := providerBindings(p); len(bound) > 0 {
-		// Deletion goes through the tenant-path client like every other
-		// instance write. Blocking on the identity here is deliberate: the
-		// old claimed-VW path treated an unserved resource's 404 as "already
-		// gone" and released the finalizer over live instances.
-		token, err := r.ensureIdentity(ctx, c, p)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("project identity for teardown: %w", err)
+	if attachmentFinalizer {
+		if r.Attachments == nil {
+			return ctrl.Result{}, fmt.Errorf("attachment storage finalizer present but attachment store is unavailable")
 		}
-		if token == "" {
-			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		scope, ok := attachmentScopeForProject(p)
+		if !ok {
+			// This can only be a legacy object (or a manually-created object
+			// carrying the old finalizer). There is no authenticated scope with
+			// which to delete bytes, so retaining the finalizer would make the CR
+			// undeletable forever. The API creation path now installs the
+			// finalizer only alongside the scope annotations, while unattached
+			// direct KCP Projects never receive it.
+			log.Printf("app-studio project %s: releasing attachment finalizer without cleanup because tenant scope is unavailable", p.Name)
+			controllerutil.RemoveFinalizer(p, store.AttachmentStorageFinalizer)
+		} else {
+			if err := r.Attachments.DeleteProjectAttachments(ctx, scope); err != nil {
+				return ctrl.Result{}, fmt.Errorf("deleting project attachments: %w", err)
+			}
+			controllerutil.RemoveFinalizer(p, store.AttachmentStorageFinalizer)
 		}
-		tc, err := r.tenantClient(clusterName, token, c)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("tenant client for teardown: %w", err)
-		}
-		for _, env := range bound {
-			for _, binding := range env.bindings {
-				want, _, err := bindings.Desired(p, binding)
-				if err != nil {
-					// Un-buildable desired state also means nothing was created.
-					continue
-				}
-				obj := &unstructured.Unstructured{}
-				obj.SetGroupVersionKind(want.GroupVersionKind())
-				obj.SetName(want.GetName())
-				if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+	}
+	if instanceFinalizer {
+		if bound := providerBindings(p); len(bound) > 0 {
+			// Deletion goes through the tenant-path client like every other
+			// instance write. Blocking on the identity here is deliberate: the
+			// old claimed-VW path treated an unserved resource's 404 as "already
+			// gone" and released the finalizer over live instances.
+			token, err := r.ensureIdentity(ctx, c, p)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("project identity for teardown: %w", err)
+			}
+			if token == "" {
+				return ctrl.Result{RequeueAfter: requeueInterval}, nil
+			}
+			tc, err := r.tenantClient(clusterName, token, c)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("tenant client for teardown: %w", err)
+			}
+			for _, env := range bound {
+				for _, binding := range env.bindings {
+					want, _, err := bindings.Desired(p, binding)
+					if err != nil {
+						// Un-buildable desired state also means nothing was created.
+						continue
+					}
+					obj := &unstructured.Unstructured{}
+					obj.SetGroupVersionKind(want.GroupVersionKind())
+					obj.SetName(want.GetName())
+					if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+						return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+					}
 				}
 			}
 		}
 	}
-	controllerutil.RemoveFinalizer(p, finalizer)
+	if instanceFinalizer {
+		controllerutil.RemoveFinalizer(p, finalizer)
+	}
 	if err := c.Update(ctx, p); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+func attachmentScopeForProject(p *aiv1alpha1.Project) (store.Scope, bool) {
+	if p == nil || strings.TrimSpace(string(p.UID)) == "" {
+		return store.Scope{}, false
+	}
+	annotations := p.GetAnnotations()
+	org := strings.TrimSpace(annotations[bindings.OrgUUIDAnnotation])
+	workspace := strings.TrimSpace(annotations[bindings.WorkspaceUUIDAnnotation])
+	if org == "" || workspace == "" || strings.TrimSpace(p.Name) == "" {
+		return store.Scope{}, false
+	}
+	return store.Scope{OrgUUID: org, WorkspaceUUID: workspace, ProjectName: p.Name, ProjectUID: string(p.UID)}, true
 }
 
 // environmentStatusesEqual compares mirrored environment statuses.

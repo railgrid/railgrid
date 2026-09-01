@@ -120,6 +120,7 @@ type projectEinoAssistantRunState struct {
 	repeatedActionCount              int
 	runtimeWarmupAttempts            int
 	modelCallOrdinal                 int
+	completedModelInputIDs           map[string]struct{}
 	transientToolResults             map[string]string
 	transientPreviewImages           map[string]projectEinoAssistantTransientPreviewImage
 	transientToolResultCount         uint64
@@ -667,7 +668,8 @@ func (s *projectEinoAssistantRunState) progressReminderPending() bool {
 
 func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result string) string {
 	persistent := projectEinoAssistantPersistentToolResult(name, result)
-	if s == nil || projectToolBaseName(name) != projectToolGetPreviewConsoleLogs {
+	baseName := projectToolBaseName(name)
+	if s == nil || (baseName != projectToolGetPreviewConsoleLogs && baseName != projectToolReadAttachment) {
 		return persistent
 	}
 
@@ -689,14 +691,14 @@ func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result 
 	if err := json.Unmarshal([]byte(persistent), &placeholder); err != nil {
 		placeholder = map[string]any{
 			"status":         "unavailable",
-			"summary":        "transient preview console result omitted from persistence",
+			"summary":        "transient tool result omitted from persistence",
 			"transientEvent": true,
 		}
 	}
 	placeholder["transientReference"] = reference
 	encoded, err := json.Marshal(placeholder)
 	if err != nil {
-		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
+		return `{"status":"unavailable","summary":"transient tool result omitted from persistence"}`
 	}
 	return string(encoded)
 }
@@ -743,7 +745,7 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			continue
 		}
 		switch projectToolBaseName(toolName) {
-		case projectToolGetPreviewConsoleLogs:
+		case projectToolGetPreviewConsoleLogs, projectToolReadAttachment:
 			result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
 			if !ok {
 				expanded = append(expanded, message)
@@ -1007,6 +1009,35 @@ func (s *projectEinoAssistantRunState) ContentParts() []projectAssistantContentP
 	return cloneProjectAssistantContentParts(s.contentParts)
 }
 
+func (s *projectEinoAssistantRunState) ModelInputCompleted(id string) bool {
+	if s == nil {
+		return false
+	}
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, completed := s.completedModelInputIDs[id]
+	return completed
+}
+
+func (s *projectEinoAssistantRunState) RecordCompletedModelInput(id string) {
+	if s == nil {
+		return
+	}
+	id = strings.TrimSpace(id)
+	if !strings.HasPrefix(id, "image-input-") || len([]byte(id)) > len("image-input-")+projectAssistantAttachmentMaxIDBytes {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.completedModelInputIDs == nil {
+		s.completedModelInputIDs = map[string]struct{}{}
+	}
+	if len(s.completedModelInputIDs) < projectAssistantMaxAttachmentsPerTurn {
+		s.completedModelInputIDs[id] = struct{}{}
+	}
+}
+
 func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssistantCheckpointState) {
 	if s == nil {
 		return
@@ -1026,6 +1057,7 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.loadedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.LoadedSkillReceipts)+len(state.SelectedSkillReceipts))
 	s.selectedContextResourceReceipts = cloneProjectAssistantContextResourceReceipts(state.SelectedContextResourceReceipts)
 	s.contentParts = cloneProjectAssistantContentParts(state.ContentParts)
+	s.completedModelInputIDs = projectEinoAssistantModelInputIDSet(state.CompletedModelInputIDs)
 	for _, receipt := range state.SelectedSkillReceipts {
 		s.selectedSkillReceipts[receipt.ID] = receipt
 		s.loadedSkillReceipts[receipt.ID] = receipt
@@ -2226,7 +2258,8 @@ func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) 
 	messages = cloneChatMessages(messages)
 	for index := range messages {
 		if messages[index].Role == "tool" &&
-			projectToolBaseName(messages[index].Name) == projectToolGetPreviewConsoleLogs {
+			(projectToolBaseName(messages[index].Name) == projectToolGetPreviewConsoleLogs ||
+				projectToolBaseName(messages[index].Name) == projectToolReadAttachment) {
 			messages[index].Content = projectEinoAssistantPersistentToolResult(
 				messages[index].Name,
 				messages[index].Content,
@@ -2500,6 +2533,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		RepeatedActionCount:              s.repeatedActionCount,
 		RuntimeWarmupAttempts:            s.runtimeWarmupAttempts,
 		ModelCallOrdinal:                 s.modelCallOrdinal,
+		CompletedModelInputIDs:           projectEinoAssistantSortedModelInputIDs(s.completedModelInputIDs),
 		AcceptedProgressCount:            s.acceptedProgressCount,
 		LastAcceptedProgressModelCall:    s.lastAcceptedProgressModelCall,
 		ProgressReminderKind:             progressReminderKind,
@@ -2517,6 +2551,36 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		RolloutBudget:                    rolloutBudget,
 		Sandbox:                          s.sandboxCheckpointLocked(),
 	}
+}
+
+func projectEinoAssistantModelInputIDSet(ids []string) map[string]struct{} {
+	out := make(map[string]struct{}, min(len(ids), projectAssistantMaxAttachmentsPerTurn))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if !strings.HasPrefix(id, "image-input-") || len([]byte(id)) > len("image-input-")+projectAssistantAttachmentMaxIDBytes {
+			continue
+		}
+		out[id] = struct{}{}
+		if len(out) >= projectAssistantMaxAttachmentsPerTurn {
+			break
+		}
+	}
+	return out
+}
+
+func projectEinoAssistantSortedModelInputIDs(ids map[string]struct{}) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(ids), projectAssistantMaxAttachmentsPerTurn))
+	for id := range ids {
+		if len(out) >= projectAssistantMaxAttachmentsPerTurn {
+			break
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *projectEinoAssistantRunState) sandboxCheckpointLocked() *projectAssistantSandboxCheckpoint {

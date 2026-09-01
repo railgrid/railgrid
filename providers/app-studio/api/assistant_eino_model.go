@@ -379,14 +379,38 @@ func projectEinoMessagesToChat(messages []*schema.Message) []chatMessage {
 		if msg == nil {
 			continue
 		}
-		out = append(out, chatMessage{
+		// Historical attachment placeholders sit immediately after their
+		// originating user message. Fold their metadata back onto that message
+		// so checkpoints and retries retain the receipt association without ever
+		// persisting image bytes.
+		if projectEinoAssistantHistoricalAttachmentMessage(msg) {
+			receipts := projectAssistantAttachmentReceiptsFromEinoMessage(msg)
+			if len(receipts) == 0 {
+				continue
+			}
+			if len(out) > 0 && out[len(out)-1].Role == string(schema.User) {
+				out[len(out)-1].Attachments = appendProjectAssistantAttachmentReceipts(out[len(out)-1].Attachments, receipts...)
+				continue
+			}
+			// A receipt without its originating user message has no conversation
+			// authority. Valid model and compaction boundaries reject this shape;
+			// never fabricate an empty user message while projecting diagnostics.
+			continue
+		}
+		// Current-turn attachment messages are model-input-only. They are
+		// rehydrated from run ContentParts and must not become durable history.
+		if projectEinoAssistantAttachmentMessage(msg) {
+			continue
+		}
+		converted := chatMessage{
 			Role:       string(msg.Role),
 			Content:    msg.Content,
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  projectEinoToolCallsToChat(msg.ToolCalls),
 			Extra:      projectAssistantDurableMessageExtra(msg.Extra),
-		})
+		}
+		out = append(out, converted)
 		if len(out) > 0 && msg.Role == schema.Tool && out[len(out)-1].Name == "" {
 			out[len(out)-1].Name = msg.ToolName
 		}
@@ -412,8 +436,46 @@ func projectChatMessagesToEino(messages []chatMessage) ([]*schema.Message, error
 		}
 		converted.Extra = projectAssistantDurableMessageExtra(msg.Extra)
 		out = append(out, converted)
+		if len(msg.Attachments) == 0 || msg.Role != string(schema.User) {
+			continue
+		}
+		receipts := make([]projectAssistantAttachmentReceipt, 0, len(msg.Attachments))
+		seen := make(map[string]struct{}, len(msg.Attachments))
+		for _, attachment := range msg.Attachments {
+			receipt, err := normalizeProjectAssistantAttachmentReceipt(&attachment)
+			if err != nil {
+				return nil, fmt.Errorf("invalid conversation attachment receipt: %w", err)
+			}
+			if _, duplicate := seen[receipt.ID]; duplicate {
+				continue
+			}
+			seen[receipt.ID] = struct{}{}
+			receipts = append(receipts, *receipt)
+		}
+		for _, receipt := range receipts {
+			out = append(out, projectAssistantAttachmentPlaceholderMessage(receipt))
+		}
 	}
 	return out, nil
+}
+
+func appendProjectAssistantAttachmentReceipts(dst []projectAssistantAttachmentReceipt, receipts ...projectAssistantAttachmentReceipt) []projectAssistantAttachmentReceipt {
+	if len(receipts) == 0 {
+		return dst
+	}
+	seen := make(map[string]struct{}, len(dst)+len(receipts))
+	for _, receipt := range dst {
+		seen[receipt.ID] = struct{}{}
+	}
+	out := append([]projectAssistantAttachmentReceipt(nil), dst...)
+	for _, receipt := range receipts {
+		if _, duplicate := seen[receipt.ID]; duplicate {
+			continue
+		}
+		seen[receipt.ID] = struct{}{}
+		out = append(out, receipt)
+	}
+	return out
 }
 
 func projectChatToolCallsToEino(toolCalls []chatToolCall) []schema.ToolCall {

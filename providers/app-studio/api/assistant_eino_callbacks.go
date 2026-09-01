@@ -27,6 +27,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -63,7 +64,7 @@ func newProjectEinoAssistantModelCallbackHandler(
 	}
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
-			recorder.recordModelInput(input)
+			recorder.recordModelInput(ctx, input)
 			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, _ *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
@@ -88,21 +89,117 @@ type projectEinoAssistantModelCallbackRecorder struct {
 
 	mu                      sync.Mutex
 	reportedToolPreparation bool
+	modelInputs             map[int][]projectAssistantModelInputEvent
 }
 
-func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(input callbacks.CallbackInput) {
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(ctx context.Context, input callbacks.CallbackInput) {
 	modelInput := einomodel.ConvCallbackInput(input)
 	if modelInput == nil || len(modelInput.Messages) == 0 {
 		return
 	}
+	// The callback runs after Eino has copied the state into the model input and
+	// immediately before the provider call. Remove model-only attachment
+	// messages from the graph state while retaining the callback's input slice,
+	// so an interrupt/cancel checkpoint cannot persist verified image bytes.
+	_ = compose.ProcessState[*adk.State](ctx, func(_ context.Context, state *adk.State) error {
+		state.Messages = projectEinoAssistantMessagesWithoutAttachments(state.Messages)
+		return nil
+	})
+	ordinal := r.runState.CurrentModelCallOrdinal()
+	attachments := projectAssistantModelInputEvents(modelInput.Messages, ordinal)
+	if len(attachments) > 0 {
+		r.mu.Lock()
+		fresh := make([]projectAssistantModelInputEvent, 0, len(attachments))
+		for _, attachment := range attachments {
+			if r.runState.ModelInputCompleted(attachment.ID) {
+				continue
+			}
+			fresh = append(fresh, attachment)
+		}
+		if r.modelInputs == nil {
+			r.modelInputs = map[int][]projectAssistantModelInputEvent{}
+		}
+		r.modelInputs[ordinal] = append([]projectAssistantModelInputEvent(nil), fresh...)
+		r.mu.Unlock()
+		for _, attachment := range fresh {
+			r.emitModelInput(attachment)
+		}
+	}
 	r.runState.RecordModelInput(projectEinoMessagesToChat(modelInput.Messages))
+}
+
+func projectAssistantModelInputEvents(messages []*schema.Message, ordinal int) []projectAssistantModelInputEvent {
+	if ordinal <= 0 || len(messages) == 0 {
+		return nil
+	}
+	events := make([]projectAssistantModelInputEvent, 0)
+	seen := map[string]struct{}{}
+	for _, message := range messages {
+		if !projectEinoAssistantAttachmentMessage(message) || len(message.UserInputMultiContent) == 0 {
+			continue
+		}
+		id, _ := message.Extra[projectAssistantAttachmentMessageIDKey].(string)
+		filename, _ := message.Extra[projectAssistantAttachmentMessageFilenameKey].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		for _, part := range message.UserInputMultiContent {
+			if part.Type != schema.ChatMessagePartTypeImageURL || part.Image == nil || part.Image.Base64Data == nil {
+				continue
+			}
+			key := id
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			events = append(events, projectAssistantModelInputEvent{
+				ID:          "image-input-" + key,
+				Filename:    filename,
+				ContentType: part.Image.MIMEType,
+				Ordinal:     ordinal,
+				Status:      "started",
+			})
+		}
+	}
+	return events
+}
+
+func (r *projectEinoAssistantModelCallbackRecorder) emitModelInput(event projectAssistantModelInputEvent) {
+	if r == nil || r.streamCallbacks.OnModelInput == nil {
+		return
+	}
+	r.streamCallbacks.OnModelInput(event)
+}
+
+func (r *projectEinoAssistantModelCallbackRecorder) finishModelInputs(status, errText string) {
+	if r == nil {
+		return
+	}
+	ordinal := r.runState.CurrentModelCallOrdinal()
+	r.mu.Lock()
+	attachments := append([]projectAssistantModelInputEvent(nil), r.modelInputs[ordinal]...)
+	delete(r.modelInputs, ordinal)
+	if status == "completed" && len(attachments) > 0 {
+		for _, attachment := range attachments {
+			r.runState.RecordCompletedModelInput(attachment.ID)
+		}
+	}
+	r.mu.Unlock()
+	for _, attachment := range attachments {
+		attachment.Status = status
+		attachment.Error = errText
+		r.emitModelInput(attachment)
+	}
 }
 
 func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(ctx context.Context, output callbacks.CallbackOutput) {
 	modelOutput := einomodel.ConvCallbackOutput(output)
 	if modelOutput == nil || modelOutput.Message == nil {
+		r.finishModelInputs("failed", "model provider returned no response")
 		return
 	}
+	r.finishModelInputs("completed", "")
 	if r.auditRecorder != nil && projectEinoAssistantMeaningfulModelChunk(modelOutput.Message) {
 		r.auditRecorder.recordModelResponseChunk(ctx, len(modelOutput.Message.ToolCalls) > 0)
 	}
@@ -121,6 +218,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 	output *schema.StreamReader[callbacks.CallbackOutput],
 ) {
 	if output == nil {
+		r.finishModelInputs("failed", "model provider returned no stream")
 		return
 	}
 	defer output.Close()
@@ -134,6 +232,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 			break
 		}
 		if err != nil {
+			r.finishModelInputs("failed", err.Error())
 			if r.auditRecorder != nil {
 				r.auditRecorder.recordModelTransportError(ctx, err)
 			}
@@ -159,6 +258,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 			projectEinoMergeToolCalls(toolCalls, msg.ToolCalls)
 		}
 	}
+	r.finishModelInputs("completed", "")
 	reply := projectAssistantReply{
 		Content:   content.String(),
 		ToolCalls: projectEinoSortedToolCalls(toolCalls),
@@ -195,6 +295,11 @@ func projectEinoAssistantMeaningfulModelChunk(msg *schema.Message) bool {
 }
 
 func (r *projectEinoAssistantModelCallbackRecorder) recordModelError(ctx context.Context, modelErr error) {
+	errText := "model provider request failed"
+	if modelErr != nil && strings.TrimSpace(modelErr.Error()) != "" {
+		errText = modelErr.Error()
+	}
+	r.finishModelInputs("failed", errText)
 	if r.auditRecorder != nil {
 		r.auditRecorder.recordModelTransportError(ctx, modelErr)
 		r.auditRecorder.recordModelError()

@@ -78,6 +78,7 @@ type projectAssistantCheckpointState struct {
 	RepeatedActionCount              int                                                 `json:"repeatedActionCount,omitempty"`
 	RuntimeWarmupAttempts            int                                                 `json:"runtimeWarmupAttempts,omitempty"`
 	ModelCallOrdinal                 int                                                 `json:"modelCallOrdinal,omitempty"`
+	CompletedModelInputIDs           []string                                            `json:"completedModelInputIDs,omitempty"`
 	AcceptedProgressCount            int                                                 `json:"acceptedProgressCount,omitempty"`
 	LastAcceptedProgressModelCall    int                                                 `json:"lastAcceptedProgressModelCall,omitempty"`
 	ProgressReminderKind             string                                              `json:"progressReminderKind,omitempty"`
@@ -952,6 +953,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
+		AttachmentReader:         s.projectAssistantAttachmentReader(),
 		LLM:                      settings,
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
@@ -1049,6 +1051,16 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				}
 				syncSteeringSegment()
 				streamToolCall(toolCall)
+				persistMetadata(ctx, nil)
+			},
+			OnModelInput: func(event projectAssistantModelInputEvent) {
+				callbackMu.Lock()
+				defer callbackMu.Unlock()
+				if callbacksClosed {
+					return
+				}
+				syncSteeringSegment()
+				metadataState.upsertModelInput(event)
 				persistMetadata(ctx, nil)
 			},
 			OnAssistantEvent: emitAssistantEvent,
@@ -1635,6 +1647,7 @@ func cloneChatMessages(src []chatMessage) []chatMessage {
 	for i, msg := range src {
 		dst[i] = msg
 		dst[i].ToolCalls = cloneProjectAssistantToolCalls(msg.ToolCalls)
+		dst[i].Attachments = cloneProjectAssistantAttachmentReceipts(msg.Attachments)
 		dst[i].Extra = projectAssistantDurableMessageExtra(msg.Extra)
 	}
 	return dst

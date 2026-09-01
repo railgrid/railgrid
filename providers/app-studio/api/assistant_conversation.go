@@ -36,6 +36,11 @@ const (
 	projectAssistantConversationCompaction    = "compaction"
 	projectAssistantConversationInterruption  = "interruption"
 	projectAssistantConversationRolloutBudget = "rollout_budget"
+	// A generic run is created before provider-specific turn startup. If that
+	// startup fails after the user conversation item is appended, this marker
+	// makes the originating item inert in every later projection without
+	// deleting append-only evidence or changing the store schema.
+	projectAssistantConversationStartFailure  = "start_failure"
 	projectAssistantConversationPageSize      = 500
 	projectAssistantConversationCheckpointV1  = 1
 	projectAssistantConversationSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
@@ -100,8 +105,14 @@ type projectAssistantConversationRolloutBudgetState struct {
 	State   projectAssistantRolloutBudgetState `json:"state"`
 }
 
+type projectAssistantConversationStartFailureMarker struct {
+	Version       int    `json:"version"`
+	UserMessageID string `json:"userMessageID"`
+}
+
 type projectAssistantSequencedConversationMessage struct {
 	sequence int64
+	itemID   string
 	message  chatMessage
 }
 
@@ -231,6 +242,53 @@ func appendProjectAssistantConversationMessage(ctx context.Context, messageStore
 	return err
 }
 
+func appendProjectAssistantStartFailureMarker(ctx context.Context, messageStore store.Store, scope store.Scope, runID, userMessageID string) error {
+	if messageStore == nil {
+		return fmt.Errorf("project message store not configured")
+	}
+	runID = strings.TrimSpace(runID)
+	userMessageID = strings.TrimSpace(userMessageID)
+	if runID == "" || userMessageID == "" {
+		return fmt.Errorf("assistant start-failure marker run and user message IDs are required")
+	}
+	payload, err := json.Marshal(projectAssistantConversationStartFailureMarker{Version: 1, UserMessageID: userMessageID})
+	if err != nil {
+		return fmt.Errorf("encode assistant start-failure marker: %w", err)
+	}
+	_, err = messageStore.AppendAssistantConversationItem(ctx, scope, store.AssistantConversationItem{
+		ID:        "start-failure-" + runID,
+		RunID:     runID,
+		Type:      projectAssistantConversationStartFailure,
+		Payload:   payload,
+		CreatedAt: time.Now().UTC(),
+	})
+	if errors.Is(err, store.ErrAssistantConversationItemConflict) {
+		return nil
+	}
+	return err
+}
+func projectAssistantConversationStartFailureMessageMatches(message chatMessage, marker projectAssistantConversationStartFailureMarker) bool {
+	return message.conversationItemID == "message-"+strings.TrimSpace(marker.UserMessageID)
+}
+
+func projectAssistantConversationRemoveStartFailureMessage(messages []chatMessage, tail []projectAssistantSequencedConversationMessage, marker projectAssistantConversationStartFailureMarker) ([]chatMessage, []projectAssistantSequencedConversationMessage) {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if !projectAssistantConversationStartFailureMessageMatches(messages[index], marker) {
+			continue
+		}
+		messages = append(messages[:index], messages[index+1:]...)
+		break
+	}
+	for index := len(tail) - 1; index >= 0; index-- {
+		if !projectAssistantConversationStartFailureMessageMatches(tail[index].message, marker) {
+			continue
+		}
+		tail = append(tail[:index], tail[index+1:]...)
+		break
+	}
+	return messages, tail
+}
+
 func projectAssistantConversationToolResultItemID(runID, callID string) string {
 	return "tool-result-" + strings.TrimSpace(runID) + "-" + strings.TrimSpace(callID)
 }
@@ -356,6 +414,16 @@ func loadProjectAssistantConversationProjection(ctx context.Context, messageStor
 	}
 	after := int64(0)
 	tailSinceCheckpoint := make([]projectAssistantSequencedConversationMessage, 0)
+	failedStartMarkers := make([]projectAssistantConversationStartFailureMarker, 0)
+	scrubFailedStartMessages := func() {
+		for _, marker := range failedStartMarkers {
+			projection.messages, tailSinceCheckpoint = projectAssistantConversationRemoveStartFailureMessage(
+				projection.messages,
+				tailSinceCheckpoint,
+				marker,
+			)
+		}
+	}
 	for {
 		page, err := messageStore.ListAssistantConversationItems(ctx, scope, after, projectAssistantConversationPageSize)
 		if err != nil {
@@ -396,6 +464,7 @@ func loadProjectAssistantConversationProjection(ctx context.Context, messageStor
 					}
 					projection.messages = append(cloneChatMessages(checkpoint.ReplacementHistory), cloneChatMessages(preserved)...)
 					tailSinceCheckpoint = preservedTail
+					scrubFailedStartMessages()
 					checkpointCopy := checkpoint
 					checkpointCopy.ReplacementHistory = cloneChatMessages(checkpoint.ReplacementHistory)
 					projection.compactionCheckpoint = &checkpointCopy
@@ -412,6 +481,17 @@ func loadProjectAssistantConversationProjection(ctx context.Context, messageStor
 				projection.messages = []chatMessage{projectAssistantConversationSummaryMessage(summary)}
 				projection.compactionCheckpoint = nil
 				tailSinceCheckpoint = nil
+				scrubFailedStartMessages()
+				continue
+			}
+			if item.Type == projectAssistantConversationStartFailure {
+				var marker projectAssistantConversationStartFailureMarker
+				if err := json.Unmarshal(item.Payload, &marker); err != nil ||
+					marker.Version != 1 || strings.TrimSpace(marker.UserMessageID) == "" {
+					return projectAssistantConversationProjection{}, fmt.Errorf("invalid assistant conversation start-failure marker %q", item.ID)
+				}
+				failedStartMarkers = append(failedStartMarkers, marker)
+				scrubFailedStartMessages()
 				continue
 			}
 			// Rollout budgets are run-scoped. Preserve their factual item in the
@@ -423,8 +503,9 @@ func loadProjectAssistantConversationProjection(ctx context.Context, messageStor
 			if json.Unmarshal(item.Payload, &message) != nil || strings.TrimSpace(message.Role) == "" {
 				continue
 			}
+			message.conversationItemID = item.ID
 			projection.messages = append(projection.messages, message)
-			tailSinceCheckpoint = append(tailSinceCheckpoint, projectAssistantSequencedConversationMessage{sequence: item.Sequence, message: message})
+			tailSinceCheckpoint = append(tailSinceCheckpoint, projectAssistantSequencedConversationMessage{sequence: item.Sequence, itemID: item.ID, message: message})
 		}
 		if len(page) < projectAssistantConversationPageSize {
 			break

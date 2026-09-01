@@ -18,6 +18,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,6 +85,7 @@ func projectEinoAssistantToolsForDiscovery(
 	catalogPolicy := projectAssistantToolCatalogPolicy(req)
 	localTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), catalogPolicy), req.CollaborationMode)
 	localTools = projectEinoAssistantFilterPreviewInspection(localTools, discovery.IncludePreviewInspection)
+	localTools = projectAssistantFilterAttachmentTools(localTools, projectAssistantAttachmentSelectionAvailable(req, runState))
 	mcpTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, catalogPolicy), req.CollaborationMode)
 	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+2)
 	if runState != nil && runState.CodexPOCEnabled() && projectEinoAssistantDynamicToolCatalogDigest(discovery) != "" {
@@ -136,6 +139,7 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
 	includePreviewInspection := server.projectAssistantPreviewInspectionAvailable(ctx, req.Identity)
 	localTools := projectEinoAssistantFilterPreviewInspection(registry.Tools(false), includePreviewInspection)
+	localTools = projectAssistantFilterAttachmentTools(localTools, projectAssistantAttachmentSelectionAvailable(req, nil))
 	chatTools := projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(localTools), policy))
 	if len(chatTools) == 0 {
 		return projectEinoAssistantToolDiscovery{}
@@ -552,6 +556,9 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		AssistantRunID:       projectAssistantRunID(t.req),
 		InitialBuild:         projectAssistantInitialBuildActive(t.req, t.runState),
 		RunState:             t.runState,
+		Conversation:         t.req.Conversation,
+		AttachmentReader:     t.req.AttachmentReader,
+		AttachmentScope:      t.req.MessageScope,
 		Arguments:            args,
 	}
 	var result string
@@ -1071,7 +1078,25 @@ func projectAssistantMutationFromSuccessfulResult(name, result string, successfu
 }
 
 func projectEinoAssistantPersistentToolResult(name, result string) string {
-	if projectToolBaseName(name) != projectToolGetPreviewConsoleLogs {
+	baseName := projectToolBaseName(name)
+	if baseName == projectToolReadAttachment {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+			return result
+		}
+		content, _ := decoded["content"].(string)
+		delete(decoded, "content")
+		digest := sha256.Sum256([]byte(content))
+		decoded["contentSHA256"] = hex.EncodeToString(digest[:])
+		decoded["transientEvent"] = true
+		decoded["summary"] = "attachment content omitted from persistence; call read_attachment again if the bytes are still needed"
+		persistent, err := json.Marshal(decoded)
+		if err != nil {
+			return `{"status":"unavailable","summary":"transient attachment content omitted from persistence","transientEvent":true}`
+		}
+		return string(persistent)
+	}
+	if baseName != projectToolGetPreviewConsoleLogs {
 		return result
 	}
 	var decoded struct {

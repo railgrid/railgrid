@@ -33,6 +33,22 @@ test('parses only the fresh allowlisted action feed contract', () => {
   )
   assert.deepEqual(feed.parseAssistantActionFeed([action({ tool: 'read_file' })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
+  const nonImageOutcome = action({ outcome: 'Read 42 lines' })
+  assert.deepEqual(feed.parseAssistantActionFeed([nonImageOutcome]), [nonImageOutcome])
+})
+
+test('parses server-owned image model-input evidence', () => {
+  const imageWithLegacyOutcome = action({
+    id: 'feed-image-1',
+    mediaKind: 'image',
+    title: 'Viewed image',
+    target: 'screen.png',
+    outcome: 'Included in model input',
+  })
+  const { outcome: _legacyOutcome, ...image } = imageWithLegacyOutcome
+  assert.deepEqual(feed.parseAssistantActionFeed([imageWithLegacyOutcome]), [image])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ mediaKind: 'video' })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([image, { ...image, id: 'feed-image-2', base64: 'private' }]), [image])
 })
 
 test('keeps skill lifecycle titles and qualified targets while rejecting private payloads', () => {

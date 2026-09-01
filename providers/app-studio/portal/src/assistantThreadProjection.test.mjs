@@ -197,6 +197,58 @@ test('keeps action items alongside agent progress in the thread projection', asy
   assert.equal(messages[0].metadata.assistantActionFeed.length, 1)
 })
 
+test('projects model-input image lifecycle without treating it as a tool call', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { parseAssistantActionFeed } = await vite.ssrLoadModule('/src/assistantActionFeed.ts')
+  const imageAction = {
+    id: 'feed-image-1', kind: 'inspect', mediaKind: 'image', status: 'running',
+    title: 'Viewing image', target: 'screen.png', severity: 'normal', sequence: 1,
+  }
+  const viewedAction = { ...imageAction, status: 'succeeded', title: 'Viewed image' }
+  const messages = assistantThreadItemsToMessages([{
+    id: 'assistant-image', turnID: 'run-image', type: 'agentMessage', status: 'completed',
+    assistantMessageID: 'assistant-image', content: 'I can see it.', sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }, {
+    id: 'model-input-assistant-image-feed-image-1', turnID: 'run-image', type: 'modelInput', status: 'in_progress',
+    assistantMessageID: 'assistant-image', data: imageAction, sequence: 2,
+    createdAt: '2026-08-02T17:42:10Z',
+  }, {
+    id: 'model-input-assistant-image-feed-image-1', turnID: 'run-image', type: 'modelInput', status: 'completed',
+    assistantMessageID: 'assistant-image', data: viewedAction, sequence: 3,
+    createdAt: '2026-08-02T17:42:11Z',
+  }], 'demo')
+
+  assert.equal(messages.length, 1)
+  const parsed = parseAssistantActionFeed(messages[0].metadata.assistantActionFeed)
+  assert.deepEqual(parsed, [viewedAction])
+  assert.equal(parsed[0].mediaKind, 'image')
+})
+
+test('upserts live model-input lifecycle updates without reclassifying or duplicating the action', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(app, /rawItem\.type === 'dynamicToolCall' \|\| rawItem\.type === 'modelInput'/)
+  assert.match(app, /metadata\.assistantActionFeed = upsertAssistantActionFeed\(metadata\.assistantActionFeed, rawItem\)/)
+
+  const { upsertAssistantActionFeed } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const started = {
+    id: 'model-input-assistant-live-feed-image-1', turnID: 'run-live-feed', type: 'modelInput', status: 'in_progress',
+    assistantMessageID: 'assistant-live-feed', data: {
+      id: 'feed-image-live', kind: 'inspect', mediaKind: 'image', status: 'running',
+      title: 'Viewing image', target: 'screen.png', severity: 'normal', sequence: 1,
+    }, sequence: 2, createdAt: '2026-08-02T17:42:10Z',
+  }
+  const completed = {
+    ...started, status: 'completed', data: {
+      ...started.data, status: 'succeeded', title: 'Viewed image',
+    }, sequence: 3,
+  }
+  const afterStarted = upsertAssistantActionFeed(undefined, started)
+  const afterCompleted = upsertAssistantActionFeed(afterStarted, completed)
+  assert.equal(afterCompleted.length, 1)
+  assert.deepEqual(afterCompleted[0], completed.data)
+})
+
 test('projects skill load and resource updates into the parsed action feed used by the action log', async () => {
   const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const { parseAssistantActionFeed, groupAssistantActions } = await vite.ssrLoadModule('/src/assistantActionFeed.ts')

@@ -245,7 +245,8 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		}
 		return projectAssistantDurableStartResult{Run: created}, nil
 	}
-	if err := appendProjectAssistantConversationMessage(ctx, s.store, scope, created.ID, "message-"+user.ID, projectAssistantConversationUser, chatMessage{Role: "user", Content: user.Content}); err != nil {
+	conversationUser := chatMessage{Role: "user", Content: user.Content, Attachments: projectAssistantAttachmentReceipts(parts)}
+	if err := appendProjectAssistantConversationMessage(ctx, s.store, scope, created.ID, "message-"+user.ID, projectAssistantConversationUser, conversationUser); err != nil {
 		persistErr := fmt.Errorf("persist assistant conversation user item: %w", err)
 		failedRun := created
 		failedMessage := assistant
@@ -261,7 +262,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		return projectAssistantDurableStartResult{Run: failedRun, User: user, Assistant: failedMessage}, persistErr
 	}
 	if err := start(created, assistant, transcriptEmpty); err != nil {
-		failedRun, failedMessage, compensateErr := s.compensateProjectAssistantStartFailure(ctx, scope, created, assistant, err)
+		failedRun, failedMessage, compensateErr := s.compensateProjectAssistantStartFailure(ctx, scope, created, assistant, conversationUser, err)
 		if compensateErr != nil {
 			return projectAssistantDurableStartResult{Run: failedRun, User: user, Assistant: failedMessage}, errors.Join(err, compensateErr)
 		}
@@ -275,7 +276,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 // example, before a canonical thread turn or worker is attached). Without
 // this transition the retry identity would point at a permanently running
 // orphan until a later reconciliation pass happened to observe it.
-func (s *Server) compensateProjectAssistantStartFailure(ctx context.Context, scope store.Scope, run store.AssistantRun, message store.Message, startErr error) (store.AssistantRun, store.Message, error) {
+func (s *Server) compensateProjectAssistantStartFailure(ctx context.Context, scope store.Scope, run store.AssistantRun, message store.Message, conversationUser chatMessage, startErr error) (store.AssistantRun, store.Message, error) {
 	if assistantRunTerminal(run.Status) {
 		return run, message, nil
 	}
@@ -288,8 +289,13 @@ func (s *Server) compensateProjectAssistantStartFailure(ctx context.Context, sco
 	run.UpdatedAt = time.Now().UTC()
 	message.UpdatedAt = run.UpdatedAt
 	message.Metadata = projectAssistantDurableMetadataForTransition(run, "Failed", false, false, nil, nil)
-	if err := s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	if err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
 		return run, message, fmt.Errorf("compensate assistant start failure: %w", err)
+	}
+	if err := appendProjectAssistantStartFailureMarker(persistCtx, s.store, scope, run.ID, run.UserMessageID); err != nil {
+		return run, message, fmt.Errorf("persist assistant start-failure marker: %w", err)
 	}
 	return run, message, nil
 }
@@ -595,6 +601,7 @@ type projectAssistantDurableMetadataState struct {
 	status             string
 	provisional        bool
 	toolCalls          []projectToolCallStreamEvent
+	modelInputs        []projectAssistantActionFeedItem
 	plan               *projectAssistantPlanSnapshot
 	initialBuild       bool
 	progressMessages   []string
@@ -686,6 +693,33 @@ func (s *projectAssistantDurableMetadataState) upsertToolCall(event projectToolC
 		s.actionSequences[publicID] = event.Sequence
 	}
 	s.toolCalls = upsertProjectToolCallStreamEvent(s.toolCalls, event)
+}
+
+func (s *projectAssistantDurableMetadataState) upsertModelInput(event projectAssistantModelInputEvent) {
+	if s == nil || strings.TrimSpace(event.ID) == "" {
+		return
+	}
+	action := projectAssistantActionFeedItemFromModelInput(event)
+	if action.ID == "" {
+		return
+	}
+	// Model callback ordinals identify provider calls, not durable action-feed
+	// order. Allocate this action's sequence from the same server-owned trace
+	// counter as tool activity and retain it by stable public ID on updates.
+	action.Sequence = 0
+	if sequence, ok := s.actionSequences[action.ID]; ok {
+		action.Sequence = sequence
+	}
+	if action.Sequence == 0 {
+		action.Sequence = s.nextSequence()
+	}
+	if s.actionSequences == nil {
+		s.actionSequences = map[string]int{}
+	}
+	if action.Sequence > 0 {
+		s.actionSequences[action.ID] = action.Sequence
+	}
+	s.modelInputs = upsertProjectAssistantActionFeedItem(s.modelInputs, action)
 }
 
 func (s *projectAssistantDurableMetadataState) nextSequence() int {
@@ -783,6 +817,9 @@ func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context,
 		// Keep that history and only upsert new action updates.
 		actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
 		for _, action := range projectAssistantActionFeedUpdatesFromToolCalls(state.toolCalls) {
+			actions = applyProjectAssistantActionFeedUpdate(actions, action)
+		}
+		for _, action := range state.modelInputs {
 			actions = applyProjectAssistantActionFeedUpdate(actions, action)
 		}
 		if assistantRunTerminal(run.Status) {
@@ -951,6 +988,18 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 				if projectAssistantToolCallCanSettleStopping(event.Status) {
 					return s.persistProjectAssistantStoppingToolMetadata(persistCtx, accumulator, workspaceScope, state)
 				}
+				return s.persistProjectAssistantDurableMetadata(persistCtx, accumulator, workspaceScope, state, nil)
+			}))
+		},
+		OnModelInput: func(event projectAssistantModelInputEvent) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			if callbacksClosed {
+				return
+			}
+			syncSteeringSegment()
+			state.upsertModelInput(event)
+			recordSnapshotErr(persistProjectAssistantToolCallSnapshot(ctx, func(persistCtx context.Context) error {
 				return s.persistProjectAssistantDurableMetadata(persistCtx, accumulator, workspaceScope, state, nil)
 			}))
 		},
@@ -1224,6 +1273,19 @@ func projectAssistantRunErrorInfo(err error) string {
 }
 
 func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope store.Scope, runID string) error {
+	return s.reconcileOrphanedProjectAssistantRunWithProjection(ctx, scope, runID, true)
+}
+
+// reconcileOrphanedProjectAssistantRunForProjection repairs the generic run
+// while reconcileProjectAssistantThreadTurn already owns the per-turn
+// projection lock. That caller finishes the canonical projection itself;
+// asking the generic repair to discover and reconcile the same turn would
+// recursively acquire the non-reentrant lock.
+func (s *Server) reconcileOrphanedProjectAssistantRunForProjection(ctx context.Context, scope store.Scope, runID string) error {
+	return s.reconcileOrphanedProjectAssistantRunWithProjection(ctx, scope, runID, false)
+}
+
+func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.Context, scope store.Scope, runID string, reconcileCanonicalProjection bool) error {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return nil
@@ -1236,6 +1298,15 @@ func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope
 		return err
 	}
 	if assistantRunTerminal(run.Status) {
+		// The process may have exited after a prior recovery committed the
+		// generic terminal state but before its canonical thread projection was
+		// repaired. Terminal runs therefore still need the idempotent projection
+		// pass on callers that do not already hold the per-turn lock.
+		if reconcileCanonicalProjection {
+			persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+			defer cancel()
+			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
+		}
 		return nil
 	}
 	if run.Status != store.AssistantRunStatusRunning && run.Status != store.AssistantRunStatusStopping {
@@ -1274,19 +1345,64 @@ func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope
 	run.AbortReason = store.AssistantRunAbortReasonInterrupted
 	run.UpdatedAt = time.Now().UTC()
 	run.Revision++
-	message, err := s.findProjectMessage(ctx, scope, run.ActiveMessageID)
+	// The transition is the recovery boundary: once the run is known to be an
+	// orphan, request cancellation must not leave either durable projection
+	// active. Keep the reads and writes in one detached, bounded context.
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	message, err := s.findProjectMessage(persistCtx, scope, run.ActiveMessageID)
 	if err != nil {
 		return err
 	}
 	message.UpdatedAt = run.UpdatedAt
 	message.Metadata = projectAssistantDurableMetadataFromExisting(run, "Interrupted", false, message.Metadata)
 	projectAssistantClearPendingInterruptMetadata(&message, run.ID)
-	if err := s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
+	if err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
 		return err
 	}
-	if err := appendProjectAssistantInterruptedBoundary(ctx, s.store, scope, run); err != nil {
+	if err := appendProjectAssistantInterruptedBoundary(persistCtx, s.store, scope, run); err != nil {
 		return err
 	}
 	s.projectAssistantSupervisor().log("orphan_interrupted", scope, run)
+	// A process can exit after the generic run commits but before the
+	// provider-specific canonical turn is mirrored. The generic run and
+	// canonical turn share the client request identity, but only the latter
+	// blocks future turns on the thread. Reconcile that projection now so a
+	// subsequent request cannot encounter a permanently active turn.
+	if reconcileCanonicalProjection {
+		if err := s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) reconcileOrphanedProjectAssistantCanonicalTurn(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
+	if s == nil || s.store == nil || strings.TrimSpace(run.ClientRequestID) == "" || strings.TrimSpace(run.UserMessageID) == "" {
+		return nil
+	}
+	user, err := s.findProjectMessage(ctx, scope, run.UserMessageID)
+	if err != nil {
+		if errors.Is(err, errProjectAssistantMessageNotFound) {
+			return nil
+		}
+		return fmt.Errorf("find orphaned assistant turn actor: %w", err)
+	}
+	if strings.TrimSpace(user.ActorID) == "" {
+		return nil
+	}
+	thread, turn, err := s.findProjectAssistantTurnAcrossThreads(ctx, scope, user.ActorID, run.ClientRequestID, "")
+	if errors.Is(err, store.ErrAssistantTurnNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find orphaned assistant canonical turn: %w", err)
+	}
+	if turn.ID != run.ID || turn.Status != store.AssistantTurnStatusInProgress {
+		return nil
+	}
+	if err := s.reconcileProjectAssistantThreadTurn(ctx, scope, turn); err != nil {
+		return fmt.Errorf("reconcile orphaned assistant canonical turn %q: %w", thread.ID, err)
+	}
 	return nil
 }

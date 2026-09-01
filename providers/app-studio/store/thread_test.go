@@ -119,6 +119,73 @@ func TestAssistantThreadListingIsActorScoped(t *testing.T) {
 	}
 }
 
+func TestDeleteAssistantThreadDeletesTurnOwnedAttachments(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-delete", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.CreateAssistantTurn(ctx, scope, AssistantTurn{ID: "turn-delete", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-delete", Status: AssistantTurnStatusCompleted, CreatedAt: now, UpdatedAt: now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(time.Hour)
+	attachment := attachmentTestRecord(now, true, &expires)
+	attachment.ID = "turn-owned"
+	if _, err := s.CreateAttachment(ctx, scope, attachment); err != nil {
+		t.Fatal(err)
+	}
+	receipt := AttachmentReceipt{ID: attachment.ID, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes, SHA256: attachment.SHA256, CreatedAt: attachment.CreatedAt}
+	if _, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt}, "alice", turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAssistantThread(ctx, scope, thread.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetAttachment(ctx, scope, attachment.ID); !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("turn-owned attachment after thread deletion = %v", err)
+	}
+}
+
+func TestAssistantRetentionDeletesAttachmentsWithExpiredConversation(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid-retention"}
+	old := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-retention", ActorID: "alice", CreatedAt: old, UpdatedAt: old}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.CreateAssistantTurn(ctx, scope, AssistantTurn{ID: "turn-retention", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-retention", Status: AssistantTurnStatusCompleted, CreatedAt: old, UpdatedAt: old}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread.Status = AssistantThreadStatusIdle
+	thread.UpdatedAt = old
+	if _, err := s.UpdateAssistantThread(ctx, scope, thread); err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().UTC().Add(time.Hour)
+	attachment := attachmentTestRecord(old, true, &expires)
+	attachment.ID = "retained-until-conversation"
+	if _, err := s.CreateAttachment(ctx, scope, attachment); err != nil {
+		t.Fatal(err)
+	}
+	receipt := AttachmentReceipt{ID: attachment.ID, Filename: attachment.Filename, ContentType: attachment.ContentType, SizeBytes: attachment.SizeBytes, SHA256: attachment.SHA256, CreatedAt: attachment.CreatedAt}
+	if _, err := s.BindAttachments(ctx, scope, []AttachmentReceipt{receipt}, "alice", turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteMessagesOlderThan(ctx, old.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetAttachment(ctx, scope, attachment.ID); !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("attachment after conversation retention = %v", err)
+	}
+}
+
 func TestUpdateAssistantThreadWithEventIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

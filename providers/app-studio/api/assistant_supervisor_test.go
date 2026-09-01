@@ -323,6 +323,111 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantReconcilesOrphanedCanonicalTurn(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	thread := store.AssistantThread{ID: "thread-orphaned", ActorID: "test-user", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now}
+	if _, err := messages.CreateAssistantThread(ctx, scope, thread, nil); err != nil {
+		t.Fatalf("CreateAssistantThread: %v", err)
+	}
+	run := store.AssistantRun{
+		ID:              "run-orphaned",
+		Mode:            store.AssistantRunModeDefault,
+		ApprovalMode:    store.AssistantApprovalModeOnRequest,
+		Status:          store.AssistantRunStatusRunning,
+		ClientRequestID: "request-orphaned",
+		UserMessageID:   "user-orphaned",
+		ActiveMessageID: "assistant-orphaned",
+		Revision:        1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if _, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: run.UserMessageID, Role: "user", ActorID: thread.ActorID, Content: "orphaned", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}, run,
+	); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	if _, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+		ID:                  run.ID,
+		ThreadID:            thread.ID,
+		ActorID:             thread.ActorID,
+		ClientUserMessageID: run.ClientRequestID,
+		Mode:                run.Mode,
+		ApprovalMode:        run.ApprovalMode,
+		Status:              store.AssistantTurnStatusInProgress,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}, nil); err != nil {
+		t.Fatalf("CreateAssistantTurn: %v", err)
+	}
+
+	// Simulate a process exit after the generic run transition commits but
+	// before the canonical projection reconciliation starts. The next startup
+	// must repair the already-terminal run as well as an active one.
+	if err := server.reconcileOrphanedProjectAssistantRunForProjection(ctx, scope, run.ID); err != nil {
+		t.Fatalf("simulate generic-only orphan reconciliation: %v", err)
+	}
+	interruptedTurn, err := messages.GetAssistantTurn(ctx, scope, thread.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantTurn before restart repair: %v", err)
+	}
+	if interruptedTurn.Status != store.AssistantTurnStatusInProgress {
+		t.Fatalf("canonical turn before restart repair = %q, want in_progress", interruptedTurn.Status)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconcileOrphanedProjectAssistantRun: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("orphaned canonical turn reconciliation deadlocked")
+	}
+
+	gotRun, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if gotRun.Status != store.AssistantRunStatusInterrupted {
+		t.Fatalf("reconciled run status = %q, want interrupted", gotRun.Status)
+	}
+	gotTurn, err := messages.GetAssistantTurn(ctx, scope, thread.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantTurn: %v", err)
+	}
+	if gotTurn.Status != store.AssistantTurnStatusInterrupted {
+		t.Fatalf("reconciled canonical turn status = %q, want interrupted", gotTurn.Status)
+	}
+	gotThread, err := messages.GetAssistantThread(ctx, scope, thread.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantThread: %v", err)
+	}
+	if gotThread.Status != store.AssistantThreadStatusIdle {
+		t.Fatalf("reconciled thread status = %q, want idle", gotThread.Status)
+	}
+	events, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 50)
+	if err != nil {
+		t.Fatalf("ListAssistantThreadEvents: %v", err)
+	}
+	interrupted := 0
+	for _, event := range events {
+		if event.TurnID == run.ID && event.Type == assistantThreadEventTurnInterrupted {
+			interrupted++
+		}
+	}
+	if interrupted != 1 {
+		t.Fatalf("canonical turn.interrupted events = %d, want one", interrupted)
+	}
+}
+
 func TestProjectAssistantReconcileTargetsRequestedRunWithoutInterruptingNewerRun(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()

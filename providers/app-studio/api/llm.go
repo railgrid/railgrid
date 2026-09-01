@@ -198,7 +198,16 @@ type chatMessage struct {
 	Name       string         `json:"name,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
-	Extra      map[string]any `json:"extra,omitempty"`
+	// Attachments contains normalized, metadata-only receipts belonging to
+	// this user message. The bytes remain in AttachmentStore and are read only
+	// at the model boundary.
+	Attachments []projectAssistantAttachmentReceipt `json:"attachments,omitempty"`
+	Extra       map[string]any                      `json:"extra,omitempty"`
+	// conversationItemID is populated only while loading the append-only
+	// conversation projection. It lets a startup-failure marker scrub exactly
+	// its originating user item without adding an internal identifier to the
+	// durable/model-facing JSON contract.
+	conversationItemID string `json:"-"`
 }
 
 // projectAssistantDurableMessageExtra keeps only server-owned provenance that
@@ -247,6 +256,18 @@ type projectAssistantReply struct {
 	ToolCalls []chatToolCall
 }
 
+// projectAssistantModelInputEvent is server-owned evidence that a receipt was
+// included in a provider request. It is intentionally separate from tool-call
+// events: direct multimodal input is not a model-authored view_image call.
+type projectAssistantModelInputEvent struct {
+	ID          string
+	Filename    string
+	ContentType string
+	Status      string
+	Error       string
+	Ordinal     int
+}
+
 type projectAssistantStreamCallbacks struct {
 	OnChunk func(string)
 	// OnCommentary carries one completed, tool-adjacent assistant prose block.
@@ -260,6 +281,7 @@ type projectAssistantStreamCallbacks struct {
 	OnStatus           func(string)
 	OnPlan             func(projectAssistantPlanSnapshot)
 	OnToolCall         func(projectToolCallStreamEvent)
+	OnModelInput       func(projectAssistantModelInputEvent)
 	OnAssistantEvent   func(projectAssistantEvent)
 }
 
@@ -453,6 +475,14 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		profile = projectAssistantTurnProfileDebugging
 	}
 	turnPolicy := projectAssistantTurnPolicyForProfile(profile)
+	var modelContentParts []projectAssistantContentPart
+	if start != nil {
+		// Attachments are persisted on their originating conversation message
+		// and rehydrated from that history at every model boundary. Keep only
+		// this run's selected parts here so read_attachment and attachment
+		// progress remain scoped to the current user turn.
+		modelContentParts = cloneProjectAssistantContentParts(start.ContentParts)
+	}
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		ToolPort:                 newProjectAssistantHTTPToolPort(s, r),
@@ -462,6 +492,7 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
+		AttachmentReader:         s.projectAssistantAttachmentReader(),
 		LLM:                      settings,
 		History:                  recent,
 		Conversation:             conversation,
@@ -495,7 +526,7 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	}
 	if start != nil {
 		req.SelectedContextResources = cloneProjectAssistantContextResourceReceipts(start.SelectedContextResources)
-		req.ContentParts = cloneProjectAssistantContentParts(start.ContentParts)
+		req.ContentParts = cloneProjectAssistantContentParts(modelContentParts)
 	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req)
 	if err != nil {
@@ -931,6 +962,8 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 			"offset": args["offset"],
 			"limit":  args["limit"],
 		}, []string{"path", "offset", "limit"})
+	case projectToolReadAttachment:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{"attachmentID", "offset", "limit"})
 	case projectToolGlob:
 		return summarizeProjectCanonicalToolKeyValues(args, []string{"path", "pattern"})
 	case projectToolGrep:

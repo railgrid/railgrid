@@ -12,10 +12,14 @@ package project
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,9 +30,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/bindings"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 func binding(name string) aiv1alpha1.ProjectProviderBindingSpec {
@@ -89,6 +95,90 @@ func TestProviderBindingsSpansAllEnvironmentModes(t *testing.T) {
 	}
 	if got[0].spec.Name != "development" || got[1].spec.Name != "production" {
 		t.Fatalf("selected envs = %s, %s", got[0].spec.Name, got[1].spec.Name)
+	}
+}
+
+func TestFinalizeProjectAttachmentStorageWithoutInstanceBinding(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              "demo",
+		UID:               "project-uid",
+		Annotations:       map[string]string{bindings.OrgUUIDAnnotation: "org", bindings.WorkspaceUUIDAnnotation: "workspace"},
+		Finalizers:        []string{store.AttachmentStorageFinalizer},
+		DeletionTimestamp: &now,
+	}}
+	scheme := runtime.NewScheme()
+	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
+	attachments := store.NewMemoryStore()
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	digest := sha256.Sum256(data)
+	expires := time.Now().UTC().Add(time.Hour)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-uid"}
+	if _, err := attachments.CreateAttachment(ctx, scope, store.Attachment{
+		ID: "att-1", ActorID: "alice", Filename: "screen.png", ContentType: "image/png", SizeBytes: int64(len(data)),
+		SHA256: hex.EncodeToString(digest[:]), Draft: true, CreatedAt: time.Now().UTC(), ExpiresAt: &expires, Data: data,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Reconciler{Attachments: attachments}).finalize(ctx, client, project, "cluster-a"); err != nil {
+		t.Fatal(err)
+	}
+	if controllerutil.ContainsFinalizer(project, store.AttachmentStorageFinalizer) {
+		t.Fatal("attachment finalizer was not released after storage cleanup")
+	}
+	if _, err := attachments.GetAttachment(ctx, scope, "att-1"); !errors.Is(err, store.ErrAttachmentNotFound) {
+		t.Fatalf("attachment after finalizer cleanup = %v", err)
+	}
+}
+
+func TestFinalizeProjectAttachmentStorageReleasesUnscopedLegacyFinalizer(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              "metadata-incomplete",
+		UID:               "project-uid",
+		Finalizers:        []string{store.AttachmentStorageFinalizer},
+		DeletionTimestamp: &now,
+	}}
+	scheme := runtime.NewScheme()
+	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
+	if _, err := (&Reconciler{Attachments: store.NewMemoryStore()}).finalize(ctx, fakeClient, project, "cluster-a"); err != nil {
+		t.Fatalf("finalize metadata-incomplete project: %v", err)
+	}
+	if controllerutil.ContainsFinalizer(project, store.AttachmentStorageFinalizer) {
+		t.Fatal("unscoped legacy attachment finalizer was retained")
+	}
+	stored := &aiv1alpha1.Project{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Name: project.Name}, stored); err != nil {
+		if !apierrors.IsNotFound(err) {
+			t.Fatal(err)
+		}
+		return
+	}
+	if controllerutil.ContainsFinalizer(stored, store.AttachmentStorageFinalizer) {
+		t.Fatal("unscoped legacy attachment finalizer persisted in the API")
+	}
+}
+
+func TestAttachmentScopeForProjectRequiresTenantMetadata(t *testing.T) {
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid"}}
+	if _, ok := attachmentScopeForProject(project); ok {
+		t.Fatal("attachment scope resolved without tenant annotations")
+	}
+	project.Annotations = map[string]string{
+		bindings.OrgUUIDAnnotation:       "org",
+		bindings.WorkspaceUUIDAnnotation: "workspace",
+	}
+	scope, ok := attachmentScopeForProject(project)
+	if !ok || scope.OrgUUID != "org" || scope.WorkspaceUUID != "workspace" || scope.ProjectName != project.Name || scope.ProjectUID != string(project.UID) {
+		t.Fatalf("attachment scope = %#v, ok=%v", scope, ok)
 	}
 }
 

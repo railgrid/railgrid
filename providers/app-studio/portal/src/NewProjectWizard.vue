@@ -4,6 +4,8 @@ import { ArrowLeft, ArrowRight, Check, ExternalLink, Layers, Loader2, Package, R
 import type { FarosContext, ProjectPlan } from './types'
 import { api } from './api'
 import type { CreateSetupItem } from './createReadiness'
+import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
+import type { AssistantStagedAttachment } from './assistantAttachments'
 
 // The wizard owns project preparation and confirmation only. Project creation
 // stays in App.vue so the confirmed details hand off to the same durable
@@ -21,11 +23,16 @@ const props = defineProps<{
   // initialPrompt is the idea already submitted in the landing composer. In
   // this mode the wizard never renders a second intake textarea.
   initialPrompt?: string
+  attachments?: AssistantStagedAttachment[]
+  attachmentError?: string
 }>()
 
 const emit = defineEmits<{
   // create carries the confirmed details for the parent to run.
   create: [payload: { prompt: string; templateName?: string; displayName?: string }]
+  'add-attachment': [attachment: AssistantStagedAttachment]
+  'remove-attachment': [clientID: string]
+  'retry-attachment': [clientID: string]
   cancel: []
   'setup-action': [action: 'setup-llm']
   'retry-setup': []
@@ -296,18 +303,20 @@ onMounted(async () => {
         <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Faros workspace. You can review the suggested starting point before anything is created.</p>
       </div>
 
-      <label for="new-project-prompt" class="grid gap-2">
-        <span class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project description</span>
-        <textarea
-          id="new-project-prompt"
+      <div class="grid gap-2">
+        <label for="new-project-prompt" class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project description</label>
+        <AssistantPreProjectComposer
           v-model="prompt"
-          rows="4"
-          class="min-h-[104px] w-full resize-y rounded-md border border-border-default bg-surface-overlay px-3 py-2.5 text-[16px] leading-6 text-text-primary outline-none transition placeholder:text-text-secondary focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px] md:leading-5"
+          input-id="new-project-prompt"
+          :attachments="attachments"
+          :error="attachmentError"
           placeholder="Describe the app, dashboard, workflow, or API you want to build…"
-          @keydown.meta.enter.prevent="runPlan"
-          @keydown.ctrl.enter.prevent="runPlan"
+          @add-attachment="emit('add-attachment', $event)"
+          @remove-attachment="emit('remove-attachment', $event)"
+          @retry-attachment="emit('retry-attachment', $event)"
+          @submit="runPlan"
         />
-      </label>
+      </div>
 
       <p v-if="error" role="alert" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">{{ error }}</p>
 
@@ -363,6 +372,19 @@ onMounted(async () => {
         <div class="min-w-0">
           <div class="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Your request</div>
           <p class="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-text-primary">{{ prompt }}</p>
+          <div class="mt-5 grid gap-2">
+            <div class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Attachments</div>
+            <AssistantPreProjectComposer
+              :model-value="prompt"
+              input-id="new-project-attachments"
+              :attachments="attachments"
+              :error="attachmentError"
+              attachment-only
+              @add-attachment="emit('add-attachment', $event)"
+              @remove-attachment="emit('remove-attachment', $event)"
+              @retry-attachment="emit('retry-attachment', $event)"
+            />
+          </div>
           <button
             type="button"
             class="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"

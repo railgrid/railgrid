@@ -66,6 +66,17 @@ func assistantThreadDynamicToolItemID(activeMessageID, actionID string) string {
 	return "tool-" + strings.TrimSpace(activeMessageID) + "-" + strings.TrimSpace(actionID)
 }
 
+func assistantThreadModelInputItemID(activeMessageID, actionID string) string {
+	return "model-input-" + strings.TrimSpace(activeMessageID) + "-" + strings.TrimSpace(actionID)
+}
+
+func assistantThreadActionItemID(itemType, activeMessageID, actionID string) string {
+	if itemType == assistantThreadEventModelInput {
+		return assistantThreadModelInputItemID(activeMessageID, actionID)
+	}
+	return assistantThreadDynamicToolItemID(activeMessageID, actionID)
+}
+
 func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store.Scope, threadID, activeMessageID, turnID string) (assistantThreadMirrorState, error) {
 	events, err := s.loadAllAssistantThreadEvents(ctx, scope, threadID)
 	if err != nil {
@@ -160,10 +171,10 @@ func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store
 			}
 		}
 		if event.ItemID != "" && (event.Type == assistantThreadEventItemStarted || event.Type == assistantThreadEventItemCompleted) {
-			if envelopeDecoded && envelope.Item.Type == assistantThreadEventDynamicToolCall {
+			if envelopeDecoded && (envelope.Item.Type == assistantThreadEventDynamicToolCall || envelope.Item.Type == assistantThreadEventModelInput) {
 				var action projectAssistantActionFeedItem
 				if json.Unmarshal(envelope.Item.Data, &action) == nil && action.ID != "" &&
-					event.ItemID == assistantThreadDynamicToolItemID(activeMessageID, action.ID) {
+					event.ItemID == assistantThreadActionItemID(envelope.Item.Type, activeMessageID, action.ID) {
 					state.actionStatuses[event.ItemID] = action.Status
 				}
 			}
@@ -666,7 +677,11 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 	}
 
 	for _, action := range projectAssistantActionFeedFromMetadata(snapshot.Message.Metadata[projectMessageMetadataAssistantActionFeed]) {
-		itemID := assistantThreadDynamicToolItemID(activeMessageID, action.ID)
+		itemType := assistantThreadEventDynamicToolCall
+		if action.MediaKind == projectAssistantActionFeedMediaImage {
+			itemType = assistantThreadEventModelInput
+		}
+		itemID := assistantThreadActionItemID(itemType, activeMessageID, action.ID)
 		if state.actionStatuses[itemID] == action.Status {
 			continue
 		}
@@ -685,7 +700,7 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 		item := assistantThreadItem{
 			ID:                 itemID,
 			TurnID:             turn.ID,
-			Type:               assistantThreadEventDynamicToolCall,
+			Type:               itemType,
 			Status:             status,
 			Content:            action.Title,
 			Data:               data,

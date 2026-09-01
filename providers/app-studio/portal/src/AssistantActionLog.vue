@@ -8,6 +8,7 @@ import {
   CircleHelp,
   FileSearch,
   GitCommitHorizontal,
+  Image,
   Loader2,
   Pencil,
   Plug,
@@ -22,7 +23,7 @@ import {
   summarizeAssistantActions,
 } from './assistantActionFeed'
 import { assistantExecStatusPresentation, formatAssistantExecCommand } from './assistantExecDisclosure'
-import type { ProjectAssistantActionFeedItem, ProjectAssistantActionKind, ProjectAssistantActionStatus } from './types'
+import type { ProjectAssistantActionFeedItem, ProjectAssistantActionKind, ProjectAssistantActionMediaKind, ProjectAssistantActionStatus } from './types'
 import AssistantExecDetails from './AssistantExecDetails.vue'
 
 const props = withDefaults(defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[]; stopping?: boolean }>(), { stopping: false })
@@ -92,6 +93,7 @@ watch(requiresVisibility, (visible) => {
 interface ActionGroup {
   key: string
   kind: ProjectAssistantActionKind
+  mediaKind?: ProjectAssistantActionMediaKind
   label: string
   items: typeof rows.value
   busy: boolean
@@ -99,7 +101,24 @@ interface ActionGroup {
   error: boolean
 }
 
-function groupLabel(kind: ProjectAssistantActionKind, busy: boolean): string {
+function groupLabel(item: typeof rows.value[number], busy: boolean): string {
+  if (item.mediaKind === 'image') {
+    switch (item.status) {
+      case 'running':
+      case 'retrying':
+        return 'Viewing image'
+      case 'succeeded':
+        return 'Viewed image'
+      case 'failed':
+      case 'rejected':
+        return 'Image view failed'
+      case 'canceled':
+        return 'Image view canceled'
+      default:
+        return busy ? 'Viewing image' : 'Viewed image'
+    }
+  }
+  const kind = item.kind
   switch (kind) {
     case 'inspect': return busy ? 'Inspecting the project' : 'Inspected the project'
     case 'edit': return busy ? 'Editing files' : 'Edited files'
@@ -120,11 +139,13 @@ const groups = computed<ActionGroup[]>(() => {
   const result: ActionGroup[] = []
   for (const item of rows.value) {
     const busy = isBusyItem(item)
-    const label = item.exec
+    const label = item.mediaKind === 'image'
+      ? groupLabel(item, busy)
+      : item.exec
       ? (busy ? 'Running commands' : 'Ran commands')
-      : item.groupTitle?.trim() || groupLabel(item.kind, busy)
+      : item.groupTitle?.trim() || groupLabel(item, busy)
     const previous = result[result.length - 1]
-    if (previous?.kind === item.kind && previous.busy === busy && previous.label === label) {
+    if (previous?.kind === item.kind && previous.mediaKind === item.mediaKind && previous.busy === busy && previous.label === label) {
       previous.items.push(item)
       previous.attention ||= isAttentionItem(item) || isErrorItem(item)
       previous.error ||= isErrorItem(item)
@@ -133,6 +154,7 @@ const groups = computed<ActionGroup[]>(() => {
     result.push({
       key: `${item.kind}-${result.length}`,
       kind: item.kind,
+      mediaKind: item.mediaKind,
       label,
       items: [item],
       busy,
@@ -178,6 +200,10 @@ function kindIcon(kind: ProjectAssistantActionKind) {
   }
 }
 
+function itemIcon(item: typeof rows.value[number]) {
+  return item.mediaKind === 'image' ? Image : kindIcon(item.kind)
+}
+
 </script>
 
 <template>
@@ -209,8 +235,8 @@ function kindIcon(kind: ProjectAssistantActionKind) {
           :aria-controls="groupPanelID(group)"
           @click="toggleGroup(group)"
         >
-          <Loader2 v-if="group.busy" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-          <component v-else :is="kindIcon(group.kind)" class="h-3.5 w-3.5 shrink-0" :class="group.error ? 'text-danger' : group.attention ? 'text-warning' : 'text-text-muted'" :stroke-width="1.75" />
+          <Loader2 v-if="group.busy && group.mediaKind !== 'image'" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+          <component v-else :is="group.mediaKind === 'image' ? Image : kindIcon(group.kind)" class="h-3.5 w-3.5 shrink-0" :class="group.error ? 'text-danger' : group.attention ? 'text-warning' : 'text-text-muted'" :stroke-width="1.75" />
           <span class="truncate">{{ group.label }}</span>
           <ChevronDown class="h-3.5 w-3.5 shrink-0 transition-transform" :class="groupCollapsed(group) ? '-rotate-90' : ''" :stroke-width="1.75" aria-hidden="true" />
         </button>
@@ -227,7 +253,7 @@ function kindIcon(kind: ProjectAssistantActionKind) {
               <Square v-else-if="isAttentionItem(item)" class="h-2.5 w-2.5 shrink-0 fill-current text-warning" :stroke-width="2" />
               <X v-else-if="isErrorItem(item)" class="h-3.5 w-3.5 shrink-0 text-danger" :stroke-width="1.75" />
               <X v-else-if="isCanceledItem(item)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <component v-else :is="kindIcon(item.kind)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+              <component v-else :is="itemIcon(item)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
               <span class="sr-only">{{ item.exec ? execStatus(item)?.label : assistantActionStatusLabel(item.status, item.severity) }}:</span>
               <button
                 v-if="item.exec"

@@ -140,6 +140,13 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
 
 const projectEinoAssistantCompactionSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
 
+// Image tokenization depends on dimensions and provider policy, neither of
+// which belongs in the durable attachment receipt. Reserve a conservative
+// fixed budget per retained image so metadata-only placeholders still exert
+// context pressure and trigger compaction before the provider rejects a long
+// multimodal history.
+const projectEinoAssistantHistoricalImageTokenEstimate = 4096
+
 func projectEinoAssistantCompactionMiddleware(
 	ctx context.Context,
 	chatModel einomodel.BaseChatModel,
@@ -166,6 +173,7 @@ func projectEinoAssistantCompactionMiddleware(
 		},
 		ModelOptions: projectMaxTokensOptions(req.LLM.Model, 4096),
 		Retry:        projectEinoAssistantCompactionRetryConfig(req),
+		TokenCounter: projectEinoAssistantCompactionTokenCounter,
 		Trigger: &summarization.TriggerCondition{
 			// Codex rolls context from active model-window pressure rather than an
 			// independent message-count ceiling.
@@ -181,6 +189,9 @@ func projectEinoAssistantCompactionMiddleware(
 			userInstruction *schema.Message,
 			original []*schema.Message,
 		) ([]*schema.Message, error) {
+			if err := projectEinoAssistantValidateHistoricalAttachmentMessages(original); err != nil {
+				return nil, err
+			}
 			conversationTail := int64(0)
 			if server != nil && server.store != nil {
 				projection, err := loadProjectAssistantConversationProjection(modelCtx, server.store, req.MessageScope)
@@ -195,6 +206,9 @@ func projectEinoAssistantCompactionMiddleware(
 			return projectEinoAssistantCompactionModelInput(modelCtx, systemInstruction, userInstruction, original)
 		},
 		Finalize: func(finalizeCtx context.Context, original []*schema.Message, summary *schema.Message) ([]*schema.Message, error) {
+			if err := projectEinoAssistantValidateHistoricalAttachmentMessages(original); err != nil {
+				return nil, runtime.fail(finalizeCtx, err)
+			}
 			toolContinuation := projectEinoAssistantLastNonSystemMessageIsTool(original)
 			ignoredToolCallCount := 0
 			if summary != nil {
@@ -213,6 +227,11 @@ func projectEinoAssistantCompactionMiddleware(
 			if err != nil {
 				return nil, runtime.fail(finalizeCtx, err)
 			}
+			// Codex compaction rebuilds older history as text-only context. Keep
+			// image receipts only when they belong to the active incoming turn that
+			// triggered this pre-model compaction; all older images leave context
+			// with their compacted message payloads.
+			finalized = projectEinoAssistantRetainCurrentCompactionImages(finalized, runState)
 
 			summaryText := projectEinoAssistantSummaryText(summary)
 			attempt, ok := runtime.activeAttempt()
@@ -269,6 +288,68 @@ func projectEinoAssistantCompactionMiddleware(
 		ChatModelAgentMiddleware: base,
 		runtime:                  runtime,
 	}, nil
+}
+
+func projectEinoAssistantRetainCurrentCompactionImages(
+	messages []*schema.Message,
+	runState *projectEinoAssistantRunState,
+) []*schema.Message {
+	current := make(map[string]struct{})
+	if runState != nil {
+		for _, receipt := range projectAssistantImageAttachmentReceipts(runState.ContentParts()) {
+			current[receipt.ID] = struct{}{}
+		}
+	}
+	out := make([]*schema.Message, 0, len(messages))
+	for _, message := range messages {
+		if !projectEinoAssistantHistoricalAttachmentMessage(message) {
+			out = append(out, message)
+			continue
+		}
+		receipts, err := projectAssistantAttachmentReceiptsFromEinoMessageChecked(message)
+		if err != nil {
+			continue
+		}
+		for _, receipt := range receipts {
+			// Text receipts are metadata-only mentions and remain selectable
+			// after compaction. Images are retained only for the current incoming
+			// turn; filtering per receipt is important when an older checkpoint
+			// grouped old and current images in one placeholder.
+			if projectAssistantAttachmentIsImage(receipt) {
+				if _, exists := current[receipt.ID]; !exists {
+					continue
+				}
+			}
+			out = append(out, projectAssistantAttachmentPlaceholderMessage(receipt))
+		}
+	}
+	return out
+}
+
+func projectEinoAssistantCompactionTokenCounter(
+	_ context.Context,
+	input *summarization.TokenCounterInput,
+) (int, error) {
+	if input == nil {
+		return 0, nil
+	}
+	if err := projectEinoAssistantValidateHistoricalAttachmentMessages(input.Messages); err != nil {
+		return 0, err
+	}
+	baseTokens := 0
+	incrementStart := 0
+	for index := len(input.Messages) - 1; index >= 0; index-- {
+		message := input.Messages[index]
+		if message == nil || message.Role != schema.Assistant || message.ResponseMeta == nil || message.ResponseMeta.Usage == nil || message.ResponseMeta.Usage.TotalTokens <= 0 {
+			continue
+		}
+		baseTokens = message.ResponseMeta.Usage.TotalTokens
+		incrementStart = index + 1
+		break
+	}
+	increment := projectEinoAssistantMessagesTokenEstimate(input.Messages[incrementStart:]) +
+		projectEinoAssistantToolSchemasTokenEstimate(input.Tools)
+	return baseTokens + increment, nil
 }
 
 // Summary sampling is an internal checkpoint operation, not an ordinary agent
@@ -749,17 +830,46 @@ func projectEinoAssistantRecentUserMessages(messages []*schema.Message, maxToken
 		return nil
 	}
 	remaining := maxTokens
-	selected := make([]*schema.Message, 0)
+	selectedGroups := make([][]*schema.Message, 0)
+	pendingAttachments := make([]*schema.Message, 0)
 	for index := len(messages) - 1; index >= 0 && remaining > 0; index-- {
 		message := messages[index]
+		if projectEinoAssistantHistoricalAttachmentMessage(message) {
+			// Placeholders are owned by the immediately preceding user message.
+			// Hold them until that message is selected so compaction cannot retain
+			// a receipt after dropping its originating conversation item.
+			pendingAttachments = append(pendingAttachments, message)
+			continue
+		}
 		if message == nil || message.Role != schema.User {
+			pendingAttachments = nil
 			continue
 		}
 		content := strings.TrimSpace(message.Content)
 		if content == "" ||
 			strings.HasPrefix(content, projectEinoAssistantCompactionSummaryPrefix) ||
 			projectEinoAssistantSyntheticWorkspaceMutationEvidence(message) {
+			pendingAttachments = nil
 			continue
+		}
+		attachmentTokens := 0
+		for _, attachment := range pendingAttachments {
+			receipts, err := projectAssistantAttachmentReceiptsFromEinoMessageChecked(attachment)
+			if err != nil {
+				pendingAttachments = nil
+				break
+			}
+			for _, receipt := range receipts {
+				if projectAssistantAttachmentIsImage(receipt) {
+					attachmentTokens += projectEinoAssistantHistoricalImageTokenEstimate
+				}
+			}
+		}
+		keepAttachments := attachmentTokens < remaining
+		if keepAttachments {
+			remaining -= attachmentTokens
+		} else {
+			pendingAttachments = nil
 		}
 		tokens := projectEinoAssistantApproxTokenCount(content)
 		retained := message
@@ -769,10 +879,16 @@ func projectEinoAssistantRecentUserMessages(messages []*schema.Message, maxToken
 		} else {
 			remaining -= tokens
 		}
-		selected = append(selected, retained)
+		group := []*schema.Message{retained}
+		for attachmentIndex := len(pendingAttachments) - 1; attachmentIndex >= 0; attachmentIndex-- {
+			group = append(group, pendingAttachments[attachmentIndex])
+		}
+		pendingAttachments = nil
+		selectedGroups = append(selectedGroups, group)
 	}
-	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
-		selected[left], selected[right] = selected[right], selected[left]
+	selected := make([]*schema.Message, 0)
+	for groupIndex := len(selectedGroups) - 1; groupIndex >= 0; groupIndex-- {
+		selected = append(selected, selectedGroups[groupIndex]...)
 	}
 	return selected
 }
@@ -785,7 +901,29 @@ func projectEinoAssistantMessagesTokenEstimate(messages []*schema.Message) int {
 	if err != nil {
 		return 0
 	}
-	return projectEinoAssistantApproxTokenCount(string(raw))
+	total := projectEinoAssistantApproxTokenCount(string(raw))
+	for _, message := range messages {
+		if projectEinoAssistantHistoricalAttachmentMessage(message) {
+			receipts, receiptErr := projectAssistantAttachmentReceiptsFromEinoMessageChecked(message)
+			if receiptErr == nil {
+				for _, receipt := range receipts {
+					if projectAssistantAttachmentIsImage(receipt) {
+						total += projectEinoAssistantHistoricalImageTokenEstimate
+					}
+				}
+			}
+			continue
+		}
+		if message == nil {
+			continue
+		}
+		for _, part := range message.UserInputMultiContent {
+			if part.Type == schema.ChatMessagePartTypeImageURL && part.Image != nil {
+				total += projectEinoAssistantHistoricalImageTokenEstimate
+			}
+		}
+	}
+	return total
 }
 
 func projectEinoAssistantToolSchemasTokenEstimate(toolInfos []*schema.ToolInfo) int {
