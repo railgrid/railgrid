@@ -216,8 +216,12 @@ export async function listEdges(): Promise<Edge[]> {
 export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail> {
   const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
   const apiVersion = 'edges.faros.sh/v1alpha1'
+  // The two specs share no fields: scheduling labels exist only on
+  // KubernetesClusterSpec, and the SSH fields only on LinuxServerSpec. GraphQL
+  // rejects the entire query on one unknown field, so selecting a field the
+  // kind does not have breaks the whole detail view, not just that column.
   const specSelection = type === 'server'
-    ? `labels sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace }`
+    ? `sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace }`
     : 'labels'
   const data = await graphql<{
     edges_faros_sh?: {

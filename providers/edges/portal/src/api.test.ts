@@ -206,7 +206,11 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       kind: 'LinuxServer',
       spec: { sshPort: 2200, sshUserMapping: 'provided' },
     })
-    expect(call?.query).toContain('sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace }')
+    expect(call?.query).toContain('spec { sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace } }')
+    // Scheduling labels exist only on KubernetesClusterSpec. GraphQL rejects
+    // the whole query on one unknown field, so selecting spec.labels here
+    // broke the entire Linux edge detail view (regression from #567).
+    expect(call?.query).not.toContain('spec { labels')
   })
 
   it('keeps listEdges as the unpaged merged fleet query and preserves kind/status joins', async () => {
