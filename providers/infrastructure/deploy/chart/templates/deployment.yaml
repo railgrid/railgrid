@@ -1,7 +1,7 @@
-{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.images.universal))) }}
+{{- if and (.Values.codingSandbox).enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.images.universal))) }}
 {{- fail "codingSandbox.enabled=true requires development.images.universal to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
 {{- end }}
-{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.agentImage))) }}
+{{- if and (.Values.codingSandbox).enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.agentImage))) }}
 {{- fail "codingSandbox.enabled=true requires development.agentImage to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
 {{- end }}
 {{- if not .Values.operator.enabled }}
@@ -60,7 +60,7 @@ spec:
             - name: INFRASTRUCTURE_KUBECONFIG
               value: /tmp/infrastructure.kubeconfig
             - name: FAROS_CODING_SANDBOX_ENABLED
-              value: {{ .Values.codingSandbox.enabled | quote }}
+              value: {{ (.Values.codingSandbox).enabled | default false | quote }}
             {{- if .Values.development.images.universal }}
             - name: FAROS_DEV_IMAGE_UNIVERSAL
               value: {{ .Values.development.images.universal | quote }}
@@ -121,7 +121,7 @@ spec:
             - name: FAROS_PROVIDER_NAME
               value: "infrastructure"
             - name: FAROS_CODING_SANDBOX_ENABLED
-              value: {{ .Values.codingSandbox.enabled | quote }}
+              value: {{ (.Values.codingSandbox).enabled | default false | quote }}
             {{- if .Values.hub.insecure }}
             - name: FAROS_HUB_INSECURE
               value: "true"

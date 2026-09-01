@@ -84,11 +84,18 @@ func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
 		"helm upgrade quickstart oci://ghcr.io/faroshq/charts/faros-quickstart-provider",
 		"--version 0.1.4",
 		"--namespace faros-provider-quickstart",
-		"--reuse-values",
+		"--reset-then-reuse-values",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("upgrade command missing %q\ngot:\n%s", want, cmd)
 		}
+	}
+	// Plain --reuse-values never merges the NEW chart's defaults, so the first
+	// chart release introducing a value block crashes every existing install
+	// with a nil-pointer template error (seen live: infrastructure 0.1.16
+	// adding codingSandbox). Guard the exact flag, not just its prefix.
+	if strings.Contains(cmd, " --reuse-values") {
+		t.Errorf("upgrade command must use --reset-then-reuse-values, not --reuse-values:\n%s", cmd)
 	}
 	// --install would create a release where none exists; the upgrade path is
 	// for an existing install only, and a typo'd release name should fail loudly
@@ -97,7 +104,7 @@ func TestRenderInstallInstructionsUpgradeCommand(t *testing.T) {
 		t.Errorf("upgrade command must not carry --install:\n%s", cmd)
 	}
 	// --set flags would clobber values the operator changed by hand since the
-	// install; --reuse-values is the whole point of the separate command.
+	// install; reusing the release's values is the whole point of the command.
 	if strings.Contains(cmd, "--set") {
 		t.Errorf("upgrade command must not carry --set flags:\n%s", cmd)
 	}

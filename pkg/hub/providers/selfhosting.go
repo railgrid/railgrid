@@ -323,22 +323,30 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 		},
 	}
 
-	// The upgrade path deliberately does not repeat the --set flags:
-	// --reuse-values carries forward whatever the release was actually
-	// installed with, including anything the operator set by hand that these
-	// instructions never knew about. Re-listing values here would clobber
-	// those local edits with the hub's current defaults.
+	// The upgrade path deliberately does not repeat the --set flags: the
+	// release's own values carry forward, including anything the operator set
+	// by hand that these instructions never knew about. Re-listing values here
+	// would clobber those local edits with the hub's current defaults.
+	//
+	// --reset-then-reuse-values, NOT --reuse-values. The plain form reuses the
+	// old release's values verbatim and never merges the NEW chart's defaults,
+	// so the first release that introduces a value block (and templates against
+	// it) crashes every existing install with a nil-pointer template error.
+	// reset-then-reuse starts from the new chart's defaults and lays the
+	// operator's previous overrides on top — new values appear, local edits
+	// survive. Requires Helm 3.14+.
 	upgrade := &strings.Builder{}
 	fmt.Fprintf(upgrade, "helm upgrade %s %s", release, chartRef)
 	if out.ChartVersion != "" {
 		fmt.Fprintf(upgrade, " --version %s", out.ChartVersion)
 	}
-	fmt.Fprintf(upgrade, " \\\n  --namespace %s \\\n  --reuse-values", namespace)
+	fmt.Fprintf(upgrade, " \\\n  --namespace %s \\\n  --reset-then-reuse-values", namespace)
 	out.Upgrade = &InstallStep{
 		Title: "Upgrade the provider",
-		Description: "For an existing install only. --reuse-values keeps the values the release was " +
-			"installed with — including any you set by hand — and the namespace and credential Secret " +
-			"stay as they are. Run it with the same cluster credentials as the install.",
+		Description: "For an existing install only. --reset-then-reuse-values (Helm 3.14+) picks up the " +
+			"new chart's defaults and keeps every value you set on the existing release — and the " +
+			"namespace and credential Secret stay as they are. Run it with the same cluster credentials " +
+			"as the install.",
 		Command: upgrade.String(),
 	}
 	return out
