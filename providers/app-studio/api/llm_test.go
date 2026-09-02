@@ -141,6 +141,18 @@ func TestProjectToolCallTerminalStatusPreservesCanceledSpellings(t *testing.T) {
 	}
 }
 
+func TestProjectToolCallStatusTreatsUnverifiableReceiptsAsFailed(t *testing.T) {
+	for _, status := range []string{"outcome_unknown", "unverifiable"} {
+		result := `{"status":"` + status + `","outcome":"unknown"}`
+		if got := projectToolCallResultStatus(browserMCPToolSnapshot, result); got != "failed" {
+			t.Fatalf("result status for %q = %q, want failed", status, got)
+		}
+		if got := projectToolCallTerminalStatus(browserMCPToolSnapshot, result, true); got != "failed" {
+			t.Fatalf("terminal status for %q = %q, want failed", status, got)
+		}
+	}
+}
+
 func TestProjectLLMSettingsUseCodexStreamRecoveryDefaults(t *testing.T) {
 	settings := defaultProjectLLMSettings()
 	if settings.MaxRetries != 5 {
@@ -734,13 +746,18 @@ func TestDeepPromptDescribesOrdinaryMutationSemantics(t *testing.T) {
 
 func TestDeepPromptScopesStaticBrowserEvidence(t *testing.T) {
 	for _, instruction := range []string{
-		"cannot click, type, press keys",
-		"Static text and role assertions verify rendered state only",
-		"source-reviewed but not browser-exercised",
-		"never say it is live, working, or independently verified from static assertions",
+		"approved browser_* Playwright MCP tools",
+		"Native browser calls return native receipts",
+		"interaction evidence requires a subsequent successful browser_snapshot receipt",
+		"Never use browser_evaluate, browser_run_code",
 	} {
 		if !strings.Contains(projectEinoAssistantV2DeepInstruction, instruction) {
 			t.Fatalf("deep instruction missing browser evidence scope %q", instruction)
+		}
+	}
+	for _, wrapper := range []string{"inspect_development_preview", "interact_development_preview"} {
+		if strings.Contains(projectEinoAssistantV2DeepInstruction, wrapper) {
+			t.Fatalf("deep instruction retains retired browser wrapper %q", wrapper)
 		}
 	}
 }

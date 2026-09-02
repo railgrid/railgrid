@@ -69,8 +69,8 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `tenantLimitRange.enabled` | `true` |  |
 | `development` |  | Development-mode images (docs/app-studio-template-sandboxes.md). These run TENANT code, so production deployments should pin them by digest. Empty values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm, agent → ghcr.io/faroshq/faros-dev-agent:latest). |
 | `development.agentImage` | `""` | The injector image carrying the static faros-dev-agent binary and universal token-bootstrap mode (FAROS_DEV_AGENT_IMAGE). Required as an immutable digest when codingSandbox.enabled is true. |
-| `development.previewConsole` |  | Public ES256 JSON Web Key Set used by the injected preview-console bridge to verify short-lived capabilities issued by App Studio. Configure the current key and, during rotation, the previous key. Never put a private signing key here. Empty disables the optional bridge without preventing developm… |
-| `development.previewConsole.verificationJWKS` | `""` |  |
+| `development.previewBridge` |  | Public ES256 JSON Web Key Set used by the injected preview bridge to verify short-lived capabilities issued by App Studio. Configure the current key and, during rotation, the previous key. Never put a private signing key here. Empty disables the optional bridge without preventing developm… |
+| `development.previewBridge.verificationJWKS` | `""` |  |
 | `development.images` |  | Toolchain image per ${faros.devImage.<toolchain>} token — each key K maps to FAROS_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain (other than node) fails setup with a pointer to the missing env var. |
 | `development.images.node` | `""` |  |
 | `development.images.universal` | `""` | Universal coding sandbox image (`${faros.devImage.universal}`). Pin this tenant-code image by digest in production. |

@@ -89,9 +89,9 @@ const (
 	controlTokenHeader      = "X-Sandbox-Control-Token"
 	agentBinaryName         = "faros-dev-agent"
 
-	previewConsolePluginName    = "preview-console-plugin.mjs"
-	previewConsoleJWKSName      = "preview-console-jwks.json"
-	previewConsoleJWKSEnv       = "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"
+	previewBridgePluginName     = "preview-bridge-plugin.mjs"
+	previewBridgeJWKSName       = "preview-bridge-jwks.json"
+	previewBridgeJWKSEnv        = "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS"
 	workspaceManifestName       = ".faros-workspace-manifest.json"
 	serviceAccountTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	serviceAccountCAPath        = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -100,8 +100,8 @@ const (
 	kubernetesServicePortEnv    = "KUBERNETES_SERVICE_PORT_HTTPS"
 )
 
-//go:embed preview-console-plugin.mjs
-var previewConsolePlugin []byte
+//go:embed preview-bridge-plugin.mjs
+var previewBridgePlugin []byte
 
 // reloadRule mirrors TemplateDevelopmentReloadRule: changed-path globs that
 // require a command before the process restarts.
@@ -483,7 +483,7 @@ func serveUntilDone(ctx context.Context, srv *http.Server, cleanup func()) error
 }
 
 // installSelf atomically installs the agent executable, the platform-owned
-// preview-console Vite plugin, and its optional trusted public JWKS into dir,
+// preview-bridge Vite plugin, and its optional trusted public JWKS into dir,
 // the shared emptyDir the dev container mounts at /faros/bin. Plain copies are
 // used because the injector image may be scratch. Application dependencies are
 // deliberately not projected here: generated applications install their
@@ -508,31 +508,31 @@ func installSelf(dir string) error {
 	if err := atomicInstall(dir, agentBinaryName, 0o755, src); err != nil {
 		return fmt.Errorf("install agent: %w", err)
 	}
-	if err := atomicInstall(dir, previewConsolePluginName, 0o644, bytes.NewReader(previewConsolePlugin)); err != nil {
-		return fmt.Errorf("install preview console plugin: %w", err)
+	if err := atomicInstall(dir, previewBridgePluginName, 0o644, bytes.NewReader(previewBridgePlugin)); err != nil {
+		return fmt.Errorf("install preview bridge plugin: %w", err)
 	}
 
-	jwksPath := filepath.Join(dir, previewConsoleJWKSName)
-	rawJWKS := strings.TrimSpace(os.Getenv(previewConsoleJWKSEnv))
+	jwksPath := filepath.Join(dir, previewBridgeJWKSName)
+	rawJWKS := strings.TrimSpace(os.Getenv(previewBridgeJWKSEnv))
 	if rawJWKS == "" {
 		if err := os.Remove(jwksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale preview console JWKS: %w", err)
+			return fmt.Errorf("remove stale preview bridge JWKS: %w", err)
 		}
-		log.Printf("preview console bridge disabled: %s is unset", previewConsoleJWKSEnv)
-	} else if jwks, err := normalizePreviewConsoleJWKS([]byte(rawJWKS)); err != nil {
+		log.Printf("preview bridge disabled: %s is unset", previewBridgeJWKSEnv)
+	} else if jwks, err := normalizePreviewBridgeJWKS([]byte(rawJWKS)); err != nil {
 		if removeErr := os.Remove(jwksPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return fmt.Errorf("remove stale preview console JWKS after invalid configuration: %w", removeErr)
+			return fmt.Errorf("remove stale preview bridge JWKS after invalid configuration: %w", removeErr)
 		}
-		log.Printf("preview console bridge disabled: invalid %s: %v", previewConsoleJWKSEnv, err)
-	} else if err := atomicInstall(dir, previewConsoleJWKSName, 0o644, bytes.NewReader(jwks)); err != nil {
-		return fmt.Errorf("install preview console JWKS: %w", err)
+		log.Printf("preview bridge disabled: invalid %s: %v", previewBridgeJWKSEnv, err)
+	} else if err := atomicInstall(dir, previewBridgeJWKSName, 0o644, bytes.NewReader(jwks)); err != nil {
+		return fmt.Errorf("install preview bridge JWKS: %w", err)
 	}
 
 	if dirHandle, err := os.Open(dir); err == nil {
 		_ = dirHandle.Sync()
 		_ = dirHandle.Close()
 	}
-	log.Printf("installed %s and %s", filepath.Join(dir, agentBinaryName), filepath.Join(dir, previewConsolePluginName))
+	log.Printf("installed %s and %s", filepath.Join(dir, agentBinaryName), filepath.Join(dir, previewBridgePluginName))
 	return nil
 }
 
@@ -577,7 +577,7 @@ type publicVerificationJWK struct {
 	Use string `json:"use"`
 }
 
-func normalizePreviewConsoleJWKS(raw []byte) ([]byte, error) {
+func normalizePreviewBridgeJWKS(raw []byte) ([]byte, error) {
 	var document struct {
 		Keys []map[string]json.RawMessage `json:"keys"`
 	}

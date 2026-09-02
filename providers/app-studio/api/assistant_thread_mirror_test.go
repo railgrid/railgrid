@@ -408,6 +408,139 @@ func TestProjectAssistantThreadSnapshotMirrorsImageModelInputWithoutDuplicateAft
 	}
 }
 
+func TestProjectAssistantThreadSnapshotMirrorsApprovedBrowserActionsWithoutDisclosure(t *testing.T) {
+	inner := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, inner, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	thread := store.AssistantThread{ID: "thread-browser-actions", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
+	if _, err := inner.CreateAssistantThread(context.Background(), scope, thread, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn := store.AssistantTurn{ID: "turn-browser-actions", ThreadID: thread.ID, Mode: store.AssistantRunModeDefault}
+	run := store.AssistantRun{ID: turn.ID, ActiveMessageID: "assistant-browser-actions", Status: store.AssistantRunStatusRunning}
+	exec := &projectAssistantExecMetadata{Component: "browser", Argv: []string{"private-browser-command"}, Status: "succeeded"}
+	makeAction := func(id, name, status string, sequence int) projectAssistantActionFeedItem {
+		return projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+			ID: id, Name: name, Status: status, Sequence: sequence,
+			Arguments:  `{"selector":"#private","receipt":"private-browser-receipt"}`,
+			Summary:    "private-browser-summary",
+			Error:      "private-browser-error",
+			Exec:       exec,
+			RecoveryOf: "private-browser-recovery",
+		})
+	}
+	initial := []projectAssistantActionFeedItem{
+		makeAction("browser-snapshot-call", browserMCPToolSnapshot, "running", 1),
+		makeAction("browser-console-call", browserMCPToolConsole, "running", 2),
+		makeAction("browser-click-call", "browser_click", "running", 3),
+	}
+	snapshot := func(actions []projectAssistantActionFeedItem) projectAssistantRunSnapshot {
+		return projectAssistantRunSnapshot{Run: run, Message: store.Message{
+			ID:       run.ActiveMessageID,
+			Metadata: map[string]any{projectMessageMetadataAssistantActionFeed: actions},
+		}}
+	}
+	state := assistantThreadMirrorState{actionStatuses: map[string]string{}}
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &state, snapshot(initial)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range initial {
+		itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+		if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, itemID); got != 1 {
+			t.Fatalf("browser action %s started events = %d, want one: %#v", action.ID, got, events)
+		}
+	}
+
+	reloaded, err := server.loadAssistantThreadMirrorState(context.Background(), scope, thread.ID, run.ActiveMessageID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range initial {
+		itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+		if reloaded.actionStatuses[itemID] != projectAssistantActionFeedStatusRunning {
+			t.Fatalf("reloaded browser action %s status = %#v, want running", action.ID, reloaded.actionStatuses)
+		}
+	}
+
+	terminal := []projectAssistantActionFeedItem{
+		makeAction("browser-snapshot-call", browserMCPToolSnapshot, "succeeded", 1),
+		makeAction("browser-console-call", browserMCPToolConsole, "succeeded", 2),
+		makeAction("browser-click-call", "browser_click", "failed", 3),
+	}
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &reloaded, snapshot(terminal)); err != nil {
+		t.Fatal(err)
+	}
+	events, err = inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStatuses := map[string]string{
+		terminal[0].ID: projectAssistantActionFeedStatusSucceeded,
+		terminal[1].ID: projectAssistantActionFeedStatusSucceeded,
+		terminal[2].ID: projectAssistantActionFeedStatusFailed,
+	}
+	wantItemStatuses := map[string]string{
+		terminal[0].ID: "completed",
+		terminal[1].ID: "completed",
+		terminal[2].ID: "failed",
+	}
+	for _, action := range terminal {
+		itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+		if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemCompleted, itemID); got != 1 {
+			t.Fatalf("browser action %s completed events = %d, want one: %#v", action.ID, got, events)
+		}
+		var persisted assistantThreadItem
+		for _, event := range events {
+			if event.ItemID != itemID || event.Type != assistantThreadEventItemCompleted {
+				continue
+			}
+			var envelope struct {
+				Item assistantThreadItem `json:"item"`
+			}
+			if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			persisted = envelope.Item
+		}
+		if persisted.Type != assistantThreadEventDynamicToolCall || persisted.Status != wantItemStatuses[action.ID] {
+			t.Fatalf("persisted browser action item = %#v", persisted)
+		}
+		var gotAction projectAssistantActionFeedItem
+		if err := json.Unmarshal(persisted.Data, &gotAction); err != nil {
+			t.Fatal(err)
+		}
+		if gotAction.ID != action.ID || gotAction.Status != wantStatuses[action.ID] || gotAction.Exec != nil || gotAction.RecoveryOf != "" {
+			t.Fatalf("persisted browser action = %#v, want bounded %s action", gotAction, wantStatuses[action.ID])
+		}
+		encoded := string(persisted.Data)
+		for _, forbidden := range []string{"browser_snapshot", "browser_console_messages", "browser_click", "private-browser-command", "private-browser-receipt", "private-browser-summary", "private-browser-error", "private-browser-recovery"} {
+			if strings.Contains(encoded, forbidden) {
+				t.Fatalf("persisted browser action = %s, must not contain %q", encoded, forbidden)
+			}
+		}
+	}
+
+	materialized := materializeAssistantThreadItems(events)
+	for _, action := range terminal {
+		itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+		var found *assistantThreadItem
+		for index := range materialized {
+			if materialized[index].ID == itemID {
+				found = &materialized[index]
+				break
+			}
+		}
+		if found == nil || found.Type != assistantThreadEventDynamicToolCall || found.Status != wantItemStatuses[action.ID] {
+			t.Fatalf("materialized browser action %s = %#v, want %s dynamic tool", action.ID, found, wantItemStatuses[action.ID])
+		}
+	}
+}
+
 func TestProjectAssistantThreadSnapshotMirrorsAcceptedProgressAsTypedCommentary(t *testing.T) {
 	inner := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, inner, nil, "", false)

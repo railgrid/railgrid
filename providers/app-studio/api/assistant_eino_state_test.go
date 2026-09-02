@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -188,5 +189,76 @@ func TestProjectAssistantRunStateEnsureSandboxRetriesTransientFailure(t *testing
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("initializer calls = %d, want one failed attempt plus one retry", got)
+	}
+}
+
+func TestProjectAssistantRunStateUnknownBrowserReceiptCannotVerifyInteraction(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+
+	state.RecordToolMessage(chatMessage{
+		Role: "tool", Name: browserMCPToolSnapshot,
+		Content: nativeBrowserValidSnapshotReceipt,
+	})
+	prior := state.CompletionEvidence()
+	if !prior.PreviewRenderedStateObserved || prior.PreviewEvidenceOutcome != "rendered_verified" {
+		t.Fatalf("prior snapshot evidence = %#v, want rendered verification", prior)
+	}
+
+	state.RecordToolMessage(chatMessage{
+		Role: "tool", Name: "browser_click",
+		Content: `{"status":"outcome_unknown","outcome":"unknown","replayed":false}`,
+	})
+	if state.NativeBrowserInteractionPending() {
+		t.Fatal("outcome-unknown interaction left a pending interaction")
+	}
+	if got := state.CompletionEvidence(); !reflect.DeepEqual(got, prior) {
+		t.Fatalf("outcome-unknown receipt changed prior evidence: got %#v, want %#v", got, prior)
+	}
+
+	state.RecordToolMessage(chatMessage{
+		Role: "tool", Name: browserMCPToolSnapshot,
+		Content: nativeBrowserValidSnapshotReceipt,
+	})
+	got := state.CompletionEvidence()
+	if got.PreviewInteractionVerified || got.PreviewEvidenceOutcome == "interactions_verified" {
+		t.Fatalf("snapshot verified an outcome-unknown interaction: %#v", got)
+	}
+}
+
+func TestProjectAssistantRunStateUnverifiableBrowserObservationIsNotEvidence(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	unverifiable := `{"status":"unverifiable","outcome":"unknown","requiresSnapshot":true,"content":[{"type":"text","text":"- Page URL: https://demo.preview.example/\n- Page Snapshot:\n- generic [ref=e1]:"}]}`
+	state.RecordToolMessage(chatMessage{Role: "tool", Name: browserMCPToolSnapshot, Content: unverifiable})
+	if got := state.CompletionEvidence(); got.PreviewRenderedStateObserved || got.PreviewInteractionVerified || got.PreviewEvidenceOutcome != "" {
+		t.Fatalf("unverifiable observation became evidence: %#v", got)
+	}
+
+	state.RecordToolMessage(chatMessage{Role: "tool", Name: browserMCPToolSnapshot, Content: nativeBrowserValidSnapshotReceipt})
+	prior := state.CompletionEvidence()
+	state.RecordToolMessage(chatMessage{Role: "tool", Name: browserMCPToolSnapshot, Content: unverifiable})
+	if got := state.CompletionEvidence(); !reflect.DeepEqual(got, prior) {
+		t.Fatalf("unverifiable observation erased prior evidence: got %#v, want %#v", got, prior)
+	}
+}
+
+func TestProjectAssistantRunStateUnverifiableSessionLossClearsPendingInteraction(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordToolMessage(chatMessage{Role: "tool", Name: "browser_click", Content: `{"isError":false,"content":[{"type":"text","text":"clicked"}]}`})
+	if !state.NativeBrowserInteractionPending() {
+		t.Fatal("successful interaction did not become pending")
+	}
+
+	state.RecordToolMessage(chatMessage{
+		Role: "tool", Name: browserMCPToolSnapshot,
+		Content: `{"status":"unverifiable","outcome":"unknown","requiresSnapshot":true,"error":"preview browser tools/call: status 404: Session not found"}`,
+	})
+	if state.NativeBrowserInteractionPending() {
+		t.Fatal("production-shaped unverifiable receipt retained the pending interaction")
+	}
+	if evidence := state.CompletionEvidence(); evidence.PreviewInteractionVerified || evidence.PreviewEvidenceOutcome == "interactions_verified" {
+		t.Fatalf("unverifiable receipt certified interaction evidence: %#v", evidence)
 	}
 }

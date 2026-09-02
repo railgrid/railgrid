@@ -14,26 +14,26 @@
  * limitations under the License.
  */
 
-export const PREVIEW_CONSOLE_PROTOCOL_VERSION = 1
+export const PREVIEW_BRIDGE_PROTOCOL_VERSION = 1
 
-export const PREVIEW_CONSOLE_ANNOTATION_START = 'faros.preview-console.annotation.start'
-export const PREVIEW_CONSOLE_ANNOTATION_STOP = 'faros.preview-console.annotation.stop'
-export const PREVIEW_CONSOLE_ANNOTATION_PINS = 'faros.preview-console.annotation.pins'
-export const PREVIEW_CONSOLE_ANNOTATION_PINS_RENDERED = 'faros.preview-console.annotation.pins-rendered'
-export const PREVIEW_CONSOLE_ANNOTATION_PIN_HOVER = 'faros.preview-console.annotation.pin-hover'
-export const PREVIEW_CONSOLE_ANNOTATION_PIN_SELECTED = 'faros.preview-console.annotation.pin-selected'
-export const PREVIEW_CONSOLE_ANNOTATION_SELECTED = 'faros.preview-console.annotation.selected'
-export const PREVIEW_CONSOLE_ANNOTATION_CANCELLED = 'faros.preview-console.annotation.cancelled'
-export const PREVIEW_CONSOLE_ANNOTATION_MODE = 'faros.preview-console.annotation.mode'
-export const PREVIEW_CONSOLE_MAX_ANNOTATION_PINS = 64
+export const PREVIEW_BRIDGE_ANNOTATION_START = 'faros.preview-bridge.annotation.start'
+export const PREVIEW_BRIDGE_ANNOTATION_STOP = 'faros.preview-bridge.annotation.stop'
+export const PREVIEW_BRIDGE_ANNOTATION_PINS = 'faros.preview-bridge.annotation.pins'
+export const PREVIEW_BRIDGE_ANNOTATION_PINS_RENDERED = 'faros.preview-bridge.annotation.pins-rendered'
+export const PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER = 'faros.preview-bridge.annotation.pin-hover'
+export const PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED = 'faros.preview-bridge.annotation.pin-selected'
+export const PREVIEW_BRIDGE_ANNOTATION_SELECTED = 'faros.preview-bridge.annotation.selected'
+export const PREVIEW_BRIDGE_ANNOTATION_CANCELLED = 'faros.preview-bridge.annotation.cancelled'
+export const PREVIEW_BRIDGE_ANNOTATION_MODE = 'faros.preview-bridge.annotation.mode'
+export const PREVIEW_BRIDGE_MAX_ANNOTATION_PINS = 64
 
-export type PreviewConsoleConnectionState =
+export type PreviewBridgeConnectionState =
   | 'disabled'
   | 'connecting'
   | 'connected'
   | 'unavailable'
 
-export interface PreviewConsoleSession {
+export interface PreviewBridgeSession {
   status: 'available' | 'unsupported'
   sessionID: string
   generation: string
@@ -43,24 +43,14 @@ export interface PreviewConsoleSession {
   expiresAt: string
 }
 
-export interface PreviewConsoleEvent {
-  sequence: number
-  documentID: string
-  level: 'debug' | 'info' | 'log' | 'warn' | 'error' | 'pageerror' | 'unhandledrejection'
-  message: string
-  stack?: string
-  sourceURL?: string
-  clientTime?: string
-}
-
-export interface PreviewConsoleAnnotationRect {
+export interface PreviewBridgeAnnotationRect {
   x: number
   y: number
   width: number
   height: number
 }
 
-export interface PreviewConsoleAnnotationTarget {
+export interface PreviewBridgeAnnotationTarget {
   tag?: string
   role?: string
   name?: string
@@ -68,66 +58,65 @@ export interface PreviewConsoleAnnotationTarget {
   locator?: string
   locatorStrategy?: string
   ancestors?: string[]
-  rect?: PreviewConsoleAnnotationRect
+  rect?: PreviewBridgeAnnotationRect
 }
 
-export interface PreviewConsoleAnnotationSelection {
+export interface PreviewBridgeAnnotationSelection {
   documentID: string
   pagePath: string
   viewport: { width: number; height: number }
-  target: PreviewConsoleAnnotationTarget
+  target: PreviewBridgeAnnotationTarget
   anchor?: { x: number; y: number }
 }
 
-export interface PreviewConsoleAnnotationPin {
+export interface PreviewBridgeAnnotationPin {
   id: string
   number: number
   documentID: string
   pagePath: string
-  boundingRect: PreviewConsoleAnnotationRect
-  target: PreviewConsoleAnnotationTarget
+  boundingRect: PreviewBridgeAnnotationRect
+  target: PreviewBridgeAnnotationTarget
   anchor?: { x: number; y: number }
 }
 
-export interface PreviewConsoleAnnotationPinRenderState {
+export interface PreviewBridgeAnnotationPinRenderState {
   id: string
   resolved: boolean
 }
 
-export interface PreviewConsoleAnnotationPinHover {
+export interface PreviewBridgeAnnotationPinHover {
   id: string
   active: boolean
   pagePath: string
-  rect: PreviewConsoleAnnotationRect
+  rect: PreviewBridgeAnnotationRect
 }
 
-export interface PreviewConsoleAnnotationPinSelection {
+export interface PreviewBridgeAnnotationPinSelection {
   id: string
   pagePath: string
-  rect: PreviewConsoleAnnotationRect
+  rect: PreviewBridgeAnnotationRect
   viewport: { width: number; height: number }
 }
 
-export interface PreviewConsoleAPI {
-  createSession(project: string, generation: string, portalInstanceID: string): Promise<PreviewConsoleSession>
-  uploadEvents(project: string, sessionID: string, generation: string, events: PreviewConsoleEvent[], droppedCount: number): Promise<void>
+export interface PreviewBridgeAPI {
+  createSession(project: string, generation: string, portalInstanceID: string): Promise<PreviewBridgeSession>
   deleteSession(project: string, sessionID: string): Promise<void>
 }
 
-interface PreviewConsoleControllerOptions {
-  api: PreviewConsoleAPI
+interface PreviewBridgeControllerOptions {
+  api: PreviewBridgeAPI
   getFrame: () => HTMLIFrameElement | null
-  onState: (state: PreviewConsoleConnectionState) => void
-  onAnnotation?: (selection: PreviewConsoleAnnotationSelection) => void
+  onState: (state: PreviewBridgeConnectionState) => void
+  onAnnotation?: (selection: PreviewBridgeAnnotationSelection) => void
   onAnnotationMode?: (active: boolean) => void
-  onAnnotationPinsRendered?: (documentID: string, pagePath: string, states: PreviewConsoleAnnotationPinRenderState[]) => void
-  onAnnotationPinHover?: (hover: PreviewConsoleAnnotationPinHover) => void
-  onAnnotationPinSelect?: (selection: PreviewConsoleAnnotationPinSelection) => void
+  onAnnotationPinsRendered?: (documentID: string, pagePath: string, states: PreviewBridgeAnnotationPinRenderState[]) => void
+  onAnnotationPinHover?: (hover: PreviewBridgeAnnotationPinHover) => void
+  onAnnotationPinSelect?: (selection: PreviewBridgeAnnotationPinSelection) => void
   onDocument?: (documentID: string, pagePath: string) => void
 }
 
 interface BridgeReadyMessage {
-  type: 'faros.preview-console.ready'
+  type: 'faros.preview-bridge.ready'
   version: number
   documentID?: string
   path?: string
@@ -147,27 +136,21 @@ interface BridgePortMessage {
   pins?: unknown
   id?: unknown
   rect?: unknown
-  events?: PreviewConsoleEvent[]
-  droppedCount?: number
 }
 
-export class PreviewConsoleController {
-  private readonly api: PreviewConsoleAPI
+export class PreviewBridgeController {
+  private readonly api: PreviewBridgeAPI
   private readonly getFrame: () => HTMLIFrameElement | null
-  private readonly onState: (state: PreviewConsoleConnectionState) => void
-  private readonly onAnnotation?: (selection: PreviewConsoleAnnotationSelection) => void
+  private readonly onState: (state: PreviewBridgeConnectionState) => void
+  private readonly onAnnotation?: (selection: PreviewBridgeAnnotationSelection) => void
   private readonly onAnnotationMode?: (active: boolean) => void
-  private readonly onAnnotationPinsRendered?: (documentID: string, pagePath: string, states: PreviewConsoleAnnotationPinRenderState[]) => void
-  private readonly onAnnotationPinHover?: (hover: PreviewConsoleAnnotationPinHover) => void
-  private readonly onAnnotationPinSelect?: (selection: PreviewConsoleAnnotationPinSelection) => void
+  private readonly onAnnotationPinsRendered?: (documentID: string, pagePath: string, states: PreviewBridgeAnnotationPinRenderState[]) => void
+  private readonly onAnnotationPinHover?: (hover: PreviewBridgeAnnotationPinHover) => void
+  private readonly onAnnotationPinSelect?: (selection: PreviewBridgeAnnotationPinSelection) => void
   private readonly onDocument?: (documentID: string, pagePath: string) => void
   private project = ''
-  private session: PreviewConsoleSession | null = null
+  private session: PreviewBridgeSession | null = null
   private port: MessagePort | null = null
-  private pending: PreviewConsoleEvent[] = []
-  private droppedPending = 0
-  private retryBatch: PreviewConsoleEvent[] | null = null
-  private flushTimer: number | undefined
   private connectionTimer: number | undefined
   private renewalTimer: number | undefined
   private started = false
@@ -176,10 +159,10 @@ export class PreviewConsoleController {
   private serial = 0
   private annotationMode = false
   private bridgeConnected = false
-  private annotationPins: PreviewConsoleAnnotationPin[] = []
-  private readonly portalInstanceID = previewConsolePortalInstanceID()
+  private annotationPins: PreviewBridgeAnnotationPin[] = []
+  private readonly portalInstanceID = previewBridgePortalInstanceID()
 
-  constructor(options: PreviewConsoleControllerOptions) {
+  constructor(options: PreviewBridgeControllerOptions) {
     this.api = options.api
     this.getFrame = options.getFrame
     this.onState = options.onState
@@ -221,8 +204,8 @@ export class PreviewConsoleController {
       // be missed. The bridge's document ID is the immutable generation; a new
       // document therefore cannot replay a capability issued to its predecessor.
       this.getFrame()?.contentWindow?.postMessage({
-        type: 'faros.preview-console.probe',
-        version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
+        type: 'faros.preview-bridge.probe',
+        version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
       }, this.expectedOrigin)
     } catch (error) {
       if (serial === this.serial) {
@@ -257,8 +240,8 @@ export class PreviewConsoleController {
     if (!session || !port || !this.started || !this.bridgeConnected || !this.expectedOrigin) return false
     try {
       port.postMessage({
-        type: PREVIEW_CONSOLE_ANNOTATION_START,
-        version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
+        type: PREVIEW_BRIDGE_ANNOTATION_START,
+        version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
         sessionID: session.sessionID,
         generation: session.generation,
       })
@@ -277,8 +260,8 @@ export class PreviewConsoleController {
     if (session && port) {
       try {
         port.postMessage({
-          type: PREVIEW_CONSOLE_ANNOTATION_STOP,
-          version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
+          type: PREVIEW_BRIDGE_ANNOTATION_STOP,
+          version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
           sessionID: session.sessionID,
           generation: session.generation,
         })
@@ -291,8 +274,8 @@ export class PreviewConsoleController {
     this.annotationMode = false
   }
 
-  setAnnotationPins(pins: PreviewConsoleAnnotationPin[]): boolean {
-    if (!Array.isArray(pins) || pins.length > PREVIEW_CONSOLE_MAX_ANNOTATION_PINS) return false
+  setAnnotationPins(pins: PreviewBridgeAnnotationPin[]): boolean {
+    if (!Array.isArray(pins) || pins.length > PREVIEW_BRIDGE_MAX_ANNOTATION_PINS) return false
     const nextPins = pins.map((pin) => ({
       id: pin.id,
       number: pin.number,
@@ -300,11 +283,11 @@ export class PreviewConsoleController {
       pagePath: pin.pagePath,
       // Composer parts are Vue-reactive. MessagePort's structured clone
       // rejects Proxy objects, so make the bridge boundary explicitly plain.
-      boundingRect: clonePreviewConsoleAnnotationRect(pin.boundingRect),
-      target: clonePreviewConsoleAnnotationTarget(pin.target),
+      boundingRect: clonePreviewBridgeAnnotationRect(pin.boundingRect),
+      target: clonePreviewBridgeAnnotationTarget(pin.target),
       ...(pin.anchor ? { anchor: { x: pin.anchor.x, y: pin.anchor.y } } : {}),
     }))
-    if (previewConsoleAnnotationPinsEqual(this.annotationPins, nextPins)) {
+    if (previewBridgeAnnotationPinsEqual(this.annotationPins, nextPins)) {
       return Boolean(this.session && this.port && this.started && this.bridgeConnected)
     }
     this.annotationPins = nextPins
@@ -317,8 +300,8 @@ export class PreviewConsoleController {
     if (!session || !port || !this.started || !this.bridgeConnected) return false
     try {
       port.postMessage({
-        type: PREVIEW_CONSOLE_ANNOTATION_PINS,
-        version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
+        type: PREVIEW_BRIDGE_ANNOTATION_PINS,
+        version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
         sessionID: session.sessionID,
         generation: session.generation,
         // Pin provenance retains the document that was annotated, while the
@@ -395,7 +378,7 @@ export class PreviewConsoleController {
   }
 
   private async authorizeBridge(project: string, generation: string, origin: string, serial: number, port: MessagePort): Promise<void> {
-    let session: PreviewConsoleSession
+    let session: PreviewBridgeSession
     try {
       session = await this.api.createSession(project, generation, this.portalInstanceID)
     } catch (error) {
@@ -469,8 +452,8 @@ export class PreviewConsoleController {
       // The capability stays on the bridge-created MessagePort. It is never
       // included in a window message visible to same-document app scripts.
       this.port.postMessage({
-        type: 'faros.preview-console.start',
-        version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
+        type: 'faros.preview-bridge.start',
+        version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
         sessionID: session.sessionID,
         generation: session.generation,
         capability: session.capability,
@@ -485,17 +468,17 @@ export class PreviewConsoleController {
     if (!session || !isBridgePortMessage(event.data)) return
     const message = event.data
     if (
-      message.version !== PREVIEW_CONSOLE_PROTOCOL_VERSION ||
+      message.version !== PREVIEW_BRIDGE_PROTOCOL_VERSION ||
       message.sessionID !== session.sessionID ||
       message.generation !== session.generation
     ) return
 
-    if (message.type === 'faros.preview-console.connected') {
+    if (message.type === 'faros.preview-bridge.connected') {
       if (this.connectionTimer !== undefined) {
         window.clearTimeout(this.connectionTimer)
         this.connectionTimer = undefined
       }
-      const pagePath = previewConsolePagePath(message.path)
+      const pagePath = previewBridgePagePath(message.path)
       if (!pagePath) {
         this.handlePortFailure(this.port!)
         return
@@ -506,37 +489,37 @@ export class PreviewConsoleController {
       this.onState('connected')
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_MODE) {
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_MODE) {
       this.annotationMode = message.active === true
       this.onAnnotationMode?.(this.annotationMode)
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_CANCELLED) {
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_CANCELLED) {
       this.annotationMode = false
       this.onAnnotationMode?.(false)
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_SELECTED) {
-      const selection = previewConsoleAnnotationSelection(message, session.generation)
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_SELECTED) {
+      const selection = previewBridgeAnnotationSelection(message, session.generation)
       if (selection) this.onAnnotation?.(selection)
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_PIN_HOVER) {
-      const hover = previewConsoleAnnotationPinHover(message, session.generation)
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER) {
+      const hover = previewBridgeAnnotationPinHover(message, session.generation)
       if (hover) this.onAnnotationPinHover?.(hover)
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_PIN_SELECTED) {
-      const selection = previewConsoleAnnotationPinSelection(message, session.generation)
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED) {
+      const selection = previewBridgeAnnotationPinSelection(message, session.generation)
       if (selection) this.onAnnotationPinSelect?.(selection)
       return
     }
-    if (message.type === PREVIEW_CONSOLE_ANNOTATION_PINS_RENDERED) {
+    if (message.type === PREVIEW_BRIDGE_ANNOTATION_PINS_RENDERED) {
       const documentID = typeof message.documentID === 'string' ? message.documentID.slice(0, 128) : ''
-      const pagePath = previewConsolePagePath(message.path)
+      const pagePath = previewBridgePagePath(message.path)
       if (documentID !== session.generation || !pagePath || !Array.isArray(message.pins)) return
-      if (message.pins.length > PREVIEW_CONSOLE_MAX_ANNOTATION_PINS) return
-      const states: PreviewConsoleAnnotationPinRenderState[] = []
+      if (message.pins.length > PREVIEW_BRIDGE_MAX_ANNOTATION_PINS) return
+      const states: PreviewBridgeAnnotationPinRenderState[] = []
       for (const value of message.pins) {
         if (!value || typeof value !== 'object') continue
         const id = typeof (value as { id?: unknown }).id === 'string' ? (value as { id: string }).id.trim().slice(0, 96) : ''
@@ -546,19 +529,6 @@ export class PreviewConsoleController {
       this.onAnnotationPinsRendered?.(documentID, pagePath, states)
       return
     }
-    if (message.type !== 'faros.preview-console.events' || !Array.isArray(message.events)) return
-    if (Number.isSafeInteger(message.droppedCount) && Number(message.droppedCount) > 0) {
-      this.addDropped(Number(message.droppedCount))
-    }
-    for (const entry of message.events.slice(0, 32)) {
-      if (!isPreviewConsoleEvent(entry) || previewConsoleJSONBytes(entry) > 2_048) {
-        this.addDropped(1)
-        continue
-      }
-      this.enqueue(entry)
-    }
-    if (message.events.length > 32) this.addDropped(message.events.length - 32)
-    if (this.pending.length === 0 && this.droppedPending > 0) this.scheduleFlush()
   }
 
   private handlePortFailure(port: MessagePort): void {
@@ -576,9 +546,6 @@ export class PreviewConsoleController {
     this.bridgeConnected = false
     this.started = false
     this.readyGeneration = ''
-    this.pending = []
-    this.droppedPending = 0
-    this.retryBatch = null
     this.annotationMode = false
     this.onAnnotationMode?.(false)
     this.onState('unavailable')
@@ -588,75 +555,8 @@ export class PreviewConsoleController {
     if (session?.sessionID && project) void this.api.deleteSession(project, session.sessionID).catch(() => {})
   }
 
-  private enqueue(event: PreviewConsoleEvent): void {
-    // The backend remains the security boundary and re-sanitizes every event.
-    // This client bound prevents a noisy app from growing portal memory.
-    if (this.pending.length >= 256) {
-      this.pending.shift()
-      this.addDropped(1)
-    }
-    this.pending.push(event)
-    if (this.pending.length >= 16) {
-      void this.flush()
-      return
-    }
-    this.scheduleFlush()
-  }
-
-  private addDropped(count: number): void {
-    if (!Number.isFinite(count) || count <= 0) return
-    this.droppedPending = Math.min(1_000_000, this.droppedPending + Math.floor(count))
-  }
-
-  private scheduleFlush(): void {
-    if (this.flushTimer === undefined) {
-      this.flushTimer = window.setTimeout(() => {
-        this.flushTimer = undefined
-        void this.flush()
-      }, 500)
-    }
-  }
-
-  private async flush(): Promise<void> {
-    const session = this.session
-    const project = this.project
-    if (!session || !project || this.retryBatch) return
-    if (this.flushTimer !== undefined) {
-      window.clearTimeout(this.flushTimer)
-      this.flushTimer = undefined
-    }
-    const batch = takePreviewConsoleUploadBatch(this.pending, session.generation, this.droppedPending)
-    const droppedCount = this.droppedPending
-    if (batch.length === 0 && droppedCount === 0) return
-    this.droppedPending = 0
-    this.retryBatch = batch
-    try {
-      await this.api.uploadEvents(project, session.sessionID, session.generation, batch, droppedCount)
-    } catch {
-      // One bounded retry; events are deliberately dropped after it.
-      try {
-        await this.api.uploadEvents(project, session.sessionID, session.generation, batch, droppedCount)
-      } catch (error) {
-        // Advisory evidence must never create an unbounded retry queue.
-        this.addDropped(batch.length + droppedCount)
-        const status = (error as { status?: number })?.status
-        if (status === 404 || status === 410) {
-          this.onState('unavailable')
-          void this.closeSession()
-        }
-      }
-    } finally {
-      this.retryBatch = null
-      if (this.pending.length > 0) void this.flush()
-    }
-  }
-
   private async closeSession(deleteRemote = true): Promise<void> {
     if (this.annotationMode) this.stopAnnotationMode()
-    if (this.flushTimer !== undefined) {
-      window.clearTimeout(this.flushTimer)
-      this.flushTimer = undefined
-    }
     if (this.connectionTimer !== undefined) {
       window.clearTimeout(this.connectionTimer)
       this.connectionTimer = undefined
@@ -665,9 +565,6 @@ export class PreviewConsoleController {
       window.clearTimeout(this.renewalTimer)
       this.renewalTimer = undefined
     }
-    this.pending = []
-    this.droppedPending = 0
-    this.retryBatch = null
     this.port?.close()
     this.port = null
     this.started = false
@@ -688,7 +585,7 @@ export class PreviewConsoleController {
   }
 }
 
-function clonePreviewConsoleAnnotationRect(rect: PreviewConsoleAnnotationRect): PreviewConsoleAnnotationRect {
+function clonePreviewBridgeAnnotationRect(rect: PreviewBridgeAnnotationRect): PreviewBridgeAnnotationRect {
   return {
     x: rect.x,
     y: rect.y,
@@ -697,7 +594,7 @@ function clonePreviewConsoleAnnotationRect(rect: PreviewConsoleAnnotationRect): 
   }
 }
 
-function previewConsolePortalInstanceID(): string {
+function previewBridgePortalInstanceID(): string {
   try {
     if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID()
   } catch {}
@@ -709,17 +606,17 @@ function previewConsolePortalInstanceID(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-function previewConsoleAnnotationPinsEqual(left: PreviewConsoleAnnotationPin[], right: PreviewConsoleAnnotationPin[]): boolean {
+function previewBridgeAnnotationPinsEqual(left: PreviewBridgeAnnotationPin[], right: PreviewBridgeAnnotationPin[]): boolean {
   if (left.length !== right.length) return false
   return left.every((pin, index) => JSON.stringify(pin) === JSON.stringify(right[index]))
 }
 
-function clonePreviewConsoleAnnotationTarget(target: PreviewConsoleAnnotationTarget): PreviewConsoleAnnotationTarget {
-  const clone: PreviewConsoleAnnotationTarget = {}
+function clonePreviewBridgeAnnotationTarget(target: PreviewBridgeAnnotationTarget): PreviewBridgeAnnotationTarget {
+  const clone: PreviewBridgeAnnotationTarget = {}
   for (const key of ['tag', 'role', 'name', 'text', 'locator', 'locatorStrategy'] as const) {
     if (typeof target[key] === 'string') clone[key] = target[key]
   }
-  if (target.rect) clone.rect = clonePreviewConsoleAnnotationRect(target.rect)
+  if (target.rect) clone.rect = clonePreviewBridgeAnnotationRect(target.rect)
   if (Array.isArray(target.ancestors)) clone.ancestors = [...target.ancestors]
   return clone
 }
@@ -727,7 +624,7 @@ function clonePreviewConsoleAnnotationTarget(target: PreviewConsoleAnnotationTar
 function isBridgeReadyMessage(value: unknown): value is BridgeReadyMessage {
   if (!value || typeof value !== 'object') return false
   const message = value as Partial<BridgeReadyMessage>
-  return message.type === 'faros.preview-console.ready' && message.version === PREVIEW_CONSOLE_PROTOCOL_VERSION
+  return message.type === 'faros.preview-bridge.ready' && message.version === PREVIEW_BRIDGE_PROTOCOL_VERSION
 }
 
 function isBridgePortMessage(value: unknown): value is BridgePortMessage {
@@ -735,34 +632,34 @@ function isBridgePortMessage(value: unknown): value is BridgePortMessage {
   const message = value as Partial<BridgePortMessage>
   return (
     typeof message.type === 'string' &&
-    message.version === PREVIEW_CONSOLE_PROTOCOL_VERSION &&
+    message.version === PREVIEW_BRIDGE_PROTOCOL_VERSION &&
     typeof message.sessionID === 'string' &&
     typeof message.generation === 'string'
   )
 }
 
-function previewConsolePagePath(value: unknown): string {
+function previewBridgePagePath(value: unknown): string {
   if (typeof value !== 'string') return ''
   const pagePath = value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 1024)
   if (!pagePath.startsWith('/') || pagePath.startsWith('//') || /[?#\\]/.test(pagePath)) return ''
   return pagePath
 }
 
-function previewConsoleAnnotationSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewConsoleAnnotationSelection | null {
-  if (value.type !== PREVIEW_CONSOLE_ANNOTATION_SELECTED || !value.target || typeof value.target !== 'object') return null
+function previewBridgeAnnotationSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationSelection | null {
+  if (value.type !== PREVIEW_BRIDGE_ANNOTATION_SELECTED || !value.target || typeof value.target !== 'object') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
   if (!documentID || documentID !== authenticatedDocumentID) return null
   const raw = value.target as Record<string, unknown>
-  const target = previewConsoleAnnotationTarget(raw)
+  const target = previewBridgeAnnotationTarget(raw)
   if (!target) return null
-  const anchor = previewConsoleAnnotationAnchor(value.anchor)
+  const anchor = previewBridgeAnnotationAnchor(value.anchor)
   if (value.anchor !== undefined && !anchor) return null
   const viewport = value.viewport
   if (!viewport || typeof viewport !== 'object') return null
   const rawViewport = viewport as Record<string, unknown>
   const width = typeof rawViewport.width === 'number' && Number.isFinite(rawViewport.width) ? rawViewport.width : null
   const height = typeof rawViewport.height === 'number' && Number.isFinite(rawViewport.height) ? rawViewport.height : null
-  const pagePath = previewConsolePagePath(value.path)
+  const pagePath = previewBridgePagePath(value.path)
   if (width === null || height === null || width <= 0 || height <= 0 || !pagePath) return null
   return {
     documentID,
@@ -773,7 +670,7 @@ function previewConsoleAnnotationSelection(value: BridgePortMessage, authenticat
   }
 }
 
-function previewConsoleAnnotationAnchor(value: unknown): { x: number; y: number } | null {
+function previewBridgeAnnotationAnchor(value: unknown): { x: number; y: number } | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
   const x = typeof raw.x === 'number' && Number.isFinite(raw.x) && raw.x >= 0 && raw.x <= 1 ? raw.x : null
@@ -781,32 +678,32 @@ function previewConsoleAnnotationAnchor(value: unknown): { x: number; y: number 
   return x === null || y === null ? null : { x, y }
 }
 
-function previewConsoleAnnotationPinHover(value: BridgePortMessage, authenticatedDocumentID: string): PreviewConsoleAnnotationPinHover | null {
-  if (value.type !== PREVIEW_CONSOLE_ANNOTATION_PIN_HOVER || typeof value.id !== 'string' || typeof value.active !== 'boolean') return null
+function previewBridgeAnnotationPinHover(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationPinHover | null {
+  if (value.type !== PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER || typeof value.id !== 'string' || typeof value.active !== 'boolean') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
   if (!documentID || documentID !== authenticatedDocumentID) return null
   const id = value.id.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 96)
   if (!id) return null
-  const pagePath = previewConsolePagePath(value.path)
+  const pagePath = previewBridgePagePath(value.path)
   if (!pagePath) return null
-  const rect = previewConsoleAnnotationPinHoverRect(value.rect)
+  const rect = previewBridgeAnnotationPinHoverRect(value.rect)
   if (!rect) return null
   return { id, active: value.active, pagePath, rect }
 }
 
-function previewConsoleAnnotationPinSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewConsoleAnnotationPinSelection | null {
-  if (value.type !== PREVIEW_CONSOLE_ANNOTATION_PIN_SELECTED || typeof value.id !== 'string') return null
+function previewBridgeAnnotationPinSelection(value: BridgePortMessage, authenticatedDocumentID: string): PreviewBridgeAnnotationPinSelection | null {
+  if (value.type !== PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED || typeof value.id !== 'string') return null
   const documentID = typeof value.documentID === 'string' ? value.documentID.slice(0, 128) : ''
   if (!documentID || documentID !== authenticatedDocumentID) return null
   const id = value.id.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 96)
-  const pagePath = previewConsolePagePath(value.path)
-  const rect = previewConsoleAnnotationPinHoverRect(value.rect)
-  const viewport = previewConsoleAnnotationViewport(value.viewport)
+  const pagePath = previewBridgePagePath(value.path)
+  const rect = previewBridgeAnnotationPinHoverRect(value.rect)
+  const viewport = previewBridgeAnnotationViewport(value.viewport)
   if (!id || !pagePath || !rect || !viewport) return null
   return { id, pagePath, rect, viewport }
 }
 
-function previewConsoleAnnotationViewport(value: unknown): { width: number; height: number } | null {
+function previewBridgeAnnotationViewport(value: unknown): { width: number; height: number } | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
   const width = typeof raw.width === 'number' && Number.isFinite(raw.width) && raw.width > 0 ? raw.width : null
@@ -814,7 +711,7 @@ function previewConsoleAnnotationViewport(value: unknown): { width: number; heig
   return width === null || height === null ? null : { width, height }
 }
 
-function previewConsoleAnnotationPinHoverRect(value: unknown): PreviewConsoleAnnotationRect | null {
+function previewBridgeAnnotationPinHoverRect(value: unknown): PreviewBridgeAnnotationRect | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
   const number = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null
@@ -831,7 +728,7 @@ function previewConsoleAnnotationPinHoverRect(value: unknown): PreviewConsoleAnn
   }
 }
 
-function previewConsoleAnnotationTarget(value: Record<string, unknown>): PreviewConsoleAnnotationTarget | null {
+function previewBridgeAnnotationTarget(value: Record<string, unknown>): PreviewBridgeAnnotationTarget | null {
   const tag = typeof value.tag === 'string' ? value.tag.trim().slice(0, 64) : ''
   const rect = value.rect
   if (!rect || typeof rect !== 'object') return null
@@ -842,9 +739,9 @@ function previewConsoleAnnotationTarget(value: Record<string, unknown>): Preview
     x: number(rawRect.x), y: number(rawRect.y), width: number(rawRect.width), height: number(rawRect.height),
   }
   if (Object.values(boundingRect).some((candidate) => candidate === null)) return null
-  const target: PreviewConsoleAnnotationTarget = {
+  const target: PreviewBridgeAnnotationTarget = {
     tag,
-    rect: boundingRect as PreviewConsoleAnnotationRect,
+    rect: boundingRect as PreviewBridgeAnnotationRect,
   }
   for (const key of ['role', 'name', 'text', 'locator', 'locatorStrategy'] as const) {
     const candidate = boundedString(value[key])
@@ -852,48 +749,4 @@ function previewConsoleAnnotationTarget(value: Record<string, unknown>): Preview
   }
   if (Array.isArray(value.ancestors)) target.ancestors = value.ancestors.slice(0, 16).map((ancestor) => boundedString(ancestor, 256)).filter(Boolean)
   return target
-}
-
-function isPreviewConsoleEvent(value: unknown): value is PreviewConsoleEvent {
-  if (!value || typeof value !== 'object') return false
-  const event = value as Partial<PreviewConsoleEvent>
-  return (
-    typeof event.level === 'string' &&
-    ['debug', 'info', 'log', 'warn', 'error', 'pageerror', 'unhandledrejection'].includes(event.level) &&
-    Number.isSafeInteger(event.sequence) &&
-    Number(event.sequence) > 0 &&
-    typeof event.documentID === 'string' &&
-    typeof event.message === 'string'
-  )
-}
-
-function previewConsoleJSONBytes(value: unknown): number {
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength
-  } catch {
-    return Number.POSITIVE_INFINITY
-  }
-}
-
-export function takePreviewConsoleUploadBatch(
-  pending: PreviewConsoleEvent[],
-  generation: string,
-  droppedCount: number,
-  maxBytes = 28 << 10,
-): PreviewConsoleEvent[] {
-  const batch: PreviewConsoleEvent[] = []
-  while (pending.length > 0 && batch.length < 16) {
-    const candidate = pending[0]
-    const next = [...batch, candidate]
-    const body = {
-      generation,
-      protocolVersion: PREVIEW_CONSOLE_PROTOCOL_VERSION,
-      droppedCount,
-      events: next,
-    }
-    if (previewConsoleJSONBytes(body) > maxBytes) break
-    batch.push(candidate)
-    pending.shift()
-  }
-  return batch
 }

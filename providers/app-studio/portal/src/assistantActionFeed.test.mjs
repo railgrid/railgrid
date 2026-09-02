@@ -37,6 +37,29 @@ test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([nonImageOutcome]), [nonImageOutcome])
 })
 
+test('keeps approved browser observations and interactions visible while hiding unknown successes', () => {
+  const snapshot = {
+    id: 'browser-snapshot-1', kind: 'inspect', status: 'running', title: 'Inspecting preview',
+    severity: 'attention', sequence: 1,
+  }
+  const consoleReview = {
+    id: 'browser-console-1', kind: 'inspect', status: 'succeeded', title: 'Reviewed browser console',
+    severity: 'normal', sequence: 2,
+  }
+  const click = {
+    id: 'browser-click-1', kind: 'run', status: 'failed', title: 'Preview interaction failed',
+    severity: 'error', sequence: 3,
+    diagnostic: { category: 'runtime', message: 'Preview interaction failed.', referenceID: 'action-browser-click' },
+  }
+  const unknown = {
+    id: 'browser-unknown-1', kind: 'other', status: 'succeeded', title: 'Completed action',
+    severity: 'normal', sequence: 4,
+  }
+
+  assert.deepEqual(feed.parseAssistantActionFeed([snapshot, consoleReview, click, unknown]), [snapshot, consoleReview, click])
+  assert.deepEqual(feed.parseAssistantActionFeed([{ ...click, arguments: 'secret', result: 'private receipt' }]), [])
+})
+
 test('parses server-owned image model-input evidence', () => {
   const imageWithLegacyOutcome = action({
     id: 'feed-image-1',

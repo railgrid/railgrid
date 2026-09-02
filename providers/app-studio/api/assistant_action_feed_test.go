@@ -202,6 +202,204 @@ func TestProjectAssistantActionFeedSuppressesTodosAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedApprovedNativeBrowserActionsAreBounded(t *testing.T) {
+	tests := []struct {
+		name      string
+		tool      string
+		rawStatus string
+		kind      string
+		status    string
+		title     string
+	}{
+		{
+			name:      "snapshot running",
+			tool:      browserMCPToolSnapshot,
+			rawStatus: "running",
+			kind:      projectAssistantActionFeedItemInspect,
+			status:    projectAssistantActionFeedStatusRunning,
+			title:     "Inspecting preview",
+		},
+		{
+			name:      "console succeeded",
+			tool:      browserMCPToolConsole,
+			rawStatus: "succeeded",
+			kind:      projectAssistantActionFeedItemInspect,
+			status:    projectAssistantActionFeedStatusSucceeded,
+			title:     "Reviewed browser console",
+		},
+		{
+			name:      "click failed",
+			tool:      "browser_click",
+			rawStatus: "failed",
+			kind:      projectAssistantActionFeedItemRun,
+			status:    projectAssistantActionFeedStatusFailed,
+			title:     "Preview interaction failed",
+		},
+		{
+			name:      "click succeeded",
+			tool:      "browser_click",
+			rawStatus: "succeeded",
+			kind:      projectAssistantActionFeedItemRun,
+			status:    projectAssistantActionFeedStatusSucceeded,
+			title:     "Interacted with preview",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := projectToolCallStreamEvent{
+				ID:        "native-browser-" + tt.name,
+				Name:      tt.tool,
+				Status:    tt.rawStatus,
+				Arguments: `{"element":"#private","text":"secret-browser-argument","url":"https://private.example"}`,
+				Summary:   "private browser receipt secret-browser-summary",
+				Error:     "private browser failure secret-browser-error",
+				Sequence:  1,
+			}
+			item := projectAssistantActionFeedItemFromToolCall(event)
+			if item.Kind != tt.kind || item.Status != tt.status || item.Title != tt.title {
+				t.Fatalf("item = %#v, want %s/%s/%s", item, tt.kind, tt.status, tt.title)
+			}
+			if item.Target != "" || item.Outcome != "" {
+				t.Fatalf("browser item = %#v, want no target or outcome disclosure", item)
+			}
+			data, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{
+				tt.tool, "secret-browser-argument", "private.example", "secret-browser-summary", "secret-browser-error",
+			} {
+				if strings.Contains(string(data), forbidden) {
+					t.Fatalf("browser item JSON = %s, must not contain %q", data, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectAssistantActionFeedNativeBrowserPresentationFailsClosedForNamespacesAndExecDisclosure(t *testing.T) {
+	namespaced := projectAssistantActionFeedFromToolCalls([]projectToolCallStreamEvent{{
+		ID:        "namespaced-browser-click",
+		Name:      "provider__browser_click",
+		Status:    "succeeded",
+		Arguments: `{"element":"#private"}`,
+		Summary:   "private receipt",
+	}})
+	if len(namespaced) != 0 {
+		t.Fatalf("namespaced browser action = %#v, want unknown successful action hidden", namespaced)
+	}
+
+	exec := &projectAssistantExecMetadata{
+		Component: "backend",
+		Argv:      []string{"secret-command"},
+		Status:    "succeeded",
+	}
+	event := projectToolCallStreamEvent{
+		ID:         "browser-click-with-exec",
+		Name:       "browser_click",
+		Status:     "succeeded",
+		Arguments:  `{"element":"#private"}`,
+		Summary:    "private receipt",
+		Exec:       exec,
+		RecoveryOf: "private-recovery",
+		Sequence:   1,
+	}
+	item := projectAssistantActionFeedItemFromToolCall(event)
+	if item.Kind != projectAssistantActionFeedItemRun || item.Status != projectAssistantActionFeedStatusSucceeded ||
+		item.Title != "Interacted with preview" || item.Exec != nil || item.RecoveryOf != "" {
+		t.Fatalf("browser action = %#v, want bounded lifecycle-only presentation", item)
+	}
+
+	assistantItem := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:     "browser-click-assistant-with-exec",
+		Name:   "browser_click",
+		Status: "succeeded",
+		Exec:   exec,
+	})
+	if assistantItem.Kind != projectAssistantActionFeedItemRun || assistantItem.Status != projectAssistantActionFeedStatusSucceeded ||
+		assistantItem.Title != "Interacted with preview" || assistantItem.Exec != nil {
+		t.Fatalf("assistant browser action = %#v, want bounded lifecycle-only presentation", assistantItem)
+	}
+}
+
+func TestProjectAssistantActionFeedApprovedNativeBrowserActionsSurviveMetadataRoundTrip(t *testing.T) {
+	events := []projectToolCallStreamEvent{
+		{
+			ID:        "browser-snapshot-running",
+			Name:      browserMCPToolSnapshot,
+			Status:    "running",
+			Arguments: `{"selector":"secret-selector","receipt":"private-receipt"}`,
+			Sequence:  1,
+		},
+		{
+			ID:       "browser-console-succeeded",
+			Name:     browserMCPToolConsole,
+			Status:   "succeeded",
+			Summary:  "private console receipt",
+			Sequence: 2,
+		},
+		{
+			ID:        "browser-click-failed",
+			Name:      "browser_click",
+			Status:    "failed",
+			Arguments: `{"element":"#secret"}`,
+			Error:     "private click receipt",
+			Sequence:  3,
+		},
+		{
+			ID:        "browser-unknown-success",
+			Name:      "browser_evaluate",
+			Status:    "succeeded",
+			Arguments: `{"expression":"secret"}`,
+			Sequence:  4,
+		},
+	}
+	metadata := projectAssistantMessageMetadata("Working", events)
+	if metadata == nil {
+		t.Fatal("metadata = nil, want browser action feed")
+	}
+	feed := projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed])
+	if len(feed) != 3 {
+		t.Fatalf("live action feed = %#v, want three approved browser actions", feed)
+	}
+	if feed[0].Kind != projectAssistantActionFeedItemInspect || feed[0].Status != projectAssistantActionFeedStatusRunning || feed[0].Title != "Inspecting preview" {
+		t.Fatalf("running snapshot = %#v", feed[0])
+	}
+	if feed[1].Kind != projectAssistantActionFeedItemInspect || feed[1].Status != projectAssistantActionFeedStatusSucceeded || feed[1].Title != "Reviewed browser console" {
+		t.Fatalf("successful console = %#v", feed[1])
+	}
+	if feed[2].Kind != projectAssistantActionFeedItemRun || feed[2].Status != projectAssistantActionFeedStatusFailed || feed[2].Title != "Preview interaction failed" || feed[2].Diagnostic == nil {
+		t.Fatalf("failed click = %#v", feed[2])
+	}
+
+	raw, err := json.Marshal(metadata[projectMessageMetadataAssistantActionFeed])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"browser_snapshot", "browser_console_messages", "browser_click", "browser_evaluate",
+		"secret-selector", "private-receipt", "private console receipt", "private click receipt",
+	} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("metadata JSON = %s, must not contain %q", raw, forbidden)
+		}
+	}
+	var persisted any
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := projectAssistantActionFeedFromMetadata(persisted)
+	if len(reloaded) != len(feed) {
+		t.Fatalf("reloaded action feed = %#v, want %#v", reloaded, feed)
+	}
+	for index := range feed {
+		if reloaded[index].ID != feed[index].ID || reloaded[index].Kind != feed[index].Kind ||
+			reloaded[index].Status != feed[index].Status || reloaded[index].Title != feed[index].Title {
+			t.Fatalf("reloaded action %d = %#v, want live %#v", index, reloaded[index], feed[index])
+		}
+	}
+}
+
 func TestApplyProjectAssistantActionFeedUpdateRemovesInvisibleTerminalAction(t *testing.T) {
 	actions := []projectAssistantActionFeedItem{{
 		ID:     "unknown-1",

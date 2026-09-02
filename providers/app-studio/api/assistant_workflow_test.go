@@ -876,66 +876,6 @@ func TestProjectAssistantRuntimeVerificationCollectsLogsWhenPreviewEdgeIsReachab
 	}
 }
 
-func TestCollectProjectAssistantRuntimeVerificationBrowserConsoleSummarizesWithoutRawEvents(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	signer, err := newEphemeralPreviewConsoleCapabilitySigner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	server.previewConsoleEnabled = true
-	server.previewConsoleStore = newPreviewConsoleStore()
-	server.previewConsoleSigner = signer
-	project := &aiv1alpha1.Project{}
-	project.Name = "demo"
-	project.UID = "project-uid-demo"
-	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
-	id := identity{clusterID: "cluster-1", orgUUID: "org-1", workspaceUUID: "workspace-1", user: "alice@example.com"}
-	scope, err := projectPreviewConsoleScope(id, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	server.previewConsoleStore.now = func() time.Time { return now }
-	const generation = "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
-	session, err := server.previewConsoleStore.create(scope, "77915ea4-f533-433a-a7fd-30a1f0fcc47d", "https://demo.preview.example", "https://console.example", generation, previewConsoleProtocolVersion, now.Add(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := server.previewConsoleStore.append(session.ID, scope, generation, previewConsoleProtocolVersion, []previewConsoleIncomingEvent{
-		{Sequence: 1, DocumentID: generation, Level: "error", Message: "stale error before the source change", ClientTime: now.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	fresh := time.Now().UTC().Add(time.Millisecond)
-	server.previewConsoleStore.now = func() time.Time { return fresh }
-	if _, _, _, err := server.previewConsoleStore.append(session.ID, scope, generation, previewConsoleProtocolVersion, []previewConsoleIncomingEvent{
-		{Sequence: 2, DocumentID: generation, Level: "warn", Message: "warning details stay transient", ClientTime: fresh.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
-		{Sequence: 3, DocumentID: generation, Level: "pageerror", Message: "secret error details stay transient", ClientTime: fresh.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	runCtx := projectAssistantWorkflowRunContext{Server: server, Project: project, Identity: id}
-	collected, err := collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx)(context.Background(), &projectAssistantRuntimeVerificationContext{RunContext: runCtx})
-	if err != nil {
-		t.Fatalf("collect browser console returned error: %v", err)
-	}
-	if collected.BrowserConsole == nil ||
-		collected.BrowserConsole.Status != "available" ||
-		collected.BrowserConsole.ErrorCount != 2 ||
-		collected.BrowserConsole.WarningCount != 1 {
-		t.Fatalf("browser console = %#v, want two summarized errors and one warning", collected.BrowserConsole)
-	}
-	encoded, err := json.Marshal(collected.BrowserConsole)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"secret error details", "warning details", "stale error", `"events"`} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("verification summary persisted transient console content %q: %s", forbidden, encoded)
-		}
-	}
-}
-
 func TestPollProjectAssistantRuntimeVerificationWaitsForReady(t *testing.T) {
 	calls := 0
 	input, result, err := pollProjectAssistantRuntimeVerification(
@@ -1011,7 +951,7 @@ func TestFormatProjectAssistantRuntimeVerificationRejectsBrokenProcessLogs(t *te
 	}
 }
 
-func TestFormatProjectAssistantRuntimeVerificationReportsBrowserConsoleErrorsAsAdvisory(t *testing.T) {
+func TestFormatProjectAssistantRuntimeVerificationReportsReadyWithProcessEvidence(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		Readiness: &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -1023,45 +963,15 @@ func TestFormatProjectAssistantRuntimeVerificationReportsBrowserConsoleErrorsAsA
 			Status: "available",
 			Lines:  []string{"server listening on port 3000"},
 		},
-		BrowserConsole: &projectAssistantBrowserConsoleResult{
-			Status:     "available",
-			Summary:    "1 browser console event(s): 1 pageerror",
-			ErrorCount: 1,
-		},
 	})
 	if err != nil {
 		t.Fatalf("format runtime verification returned error: %v", err)
 	}
-	if result.Status != "ready" || len(result.Blockers) != 0 || len(result.Warnings) != 1 {
-		t.Fatalf("result = %#v, want ready with browser-console warning", result)
+	if result.Status != "ready" || len(result.Blockers) != 0 || len(result.Warnings) != 0 {
+		t.Fatalf("result = %#v, want ready without warnings", result)
 	}
 	if disposition := projectEinoAssistantRuntimeVerificationDisposition(*result); disposition != projectEinoAssistantVerificationReadyDisposition {
 		t.Fatalf("disposition = %q, want ready", disposition)
-	}
-}
-
-func TestFormatProjectAssistantRuntimeVerificationTreatsDisconnectedBrowserConsoleAsAdvisory(t *testing.T) {
-	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
-		Readiness: &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
-		Runtime: &projectAssistantRuntimeWorkflowResult{
-			Status:     "reachable",
-			Summary:    "The preview edge is reachable.",
-			PreviewURL: "https://app.example.com",
-		},
-		Logs: &projectAssistantRuntimeLogsResult{
-			Status: "available",
-			Lines:  []string{"server listening on port 3000"},
-		},
-		BrowserConsole: &projectAssistantBrowserConsoleResult{
-			Status:  "not_connected",
-			Summary: "Browser console evidence is not connected.",
-		},
-	})
-	if err != nil {
-		t.Fatalf("format runtime verification returned error: %v", err)
-	}
-	if result.Status != "ready" || len(result.Blockers) != 0 || len(result.Warnings) != 1 {
-		t.Fatalf("result = %#v, want ready with one advisory warning", result)
 	}
 }
 

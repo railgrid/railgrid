@@ -539,7 +539,7 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 
 func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	tokens := devTestTokens()
-	tokens[previewConsoleVerificationJWKSConfigKey] = `{"keys":[{"kid":"current","kty":"EC"}]}`
+	tokens[previewBridgeVerificationJWKSConfigKey] = `{"keys":[{"kid":"current","kty":"EC"}]}`
 	rgd, err := buildRGD(devTestTemplate(t), tokens)
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)

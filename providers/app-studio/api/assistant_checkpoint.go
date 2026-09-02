@@ -49,6 +49,7 @@ type projectAssistantCheckpointState struct {
 	RepeatedToolLoop                 bool                                                `json:"repeatedToolLoop,omitempty"`
 	LastToolMessages                 []chatMessage                                       `json:"lastToolMessages,omitempty"`
 	CatalogDigest                    string                                              `json:"catalogDigest,omitempty"`
+	NativeBrowserToolCatalog         []projectMCPTool                                    `json:"nativeBrowserToolCatalog,omitempty"`
 	SelectedSkillReceipts            []projectAssistantSkillReceipt                      `json:"selectedSkillReceipts,omitempty"`
 	LoadedSkillReceipts              []projectAssistantSkillReceipt                      `json:"loadedSkillReceipts,omitempty"`
 	SelectedContextResourceReceipts  []projectAssistantContextResourceReceipt            `json:"selectedContextResourceReceipts,omitempty"`
@@ -73,6 +74,7 @@ type projectAssistantCheckpointState struct {
 	VerificationSummary              string                                              `json:"verificationSummary,omitempty"`
 	VerificationBlockers             []string                                            `json:"verificationBlockers,omitempty"`
 	PreviewEvidence                  projectAssistantPreviewEvidence                     `json:"previewEvidence,omitempty"`
+	NativeBrowserInteractionPending  bool                                                `json:"nativeBrowserInteractionPending,omitempty"`
 	RepeatedActionSignature          string                                              `json:"repeatedActionSignature,omitempty"`
 	RepeatedActionToolName           string                                              `json:"repeatedActionToolName,omitempty"`
 	RepeatedActionCount              int                                                 `json:"repeatedActionCount,omitempty"`
@@ -1681,8 +1683,8 @@ func projectAssistantBoundCheckpointMessages(src []chatMessage) []chatMessage {
 		start++
 	}
 	// A model-input snapshot can legitimately contain a standalone tool
-	// evidence message (for example, the scrubbed preview-console record used
-	// by the no-leakage boundary). Do not turn an all-tool snapshot into an
+	// evidence message (for example, a scrubbed transient tool record used by
+	// the no-leakage boundary). Do not turn an all-tool snapshot into an
 	// empty checkpoint merely because there is no assistant call to anchor it.
 	if start == len(src) {
 		start = len(src) - 1

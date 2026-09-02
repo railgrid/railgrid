@@ -113,8 +113,8 @@ func New(runtime dynamic.Interface) *Backend {
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
 		appPublicPortToken:    appPublicPortSuffix(os.Getenv("FAROS_APP_PUBLIC_PORT")),
-		previewConsoleVerificationJWKSConfigKey: strings.TrimSpace(
-			os.Getenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"),
+		previewBridgeVerificationJWKSConfigKey: strings.TrimSpace(
+			os.Getenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
 		),
 	}
 	maps.Copy(tokens, accessGateTokens())

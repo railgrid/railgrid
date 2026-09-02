@@ -257,13 +257,13 @@ import {
 } from './previewState'
 import { DevelopmentPreviewRefreshController } from './previewRefresh'
 import {
-  PreviewConsoleController,
-  type PreviewConsoleAnnotationPinHover,
-  type PreviewConsoleAnnotationPinRenderState,
-  type PreviewConsoleAnnotationPinSelection,
-  type PreviewConsoleAnnotationSelection,
-  type PreviewConsoleConnectionState,
-} from './previewConsole'
+  PreviewBridgeController,
+  type PreviewBridgeAnnotationPinHover,
+  type PreviewBridgeAnnotationPinRenderState,
+  type PreviewBridgeAnnotationPinSelection,
+  type PreviewBridgeAnnotationSelection,
+  type PreviewBridgeConnectionState,
+} from './previewBridge'
 import {
   advancePromotionPoll,
   beginPromotionPoll,
@@ -799,7 +799,7 @@ const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
 const developmentPreviewFrameRef = ref<HTMLIFrameElement | null>(null)
 const developmentPreviewFrameLoaded = ref(false)
-const developmentPreviewDocumentState = ref<PreviewConsoleConnectionState>('disabled')
+const developmentPreviewDocumentState = ref<PreviewBridgeConnectionState>('disabled')
 const developmentPreviewRecoveryError = ref<string | null>(null)
 const developmentPreviewRecoveryAttempt = ref(0)
 const developmentPreviewRecoveryReloadAttempted = ref(false)
@@ -818,7 +818,7 @@ const developmentPreviewAnnotationDraft = ref<{
 const developmentPreviewAnnotationDocumentID = ref('')
 const developmentPreviewAnnotationPagePath = ref('')
 const developmentPreviewAnnotationPinResolution = ref<Record<string, boolean>>({})
-const developmentPreviewAnnotationHover = ref<PreviewConsoleAnnotationPinHover | null>(null)
+const developmentPreviewAnnotationHover = ref<PreviewBridgeAnnotationPinHover | null>(null)
 const developmentPreviewAnnotationInputRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const shareMode = ref<ProjectPublishingMode>('restricted')
 // Preview sharing is the development-side channel of the same dialog. It is
@@ -989,15 +989,13 @@ const developmentPreviewRefreshController = new DevelopmentPreviewRefreshControl
   getProject: (projectName) => api.getProject(props.ctx, projectName),
   setSelectedProject: (project) => { selected.value = project },
 })
-const previewConsoleController = new PreviewConsoleController({
+const previewBridgeController = new PreviewBridgeController({
   api: {
-    createSession: (project, generation, portalInstanceID) => api.createPreviewConsoleSession(props.ctx, project, generation, portalInstanceID),
-    uploadEvents: (project, sessionID, generation, events, droppedCount) =>
-      api.uploadPreviewConsoleEvents(props.ctx, project, sessionID, generation, events, droppedCount),
-    deleteSession: (project, sessionID) => api.deletePreviewConsoleSession(props.ctx, project, sessionID),
+    createSession: (project, generation, portalInstanceID) => api.createPreviewBridgeSession(props.ctx, project, generation, portalInstanceID),
+    deleteSession: (project, sessionID) => api.deletePreviewBridgeSession(props.ctx, project, sessionID),
   },
   getFrame: () => developmentPreviewFrameRef.value,
-  onState: handleDevelopmentPreviewConsoleState,
+  onState: handleDevelopmentPreviewBridgeState,
   onAnnotation: handleDevelopmentPreviewAnnotation,
   onAnnotationPinHover: handleDevelopmentPreviewAnnotationPinHover,
   onAnnotationPinSelect: handleDevelopmentPreviewAnnotationPinSelect,
@@ -1412,7 +1410,7 @@ function invalidateProjectContextState() {
   clearDevelopmentPreviewAuthorizationRetry()
   clearDevelopmentPreviewRecovery()
   developmentPreviewRefreshController.invalidate()
-  void previewConsoleController.disconnect()
+  void previewBridgeController.disconnect()
   assistantRunController.disconnect()
   activeAssistantSubscription?.abort()
   activeAssistantSubscription = null
@@ -2778,7 +2776,7 @@ watch(
     assistantWorkedDurationClock.clear()
     developmentPreviewRefreshController.invalidate()
     developmentPreviewAuthorizationSerial += 1
-    void previewConsoleController.disconnect()
+    void previewBridgeController.disconnect()
     developmentSyncStatus.value = null
     developmentSyncError.value = null
     developmentTemplateStatus.value = null
@@ -2813,7 +2811,7 @@ watch(
   (kind) => {
     if (kind === 'preview') return
 	clearDevelopmentPreviewAnnotationHover()
-    void previewConsoleController.disconnect()
+    void previewBridgeController.disconnect()
   },
 )
 
@@ -2926,7 +2924,7 @@ onBeforeUnmount(() => {
   developmentPreviewComponentMounted = false
   developmentPreviewRefreshController.dispose()
   developmentPreviewAuthorizationSerial += 1
-  previewConsoleController.destroy()
+  previewBridgeController.destroy()
   clearInitializationRetry()
   clearDevelopmentPreviewAuthorizationRetry()
 	clearDevelopmentPreviewRecovery()
@@ -6144,7 +6142,7 @@ function handleDevelopmentPreviewFrameLoad() {
 		developmentPreviewFrameLoaded.value = true
 		clearDevelopmentPreviewAnnotationHover()
 		developmentPreviewDocumentState.value = 'connecting'
-		void previewConsoleController.connect(projectName)
+		void previewBridgeController.connect(projectName)
 	}
 }
 
@@ -6159,7 +6157,7 @@ function clearDevelopmentPreviewAnnotationHover(id?: string) {
   }
 }
 
-function handleDevelopmentPreviewAnnotationPinHover(hover: PreviewConsoleAnnotationPinHover) {
+function handleDevelopmentPreviewAnnotationPinHover(hover: PreviewBridgeAnnotationPinHover) {
   if (!hover.active) {
     clearDevelopmentPreviewAnnotationHover(hover.id)
     return
@@ -6182,10 +6180,10 @@ function handleDevelopmentPreviewAnnotationPinHover(hover: PreviewConsoleAnnotat
 function toggleDevelopmentPreviewAnnotation() {
   if (!developmentPreviewCanAnnotate.value) return
   if (developmentPreviewAnnotationMode.value) {
-    previewConsoleController.stopAnnotationMode()
+    previewBridgeController.stopAnnotationMode()
     return
   }
-  previewConsoleController.startAnnotationMode()
+  previewBridgeController.startAnnotationMode()
 }
 
 function handleDevelopmentPreviewDocument(documentID: string, pagePath: string) {
@@ -6208,7 +6206,7 @@ function handleDevelopmentPreviewDocument(documentID: string, pagePath: string) 
   // when the user returns.
 }
 
-function handleDevelopmentPreviewAnnotationPinsRendered(documentID: string, pagePath: string, states: PreviewConsoleAnnotationPinRenderState[]) {
+function handleDevelopmentPreviewAnnotationPinsRendered(documentID: string, pagePath: string, states: PreviewBridgeAnnotationPinRenderState[]) {
   if (documentID !== developmentPreviewAnnotationDocumentID.value) return
   if (pagePath !== developmentPreviewAnnotationPagePath.value) {
     developmentPreviewAnnotationPagePath.value = pagePath
@@ -6216,7 +6214,7 @@ function handleDevelopmentPreviewAnnotationPinsRendered(documentID: string, page
   developmentPreviewAnnotationPinResolution.value = Object.fromEntries(states.map((state) => [state.id, state.resolved]))
 }
 
-function handleDevelopmentPreviewAnnotation(selection: PreviewConsoleAnnotationSelection) {
+function handleDevelopmentPreviewAnnotation(selection: PreviewBridgeAnnotationSelection) {
   if (!developmentPreviewCanAnnotate.value || !selected.value) return
   if (!selection.documentID || selection.documentID !== developmentPreviewAnnotationDocumentID.value) return
   developmentPreviewAnnotationDraft.value = {
@@ -6236,7 +6234,7 @@ function handleDevelopmentPreviewAnnotation(selection: PreviewConsoleAnnotationS
   void nextTick(() => developmentPreviewAnnotationInputRef.value?.focus())
 }
 
-function handleDevelopmentPreviewAnnotationPinSelect(selection: PreviewConsoleAnnotationPinSelection) {
+function handleDevelopmentPreviewAnnotationPinSelect(selection: PreviewBridgeAnnotationPinSelection) {
   if (!developmentPreviewAnnotationMode.value || !developmentPreviewCanAnnotate.value) return
   if (selection.pagePath !== developmentPreviewAnnotationPagePath.value) return
   const annotation = developmentPreviewAnnotations.value.find((candidate) => (
@@ -6283,7 +6281,7 @@ function syncDevelopmentPreviewAnnotationPins() {
   if (developmentPreviewAnnotationHover.value && !pins.some((pin) => pin.id === developmentPreviewAnnotationHover.value?.id)) {
     clearDevelopmentPreviewAnnotationHover()
   }
-  previewConsoleController.setAnnotationPins(pins)
+  previewBridgeController.setAnnotationPins(pins)
 }
 
 function commitDevelopmentPreviewAnnotation() {
@@ -6332,7 +6330,7 @@ function cancelDevelopmentPreviewAnnotation() {
   developmentPreviewAnnotationInputRef.value?.blur()
 }
 
-function handleDevelopmentPreviewConsoleState(state: PreviewConsoleConnectionState) {
+function handleDevelopmentPreviewBridgeState(state: PreviewBridgeConnectionState) {
 	developmentPreviewDocumentState.value = state
 	if (state !== 'connected') {
 		clearDevelopmentPreviewAnnotationHover()
@@ -6372,7 +6370,7 @@ function scheduleDevelopmentPreviewRecovery() {
 	}
 	if (action.kind === 'background') {
 		developmentPreviewRecoveryError.value = developmentPreviewFrameLoaded.value
-			? 'Preview loaded, but annotations and console evidence are reconnecting.'
+			? 'Preview loaded, but annotations are reconnecting.'
 			: 'The preview document did not finish loading. The development runtime may still be starting.'
 	} else {
 		developmentPreviewRecoveryAttempt.value = attempt + 1
@@ -6387,7 +6385,7 @@ function scheduleDevelopmentPreviewRecovery() {
 			void recoverDevelopmentPreviewDocument(projectName)
 			return
 		}
-		void previewConsoleController.reconnect()
+		void previewBridgeController.reconnect()
 	}, action.delayMS)
 }
 
@@ -6431,7 +6429,7 @@ function refreshDevelopmentPreviewAuthorizationIfNeeded() {
       void recoverDevelopmentPreviewDocument(projectName)
       return
     }
-    void previewConsoleController.reconnect()
+    void previewBridgeController.reconnect()
     return
   }
   void authorizeDevelopmentPreview({ force: true })

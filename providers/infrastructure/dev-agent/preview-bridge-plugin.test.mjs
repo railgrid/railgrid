@@ -20,9 +20,9 @@ import test from "node:test";
 import vm from "node:vm";
 
 import {
-  createPreviewConsolePlugin,
-  previewConsoleClientSource,
-} from "./preview-console-plugin.mjs";
+  createPreviewBridgePlugin,
+  previewBridgeClientSource,
+} from "./preview-bridge-plugin.mjs";
 
 const base64url = (value) => Buffer.from(value).toString("base64url");
 
@@ -63,19 +63,22 @@ const waitForPortMessage = async (port, type) => {
 
 test("plugin injects the v1 bridge before application scripts", async () => {
   const trusted = await signingKey("current");
-  const plugin = createPreviewConsolePlugin({ keys: [trusted.publicKey] });
+  const plugin = createPreviewBridgePlugin({ keys: [trusted.publicKey] });
   const tags = plugin.transformIndexHtml();
   assert.equal(plugin.apply, "serve");
   assert.equal(tags[0].injectTo, "head-prepend");
-  assert.equal(tags[0].attrs["data-faros-preview-console"], "v1");
-  assert.match(tags[0].children, /faros\.preview-console\.ready/);
-  assert.doesNotMatch(tags[0].children, /__FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__/);
+  assert.equal(tags[0].attrs["data-faros-preview-bridge"], "v1");
+  assert.match(tags[0].children, /faros\.preview-bridge\.ready/);
+  assert.doesNotMatch(tags[0].children, /__FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__/);
+  assert.doesNotMatch(tags[0].children, /window\.console/);
+  assert.doesNotMatch(tags[0].children, /unhandledrejection/);
+  assert.doesNotMatch(tags[0].children, /faros\.preview-bridge\.events/);
 });
 
 test("bridge ignores attacker-supplied keys and accepts a platform-trusted capability", async () => {
   const trusted = await signingKey("current");
   const attacker = await signingKey("attacker");
-  const source = previewConsoleClientSource({ keys: [trusted.publicKey] });
+  const source = previewBridgeClientSource({ keys: [trusted.publicKey] });
 
   const windowListeners = new Map();
   const parentMessages = [];
@@ -115,9 +118,8 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
       parentMessages.push({ message, origin, ports });
     },
   };
-  let originalConsoleCalls = 0;
   const fakeConsole = Object.fromEntries(
-    ["debug", "log", "info", "warn", "error"].map((level) => [level, () => { originalConsoleCalls++; }]),
+    ["debug", "log", "info", "warn", "error"].map((level) => [level, () => {}]),
   );
   const window = {
     parent,
@@ -171,9 +173,13 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   vm.runInContext(source, context);
 
   assert.equal(typeof windowListeners.get("click"), "function", "bridge must register window capture before app listeners");
+  assert.equal(windowListeners.has("error"), false, "bridge must not capture page errors");
+  assert.equal(windowListeners.has("unhandledrejection"), false, "bridge must not capture promise rejections");
+  assert.equal(window.console.error, fakeConsole.error, "bridge must not wrap window.console");
+  assert.equal(window.console.log, fakeConsole.log, "bridge must not wrap window.console");
 
   assert.equal(parentMessages.length, 1);
-  assert.equal(parentMessages[0].message.type, "faros.preview-console.ready");
+  assert.equal(parentMessages[0].message.type, "faros.preview-bridge.ready");
   const documentID = parentMessages[0].message.documentID;
   assert.match(documentID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   const parentOrigin = "https://studio.test";
@@ -181,7 +187,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: "app-studio",
-    aud: "preview-console-events",
+    aud: "preview-bridge",
     v: 1,
     sid: sessionID,
     gen: documentID,
@@ -195,14 +201,14 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-bridge.probe", version: 1 },
     ports: [],
   });
   assert.equal(parentMessages.at(-1).origin, parentOrigin);
 
   const attackerPort = parentMessages.at(-1).ports[0];
   attackerPort.postMessage({
-    type: "faros.preview-console.start",
+    type: "faros.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
@@ -213,72 +219,27 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await tick();
   assert.equal(attackerPort.closed, true);
 
-  let getterCalls = 0;
-  const objectWithGetter = {};
-  Object.defineProperty(objectWithGetter, "secret", {
-    enumerable: true,
-    get() {
-      getterCalls++;
-      return "must-not-run";
-    },
-  });
-  const pageError = vm.runInContext("new Error('page exploded')", context);
-  Object.defineProperty(pageError, "stack", {
-    configurable: true,
-    value: "Error: page exploded\n    at https://user:pass@preview.test/app.js?token=secret#fragment",
-  });
-  window.console.error("render failed", objectWithGetter, new FakeNode(), { nestedError: pageError });
-  const hostileProxy = new Proxy({}, {
-    ownKeys() {
-      throw new Error("hostile ownKeys trap");
-    },
-  });
-  window.console.error(hostileProxy);
-  assert.equal(originalConsoleCalls, 2);
-  windowListeners.get("error")({
-    message: "page exploded",
-    error: pageError,
-    filename: "https://user:pass@preview.test/app.js?token=secret#fragment",
-  });
-
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-bridge.probe", version: 1 },
     ports: [],
   });
   const trustedPort = parentMessages.at(-1).ports[0];
   trustedPort.postMessage({
-    type: "faros.preview-console.start",
+    type: "faros.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
     capability: await capability(trusted, claims),
   });
-  assert.ok(await waitForPortMessage(trustedPort, "faros.preview-console.connected"));
+  assert.ok(await waitForPortMessage(trustedPort, "faros.preview-bridge.connected"));
 
-  assert.equal(getterCalls, 0);
-  assert.equal(trustedPort.messages.find((message) => message.type === "faros.preview-console.connected").type, "faros.preview-console.connected");
+  assert.equal(trustedPort.messages.find((message) => message.type === "faros.preview-bridge.connected").type, "faros.preview-bridge.connected");
   assert.equal(trustedPort.messages[0].generation, documentID);
-  const batch = trustedPort.messages.find((message) => message.type === "faros.preview-console.events");
-  assert.equal(batch.sessionID, sessionID);
-  assert.equal(batch.generation, documentID);
-  assert.equal(batch.events.length, 3);
-  assert.deepEqual(
-    Object.keys(batch.events[0]).sort(),
-    ["clientTime", "documentID", "level", "message", "sequence", "sourceURL"].sort(),
-  );
-  assert.equal(batch.events[0].level, "error");
-  assert.match(batch.events[0].message, /\[Accessor\]/);
-  assert.match(batch.events[0].message, /\[DOM Element\]/);
-  assert.match(batch.events[0].message, /"name":"Error"/);
-  assert.match(batch.events[0].message, /"stack":"Error: page exploded/);
-  assert.doesNotMatch(batch.events[0].message, /token=secret/);
-  assert.equal(batch.events[0].sourceURL, "https://preview.test/app");
-  assert.equal(batch.events[1].message, "[Unavailable]");
-  assert.equal(batch.events[2].level, "pageerror");
-  assert.equal(batch.events[2].sourceURL, "https://preview.test/app.js");
-  assert.doesNotMatch(batch.events[2].stack, /token=secret/);
+  assert.equal(trustedPort.messages.some((message) => message.type === "faros.preview-bridge.events"), false, "connected bridge must not emit console events");
+  assert.equal(window.console.error, fakeConsole.error, "bridge must not wrap window.console");
+  assert.equal(window.console.log, fakeConsole.log, "bridge must not wrap window.console");
 
   const renewalClaims = {
     ...claims,
@@ -289,66 +250,46 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-bridge.probe", version: 1 },
   });
   const renewalPort = parentMessages.at(-1).ports[0];
   renewalPort.postMessage({
-    type: "faros.preview-console.start",
+    type: "faros.preview-bridge.start",
     version: 1,
     sessionID: renewalClaims.sid,
     generation: documentID,
     capability: renewalCapability,
   });
-  assert.ok(await waitForPortMessage(renewalPort, "faros.preview-console.connected"));
+  assert.ok(await waitForPortMessage(renewalPort, "faros.preview-bridge.connected"));
   assert.equal(trustedPort.closed, true);
-  assert.equal(renewalPort.messages.find((message) => message.type === "faros.preview-console.connected").type, "faros.preview-console.connected");
+  assert.equal(renewalPort.messages.find((message) => message.type === "faros.preview-bridge.connected").type, "faros.preview-bridge.connected");
 
-  const beforeHugeEvent = renewalPort.messages.length;
-  window.console.log("🔥".repeat(5_000));
+  window.console.log("console observation is disabled");
   await tick();
-  const hugeBatch = renewalPort.messages.slice(beforeHugeEvent)
-    .find((message) => message.type === "faros.preview-console.events");
-  assert.ok(hugeBatch);
-  assert.ok(new TextEncoder().encode(JSON.stringify(hugeBatch.events[0])).byteLength <= 1_900);
-
-  const beforeBurst = renewalPort.messages.length;
-  for (let index = 0; index < 210; index++) {
-    window.console.log("burst", index);
-  }
-  await tick();
-  const burstBatches = renewalPort.messages.slice(beforeBurst)
-    .filter((message) => message.type === "faros.preview-console.events");
-  assert.ok(burstBatches.length > 1);
-  assert.ok(burstBatches.every((message) => message.events.length <= 16));
-  assert.equal(burstBatches.reduce((total, message) => total + message.events.length, 0), 200);
-  assert.equal(burstBatches.reduce((total, message) => total + message.droppedCount, 0), 10);
+  assert.equal(renewalPort.messages.some((message) => message.type === "faros.preview-bridge.events"), false, "console calls must not emit event batches");
 
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-bridge.probe", version: 1 },
   });
   const replayPort = parentMessages.at(-1).ports[0];
   replayPort.postMessage({
-    type: "faros.preview-console.start",
+    type: "faros.preview-bridge.start",
     version: 1,
     sessionID: renewalClaims.sid,
     generation: documentID,
     capability: renewalCapability,
   });
-  await waitForPortMessage(replayPort, "faros.preview-console.connected");
+  await waitForPortMessage(replayPort, "faros.preview-bridge.connected");
   assert.equal(replayPort.closed, true);
-  assert.equal(replayPort.messages.some((message) => message.type === "faros.preview-console.connected"), false);
+  assert.equal(replayPort.messages.some((message) => message.type === "faros.preview-bridge.connected"), false);
   assert.equal(renewalPort.closed, false);
-  renewalPort.peer.throwOnPost = true;
-  window.console.log("port failure cleanup");
-  await tick();
-  assert.equal(renewalPort.closed, true, "a failed event send must tear down the authenticated port");
 });
 
 test("bridge rejects private verification material", () => {
   assert.throws(
-    () => previewConsoleClientSource({
+    () => previewBridgeClientSource({
       keys: [{
         kty: "EC",
         crv: "P-256",
@@ -364,7 +305,7 @@ test("bridge rejects private verification material", () => {
 
 test("authenticated annotation mode captures bounded targets without activating the app", async () => {
   const trusted = await signingKey("current");
-  const source = previewConsoleClientSource({ keys: [trusted.publicKey] });
+  const source = previewBridgeClientSource({ keys: [trusted.publicKey] });
   const windowListeners = new Map();
   const documentListeners = new Map();
   const parentMessages = [];
@@ -557,7 +498,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: "app-studio",
-    aud: "preview-console-events",
+    aud: "preview-bridge",
     v: 1,
     sid: sessionID,
     gen: documentID,
@@ -570,18 +511,18 @@ test("authenticated annotation mode captures bounded targets without activating 
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-bridge.probe", version: 1 },
     ports: [],
   });
   const port = parentMessages.at(-1).ports[0];
   port.postMessage({
-    type: "faros.preview-console.start",
+    type: "faros.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
     capability: await capability(trusted, claims),
   });
-  assert.ok(await waitForPortMessage(port, "faros.preview-console.connected"));
+  assert.ok(await waitForPortMessage(port, "faros.preview-bridge.connected"));
 
   const target = new FakeElement("button", "Account settings");
   target.setAttribute("data-faros-id", "account-card");
@@ -595,7 +536,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   document.body.append(new FakeElement("button", "Duplicate label"));
 
   port.postMessage({
-      type: "faros.preview-console.annotation.start",
+      type: "faros.preview-bridge.annotation.start",
       version: 1,
       sessionID,
       generation: documentID,
@@ -611,7 +552,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.match(cursorStyle.textContent, /crosshair !important/);
 
   port.postMessage({
-      type: "faros.preview-console.annotation.pins",
+      type: "faros.preview-bridge.annotation.pins",
       version: 1,
       sessionID,
       generation: documentID,
@@ -635,7 +576,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(firstPin.style.left, "38px");
   assert.equal(firstPin.style.top, "34px");
   assert.equal(firstPin.children.length, 1, "the preview marker must not render a comment tooltip");
-  const renderedPins = port.messages.find((message) => message.type === "faros.preview-console.annotation.pins-rendered");
+  const renderedPins = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pins-rendered");
   assert.deepEqual(JSON.parse(JSON.stringify(renderedPins.pins)), [
     { id: "first", resolved: true },
     { id: "second", resolved: true },
@@ -646,7 +587,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   firstPin.onmouseleave();
   firstPin.onblur();
   const pinHoverMessages = port.messages
-    .filter((message) => message.type === "faros.preview-console.annotation.pin-hover")
+    .filter((message) => message.type === "faros.preview-bridge.annotation.pin-hover")
     .map(({ id, active, rect }) => ({ id, active, rect }));
   assert.deepEqual(pinHoverMessages, [
     { id: "first", active: true, rect: { x: 52, y: 48, width: 0, height: 0 } },
@@ -667,9 +608,9 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(pinClick.prevented, true);
   assert.equal(pinClick.stopped, true);
   assert.equal(pinClick.immediateStopped, true);
-  const selectedPin = port.messages.find((message) => message.type === "faros.preview-console.annotation.pin-selected");
+  const selectedPin = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pin-selected");
   assert.deepEqual(JSON.parse(JSON.stringify(selectedPin)), {
-    type: "faros.preview-console.annotation.pin-selected",
+    type: "faros.preview-bridge.annotation.pin-selected",
     version: 1,
     sessionID,
     generation: documentID,
@@ -679,11 +620,11 @@ test("authenticated annotation mode captures bounded targets without activating 
     rect: { x: 52, y: 48, width: 0, height: 0 },
     viewport: { width: 1024, height: 768 },
   });
-  assert.equal(port.messages.some((message) => message.type === "faros.preview-console.annotation.selected"), false, "clicking a pin must edit it instead of selecting the marker DOM");
+  assert.equal(port.messages.some((message) => message.type === "faros.preview-bridge.annotation.selected"), false, "clicking a pin must edit it instead of selecting the marker DOM");
 
   const pinTail = firstPin.children[0];
-  const pinSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-console.annotation.pin-selected").length;
-  const newSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-console.annotation.selected").length;
+  const pinSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pin-selected").length;
+  const newSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length;
   const pinTailClick = {
     target: pinTail,
     composedPath() { return [pinTail, firstPin, pinLayer, document.documentElement, window]; },
@@ -693,12 +634,12 @@ test("authenticated annotation mode captures bounded targets without activating 
   };
   windowListeners.get("click")(pinTailClick);
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-console.annotation.pin-selected").length,
+    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pin-selected").length,
     pinSelectionsBeforeTailClick + 1,
     "clicking marker chrome must select the existing annotation",
   );
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-console.annotation.selected").length,
+    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length,
     newSelectionsBeforeTailClick,
     "marker descendants must never become new annotation targets",
   );
@@ -714,7 +655,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopImmediatePropagation() {},
   });
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-console.annotation.selected").length,
+    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length,
     newSelectionsBeforeTailClick,
     "stale annotation chrome must fail closed instead of becoming a new annotation",
   );
@@ -732,7 +673,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   context.location.pathname = "/admin.html";
   windowListeners.get("scroll")({});
   assert.equal(firstPin.hidden, true, "a pin must hide when its annotated page is not active");
-  const offRoute = port.messages.filter((message) => message.type === "faros.preview-console.annotation.pins-rendered").at(-1);
+  const offRoute = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered").at(-1);
   assert.equal(offRoute.path, "/admin.html");
   assert.deepEqual(JSON.parse(JSON.stringify(offRoute.pins)), [
     { id: "first", resolved: false },
@@ -742,7 +683,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   context.location.pathname = "/app";
   windowListeners.get("scroll")({});
   assert.equal(firstPin.hidden, false, "a route-bound pin must re-resolve when its page becomes active again");
-  const returnedRoute = port.messages.filter((message) => message.type === "faros.preview-console.annotation.pins-rendered").at(-1);
+  const returnedRoute = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered").at(-1);
   assert.equal(returnedRoute.path, "/app");
   assert.deepEqual(JSON.parse(JSON.stringify(returnedRoute.pins)), [
     { id: "first", resolved: true },
@@ -758,7 +699,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" },
   }));
   port.postMessage({
-    type: "faros.preview-console.annotation.pins",
+    type: "faros.preview-bridge.annotation.pins",
     version: 1,
     sessionID,
     generation: documentID,
@@ -768,7 +709,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   const acceptedPinLayer = document.body.children.find((child) => child.getAttribute("data-faros-annotation-pins") === "true");
   assert.equal(acceptedPinLayer.children.length, 64, "the bridge must render all 64 accepted pins");
   const acceptedRenderedPins = port.messages
-    .filter((message) => message.type === "faros.preview-console.annotation.pins-rendered")
+    .filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered")
     .at(-1);
   assert.equal(acceptedRenderedPins.pins.length, 64);
 
@@ -795,7 +736,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(click.prevented, true);
   assert.equal(click.stopped, true);
   assert.equal(click.immediateStopped, true);
-  const selected = port.messages.find((message) => message.type === "faros.preview-console.annotation.selected");
+  const selected = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.selected");
   assert.deepEqual(JSON.parse(JSON.stringify(selected.target)), {
     tag: "button",
     role: "button",
@@ -826,7 +767,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopImmediatePropagation() {},
   };
   windowListeners.get("click")(editorClick);
-  const selectedEditor = port.messages.filter((message) => message.type === "faros.preview-console.annotation.selected").at(-1);
+  const selectedEditor = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").at(-1);
   assert.equal(selectedEditor.target.text, "", "contenteditable values must not be exposed as annotation text");
 
   const numericID = new FakeElement("button", "Numeric ID");
@@ -840,7 +781,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopPropagation() {},
     stopImmediatePropagation() {},
   });
-  const selectedNumericID = port.messages.filter((message) => message.type === "faros.preview-console.annotation.selected").at(-1);
+  const selectedNumericID = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").at(-1);
   assert.equal(selectedNumericID.target.locator, '[id="123"]', "numeric IDs must use a valid attribute selector");
 
   const extractionFailure = {
@@ -858,7 +799,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(extractionFailure.stopImmediatePropagationCalled, true);
 
   port.postMessage({
-    type: "faros.preview-console.annotation.pins",
+    type: "faros.preview-bridge.annotation.pins",
     version: 1,
     sessionID,
     generation: documentID,
@@ -870,7 +811,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     })),
   });
   await tick();
-  const rejectedPins = port.messages.find((message) => message.type === "faros.preview-console.annotation.pins-rendered" && message.rejectedCount);
+  const rejectedPins = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pins-rendered" && message.rejectedCount);
   assert.equal(rejectedPins.rejectedCount, 1, "oversized pin state must report rejection instead of truncating silently");
   assert.equal(acceptedPinLayer.removed, true, "a rejected replacement must clean up the previous marker layer");
 
@@ -901,19 +842,19 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(windowListeners.has("click"), true, "the early window guard remains installed while inactive");
   assert.equal(document.documentElement.getAttribute("data-faros-annotation-mode"), null);
   assert.equal(cursorStyle.removed, true);
-  assert.equal(port.messages.at(-2).type, "faros.preview-console.annotation.mode");
+  assert.equal(port.messages.at(-2).type, "faros.preview-bridge.annotation.mode");
   assert.equal(port.messages.at(-2).active, false);
-  assert.equal(port.messages.at(-1).type, "faros.preview-console.annotation.cancelled");
+  assert.equal(port.messages.at(-1).type, "faros.preview-bridge.annotation.cancelled");
 
   port.postMessage({
-      type: "faros.preview-console.annotation.start",
+      type: "faros.preview-bridge.annotation.start",
       version: 1,
       sessionID,
       generation: documentID,
   });
   await tick();
   port.postMessage({
-      type: "faros.preview-console.annotation.stop",
+      type: "faros.preview-bridge.annotation.stop",
       version: 1,
       sessionID,
       generation: documentID,

@@ -1,16 +1,12 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# App Studio assistant project mutations use a single active writer. The chart
-# rejects other values and uses a Recreate deployment strategy to prevent
-# cross-pod overlap during upgrades.
-# Safe to scale with the default emptyDir workspace: runs and external
-# operations are guarded by durable claims, projects pin to one replica with
-# peer forwarding, and an adopting replica rebuilds the workspace from git
-# (docs/app-studio-replica-awareness.md). A replica crash loses only that
-# replica's uncommitted workspace edits — the durable truth is git.
-# With a PVC-backed workspace (workspace.emptyDir=false) the template refuses
-# replicaCount > 1: one ReadWriteOnce volume cannot back multiple replicas.
+# App Studio currently requires one provider replica. Each workspace has one
+# shared, single-session Playwright Browser, while the provider's browser
+# session ownership and serialization are process-local. Multiple replicas
+# could therefore invalidate or concurrently drive the same browser. The chart
+# rejects replicaCount > 1 and uses Recreate upgrades to prevent transient pod
+# overlap. See docs/app-studio-replica-awareness.md.
 replicaCount: 1
 
 # internalPort carries peer-forwarded project requests between replicas.
@@ -73,12 +69,12 @@ assistant:
     # a startup warning; it never selects the platform Infrastructure export.
     enabled: null
 
-# Browser-console sharing starts automatically while the embedded preview is
-# open. Until both signing fields are configured, App Studio stays available
-# but reports console instrumentation as unavailable.
+# Signed DOM annotation sharing starts automatically while the embedded preview
+# is open. Until both signing fields are configured, App Studio stays available
+# but reports the optional preview bridge as unavailable.
 # The private key signs short-lived iframe capabilities. Its matching current
 # and previous public JWKs are deployed independently with the preview bridge.
-previewConsole:
+previewBridge:
   enabled: true
   signingKeyID: ""
   signingKeySecretRef:
@@ -123,10 +119,11 @@ store:
 #
 # The workspace is a CACHE of git plus in-flight edits: a replica that adopts
 # a project rebuilds the tree from the last commit, so the default is an
-# ephemeral emptyDir — pods are cattle and replicas can scale. Committed work
+# ephemeral emptyDir — a replacement pod can rebuild from git. Committed work
 # is always safe in git; a pod crash loses only edits since the last commit.
-# Set emptyDir=false (PVC) to keep the old durable-volume behavior, at the
-# cost of being pinned to one replica and Recreate rollouts.
+# Set emptyDir=false (PVC) to retain the old durable-volume behavior. App Studio
+# remains single-replica with either workspace mode because of the shared
+# Playwright Browser boundary described above.
 workspace:
   path: /var/lib/faros-app-studio/workspaces
   existingClaim: ""
@@ -140,6 +137,11 @@ workspace:
 
 hub:
   url: "http://faros-hub.faros.svc.cluster.local:8080"
+  # Browser-reachable HTTPS hub origin used by private preview authorization
+  # redirects and one-use browser-session handoffs. Required when a Project's
+  # preview is private; leave empty only when private browser inspection is not
+  # used. This may differ from hub.url, which is the provider's internal route.
+  publicURL: ""
   # Public hub origin used by action-enabled development runtimes. Keep this
   # separate from hub.url: the latter is an internal provider-to-hub address.
   # Production action-enabled projects require an absolute HTTPS origin.

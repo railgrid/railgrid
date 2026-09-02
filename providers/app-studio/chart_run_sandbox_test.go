@@ -55,3 +55,23 @@ func TestChartRunSandboxLegacyBooleanMigration(t *testing.T) {
 		t.Fatalf("an explicit non-off mode must remain authoritative")
 	}
 }
+
+func TestChartRejectsMultipleReplicasForSharedBrowser(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm is not installed")
+	}
+
+	output, err := exec.Command(
+		helm,
+		"template", "app-studio", "deploy/chart",
+		"--set", "replicaCount=2",
+		"--set", "workspace.emptyDir=true",
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("helm template unexpectedly accepted replicaCount=2 with an emptyDir workspace")
+	}
+	if !strings.Contains(string(output), "shared Playwright Browser is single-session and its session ownership is process-local") {
+		t.Fatalf("helm template must explain the shared-browser replica boundary: %v\n%s", err, output)
+	}
+}

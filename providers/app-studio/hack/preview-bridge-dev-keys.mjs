@@ -134,7 +134,7 @@ function publicConfiguration(privateKeyPEM) {
     publicJWK.kty !== "EC" ||
     publicJWK.crv !== "P-256"
   ) {
-    throw new Error("preview-console signing key must be an EC P-256 key");
+    throw new Error("preview-bridge signing key must be an EC P-256 key");
   }
   const publicDER = publicKey.export({ format: "der", type: "spki" });
   const keyID = `local-${createHash("sha256")
@@ -149,7 +149,7 @@ function publicConfiguration(privateKeyPEM) {
   };
 }
 
-export async function ensurePreviewConsoleDevKeys(outputDirectory) {
+export async function ensurePreviewBridgeDevKeys(outputDirectory) {
   if (!outputDirectory) throw new Error("output directory is required");
   const resolvedDirectory = path.resolve(outputDirectory);
   await mkdir(resolvedDirectory, { recursive: true, mode: 0o700 });
@@ -193,7 +193,7 @@ export async function ensurePreviewConsoleDevKeys(outputDirectory) {
 function outputDirectoryArgument(argv) {
   const index = argv.indexOf("--output-dir");
   if (index < 0 || !argv[index + 1]) {
-    throw new Error("usage: preview-console-dev-keys.mjs --output-dir <path>");
+    throw new Error("usage: preview-bridge-dev-keys.mjs --output-dir <path>");
   }
   return argv[index + 1];
 }
@@ -202,10 +202,10 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
-  ensurePreviewConsoleDevKeys(outputDirectoryArgument(process.argv.slice(2)))
+  ensurePreviewBridgeDevKeys(outputDirectoryArgument(process.argv.slice(2)))
     .then(({ keyID, privateKeyPath, verificationJWKSPath }) => {
       process.stdout.write(
-        `Preview-console local key ready (${keyID})\n` +
+        `Preview-bridge local key ready (${keyID})\n` +
           `  private: ${privateKeyPath}\n` +
           `  public:  ${verificationJWKSPath}\n`,
       );

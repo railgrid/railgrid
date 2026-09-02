@@ -84,6 +84,133 @@ type projectAssistantActionFeedItem struct {
 	Exec       *projectAssistantExecMetadata     `json:"exec,omitempty"`
 }
 
+// projectAssistantBrowserActionFeedPresentation is the server-owned public
+// presentation for one approved native Playwright operation. Native browser
+// tool names, arguments, and receipts are deliberately not part of the action
+// feed contract; only this bounded product copy crosses into a conversation
+// thread.
+type projectAssistantBrowserActionFeedPresentation struct {
+	kind      string
+	active    string
+	succeeded string
+	failed    string
+}
+
+// Keep the copy keyed to the approved browser catalog rather than accepting
+// arbitrary browser_* names. The fallback below makes an explicitly approved
+// catalog addition visible without allowing an upstream, unknown tool to
+// become a public action by accident.
+var projectAssistantBrowserActionFeedPresentations = map[string]projectAssistantBrowserActionFeedPresentation{
+	browserMCPToolNavigate: {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Opening preview",
+		succeeded: "Opened preview",
+		failed:    "Preview navigation failed",
+	},
+	"browser_navigate_back": {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Going back in preview",
+		succeeded: "Went back in preview",
+		failed:    "Preview back navigation failed",
+	},
+	"browser_navigate_forward": {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Going forward in preview",
+		succeeded: "Went forward in preview",
+		failed:    "Preview forward navigation failed",
+	},
+	browserMCPToolSnapshot: {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Inspecting preview",
+		succeeded: "Inspected preview",
+		failed:    "Preview inspection failed",
+	},
+	browserMCPToolConsole: {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Reviewing browser console",
+		succeeded: "Reviewed browser console",
+		failed:    "Browser console review failed",
+	},
+	"browser_network_requests": {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Reviewing preview network",
+		succeeded: "Reviewed preview network",
+		failed:    "Preview network review failed",
+	},
+	browserMCPToolScreenshot: {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Capturing preview screenshot",
+		succeeded: "Captured preview screenshot",
+		failed:    "Preview screenshot failed",
+	},
+	"browser_wait_for": {
+		kind:      projectAssistantActionFeedItemInspect,
+		active:    "Waiting for preview",
+		succeeded: "Waited for preview",
+		failed:    "Preview wait failed",
+	},
+	"browser_click": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Interacting with preview",
+		succeeded: "Interacted with preview",
+		failed:    "Preview interaction failed",
+	},
+	"browser_drag": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Dragging in preview",
+		succeeded: "Dragged in preview",
+		failed:    "Preview drag failed",
+	},
+	"browser_fill_form": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Filling preview form",
+		succeeded: "Filled preview form",
+		failed:    "Preview form fill failed",
+	},
+	"browser_handle_dialog": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Handling preview dialog",
+		succeeded: "Handled preview dialog",
+		failed:    "Preview dialog handling failed",
+	},
+	"browser_hover": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Hovering in preview",
+		succeeded: "Hovered in preview",
+		failed:    "Preview hover failed",
+	},
+	"browser_press_key": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Pressing a preview key",
+		succeeded: "Pressed a preview key",
+		failed:    "Preview key press failed",
+	},
+	"browser_resize": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Resizing preview",
+		succeeded: "Resized preview",
+		failed:    "Preview resize failed",
+	},
+	"browser_select_option": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Selecting a preview option",
+		succeeded: "Selected a preview option",
+		failed:    "Preview option selection failed",
+	},
+	"browser_type": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Typing in preview",
+		succeeded: "Typed in preview",
+		failed:    "Preview typing failed",
+	},
+	"browser_close": {
+		kind:      projectAssistantActionFeedItemRun,
+		active:    "Closing preview browser",
+		succeeded: "Closed preview browser",
+		failed:    "Preview browser close failed",
+	},
+}
+
 func projectAssistantActionFeedItemFromModelInput(event projectAssistantModelInputEvent) projectAssistantActionFeedItem {
 	status := projectAssistantActionFeedStatusRunning
 	switch strings.TrimSpace(event.Status) {
@@ -122,6 +249,7 @@ type projectAssistantActionDiagnostic struct {
 }
 
 func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantActionFeedItem {
+	_, isApprovedBrowserTool := projectAssistantBrowserActionFeedPresentationForTool(toolCall.Name)
 	item := presentProjectAssistantAction(
 		toolCall.ID,
 		toolCall.Name,
@@ -135,6 +263,15 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		permissionExec = toolCall.Permission.Exec
 	}
 	item.Exec = mergeProjectAssistantExecMetadata(permissionExec, toolCall.Exec)
+	if isApprovedBrowserTool {
+		// Native browser actions have their own bounded presentation. Never let
+		// an upstream callback attach command disclosure or mutation linkage to
+		// that presentation, even if a malformed callback includes those fields.
+		item.Exec = nil
+		item.RecoveryOf = ""
+		item.Sequence = toolCall.Sequence
+		return item
+	}
 	if toolCall.Mutation != nil {
 		item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.Mutation.RecoveryOf, 120)
 	}
@@ -159,6 +296,7 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 }
 
 func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantActionFeedItem {
+	_, isApprovedBrowserTool := projectAssistantBrowserActionFeedPresentationForTool(toolCall.Name)
 	item := presentProjectAssistantAction(
 		toolCall.ID,
 		toolCall.Name,
@@ -168,6 +306,12 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		toolCall.Error,
 	)
 	item.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
+	if isApprovedBrowserTool {
+		// Browser receipts are application-controlled and are intentionally not
+		// an exec disclosure. Keep only the bounded lifecycle row.
+		item.Exec = nil
+		return item
+	}
 	item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.RecoveryOf, 120)
 	if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
 		projectAssistantWorkspaceMutationTool(toolCall.Name) {
@@ -209,12 +353,16 @@ func projectAssistantActionFeedItemFromFollowUp(followUp projectAssistantFollowU
 func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errText string) projectAssistantActionFeedItem {
 	kind := projectAssistantActionFeedItemKind(name)
 	status := projectAssistantActionFeedItemStatus(rawStatus)
+	browserPresentation, isApprovedBrowserTool := projectAssistantBrowserActionFeedPresentationForTool(name)
 	item := projectAssistantActionFeedItem{
 		ID:       projectAssistantActionPublicID(id),
 		Kind:     kind,
 		Status:   status,
 		Title:    projectAssistantActionFeedItemTitle(kind, status),
 		Severity: projectAssistantActionFeedItemSeverity(status),
+	}
+	if isApprovedBrowserTool {
+		item.Title = projectAssistantBrowserActionLifecycleTitle(status, browserPresentation)
 	}
 	if status == projectAssistantActionFeedStatusFailed || status == projectAssistantActionFeedStatusRejected {
 		item.Diagnostic = projectAssistantActionFeedDiagnostic(id, errText)
@@ -224,6 +372,12 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		}
 	}
 	if projectAssistantToolDisclosureMinimal {
+		return item
+	}
+	if isApprovedBrowserTool {
+		// Native browser arguments and receipts are application-controlled data,
+		// not product-facing action fields. Keep the action bounded even if the
+		// approved catalog gains another operation later.
 		return item
 	}
 
@@ -286,12 +440,6 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		if count, ok := projectAssistantSummaryCount(summary, "log line(s)"); ok {
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "log line", "log lines")
-		}
-	case projectToolGetPreviewConsoleLogs:
-		item.Title = projectAssistantActionLifecycleTitle(status, "Reviewing preview console", "Reviewed preview console", "Preview console review failed")
-		if count, ok := projectAssistantSummaryCount(summary, "browser console event(s)"); ok {
-			item.Count = count
-			item.Outcome = projectAssistantCountOutcome(count, "console event", "console events")
 		}
 	case projectToolRestartRuntime:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Restarting development runtime", "Restarted development runtime", "Runtime restart failed")
@@ -568,7 +716,59 @@ func projectAssistantActionPublicID(id string) string {
 	return "feed-" + hex.EncodeToString(sum[:12])
 }
 
+func projectAssistantBrowserActionFeedPresentationForTool(name string) (projectAssistantBrowserActionFeedPresentation, bool) {
+	// Native Playwright tools are exposed with their exact MCP names. Do not
+	// apply projectToolBaseName here: a provider namespace ending in an
+	// approved browser suffix is still an unknown tool and must stay hidden.
+	base := strings.ToLower(strings.TrimSpace(name))
+	risk, approved := projectAssistantApprovedBrowserTools[base]
+	if !approved {
+		return projectAssistantBrowserActionFeedPresentation{}, false
+	}
+	if presentation, ok := projectAssistantBrowserActionFeedPresentations[base]; ok {
+		return presentation, true
+	}
+	// A future browser operation is still safe to expose only when the native
+	// browser catalog explicitly approves it and gives it a known risk class.
+	switch risk {
+	case projectAssistantToolRiskRead:
+		return projectAssistantBrowserActionFeedPresentation{
+			kind:      projectAssistantActionFeedItemInspect,
+			active:    "Inspecting preview",
+			succeeded: "Inspected preview",
+			failed:    "Preview inspection failed",
+		}, true
+	case projectAssistantToolRiskRuntime:
+		return projectAssistantBrowserActionFeedPresentation{
+			kind:      projectAssistantActionFeedItemRun,
+			active:    "Interacting with preview",
+			succeeded: "Interacted with preview",
+			failed:    "Preview interaction failed",
+		}, true
+	default:
+		return projectAssistantBrowserActionFeedPresentation{}, false
+	}
+}
+
+func projectAssistantBrowserActionLifecycleTitle(status string, presentation projectAssistantBrowserActionFeedPresentation) string {
+	switch status {
+	case projectAssistantActionFeedStatusRetrying:
+		return "Retrying preview action"
+	case projectAssistantActionFeedStatusRecovered:
+		return "Recovered preview action"
+	case projectAssistantActionFeedStatusSkipped:
+		return "Skipped preview action"
+	case projectAssistantActionFeedStatusCanceled:
+		return "Canceled preview action"
+	default:
+		return projectAssistantActionLifecycleTitle(status, presentation.active, presentation.succeeded, presentation.failed)
+	}
+}
+
 func projectAssistantActionFeedItemKind(name string) string {
+	if browserPresentation, ok := projectAssistantBrowserActionFeedPresentationForTool(name); ok {
+		return browserPresentation.kind
+	}
 	switch base := projectToolBaseName(name); {
 	case base == projectToolAskFollowUp:
 		return projectAssistantActionFeedItemClarify

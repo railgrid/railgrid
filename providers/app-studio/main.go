@@ -70,12 +70,12 @@ func envOr(key, def string) string {
 	return def
 }
 
-func previewConsoleEnvironmentConfig() (bool, string, string) {
-	enabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_ENABLED")), "false")
-	privateKey := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY"))
-	keyID := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID"))
+func previewBridgeEnvironmentConfig() (bool, string, string) {
+	enabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_ENABLED")), "false")
+	privateKey := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY"))
+	keyID := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID"))
 	if enabled && privateKey == "" && keyID == "" {
-		log.Print("preview console requested but unavailable: signing key and key ID are not configured")
+		log.Print("preview bridge requested but unavailable: signing key and key ID are not configured")
 		enabled = false
 	}
 	return enabled, privateKey, keyID
@@ -228,13 +228,13 @@ func runServe() {
 	// Preview inspection drives the workspace's shared browser (the Studio's
 	// Playwright MCP instance) over the infrastructure data plane — no
 	// app-studio-owned browser worker to configure.
-	previewConsoleEnabled, previewConsoleSigningKey, previewConsoleSigningKeyID := previewConsoleEnvironmentConfig()
-	if err := apiServer.ConfigurePreviewConsole(
-		previewConsoleEnabled,
-		previewConsoleSigningKey,
-		previewConsoleSigningKeyID,
+	previewBridgeEnabled, previewBridgeSigningKey, previewBridgeSigningKeyID := previewBridgeEnvironmentConfig()
+	if err := apiServer.ConfigurePreviewBridge(
+		previewBridgeEnabled,
+		previewBridgeSigningKey,
+		previewBridgeSigningKeyID,
 	); err != nil {
-		log.Fatalf("preview console: %v", err)
+		log.Fatalf("preview bridge: %v", err)
 	}
 	// App Studio holds no runtime-cluster kubeconfig: the development data
 	// plane (logs/sync/restart) is served by the infrastructure provider as

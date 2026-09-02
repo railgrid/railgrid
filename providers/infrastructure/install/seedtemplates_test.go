@@ -18,6 +18,7 @@ package install
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"reflect"
@@ -78,6 +79,80 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBrowserTemplatePinsVerifiedPlaywrightImage(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/browser.yaml")
+	if err != nil {
+		t.Fatalf("read browser template: %v", err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatalf("decode browser template: %v", err)
+	}
+
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatalf("decode browser backendConfig: %v", err)
+	}
+	resources, ok := backend["resources"].([]any)
+	if !ok {
+		t.Fatalf("browser backend resources = %#v, want list", backend["resources"])
+	}
+	var image string
+	for _, rawResource := range resources {
+		resource, ok := rawResource.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		template, ok := resource["template"].(map[string]any)
+		if !ok {
+			t.Fatalf("browser deployment template = %#v, want object", resource["template"])
+		}
+		spec, ok := template["spec"].(map[string]any)
+		if !ok {
+			t.Fatalf("browser deployment spec = %#v, want object", template["spec"])
+		}
+		podTemplate, ok := spec["template"].(map[string]any)
+		if !ok {
+			t.Fatalf("browser pod template = %#v, want object", spec["template"])
+		}
+		podSpec, ok := podTemplate["spec"].(map[string]any)
+		if !ok {
+			t.Fatalf("browser pod spec = %#v, want object", podTemplate["spec"])
+		}
+		containers, ok := podSpec["containers"].([]any)
+		if !ok || len(containers) != 1 {
+			t.Fatalf("browser containers = %#v, want one container", podSpec["containers"])
+		}
+		container, ok := containers[0].(map[string]any)
+		if !ok {
+			t.Fatalf("browser container = %#v, want object", containers[0])
+		}
+		image, ok = container["image"].(string)
+		if !ok {
+			t.Fatalf("browser image = %#v, want string", container["image"])
+		}
+		break
+	}
+	if image == "" {
+		t.Fatal("browser deployment image is missing")
+	}
+
+	// This is the architecture-neutral OCI image index digest recorded from the
+	// Playwright MCP registry reference used for the reviewed deployment (the
+	// local checkout's saved registry evidence, not a guessed tag or truncation).
+	const wantImage = "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804"
+	if image != wantImage {
+		t.Fatalf("browser image = %q, want verified immutable image %q", image, wantImage)
+	}
+	digest := strings.TrimPrefix(image, "mcr.microsoft.com/playwright/mcp@sha256:")
+	if len(digest) != 64 {
+		t.Fatalf("Playwright MCP digest length = %d, want 64", len(digest))
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		t.Fatalf("Playwright MCP digest is not hexadecimal: %v", err)
 	}
 }
 
@@ -814,7 +889,7 @@ func TestApplicationLocksStatefulDatabaseInputsAfterCreation(t *testing.T) {
 	}
 }
 
-func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
+func TestPreviewBridgePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 	want := map[string]string{
 		"simple-webapp": "app",
 		"application":   "web",
@@ -851,22 +926,22 @@ func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 				t.Fatalf("%s/%s decode Vite shim: %v", tmpl.Name, componentName, err)
 			}
 			source := string(shim)
-			if !strings.Contains(source, "preview-console-plugin.mjs") {
+			if !strings.Contains(source, "preview-bridge-plugin.mjs") {
 				continue
 			}
 			key := tmpl.Name + "/" + componentName
 			if found[key] {
-				t.Errorf("duplicate preview console discovery for %s", key)
+				t.Errorf("duplicate preview bridge discovery for %s", key)
 			}
 			found[key] = true
-			count := strings.Count(source, "file:///faros/bin/preview-console-plugin.mjs")
+			count := strings.Count(source, "file:///faros/bin/preview-bridge-plugin.mjs")
 			references += count
 			if count != 1 {
-				t.Errorf("%s Vite shim has %d preview-console imports, want exactly 1", key, count)
+				t.Errorf("%s Vite shim has %d preview-bridge imports, want exactly 1", key, count)
 			}
 			for _, required := range []string{
-				"await import('file:///faros/bin/preview-console-plugin.mjs')",
-				"forced.plugins = [previewConsolePlugin()]",
+				"await import('file:///faros/bin/preview-bridge-plugin.mjs')",
+				"forced.plugins = [previewBridgePlugin()]",
 				"} catch (e) {",
 				"return mergeConfig(base, forced)",
 			} {
@@ -874,21 +949,21 @@ func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 					t.Errorf("%s/%s Vite shim lacks %q:\n%s", tmpl.Name, componentName, required, source)
 				}
 			}
-			if strings.Contains(source, "preview console bridge unavailable") {
+			if strings.Contains(source, "preview bridge unavailable") {
 				t.Errorf("%s/%s Vite shim logs while optional instrumentation is disabled", tmpl.Name, componentName)
 			}
 		}
 	}
 	if len(found) != len(want) {
-		t.Fatalf("preview console plugin components = %v, want exactly %v", found, want)
+		t.Fatalf("preview bridge plugin components = %v, want exactly %v", found, want)
 	}
 	if references != len(want) {
-		t.Errorf("preview console import references = %d, want exactly %d", references, len(want))
+		t.Errorf("preview bridge import references = %d, want exactly %d", references, len(want))
 	}
 	for templateName, componentName := range want {
 		key := templateName + "/" + componentName
 		if !found[key] {
-			t.Errorf("missing preview console plugin from %s", key)
+			t.Errorf("missing preview bridge plugin from %s", key)
 		}
 	}
 }

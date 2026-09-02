@@ -249,6 +249,60 @@ test('upserts live model-input lifecycle updates without reclassifying or duplic
   assert.deepEqual(afterCompleted[0], completed.data)
 })
 
+test('projects native browser actions across live updates and durable reload', async () => {
+  const { upsertAssistantActionFeed, assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { parseAssistantActionFeed } = await vite.ssrLoadModule('/src/assistantActionFeed.ts')
+  const snapshotStarted = {
+    id: 'tool-assistant-browser-snapshot', turnID: 'run-browser', type: 'dynamicToolCall', status: 'in_progress',
+    assistantMessageID: 'assistant-browser', data: {
+      id: 'browser-snapshot-1', kind: 'inspect', status: 'running', title: 'Inspecting preview',
+      severity: 'attention', sequence: 1,
+    }, sequence: 2, createdAt: '2026-08-02T17:42:10Z',
+  }
+  const consoleCompleted = {
+    id: 'tool-assistant-browser-console', turnID: 'run-browser', type: 'dynamicToolCall', status: 'completed',
+    assistantMessageID: 'assistant-browser', data: {
+      id: 'browser-console-1', kind: 'inspect', status: 'succeeded', title: 'Reviewed browser console',
+      severity: 'normal', sequence: 2,
+    }, sequence: 3, createdAt: '2026-08-02T17:42:11Z',
+  }
+  const clickFailed = {
+    id: 'tool-assistant-browser-click', turnID: 'run-browser', type: 'dynamicToolCall', status: 'completed',
+    assistantMessageID: 'assistant-browser', data: {
+      id: 'browser-click-1', kind: 'run', status: 'failed', title: 'Preview interaction failed',
+      severity: 'error', sequence: 3,
+      diagnostic: { category: 'runtime', message: 'Preview interaction failed.', referenceID: 'action-browser-click' },
+    }, sequence: 4, createdAt: '2026-08-02T17:42:12Z',
+  }
+  const unknownCompleted = {
+    id: 'tool-assistant-browser-unknown', turnID: 'run-browser', type: 'dynamicToolCall', status: 'completed',
+    assistantMessageID: 'assistant-browser', data: {
+      id: 'browser-unknown-1', kind: 'other', status: 'succeeded', title: 'Completed action',
+      severity: 'normal', sequence: 4,
+    }, sequence: 5, createdAt: '2026-08-02T17:42:13Z',
+  }
+
+  const live = upsertAssistantActionFeed(undefined, snapshotStarted)
+  assert.deepEqual(live, [snapshotStarted.data])
+  const liveAfterConsole = upsertAssistantActionFeed(live, consoleCompleted)
+  const liveAfterClick = upsertAssistantActionFeed(liveAfterConsole, clickFailed)
+  const liveAfterUnknown = upsertAssistantActionFeed(liveAfterClick, unknownCompleted)
+  assert.deepEqual(parseAssistantActionFeed(liveAfterUnknown), [snapshotStarted.data, consoleCompleted.data, clickFailed.data])
+
+  const reloaded = assistantThreadItemsToMessages([
+    {
+      id: 'assistant-browser', turnID: 'run-browser', type: 'agentMessage', status: 'in_progress',
+      assistantMessageID: 'assistant-browser', content: '', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    snapshotStarted, consoleCompleted, clickFailed, unknownCompleted,
+  ], 'demo')
+  const owner = reloaded.find(({ id }) => id === 'assistant-browser')
+  assert.ok(owner)
+  assert.deepEqual(parseAssistantActionFeed(owner.metadata.assistantActionFeed), [snapshotStarted.data, consoleCompleted.data, clickFailed.data])
+  assert.doesNotMatch(JSON.stringify(owner.metadata.assistantActionFeed), /browser_(snapshot|console_messages|click)|arguments|result|receipt/)
+})
+
 test('projects skill load and resource updates into the parsed action feed used by the action log', async () => {
   const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const { parseAssistantActionFeed, groupAssistantActions } = await vite.ssrLoadModule('/src/assistantActionFeed.ts')

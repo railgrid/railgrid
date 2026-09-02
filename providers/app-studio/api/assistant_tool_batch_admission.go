@@ -160,9 +160,6 @@ func projectEinoAssistantToolParallelSafe(name string) bool {
 	if projectEinoAssistantFilesystemReadTool(name) || name == projectEinoAssistantToolSearchTool {
 		return true
 	}
-	if name == projectToolGetPreviewConsoleLogs {
-		return true
-	}
 	if spec, ok := projectAssistantWorkflowToolSpec(name); ok {
 		return spec.Risk == projectAssistantToolRiskRead && spec.ParallelSafe
 	}
@@ -333,9 +330,7 @@ func projectEinoAssistantToolBatchRead(name string) bool {
 	if spec, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: rawName}); ok {
 		return spec.Risk == projectAssistantToolRiskRead
 	}
-	// This optional local tool is absent from the nil-server registry used for
-	// classification, but its contract is always read-only when registered.
-	return baseName == projectToolGetPreviewConsoleLogs
+	return false
 }
 
 // The model callback runs inside Eino's retry wrapper and therefore observes a

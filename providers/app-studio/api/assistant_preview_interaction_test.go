@@ -269,6 +269,9 @@ func configurePreviewInteractionBrowserTestServer(t *testing.T, server *Server, 
 	}
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				return browserMCPTestEventStreamResponse(request), nil
+			}
 			if request.Method == http.MethodDelete {
 				recorder := httptest.NewRecorder()
 				recorder.WriteHeader(http.StatusNoContent)
@@ -291,13 +294,16 @@ func configurePreviewInteractionBrowserTestServer(t *testing.T, server *Server, 
 			switch envelope.Method {
 			case "initialize":
 				recorder.Header().Set("Mcp-Session-Id", "preview-session")
-				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}})
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
 			case "notifications/initialized":
 				recorder.WriteHeader(http.StatusAccepted)
 			case "tools/call":
 				content := "ok"
-				if envelope.Params.Name == browserMCPToolSnapshot {
+				switch envelope.Params.Name {
+				case browserMCPToolSnapshot:
 					content = "- Page URL: https://demo.preview.example/\n- Page Title: Demo\n- button \"Save\" [ref=e1]\n"
+				case "browser_tabs":
+					content = "- 0: https://demo.preview.example/\n"
 				}
 				_ = json.NewEncoder(recorder).Encode(map[string]any{
 					"jsonrpc": "2.0", "id": 1,

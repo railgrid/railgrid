@@ -124,7 +124,7 @@ primitives in `provider-sdk` (Phase 0 below).
 
 **P1 — `sharedstore` port.** The hub's Secrets-backed KV (TTL, GC, single-use
 `Take`), parameterized on the provider's own workspace + a namespace. Backing
-for: app-studio preview-console sessions, small cross-replica memos. (~250
+for: app-studio preview-bridge sessions, small cross-replica memos. (~250
 lines + tests, mechanical port.)
 
 **P2 — `ownership` claims registry.** A tiny claim/renew/release API for
@@ -241,7 +241,7 @@ store-polling). Two work streams:
    Recommendation: **(b)** first — it needs no new infra, reuses hydrate, and
    its failure mode (lose uncommitted edits on pod crash) matches user
    expectations of a dev sandbox; (a) remains open as a later hardening.
-3. Preview-console sessions move to P1 (sharedstore) or ride the project pin.
+3. Preview-bridge sessions move to P1 (sharedstore) or ride the project pin.
 4. Only then: leader-elect/claim-gate the Project reconciler per project
    (owner replica reconciles its own projects — reconcile-side sharding via
    the same claims), and lift the chart's `replicaCount != 1` fail.

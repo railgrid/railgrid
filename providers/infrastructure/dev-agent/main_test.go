@@ -346,7 +346,7 @@ func TestMatchReloadRules(t *testing.T) {
 
 func TestInstallSelf(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(previewConsoleJWKSEnv, testPreviewConsoleJWKS())
+	t.Setenv(previewBridgeJWKSEnv, testPreviewBridgeJWKS())
 	if err := installSelf(dir); err != nil {
 		t.Fatalf("installSelf: %v", err)
 	}
@@ -363,21 +363,21 @@ func TestInstallSelf(t *testing.T) {
 	if info.Size() != selfInfo.Size() {
 		t.Errorf("installed binary size %d != executable size %d", info.Size(), selfInfo.Size())
 	}
-	plugin, err := os.ReadFile(filepath.Join(dir, previewConsolePluginName))
+	plugin, err := os.ReadFile(filepath.Join(dir, previewBridgePluginName))
 	if err != nil {
 		t.Fatalf("read installed plugin: %v", err)
 	}
-	if !bytes.Equal(plugin, previewConsolePlugin) {
-		t.Error("installed preview console plugin differs from embedded asset")
+	if !bytes.Equal(plugin, previewBridgePlugin) {
+		t.Error("installed preview bridge plugin differs from embedded asset")
 	}
-	rawJWKS, err := os.ReadFile(filepath.Join(dir, previewConsoleJWKSName))
+	rawJWKS, err := os.ReadFile(filepath.Join(dir, previewBridgeJWKSName))
 	if err != nil {
 		t.Fatalf("read installed JWKS: %v", err)
 	}
 	if strings.Contains(string(rawJWKS), `"d"`) {
 		t.Errorf("installed JWKS contains private material: %s", rawJWKS)
 	}
-	for _, name := range []string{previewConsolePluginName, previewConsoleJWKSName} {
+	for _, name := range []string{previewBridgePluginName, previewBridgeJWKSName} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
@@ -401,15 +401,15 @@ func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
 	for _, raw := range []string{"", `{"keys":[{"kty":"EC","crv":"P-256","kid":"attacker","x":"x","y":"y","d":"private"}]}`} {
 		t.Run(raw, func(t *testing.T) {
 			dir := t.TempDir()
-			stale := filepath.Join(dir, previewConsoleJWKSName)
-			if err := os.WriteFile(stale, []byte(testPreviewConsoleJWKS()), 0o644); err != nil {
+			stale := filepath.Join(dir, previewBridgeJWKSName)
+			if err := os.WriteFile(stale, []byte(testPreviewBridgeJWKS()), 0o644); err != nil {
 				t.Fatalf("write stale config: %v", err)
 			}
-			t.Setenv(previewConsoleJWKSEnv, raw)
+			t.Setenv(previewBridgeJWKSEnv, raw)
 			if err := installSelf(dir); err != nil {
 				t.Fatalf("installSelf should leave app available: %v", err)
 			}
-			if _, err := os.Stat(filepath.Join(dir, previewConsolePluginName)); err != nil {
+			if _, err := os.Stat(filepath.Join(dir, previewBridgePluginName)); err != nil {
 				t.Errorf("plugin was not installed: %v", err)
 			}
 			if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
@@ -418,20 +418,20 @@ func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
 		})
 	}
 }
-func TestNormalizePreviewConsoleJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
+func TestNormalizePreviewBridgeJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
 	for _, raw := range []string{
 		`{"keys":[]}`,
 		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"x","y":"y","d":"private"}]}`,
 		`{"keys":[{"kty":"RSA","kid":"a","x":"x","y":"y"}]}`,
 		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"eA","y":"eQ"}]}`,
 	} {
-		if _, err := normalizePreviewConsoleJWKS([]byte(raw)); err == nil {
-			t.Errorf("normalizePreviewConsoleJWKS(%s) succeeded, want rejection", raw)
+		if _, err := normalizePreviewBridgeJWKS([]byte(raw)); err == nil {
+			t.Errorf("normalizePreviewBridgeJWKS(%s) succeeded, want rejection", raw)
 		}
 	}
 }
 
-func testPreviewConsoleJWKS() string {
+func testPreviewBridgeJWKS() string {
 	coordinate := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 	return `{"keys":[{"kty":"EC","crv":"P-256","kid":"current","x":"` + coordinate + `","y":"` + coordinate + `","alg":"ES256","use":"sig"}]}`
 }

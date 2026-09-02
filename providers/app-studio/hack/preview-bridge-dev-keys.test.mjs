@@ -28,13 +28,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ensurePreviewConsoleDevKeys } from "./preview-console-dev-keys.mjs";
+import { ensurePreviewBridgeDevKeys } from "./preview-bridge-dev-keys.mjs";
 
 test("generates a stable matching P-256 key and public JWKS", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-console-keys-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-bridge-keys-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
-  const first = await ensurePreviewConsoleDevKeys(directory);
+  const first = await ensurePreviewBridgeDevKeys(directory);
   const privateKeyPEM = await readFile(first.privateKeyPath, "utf8");
   const privateKey = createPrivateKey(privateKeyPEM);
   const expectedPublicJWK = createPublicKey(privateKey).export({ format: "jwk" });
@@ -51,23 +51,23 @@ test("generates a stable matching P-256 key and public JWKS", async (t) => {
   assert.equal("d" in jwks.keys[0], false);
   assert.equal((await stat(first.privateKeyPath)).mode & 0o777, 0o600);
 
-  const second = await ensurePreviewConsoleDevKeys(directory);
+  const second = await ensurePreviewBridgeDevKeys(directory);
   assert.equal(second.keyID, first.keyID);
   assert.equal(await readFile(second.privateKeyPath, "utf8"), privateKeyPEM);
 });
 
 test("repairs missing public files without rotating the private key", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-console-keys-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-bridge-keys-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
-  const first = await ensurePreviewConsoleDevKeys(directory);
+  const first = await ensurePreviewBridgeDevKeys(directory);
   const privateKeyPEM = await readFile(first.privateKeyPath, "utf8");
   await Promise.all([
     unlink(first.verificationJWKSPath),
     unlink(first.keyIDPath),
   ]);
 
-  const second = await ensurePreviewConsoleDevKeys(directory);
+  const second = await ensurePreviewBridgeDevKeys(directory);
   assert.equal(second.keyID, first.keyID);
   assert.equal(await readFile(second.privateKeyPath, "utf8"), privateKeyPEM);
   assert.equal(
@@ -77,11 +77,11 @@ test("repairs missing public files without rotating the private key", async (t) 
 });
 
 test("serializes concurrent Tilt and make invocations", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-console-keys-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-bridge-keys-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   const results = await Promise.all(
-    Array.from({ length: 4 }, () => ensurePreviewConsoleDevKeys(directory)),
+    Array.from({ length: 4 }, () => ensurePreviewBridgeDevKeys(directory)),
   );
   assert.equal(new Set(results.map((result) => result.keyID)).size, 1);
 
@@ -97,7 +97,7 @@ test("serializes concurrent Tilt and make invocations", async (t) => {
 });
 
 test("recovers a lock left by a dead generator process", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-console-keys-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-bridge-keys-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(
     path.join(directory, ".generate.lock"),
@@ -105,17 +105,17 @@ test("recovers a lock left by a dead generator process", async (t) => {
     { mode: 0o600 },
   );
 
-  const result = await ensurePreviewConsoleDevKeys(directory);
+  const result = await ensurePreviewBridgeDevKeys(directory);
   assert.match(result.keyID, /^local-[a-f0-9]{16}$/);
 });
 
 test("replaces an invalid private key and derives a new public tuple", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-console-keys-"));
+  const directory = await mkdtemp(path.join(os.tmpdir(), "preview-bridge-keys-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const first = await ensurePreviewConsoleDevKeys(directory);
+  const first = await ensurePreviewBridgeDevKeys(directory);
   await writeFile(first.privateKeyPath, "not a private key\n", { mode: 0o600 });
 
-  const second = await ensurePreviewConsoleDevKeys(directory);
+  const second = await ensurePreviewBridgeDevKeys(directory);
   assert.notEqual(second.keyID, first.keyID);
   const privateKeyPEM = await readFile(second.privateKeyPath, "utf8");
   assert.doesNotThrow(() => createPrivateKey(privateKeyPEM));

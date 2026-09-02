@@ -1,8 +1,10 @@
 # App Studio replica awareness — design
 
-Status: **phases A–C implemented** (run claims; project affinity + peer
-forwarding; git re-hydration on adoption, emptyDir workspaces, owner-gated
-commit convergence — phase D snapshotting remains optional hardening) ·
+Status: **single-replica deployment boundary enforced**. Phases A–C are
+implemented (run claims; project affinity + peer forwarding; git re-hydration
+on adoption, emptyDir workspaces, owner-gated commit convergence), but the
+workspace's shared Playwright Browser adds a newer fleet-wide serialization
+requirement that these mechanisms do not satisfy. ·
 Date: 2026-08-17 · Author: design note
 Related: [`provider-horizontal-scaling.md`](./provider-horizontal-scaling.md)
 (the cross-provider plan this details), the kuery per-edge claims
@@ -36,16 +38,25 @@ CRs; committed source of truth is git via the code provider.
    tree, which silently reads as "project clean" and can push an **empty
    file list** to the dev sandbox (audit F3).
 
-The chart hard-fails `replicaCount != 1` today
-(`deploy/chart/templates/deployment.yaml:3-5`).
+There is also one cross-project resource: each workspace has one shared,
+single-session Playwright Browser. The browser session manager serializes that
+resource only within one App Studio process. Project pinning can place projects
+from the same workspace on different replicas, so two processes could invalidate
+or concurrently drive the same browser. The chart therefore rejects
+`replicaCount > 1` and uses a Recreate strategy to avoid transient overlap
+during upgrades (`deploy/chart/templates/deployment.yaml`).
 
 ## Design verdict
 
-No hub changes, no shared filesystem. Two provider-side mechanisms:
+No hub changes, no shared filesystem. Two implemented provider-side mechanisms:
 
 - **Durable run claims in Postgres** make run lifecycle correct fleet-wide.
 - **Project pinning + peer forwarding** keep all workspace-touching work on
   one replica per project, with git re-hydration as the failover story.
+
+These mechanisms make project and run state replica-aware, but they do not make
+the workspace-wide Browser replica-safe. App Studio remains one replica until
+browser ownership and serialization become durable or distributed.
 
 The hub keeps its "no request pinned to a pod" model: the Service still
 round-robins, and the *provider* forwards internally exactly like edges does
@@ -91,7 +102,7 @@ on the owner.
 - **Route split** (from the audit's flow map):
   - *Forwarded (workspace/run-touching)*: turn start, steer, interrupt,
     approvals/resume, hydrate-workspace, template switch, scaffold reseed,
-    dev-sync, file browser, promote gate, preview-console, preview
+    dev-sync, file browser, promote gate, preview-bridge, preview
     interaction (browser lock).
   - *Served anywhere (store/CR-backed)*: SSE event streams, thread/message
     listing, project listing, health, portal assets, MCP surfaces that only
@@ -130,7 +141,11 @@ work is inherently partitioned by project, not singleton.
 - The orphan-interrupt cross-kill (F1) and the non-mutual Busy gate (F5).
 - The chart's `replicaCount != 1` hard fail and the RWO PVC.
 - The empty-workspace dev-sync wipe (F3) — non-owners never touch workspaces.
-- Preview-console session breakage (F6) — console routes ride the pin.
+- Preview-bridge session breakage (F6) — bridge routes ride the pin.
+
+These mechanisms do **not** delete the shared-browser race: projects in one
+workspace can have different owners while still targeting the same Browser.
+The chart's single-replica guard remains the safety boundary.
 
 ## Phasing
 
@@ -138,8 +153,9 @@ work is inherently partitioned by project, not singleton.
 |---|---|---|
 | A | Run claims table + Busy/reservation/orphan-interrupt on claims | Yes — strictly better restart semantics |
 | B | Internal listener + project claims + forwarding middleware; revision fence to durable side | Yes — forwarding is a no-op single-replica |
-| C | Claim-driven hydration, `emptyDir` default, reconciler owner-gating, drop the chart fail | Unlocks N replicas |
-| D (optional) | WIP snapshot-to-git; preview-console to sharedstore if forwarding proves noisy | Hardening |
+| C | Claim-driven hydration, `emptyDir` default, reconciler owner-gating | Makes workspace/run state replica-aware, but does not unlock N replicas by itself |
+| D | Distributed or durable ownership for the workspace-wide Playwright Browser | Required before allowing `replicaCount > 1` |
+| E (optional) | WIP snapshot-to-git; preview-bridge to shared store if forwarding proves noisy | Hardening |
 
 ## Open decisions
 
@@ -152,3 +168,7 @@ work is inherently partitioned by project, not singleton.
 3. **Forward-all vs selective**: start with the selective route split above,
    or forward every project-scoped route and carve out reads later? The
    selective split is more work to get right but keeps SSE latency flat.
+4. **Shared Browser ownership**: put the Browser session lease in durable
+   shared state, or route every workspace's browser calls to one designated
+   replica? Either solution must cover all projects in the workspace and
+   preserve the no-replay-on-unknown-outcome contract.

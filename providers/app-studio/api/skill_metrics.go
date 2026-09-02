@@ -68,6 +68,11 @@ func writeProjectAssistantSkillMetrics(w http.ResponseWriter) {
 	}
 }
 
+func projectAssistantMetricsHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	writeProjectAssistantSkillMetrics(w)
+}
+
 func skillMetricOutcomes(kind string) []string {
 	switch kind {
 	case "catalog":

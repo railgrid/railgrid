@@ -107,11 +107,11 @@ spec:
             # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
             - name: FAROS_PROVIDER_VERSION
               value: {{ .Chart.AppVersion | quote }}
-            {{- with .Values.development.previewConsole.verificationJWKS }}
+            {{- with .Values.development.previewBridge.verificationJWKS }}
             # Public verification keys are platform-global configuration. The
             # operator propagates them into each managed provider Deployment;
             # no tenant or InfrastructureProvider CR can override them.
-            - name: FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS
+            - name: FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS
               value: {{ . | quote }}
             {{- end }}
           resources:

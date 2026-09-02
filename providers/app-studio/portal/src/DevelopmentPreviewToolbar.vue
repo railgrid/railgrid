@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
 <template>
   <header
     ref="root"
-    class="preview-toolbar flex min-w-0 items-center justify-between gap-3"
+    class="preview-toolbar relative z-40 flex min-w-0 items-center justify-between gap-3"
     :data-preview-toolbar-layout="layout"
     @focusout="handleFocusOut"
   >

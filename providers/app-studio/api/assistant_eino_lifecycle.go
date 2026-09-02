@@ -601,10 +601,10 @@ func (m *projectEinoAssistantLifecycle) refreshLiveRequestContext(ctx context.Co
 	}
 	m.refreshRepositoryState(ctx)
 	// newAgent resolves the first request's executable tool set immediately
-	// before this hook runs. Reuse that just-captured view for its first sample;
-	// every later sample refreshes discovery before rebuilding prompt context.
+	// before this hook runs. Reuse the native browser catalog captured for this
+	// run/checkpoint while refreshing aggregate MCP discovery for later samples.
 	if m.server != nil && m.runState.CurrentModelCallOrdinal() > 0 {
-		m.runState.SetToolDiscovery(projectEinoAssistantDiscoverTools(ctx, m.server, m.req))
+		projectEinoAssistantRefreshToolDiscovery(ctx, m.server, m.req, m.runState)
 	}
 	// Publish only after every live field needed by prompt construction and
 	// dispatch has been refreshed. Tool wrappers read this same immutable copy

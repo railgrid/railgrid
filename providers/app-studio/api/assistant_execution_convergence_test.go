@@ -179,3 +179,31 @@ func TestAssistantRunLedgerPersistsTypedDisposition(t *testing.T) {
 		t.Fatalf("not-ready read outcome = %#v, want successful observation", outcome)
 	}
 }
+
+func TestAssistantRunLedgerSettlesUnverifiableBrowserReceiptAsNonSuccess(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-unverifiable-receipt")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-unverifiable-receipt")
+	spec := projectAssistantToolSpec{Name: browserMCPToolSnapshot, Risk: projectAssistantToolRiskRead}
+	decision, err := ledger.BeginToolCall(ctx, "unverifiable-snapshot", spec, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := `{"status":"unverifiable","outcome":"unknown","replayed":false,"requiresSnapshot":true}`
+	outcome, err := ledger.FinishToolCall(ctx, decision.Token, result, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Succeeded() || outcome.Disposition != projectAssistantToolDispositionFailed {
+		t.Fatalf("unverifiable receipt outcome = %#v, want durable non-success", outcome)
+	}
+
+	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-unverifiable-receipt")
+	persisted, ok, err := restarted.ToolCallOutcome(ctx, decision.Token.CallID)
+	if err != nil || !ok {
+		t.Fatalf("persisted unverifiable outcome = (%#v, %t, %v)", persisted, ok, err)
+	}
+	if persisted.Succeeded() || persisted.Disposition != projectAssistantToolDispositionFailed {
+		t.Fatalf("replayed unverifiable outcome = %#v, want durable non-success", persisted)
+	}
+}

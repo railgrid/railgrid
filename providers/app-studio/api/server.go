@@ -56,6 +56,11 @@ type Server struct {
 	attachmentDraftRetention time.Duration
 	workspaces               *workspace.FileStore
 	hubBase                  string
+	// hubPublicURL is the browser-reachable hub origin used by private preview
+	// authorization redirects and one-use browser-session handoffs. It is
+	// deliberately separate from hubBase, which may be an internal
+	// cluster-local address used for MCP/data-plane traffic.
+	hubPublicURL string
 	// actionsExternalURL is the externally reachable hub origin used by
 	// development workloads for the Provider Actions exchange and SDK base
 	// URL. It is deliberately separate from hubBase, which may be an internal
@@ -84,10 +89,14 @@ type Server struct {
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client
 	assistantRunManager    *projectAssistantRunManager
-	assistantSupervisor    *projectAssistantSupervisor
-	runSandboxManager      *projectAssistantSandboxManager
-	runSandboxConfig       CodingSandboxConfig
-	runSandboxConfigured   bool
+	// browserSessions owns the stateful native Playwright MCP session for each
+	// tenant/workspace/project/run owner tuple. It is intentionally process-local
+	// because the browser instance itself is single-replica and stateful.
+	browserSessions      *projectAssistantBrowserSessionManager
+	assistantSupervisor  *projectAssistantSupervisor
+	runSandboxManager    *projectAssistantSandboxManager
+	runSandboxConfig     CodingSandboxConfig
+	runSandboxConfigured bool
 	// codingSandboxResolver resolves a caller's organization-scoped BYO
 	// provider binding. Nil is fail-closed. Platform force mode never calls it.
 	codingSandboxResolver  func(context.Context, identity, workspace.Scope) (CodingSandboxEligibility, error)
@@ -126,9 +135,9 @@ type Server struct {
 	previewEdgeProbe            func(context.Context, string) error
 	edgeReadyURLs               edgeReadyURLsCache
 	previewEdgeProbeInflight    map[string]*previewEdgeProbeInflight
-	previewConsoleEnabled       bool
-	previewConsoleStore         *previewConsoleStore
-	previewConsoleSigner        *previewConsoleCapabilitySigner
+	previewBridgeEnabled        bool
+	previewBridgeStore          *previewBridgeStore
+	previewBridgeSigner         *previewBridgeCapabilitySigner
 	previewInspector            projectAssistantPreviewInspector
 	previewInspectionResolveURL func(context.Context, identity, *aiv1alpha1.Project) (string, error)
 	projectThumbnailContext     context.Context
@@ -174,6 +183,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		attachmentDraftRetention: store.DefaultAttachmentDraftRetention,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
+		hubPublicURL:             strings.TrimSpace(os.Getenv("FAROS_HUB_PUBLIC_URL")),
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
 		actionsCABundleErr:       actionsCABundleErr,
@@ -188,6 +198,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 	s.publishingHTTPClient = newPublishingHTTPClient()
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
+	s.browserSessions = newProjectAssistantBrowserSessionManager()
 	s.assistantSupervisor = newProjectAssistantSupervisor(parent, msgStore)
 	s.assistantSupervisor.server = s
 	s.runSandboxManager = newProjectAssistantSandboxManager()
@@ -213,6 +224,9 @@ func (s *Server) ConfigureCodingSandbox(config CodingSandboxConfig) {
 func (s *Server) Shutdown(ctx context.Context) {
 	if s.projectThumbnailCancel != nil {
 		s.projectThumbnailCancel()
+	}
+	if s.browserSessions != nil {
+		s.browserSessions.closeAll()
 	}
 	s.projectAssistantSupervisor().Shutdown(ctx)
 }
@@ -275,7 +289,7 @@ func (s *Server) developmentSyncLock(id identity, project *aiv1alpha1.Project) *
 // Register mounts the project routes onto r. The hub backend proxy strips the
 // /services/providers/app-studio prefix, so paths are registered bare.
 func (s *Server) Register(r *mux.Router) {
-	r.HandleFunc("/metrics", s.previewConsoleMetrics).Methods(http.MethodGet)
+	r.HandleFunc("/metrics", projectAssistantMetricsHandler).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.listProjects).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/stream", s.createProjectStream).Methods(http.MethodPost)
@@ -362,9 +376,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/files", s.listProjectFiles).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/files/content", s.readProjectFile).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview-console/sessions", s.createProjectPreviewConsoleSession).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}/events", s.appendProjectPreviewConsoleEvents).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}", s.deleteProjectPreviewConsoleSession).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions", s.createProjectPreviewBridgeSession).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions/{session}", s.deleteProjectPreviewBridgeSession).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)

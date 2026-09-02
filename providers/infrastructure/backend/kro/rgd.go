@@ -44,12 +44,12 @@ const (
 	// (FAROS_DEV_AGENT_IMAGE).
 	devAgentImageToken = "${faros.devAgentImage}"
 
-	// previewConsoleVerificationJWKSConfigKey is internal backend configuration,
+	// previewBridgeVerificationJWKSConfigKey is internal backend configuration,
 	// not a template substitution token. The provider passes the platform-owned
 	// current/previous public ES256 keys to dev-agent init containers, which
 	// install them beside the Vite plugin. Private signing keys never enter the
 	// infrastructure provider or tenant pod.
-	previewConsoleVerificationJWKSConfigKey = "faros.previewConsoleVerificationJWKS"
+	previewBridgeVerificationJWKSConfigKey = "faros.previewBridgeVerificationJWKS"
 
 	// appPublicPortToken is the ":<port>" suffix templates append to
 	// synthesized exposure URLs (status.url). Empty in production — the
@@ -391,7 +391,7 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 		resolved[appPublicPortToken] = ""
 	}
 	for token, value := range resolved {
-		if token == previewConsoleVerificationJWKSConfigKey {
+		if token == previewBridgeVerificationJWKSConfigKey {
 			continue
 		}
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

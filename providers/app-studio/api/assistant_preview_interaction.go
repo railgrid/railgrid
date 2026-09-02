@@ -263,12 +263,15 @@ type projectAssistantPreviewInteractionResult struct {
 func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInteractionRequest) (projectAssistantPreviewInteractionResult, error) {
 	unlock := lockBrowserInstance(id.clusterID, ref)
 	defer unlock()
+	if err := s.rejectUnmanagedBrowserSession(id, ref); err != nil {
+		return projectAssistantPreviewInteractionResult{}, err
+	}
 
-	session, err := s.newBrowserMCPSession(ctx, id, ref)
+	session, err := s.newBrowserMCPSessionWithRole(ctx, id, ref, projectAssistantBrowserSessionRoleLegacyInteraction)
 	if err != nil {
 		return projectAssistantPreviewInteractionResult{}, err
 	}
-	defer session.close()
+	defer session.closeWithReason("interaction_complete", "interactPreviewViaBrowserMCP")
 	if req.RequiresHubSession {
 		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.URL); err != nil {
 			return projectAssistantPreviewInteractionResult{}, err

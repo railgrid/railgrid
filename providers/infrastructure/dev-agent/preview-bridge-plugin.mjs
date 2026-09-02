@@ -16,40 +16,30 @@ limitations under the License.
 
 import { readFileSync } from "node:fs";
 
-export const previewConsoleJWKSPath = "/faros/bin/preview-console-jwks.json";
+export const previewBridgeJWKSPath = "/faros/bin/preview-bridge-jwks.json";
 
-const previewConsoleClient = String.raw`(() => {
+const previewBridgeClient = String.raw`(() => {
   "use strict";
 
-  const TRUSTED_VERIFICATION_KEYS = __FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__;
+  const TRUSTED_VERIFICATION_KEYS = __FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__;
   const VERSION = 1;
-  const READY = "faros.preview-console.ready";
-  const PROBE = "faros.preview-console.probe";
-  const START = "faros.preview-console.start";
-  const CONNECTED = "faros.preview-console.connected";
-  const EVENTS = "faros.preview-console.events";
-  const ANNOTATION_START = "faros.preview-console.annotation.start";
-  const ANNOTATION_STOP = "faros.preview-console.annotation.stop";
-  const ANNOTATION_PINS = "faros.preview-console.annotation.pins";
-  const ANNOTATION_PINS_RENDERED = "faros.preview-console.annotation.pins-rendered";
-  const ANNOTATION_PIN_HOVER = "faros.preview-console.annotation.pin-hover";
-  const ANNOTATION_PIN_SELECTED = "faros.preview-console.annotation.pin-selected";
-  const ANNOTATION_SELECTED = "faros.preview-console.annotation.selected";
-  const ANNOTATION_CANCELLED = "faros.preview-console.annotation.cancelled";
-  const ANNOTATION_MODE = "faros.preview-console.annotation.mode";
-  const MAX_EVENTS = 200;
-  const MAX_PORT_BATCH_EVENTS = 16;
-  const MAX_PROPERTIES = 20;
-  const MAX_STRING = 1000;
-  const MAX_MESSAGE = 1200;
-  const MAX_STACK = 600;
-  const MAX_DEPTH = 2;
-  const MAX_EVENT_BYTES = 1900;
+  const READY = "faros.preview-bridge.ready";
+  const PROBE = "faros.preview-bridge.probe";
+  const START = "faros.preview-bridge.start";
+  const CONNECTED = "faros.preview-bridge.connected";
+  const ANNOTATION_START = "faros.preview-bridge.annotation.start";
+  const ANNOTATION_STOP = "faros.preview-bridge.annotation.stop";
+  const ANNOTATION_PINS = "faros.preview-bridge.annotation.pins";
+  const ANNOTATION_PINS_RENDERED = "faros.preview-bridge.annotation.pins-rendered";
+  const ANNOTATION_PIN_HOVER = "faros.preview-bridge.annotation.pin-hover";
+  const ANNOTATION_PIN_SELECTED = "faros.preview-bridge.annotation.pin-selected";
+  const ANNOTATION_SELECTED = "faros.preview-bridge.annotation.selected";
+  const ANNOTATION_CANCELLED = "faros.preview-bridge.annotation.cancelled";
+  const ANNOTATION_MODE = "faros.preview-bridge.annotation.mode";
   const MAX_ANNOTATION_STRING = 240;
   const MAX_ANNOTATION_TEXT = 320;
   const MAX_ANNOTATION_SELECTOR = 320;
   const MAX_ANNOTATION_PINS = 64;
-  const clock = () => new Date().toISOString();
   const path = () => location.pathname;
   const randomID = () => {
     if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -63,17 +53,13 @@ const previewConsoleClient = String.raw`(() => {
   };
 
   const documentID = randomID();
-  const ring = [];
-  let sequence = 0;
   let port = null;
   let handshakePort = null;
   let connected = false;
   let connecting = false;
-  let flushScheduled = false;
   let probedOrigin = "";
   let sessionID = "";
   let generation = null;
-  let droppedCount = 0;
   const consumedCapabilityIDs = new Set();
   let annotationMode = false;
   let annotationOverlay = null;
@@ -88,130 +74,10 @@ const previewConsoleClient = String.raw`(() => {
   let annotationClick = null;
   let annotationKeydown = null;
 
-  const truncate = (value, limit = MAX_STRING) => {
+  const truncate = (value, limit = 1000) => {
     const text = String(value);
     return text.length > limit ? text.slice(0, limit) + "…" : text;
   };
-
-  const serialize = (value, depth = 0, seen = new WeakSet()) => {
-    if (value === null || typeof value === "boolean" || typeof value === "number") return value;
-    if (typeof value === "string") return truncate(value);
-    if (typeof value === "undefined") return "[undefined]";
-    if (typeof value === "bigint") return value.toString() + "n";
-    if (typeof value === "symbol") return truncate(value.toString());
-    if (typeof value === "function") return "[Function]";
-    if (typeof Element !== "undefined" && value instanceof Element) {
-      return "[DOM Element]";
-    }
-    if (typeof Node !== "undefined" && value instanceof Node) {
-      return "[DOM Node]";
-    }
-    if (value instanceof Error) {
-      const descriptors = Object.getOwnPropertyDescriptors(value);
-      return {
-        type: "Error",
-        name: descriptors.name && "value" in descriptors.name && typeof descriptors.name.value === "string"
-          ? truncate(descriptors.name.value)
-          : "Error",
-        message: descriptors.message && "value" in descriptors.message && typeof descriptors.message.value === "string"
-          ? truncate(descriptors.message.value)
-          : "",
-        stack: descriptors.stack && "value" in descriptors.stack && typeof descriptors.stack.value === "string"
-          ? sanitizeStack(descriptors.stack.value)
-          : "",
-      };
-    }
-    if (depth >= MAX_DEPTH) return "[Object]";
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-    let array;
-    try {
-      array = Array.isArray(value);
-      if (!array) {
-        const prototype = Object.getPrototypeOf(value);
-        if (prototype !== Object.prototype && prototype !== null) return "[Object]";
-      }
-    } catch {
-      return "[Unavailable]";
-    }
-    const out = array ? [] : {};
-    let descriptors;
-    try {
-      descriptors = Object.getOwnPropertyDescriptors(value);
-    } catch {
-      return "[Unavailable]";
-    }
-    let count = 0;
-    for (const key of Object.keys(descriptors)) {
-      if (key === "length") continue;
-      if (count >= MAX_PROPERTIES) {
-        out["…"] = "[truncated]";
-        break;
-      }
-      const descriptor = descriptors[key];
-      const safeKey = truncate(key);
-      if (!descriptor || !("value" in descriptor)) {
-        out[safeKey] = "[Accessor]";
-        count++;
-        continue;
-      }
-      try {
-        out[safeKey] = serialize(descriptor.value, depth + 1, seen);
-      } catch {
-        out[safeKey] = "[Unavailable]";
-      }
-      count++;
-    }
-    return out;
-  };
-
-  const readable = (value) => {
-    if (typeof value === "string") return truncate(value);
-    if (value instanceof Error) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, "message");
-      return descriptor && "value" in descriptor && typeof descriptor.value === "string"
-        ? truncate(descriptor.value)
-        : "Error";
-    }
-    const safe = serialize(value);
-    if (typeof safe === "string") return safe;
-    try {
-      return truncate(JSON.stringify(safe));
-    } catch {
-      return "[Unavailable]";
-    }
-  };
-
-  const readableArgs = (args) =>
-    truncate(Array.from(args).slice(0, MAX_PROPERTIES).map(readable).join(" "), MAX_MESSAGE);
-
-  const errorStack = (value) => {
-    if (!(value instanceof Error)) return "";
-    const descriptor = Object.getOwnPropertyDescriptor(value, "stack");
-    return descriptor && "value" in descriptor && typeof descriptor.value === "string"
-      ? sanitizeStack(descriptor.value)
-      : "";
-  };
-
-  const sanitizeURL = (value) => {
-    if (typeof value !== "string" || value.length === 0) return "";
-    try {
-      const parsed = new URL(value, location.href);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
-      parsed.username = "";
-      parsed.password = "";
-      parsed.search = "";
-      parsed.hash = "";
-      return truncate(parsed.href);
-    } catch {
-      return "";
-    }
-  };
-
-  const sanitizeStack = (value) => truncate(String(value || "").replace(
-    /https?:\/\/[^\s)]+/g,
-    (candidate) => sanitizeURL(candidate) || "[URL]",
-  ), MAX_STACK);
 
   const annotationString = (value, limit = MAX_ANNOTATION_STRING) => {
     if (typeof value !== "string") return "";
@@ -984,116 +850,6 @@ const previewConsoleClient = String.raw`(() => {
     syncAnnotationPinPositions();
   };
 
-  const jsonBytes = (value) => {
-    try {
-      return new TextEncoder().encode(JSON.stringify(value)).byteLength;
-    } catch {
-      return Number.POSITIVE_INFINITY;
-    }
-  };
-
-  const boundEvent = (event) => {
-    if (jsonBytes(event) <= MAX_EVENT_BYTES) return event;
-    if (event.sourceURL) event.sourceURL = truncate(event.sourceURL, 300);
-    if (event.stack) event.stack = truncate(event.stack, 300);
-    event.message = truncate(event.message, 700);
-    while (jsonBytes(event) > MAX_EVENT_BYTES && event.message.length > 80) {
-      event.message = truncate(event.message, Math.max(80, Math.floor(event.message.length * 0.7)));
-    }
-    if (jsonBytes(event) > MAX_EVENT_BYTES) delete event.stack;
-    if (jsonBytes(event) > MAX_EVENT_BYTES) delete event.sourceURL;
-    if (jsonBytes(event) > MAX_EVENT_BYTES) event.message = "[console event truncated]";
-    return event;
-  };
-
-  const scheduleFlush = () => {
-    if (!connected || !port || flushScheduled || ring.length === 0) return;
-    flushScheduled = true;
-    const run = () => {
-      flushScheduled = false;
-      if (!connected || !port || ring.length === 0) return;
-      const events = ring.splice(0, MAX_PORT_BATCH_EVENTS);
-      const reportedDroppedCount = droppedCount;
-      try {
-        port.postMessage({
-          type: EVENTS,
-          version: VERSION,
-          sessionID,
-          generation,
-          documentID,
-          path: path(),
-          droppedCount: reportedDroppedCount,
-          events,
-        });
-        droppedCount -= reportedDroppedCount;
-        if (ring.length > 0) scheduleFlush();
-      } catch {
-        ring.unshift(...events.slice(-MAX_EVENTS));
-        failPort();
-      }
-    };
-    if (typeof queueMicrotask === "function") queueMicrotask(run);
-    else Promise.resolve().then(run);
-  };
-
-  const capture = (level, message, stack = "", sourceURL = location.href) => {
-    try {
-      const event = {
-        sequence: ++sequence,
-        documentID,
-        level,
-        message: truncate(message, MAX_MESSAGE),
-        clientTime: clock(),
-      };
-      if (stack) event.stack = sanitizeStack(stack);
-      if (sourceURL) event.sourceURL = sanitizeURL(sourceURL);
-      ring.push(boundEvent(event));
-      if (ring.length > MAX_EVENTS) {
-        const overflow = ring.length - MAX_EVENTS;
-        ring.splice(0, overflow);
-        droppedCount += overflow;
-      }
-      scheduleFlush();
-    } catch {
-      // Console observation must never interfere with the application.
-    }
-  };
-
-  const consoleObject = window.console;
-  if (consoleObject) {
-    for (const level of ["debug", "log", "info", "warn", "error"]) {
-      const original = consoleObject[level];
-      if (typeof original !== "function") continue;
-      try {
-        consoleObject[level] = function (...args) {
-          try {
-            capture(level, readableArgs(args), args.map(errorStack).filter(Boolean).join("\n"));
-          } catch {
-            // Serialization is observational and must not change console behavior.
-          }
-          return original.apply(this, args);
-        };
-      } catch {
-        // A frozen console object is unusual, but the app must still start.
-      }
-    }
-  }
-
-  window.addEventListener("error", (event) => {
-    try {
-      capture("pageerror", event.message || "Uncaught error", errorStack(event.error), event.filename || "");
-    } catch {}
-  }, true);
-  window.addEventListener("unhandledrejection", (event) => {
-    try {
-      capture(
-        "unhandledrejection",
-        readable(event.reason || "Unhandled promise rejection"),
-        errorStack(event.reason),
-      );
-    } catch {}
-  }, true);
-
   const readyMessage = () => ({
     type: READY,
     version: VERSION,
@@ -1131,7 +887,7 @@ const previewConsoleClient = String.raw`(() => {
     const now = Math.floor(Date.now() / 1000);
     return claims &&
       claims.iss === "app-studio" &&
-      claims.aud === "preview-console-events" &&
+      claims.aud === "preview-bridge" &&
       claims.v === VERSION &&
       String(claims.sid || "") === String(data.sessionID || "") &&
       String(claims.gen) === String(data.generation) &&
@@ -1252,7 +1008,6 @@ const previewConsoleClient = String.raw`(() => {
       failPort();
       return;
     }
-    scheduleFlush();
   };
 
   const onMessage = (event) => {
@@ -1280,19 +1035,19 @@ const previewConsoleClient = String.raw`(() => {
 
 function verificationKeys(configuration) {
   if (!configuration || !Array.isArray(configuration.keys)) {
-    throw new Error("preview console JWKS must be an object with a keys array");
+    throw new Error("preview bridge JWKS must be an object with a keys array");
   }
   if (configuration.keys.length < 1 || configuration.keys.length > 2) {
-    throw new Error("preview console JWKS must contain the current key and optional previous key");
+    throw new Error("preview bridge JWKS must contain the current key and optional previous key");
   }
   const seen = new Set();
   return configuration.keys.map((key) => {
     if (!key || key.kty !== "EC" || key.crv !== "P-256" || key.alg && key.alg !== "ES256" ||
         key.use && key.use !== "sig" || typeof key.kid !== "string" || key.kid.length === 0 ||
         typeof key.x !== "string" || typeof key.y !== "string" || "d" in key) {
-      throw new Error("preview console JWKS contains an invalid or private ES256 key");
+      throw new Error("preview bridge JWKS contains an invalid or private ES256 key");
     }
-    if (seen.has(key.kid)) throw new Error("preview console JWKS key ids must be unique");
+    if (seen.has(key.kid)) throw new Error("preview bridge JWKS key ids must be unique");
     seen.add(key.kid);
     return {
       kty: "EC",
@@ -1306,22 +1061,22 @@ function verificationKeys(configuration) {
   });
 }
 
-export function previewConsoleClientSource(configuration) {
+export function previewBridgeClientSource(configuration) {
   const keys = verificationKeys(configuration);
   const encoded = JSON.stringify(keys).replaceAll("<", "\\u003c");
-  return previewConsoleClient.replace("__FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__", encoded);
+  return previewBridgeClient.replace("__FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__", encoded);
 }
 
-export function createPreviewConsolePlugin(configuration) {
-  const client = previewConsoleClientSource(configuration);
+export function createPreviewBridgePlugin(configuration) {
+  const client = previewBridgeClientSource(configuration);
   return {
-    name: "faros-preview-console-v1",
+    name: "faros-preview-bridge-v1",
     enforce: "pre",
     apply: "serve",
     transformIndexHtml() {
       return [{
         tag: "script",
-        attrs: { "data-faros-preview-console": "v1" },
+        attrs: { "data-faros-preview-bridge": "v1" },
         children: client,
         injectTo: "head-prepend",
       }];
@@ -1329,7 +1084,7 @@ export function createPreviewConsolePlugin(configuration) {
   };
 }
 
-export default function previewConsolePlugin() {
-  const configuration = JSON.parse(readFileSync(previewConsoleJWKSPath, "utf8"));
-  return createPreviewConsolePlugin(configuration);
+export default function previewBridgePlugin() {
+  const configuration = JSON.parse(readFileSync(previewBridgeJWKSPath, "utf8"));
+  return createPreviewBridgePlugin(configuration);
 }

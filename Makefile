@@ -1,6 +1,6 @@
-.PHONY: sync-portalkit verify-portalkit verify-ui-conformance test-portal-settings-conformance test-create-flow-conformance build-portal
+.PHONY: sync-portalkit verify-portalkit verify-ui-conformance verify-tilt-browser-deployment test-portal-settings-conformance test-create-flow-conformance build-portal
 .PHONY: build-access-proxy docker-build-access-proxy
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -376,6 +376,9 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
+
+verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachability wiring
+	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
 
 # --- Tool installation ---
 
@@ -1420,6 +1423,10 @@ KROMC_PROVIDER_MANIFEST ?= providers/infrastructure/provider.yaml
 # self-registration via ConfigMap.
 APP_STUDIO_PORT ?= 8085
 APP_STUDIO_HUB_URL ?= https://localhost:9443
+# Browser-reachable hub origin for private preview authorization. Normal local
+# development uses the same localhost origin; deployments with an internal hub
+# route should override this independently.
+APP_STUDIO_HUB_PUBLIC_URL ?= $(APP_STUDIO_HUB_URL)
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 # Optional external HTTPS hub origin for generated development runtimes. Keep
 # unset unless the operator has configured a pod-reachable, certificate-valid
@@ -1442,10 +1449,10 @@ APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
 APP_STUDIO_POSTGRES_USER ?= appstudio
 APP_STUDIO_POSTGRES_PASSWORD ?= appstudio
 APP_STUDIO_POSTGRES_DB ?= appstudio
-APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_DIR ?= $(KCP_DATA_DIR)/app-studio-preview-console
-APP_STUDIO_PREVIEW_CONSOLE_DEV_PRIVATE_KEY ?= $(APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_DIR)/private-key.pem
-APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS ?= $(APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_DIR)/verification-jwks.json
-APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_ID ?= $(APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_DIR)/key-id
+APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR ?= $(KCP_DATA_DIR)/app-studio-preview-bridge
+APP_STUDIO_PREVIEW_BRIDGE_DEV_PRIVATE_KEY ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/private-key.pem
+APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/verification-jwks.json
+APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_ID ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)/key-id
 
 # --- agents provider (long-running personal AI agents) ---
 AGENTS_PORT ?= 8087
@@ -1473,7 +1480,7 @@ AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
 ## stub catalog so the UI is demoable without standing up a real central
 ## kro cluster. Point KRO_KUBECONFIG at a real kubeconfig to use the
 ## real client + your own ResourceGraphDefinitions.
-run-provider-infrastructure: build-infrastructure-provider app-studio-preview-console-dev-key ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
+run-provider-infrastructure: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
 	@echo "Starting infrastructure provider on :$(KROMC_PORT)"
 	@echo "  hub:   $(KROMC_HUB_URL)"
 	@echo "  token: $(KROMC_TOKEN)"
@@ -1500,10 +1507,10 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-co
 	FAROS_GATEWAY_NAME=$${FAROS_GATEWAY_NAME:-cloudflare-tunnel} \
 	FAROS_GATEWAY_NAMESPACE=$${FAROS_GATEWAY_NAMESPACE:-cfgate-system} \
 	FAROS_APP_PUBLIC_PORT=$${FAROS_APP_PUBLIC_PORT-10443} \
-	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider
 
-run-provider-infrastructure-operator: build-infrastructure-provider app-studio-preview-console-dev-key ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
+run-provider-infrastructure-operator: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
 	@echo "Starting infrastructure provider (operator) on :$(KROMC_PORT)"
 	@echo "  hub:      $(KROMC_HUB_URL)"
 	@echo "  provider: $${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} (kcp)"
@@ -1521,7 +1528,7 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider operator
 
 # ── CRD-driven operator (controller) dev flow ───────────────────────────────
@@ -1534,7 +1541,7 @@ INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
 INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
 INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.faros.sh_infrastructureproviders.yaml
 
-run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-console-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
+run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
 	@echo "Applying operator CRD + Secrets + CR into runtime cluster ($(INFRA_OPERATOR_RUNTIME_KC))"
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f $(INFRA_OPERATOR_CRD)
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl create namespace $(INFRA_OPERATOR_NS) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
@@ -1545,17 +1552,17 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_OPERATOR_SKIP_SERVE=true \
-	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider controller
 
 ## Run the App Studio provider binary locally. Mirrors the other external
 ## providers so the heartbeat path is consistent and the UI runs on :8085.
-app-studio-preview-console-dev-key: ## Generate/reuse the local preview-console signing key and public JWKS under .kcp
-	@node providers/app-studio/hack/preview-console-dev-keys.mjs \
-		--output-dir "$(abspath $(APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_DIR))"
+app-studio-preview-bridge-dev-key: ## Generate/reuse the local preview-bridge signing key and public JWKS under .kcp
+	@node providers/app-studio/hack/preview-bridge-dev-keys.mjs \
+		--output-dir "$(abspath $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR))"
 
-verify-app-studio-preview-console-dev-key: ## Verify local preview-console key generation, repair, and concurrency
-	node --test providers/app-studio/hack/preview-console-dev-keys.test.mjs
+verify-app-studio-preview-bridge-dev-key: ## Verify local preview-bridge key generation, repair, and concurrency
+	node --test providers/app-studio/hack/preview-bridge-dev-keys.test.mjs
 
 verify-app-studio-eval: ## Verify the terminal-aware assistant evaluation harness
 	@output="$$(node providers/app-studio/hack/eval/terminal-turn.test.mjs 2>&1)"; \
@@ -1618,7 +1625,7 @@ app-studio-db-down: ## Stop and remove the local App Studio Postgres container (
 		echo "App Studio Postgres container not found ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
 	fi
 
-run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-preview-console-dev-key ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-preview-bridge-dev-key ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
@@ -1632,15 +1639,17 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@# being absent until init writes it.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL:-$(FAROS_ACTIONS_EXTERNAL_URL)}"; \
+	FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL:-$(APP_STUDIO_HUB_PUBLIC_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
-	APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_PRIVATE_KEY)")"; \
-	APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_KEY_ID)")"; \
+	APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_PRIVATE_KEY)")"; \
+	APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_ID)")"; \
 	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
 		echo "  store: in-memory (non-durable)"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
 		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL}" \
 		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
 		FAROS_HUB_INSECURE=true \
@@ -1649,13 +1658,14 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
-		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY}" \
-		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID}" \
+		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY}" \
+		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
 		PORT=$(APP_STUDIO_PORT) \
 		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL}" \
 		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
 		FAROS_HUB_INSECURE=true \
@@ -1664,8 +1674,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
-		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY}" \
-		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID}" \
+		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY}" \
+		APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
 	fi
 
@@ -2359,6 +2369,7 @@ help-dev: ## Show development environment options
 	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
 	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  APP_STUDIO_HUB_PUBLIC_URL - Browser-reachable hub origin for private previews (default: APP_STUDIO_HUB_URL)"
 	@echo "  APP_STUDIO_DEV_DATABASE_URL - Local App Studio Postgres DSN (default: postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable)"
 	@echo "  APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true - Force non-durable App Studio message store"
 	@echo ""
@@ -2414,7 +2425,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-boilerplate verify-codegen verify-portalkit verify-ui-conformance verify-app-studio-preview-console-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-boilerplate verify-codegen verify-portalkit verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

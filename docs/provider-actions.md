@@ -253,7 +253,7 @@ provider-action errors. There is no development-token fallback.
 ### Development sandbox delivery
 
 The Infrastructure `faros-dev-agent` supplies only the coordinator, runtime
-supervisor, executor, and preview-console assets. It does not copy, validate,
+supervisor, executor, and preview-bridge assets. It does not copy, validate,
 or mount the Actions SDK. Development components run their normal package
 manager against the exact alias in the server `package.json`, writing
 dependencies into the shared workspace used by the app and executor. This

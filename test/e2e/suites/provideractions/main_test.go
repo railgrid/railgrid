@@ -219,7 +219,7 @@ func TestMain(m *testing.M) {
 	appCmd, err := startProvider("app-studio", appStudioPort, appKubeconfig, map[string]string{
 		"APP_STUDIO_IN_MEMORY_MESSAGE_STORE":          "true",
 		"APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY": "true",
-		"APP_STUDIO_PREVIEW_CONSOLE_ENABLED":          "false",
+		"APP_STUDIO_PREVIEW_BRIDGE_ENABLED":           "false",
 		// The production action-enabled runtime contract requires an HTTPS
 		// external origin. This fixture is only persisted in Project values;
 		// the generated app still enters through the local hub URL below.

@@ -266,7 +266,7 @@ spec:
               spec:
                 containers:
                   - name: browser
-                    image: mcr.microsoft.com/playwright/mcp:latest
+                    image: mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804
                     # The image ENTRYPOINT is
                     # `node /app/cli.js --headless --browser chromium --no-sandbox`,
                     # so args only append the HTTP-server flags. --no-sandbox is

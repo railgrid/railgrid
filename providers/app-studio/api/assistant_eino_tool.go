@@ -48,7 +48,13 @@ type projectEinoAssistantToolDiscovery struct {
 	IncludeCommitBridge      bool
 	IncludePreviewInspection bool
 	MCPTools                 []projectAssistantTool
-	Prompt                   string
+	BrowserTools             []projectAssistantTool
+	// BrowserCatalogCached means BrowserTools came from a successful native
+	// browser discovery (or an earlier cached catalog), rather than from a
+	// partial/failure-only discovery result. The catalog is retained across
+	// model boundaries while aggregate MCP discovery may continue refreshing.
+	BrowserCatalogCached bool
+	Prompt               string
 }
 
 type projectEinoAssistantTool struct {
@@ -59,6 +65,7 @@ type projectEinoAssistantTool struct {
 	commitBridgeBound       bool
 	discoveredMCPBound      bool
 	searchSelectionRequired bool
+	discoveredBrowserBound  bool
 }
 
 func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToolsFactory {
@@ -87,7 +94,8 @@ func projectEinoAssistantToolsForDiscovery(
 	localTools = projectEinoAssistantFilterPreviewInspection(localTools, discovery.IncludePreviewInspection)
 	localTools = projectAssistantFilterAttachmentTools(localTools, projectAssistantAttachmentSelectionAvailable(req, runState))
 	mcpTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, catalogPolicy), req.CollaborationMode)
-	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+2)
+	browserTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.BrowserTools, catalogPolicy), req.CollaborationMode)
+	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+len(browserTools)+2)
 	if runState != nil && runState.CodexPOCEnabled() && projectEinoAssistantDynamicToolCatalogDigest(discovery) != "" {
 		out = append(out, newProjectEinoAssistantServerTool(server, projectEinoAssistantToolSearchBackend(server, req), req, runState))
 	}
@@ -119,6 +127,9 @@ func projectEinoAssistantToolsForDiscovery(
 	for _, tool := range mcpTools {
 		out = append(out, newProjectEinoAssistantSearchableMCPTool(server, tool, req, runState))
 	}
+	for _, tool := range browserTools {
+		out = append(out, newProjectEinoAssistantNativeBrowserTool(server, tool, req, runState))
+	}
 	return out, nil
 }
 
@@ -126,12 +137,43 @@ func projectEinoAssistantEnsureToolDiscovery(ctx context.Context, server *Server
 	if discovery, ok := runState.ToolDiscovery(); ok {
 		return discovery
 	}
-	discovery := projectEinoAssistantDiscoverTools(ctx, server, req)
-	runState.SetToolDiscovery(discovery)
+	discovery := projectEinoAssistantRefreshToolDiscovery(ctx, server, req, runState)
+	return discovery
+}
+
+func projectEinoAssistantRefreshToolDiscovery(
+	ctx context.Context,
+	server *Server,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+) projectEinoAssistantToolDiscovery {
+	var cachedBrowserTools []projectAssistantTool
+	var browserCatalogCached bool
+	if runState != nil {
+		catalog, ok := runState.NativeBrowserToolCatalog()
+		if ok {
+			cachedBrowserTools = projectAssistantNativeBrowserToolsForSpecs(server, catalog)
+			browserCatalogCached = len(cachedBrowserTools) > 0
+		}
+	}
+	discovery := projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, cachedBrowserTools, browserCatalogCached)
+	if runState != nil {
+		runState.SetToolDiscovery(discovery)
+	}
 	return discovery
 }
 
 func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req projectAssistantRunRequest) projectEinoAssistantToolDiscovery {
+	return projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, nil, false)
+}
+
+func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
+	ctx context.Context,
+	server *Server,
+	req projectAssistantRunRequest,
+	cachedBrowserTools []projectAssistantTool,
+	browserCatalogCached bool,
+) projectEinoAssistantToolDiscovery {
 	if server == nil {
 		return projectEinoAssistantToolDiscovery{}
 	}
@@ -148,20 +190,65 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 		IncludePreviewInspection: includePreviewInspection,
 		Prompt:                   projectMCPToolsPrompt(chatTools),
 	}
+	var browserErr error
 	if req.ToolPort == nil {
-		return discovery
-	}
-	mcpTools, includeCommitBridge, err := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.LLM)
-	if err != nil {
-		if projectAssistantTurnPolicyCanUseMCP(policy, req) {
-			discovery.Prompt = projectMCPToolsFailurePrompt(err)
+		if browserCatalogCached && len(cachedBrowserTools) > 0 {
+			discovery.BrowserTools = append([]projectAssistantTool(nil), cachedBrowserTools...)
+			discovery.BrowserCatalogCached = true
+			allTools := append(projectEinoAssistantFilterPreviewInspection(registry.Tools(false), includePreviewInspection), discovery.BrowserTools...)
+			discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(allTools), policy)))
+		} else if includePreviewInspection {
+			if server.previewInspector != nil {
+				discovery.Prompt = "Preview inspection capability: inspect_development_preview is available through the compatibility inspector.\n" + discovery.Prompt
+			} else {
+				browserErr = errors.New("native browser discovery transport is not configured")
+				discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserErr)
+			}
 		}
 		return discovery
 	}
-	discovery.IncludeCommitBridge = includeCommitBridge
-	discovery.MCPTools = mcpTools
+	mcpTools, includeCommitBridge, mcpErr := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.LLM)
+	if mcpErr == nil {
+		discovery.IncludeCommitBridge = includeCommitBridge
+		discovery.MCPTools = mcpTools
+	} else if projectAssistantTurnPolicyCanUseMCP(policy, req) {
+		discovery.Prompt = projectMCPToolsFailurePrompt(mcpErr)
+	}
+	if browserCatalogCached && len(cachedBrowserTools) > 0 {
+		discovery.BrowserTools = append([]projectAssistantTool(nil), cachedBrowserTools...)
+		discovery.BrowserCatalogCached = true
+	} else if browserDiscoverer, ok := req.ToolPort.(projectAssistantBrowserToolDiscoverer); ok {
+		var discoveredBrowserTools []projectAssistantTool
+		discoveredBrowserTools, browserErr = browserDiscoverer.DiscoverBrowser(ctx, req.Identity, req.LLM)
+		if browserErr == nil {
+			browserTools := discoveredBrowserTools
+			discovery.BrowserTools = browserTools
+			discovery.BrowserCatalogCached = len(browserTools) > 0
+		}
+	} else if includePreviewInspection && server.previewInspector == nil {
+		browserErr = errors.New("native browser discovery is not configured on the tool port")
+	}
 	allTools := append(projectEinoAssistantFilterPreviewInspection(registry.Tools(discovery.IncludeCommitBridge), includePreviewInspection), discovery.MCPTools...)
+	allTools = append(allTools, discovery.BrowserTools...)
 	discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(allTools), policy)))
+	// Keep the old capability wording only for the in-process inspector test
+	// seam. Production no longer registers either wrapper in the model catalog;
+	// this compatibility text lets historical event-decoding tests continue to
+	// exercise the retired inspector without exposing it as a callable tool.
+	if includePreviewInspection && server.previewInspector != nil && len(discovery.BrowserTools) == 0 {
+		discovery.Prompt = "Preview inspection capability: inspect_development_preview is available through the compatibility inspector.\n" + discovery.Prompt
+	}
+	if mcpErr != nil && projectAssistantTurnPolicyCanUseMCP(policy, req) {
+		failurePrompt := strings.TrimSpace(projectMCPToolsFailurePrompt(mcpErr))
+		if discovery.Prompt == "" {
+			discovery.Prompt = failurePrompt
+		} else {
+			discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + failurePrompt
+		}
+	}
+	if browserErr != nil && includePreviewInspection {
+		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserErr)
+	}
 	if researchPrompt := projectAssistantResearchCapabilityPrompt(ctx, req, discovery.MCPTools); researchPrompt != "" {
 		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + researchPrompt
 	}
@@ -238,6 +325,17 @@ func newProjectEinoAssistantSearchableMCPTool(server *Server, tool projectAssist
 		req:                     req,
 		runState:                runState,
 		discoveredMCPBound:      true,
+		searchSelectionRequired: runState != nil && runState.CodexPOCEnabled(),
+	}
+}
+
+func newProjectEinoAssistantNativeBrowserTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
+	return projectEinoAssistantTool{
+		server:                  server,
+		tool:                    tool,
+		req:                     req,
+		runState:                runState,
+		discoveredBrowserBound:  true,
 		searchSelectionRequired: runState != nil && runState.CodexPOCEnabled(),
 	}
 }
@@ -470,7 +568,7 @@ func (t projectEinoAssistantTool) availableInCurrentDiscovery() bool {
 }
 
 func (t projectEinoAssistantTool) currentDiscoveryTool() (projectAssistantTool, bool) {
-	if !t.commitBridgeBound && !t.discoveredMCPBound {
+	if !t.commitBridgeBound && !t.discoveredMCPBound && !t.discoveredBrowserBound {
 		return t.tool, t.tool != nil
 	}
 	if t.runState == nil || t.tool == nil {
@@ -480,10 +578,18 @@ func (t projectEinoAssistantTool) currentDiscoveryTool() (projectAssistantTool, 
 	if !ok {
 		return nil, false
 	}
+	name := projectAssistantToolKey(t.tool.Spec().Name)
 	if t.commitBridgeBound {
 		return t.tool, discovery.IncludeCommitBridge
 	}
-	name := projectAssistantToolKey(t.tool.Spec().Name)
+	if t.discoveredBrowserBound {
+		for _, current := range discovery.BrowserTools {
+			if current != nil && projectAssistantToolKey(current.Spec().Name) == name {
+				return current, true
+			}
+		}
+		return nil, false
+	}
 	for _, current := range discovery.MCPTools {
 		if current != nil && projectAssistantToolKey(current.Spec().Name) == name {
 			return current, true
@@ -563,9 +669,11 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 	}
 	var result string
 	if projectToolBaseName(spec.Name) == projectEinoAssistantWriteTodosTool ||
-		projectToolBaseName(spec.Name) == projectEinoAssistantToolSearchTool {
+		projectToolBaseName(spec.Name) == projectEinoAssistantToolSearchTool ||
+		t.discoveredBrowserBound {
 		// App-owned framework tools are normal projectAssistantTools, but must
-		// not depend on the HTTP/MCP port.
+		// not depend on the HTTP/MCP port. Native browser tools are bound to the
+		// server-owned session manager and therefore also bypass aggregate MCP.
 		result, err = t.tool.Call(ctx, callRequest)
 	} else {
 		if t.req.ToolPort == nil {
@@ -631,7 +739,12 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 		return modelResult, durableErr
 	}
-	modelResult := t.runState.RegisterTransientToolResult(spec.Name, result)
+	modelResult := result
+	if projectAssistantNativeBrowserToolName(spec.Name) {
+		modelResult = t.runState.RegisterNativeBrowserReceipt(spec.Name, result)
+	} else {
+		modelResult = t.runState.RegisterTransientToolResult(spec.Name, result)
+	}
 	if projectEinoAssistantSuccessfulWorkspaceMutationResult(spec.Name, result) {
 		if recordErr := t.recordV2WorkspaceMutation(ctx, spec.Name, result); recordErr != nil {
 			return t.finishDurableToolCall(ctx, ledgerDecision, result, recordErr)
@@ -1079,6 +1192,10 @@ func projectAssistantMutationFromSuccessfulResult(name, result string, successfu
 
 func projectEinoAssistantPersistentToolResult(name, result string) string {
 	baseName := projectToolBaseName(name)
+	if projectAssistantNativeBrowserToolName(baseName) {
+		sanitized, _, _ := projectEinoAssistantSanitizeNativeBrowserReceipt(result)
+		return sanitized
+	}
 	if baseName == projectToolReadAttachment {
 		var decoded map[string]any
 		if err := json.Unmarshal([]byte(result), &decoded); err != nil {
@@ -1096,33 +1213,7 @@ func projectEinoAssistantPersistentToolResult(name, result string) string {
 		}
 		return string(persistent)
 	}
-	if baseName != projectToolGetPreviewConsoleLogs {
-		return result
-	}
-	var decoded struct {
-		Status        string `json:"status"`
-		NextSequence  uint64 `json:"nextSequence,omitempty"`
-		DroppedCount  int    `json:"droppedCount,omitempty"`
-		ReceivedCount int    `json:"receivedCount,omitempty"`
-		RedactedCount int    `json:"redactedCount,omitempty"`
-		Summary       string `json:"summary,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
-		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
-	}
-	persistent, err := json.Marshal(map[string]any{
-		"status":         strings.TrimSpace(decoded.Status),
-		"nextSequence":   decoded.NextSequence,
-		"droppedCount":   decoded.DroppedCount,
-		"receivedCount":  decoded.ReceivedCount,
-		"redactedCount":  decoded.RedactedCount,
-		"summary":        strings.TrimSpace(decoded.Summary),
-		"transientEvent": true,
-	})
-	if err != nil {
-		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
-	}
-	return string(persistent)
+	return result
 }
 
 func projectAssistantMutationFromResult(name, result string) *projectAssistantMutation {
@@ -1745,6 +1836,11 @@ func projectEinoAssistantCurrentDynamicTool(
 			if current != nil && current.Spec().Risk == projectAssistantToolRiskCommit && projectAssistantToolKey(current.Spec().Name) == wanted {
 				return projectEinoAssistantTool{server: server, tool: current, req: req, runState: runState, commitBridgeBound: true, searchSelectionRequired: runState.CodexPOCEnabled()}, true
 			}
+		}
+	}
+	for _, current := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.BrowserTools, policy), req.CollaborationMode) {
+		if current != nil && projectAssistantToolKey(current.Spec().Name) == wanted {
+			return projectEinoAssistantTool{server: server, tool: current, req: req, runState: runState, discoveredBrowserBound: true, searchSelectionRequired: runState.CodexPOCEnabled()}, true
 		}
 	}
 	for _, current := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, policy), req.CollaborationMode) {

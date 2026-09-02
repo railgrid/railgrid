@@ -44,7 +44,7 @@ import type {
   ProjectFileContent,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
-import type { PreviewConsoleEvent, PreviewConsoleSession } from './previewConsole'
+import type { PreviewBridgeSession } from './previewBridge'
 import { readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 
@@ -116,7 +116,7 @@ interface ProjectAPIRequestOptions {
 
 const ASSISTANT_THREAD_PAGE_SIZE = 500
 const MAX_ASSISTANT_THREAD_PAGES = 100
-const PREVIEW_CONSOLE_TIMEOUT_MESSAGE = 'preview console request timed out'
+const PREVIEW_BRIDGE_TIMEOUT_MESSAGE = 'preview bridge request timed out'
 
 async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
@@ -1191,39 +1191,22 @@ export const api = {
     )
   },
 
-  async createPreviewConsoleSession(
+  async createPreviewBridgeSession(
     ctx: FarosContext | null,
     name: string,
     generation: string,
     portalInstanceID: string,
-  ): Promise<PreviewConsoleSession> {
-    return request<PreviewConsoleSession>(
+  ): Promise<PreviewBridgeSession> {
+    return request<PreviewBridgeSession>(
       ctx,
       'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions`,
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-bridge/sessions`,
       { generation, protocolVersion: 1, portalInstanceID },
-      { timeoutMS: 8_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
+      { timeoutMS: 8_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
     )
   },
 
-  async uploadPreviewConsoleEvents(
-    ctx: FarosContext | null,
-    name: string,
-    sessionID: string,
-    generation: string,
-    events: PreviewConsoleEvent[],
-    droppedCount: number,
-  ): Promise<void> {
-    await request<unknown>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}/events`,
-      { generation, protocolVersion: 1, droppedCount, events },
-      { timeoutMS: 5_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
-    )
-  },
-
-  async deletePreviewConsoleSession(
+  async deletePreviewBridgeSession(
     ctx: FarosContext | null,
     name: string,
     sessionID: string,
@@ -1231,9 +1214,9 @@ export const api = {
     await request<unknown>(
       ctx,
       'DELETE',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}`,
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-bridge/sessions/${encodeURIComponent(sessionID)}`,
       undefined,
-      { timeoutMS: 3_000, timeoutMessage: PREVIEW_CONSOLE_TIMEOUT_MESSAGE },
+      { timeoutMS: 3_000, timeoutMessage: PREVIEW_BRIDGE_TIMEOUT_MESSAGE },
     )
   },
 }

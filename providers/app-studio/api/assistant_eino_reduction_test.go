@@ -258,3 +258,22 @@ func quoteJSON(value string) string {
 	}
 	return string(encoded)
 }
+
+func TestProjectEinoAssistantUnverifiableReceiptsAreNonSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{name: "outcome unknown", result: `{"status":"outcome_unknown","outcome":"unknown","replayed":false}`},
+		{name: "unverifiable", result: `{"status":"unverifiable","outcome":"unknown","replayed":false,"requiresSnapshot":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if projectEinoAssistantSuccessfulToolContent(tc.result) {
+				t.Fatalf("successful content accepted %s receipt", tc.name)
+			}
+			if got := projectAssistantToolResultDisposition(browserMCPToolSnapshot, tc.result, nil); got != projectAssistantToolDispositionFailed {
+				t.Fatalf("%s disposition = %q, want failed", tc.name, got)
+			}
+		})
+	}
+}

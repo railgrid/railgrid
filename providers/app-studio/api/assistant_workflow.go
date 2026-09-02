@@ -137,19 +137,8 @@ type projectAssistantRuntimeVerificationResult struct {
 	Runtime                 *projectAssistantRuntimeWorkflowResult   `json:"runtime,omitempty"`
 	PreviewURL              string                                   `json:"previewURL,omitempty"`
 	Logs                    *projectAssistantRuntimeLogsResult       `json:"logs,omitempty"`
-	BrowserConsole          *projectAssistantBrowserConsoleResult    `json:"browserConsole,omitempty"`
 	Warnings                []string                                 `json:"warnings,omitempty"`
 	Blockers                []string                                 `json:"blockers,omitempty"`
-}
-
-type projectAssistantBrowserConsoleResult struct {
-	Status        string `json:"status"`
-	Summary       string `json:"summary"`
-	ErrorCount    int    `json:"errorCount,omitempty"`
-	WarningCount  int    `json:"warningCount,omitempty"`
-	DroppedCount  int    `json:"droppedCount,omitempty"`
-	RedactedCount int    `json:"redactedCount,omitempty"`
-	ReceivedCount int    `json:"receivedCount,omitempty"`
 }
 
 type projectEinoAssistantVerificationDisposition string

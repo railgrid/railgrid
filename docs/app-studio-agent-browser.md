@@ -539,7 +539,7 @@ directory or Playwright `storageState` by default.
 ## User annotations
 
 The development preview now supports DOM annotations through the existing
-signed preview-console `MessagePort`. This is not the removed signed preview
+signed preview-bridge `MessagePort`. This is not the removed signed preview
 gateway and does not share the user's browser session with the agent.
 
 - When the bridge is connected, Preview actions exposes `Annotate`. The
@@ -732,7 +732,7 @@ evidence from the current preview revision.
 
 ### Phase 4: annotations (implemented foundation)
 
-- The existing signed, exact-origin preview-console bridge now provides DOM
+- The existing signed, exact-origin preview-bridge now provides DOM
   annotation mode and a transparent in-frame overlay.
 - It returns bounded route, viewport, rectangle, accessible-name, role, and
   locator facts rather than DOM dumps, form values, or arbitrary attributes.

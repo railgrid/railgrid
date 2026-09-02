@@ -1,145 +1,110 @@
-# Move the App Studio browser worker to the infrastructure provider
+# App Studio direct Playwright MCP browser integration
 
-## Why
+## Status
 
-Today app-studio ships its **own** headless-browser service:
+App Studio now uses the Infrastructure provider's shared `Browser` instance,
+which runs the upstream Playwright MCP server. The browser image is pinned by
+the verified architecture-neutral OCI image index digest recorded from the
+Playwright MCP registry reference:
+`mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804`.
+The instance is provisioned once per workspace by the Studio reconciler and
+reached through the Infrastructure data-plane proxy.
 
-- `providers/app-studio/browser-worker/` — a custom Playwright service exposing
-  `POST /v1/inspect`, image `@faroshq/app-studio-browser-worker`, port 8090.
-- Deployed as a **standalone tilt resource** (`app-studio-browser-worker`), a
-  hard `resource_deps` of the `app-studio` process.
-- Reached by the backend through the `APP_STUDIO_BROWSER_WORKER_URL` env var
-  (`main.go` → `ConfigurePreviewInspection`), one fixed URL for the whole
-  provider.
+The model receives approved upstream `browser_*` tools directly. App Studio no
+longer retains a model-facing `inspect_development_preview` or
+`interact_development_preview` wrapper contract. Historical compatibility code
+may still decode old event records, but those wrapper names are not advertised
+as new callable capabilities.
 
-This is the wrong altitude. app-studio already provisions its *other* shared
-service — web search — the right way: the **Studio reconciler** creates one
-`searxng` instance per workspace through the **infrastructure provider**, and
-the backend reaches it over the infra **data-plane proxy verb**
-(`.../dataplane/.../searxngs/{name}/proxy/search`). No env URL, no bespoke
-deployment, no app-studio-owned image.
+This is a direct-native exposure inspired by Codex's browser-tool model. The
+upstream Playwright server owns browser mechanics and native tool schemas;
+App Studio owns the safety, tenancy, evidence, and lifecycle boundary around
+those calls.
 
-The infrastructure provider **already has the browser equivalent**:
-`providers/infrastructure/install/templates/browser.yaml` — *"Browser
-(Playwright MCP)"*, `instanceCRD: Browser`, same shape as searxng (size
-buckets, `status.ready`, data-plane `proxy` verb, one replica, no token). It
-runs the official `mcr.microsoft.com/playwright/mcp` server and exposes the
-standard Playwright MCP toolset (`browser_navigate`, `browser_snapshot`,
-`browser_take_screenshot`, `browser_console_messages`, …).
+## Model-facing capability boundary
 
-**Goal:** retire the app-studio custom worker; provision the `browser` template
-once per workspace via the Studio reconciler; drive preview inspection through
-the shared instance's data-plane MCP endpoint — exactly the search pattern.
+At turn setup, App Studio calls MCP `tools/list`, validates the required
+capabilities, and passes through the approved upstream descriptions and JSON
+schemas. The allowlist includes navigation, snapshots, console and network
+observation, screenshots, waits, and bounded interactions such as click, drag,
+fill, dialog handling, hover, key press, resize, option selection, and type.
+`browser_tabs` is retained as an App Studio-only safety tool. Arbitrary-code
+tools such as `browser_evaluate` or `browser_run_code` are not exposed.
 
-## Target architecture (mirrors search)
+The required catalog includes `browser_navigate`, `browser_snapshot`,
+`browser_console_messages`, `browser_click`, `browser_tabs`, and either
+`browser_type` or `browser_fill_form`. If discovery cannot prove that catalog,
+App Studio fails closed instead of exposing a partial browser surface.
 
-| Concern            | Search (today)                                    | Browser (target)                                   |
-|--------------------|---------------------------------------------------|----------------------------------------------------|
-| Infra template     | `searxng`                                          | `browser` (already exists)                         |
-| Instance CRD       | `Searxng`                                          | `Browser` (already exists)                         |
-| Shared instance    | `app-studio-search` (fixed name)                  | `app-studio-browser` (fixed name)                  |
-| Owner/lifecycle    | Studio reconciler `converge` + finalizer          | Studio reconciler, same `converge` + finalizer     |
-| Studio CR field    | `spec.search` / `status.search`                   | `spec.browser` / `status.browser`                  |
-| Ref resolution     | `searchResourceRef` → `fetchProjectTemplate("searxng")` | `browserResourceRef` → `fetchProjectTemplate("browser")` |
-| Permission claim   | `searxngs.infrastructure…`                        | `browsers.infrastructure…` (new claim)             |
-| Backend reaches it | infra data-plane `…/searxngs/{name}/proxy/search` | infra data-plane `…/browsers/{name}/proxy` (MCP root) |
+Successful catalogs are cached for the shared browser reference. A discovery
+request or legacy inspection cannot displace an active managed session; the
+single-replica browser is serialized per data-plane reference while distinct
+owners receive distinct MCP sessions.
 
-## Decision — inspection contract
+## Streamable-HTTP lifecycle
 
-The current `inspect_development_preview` / `get_preview_console_logs` tools call
-the custom `/v1/inspect` and get back a rendered-state result + console logs.
-The `browser` template speaks **Playwright MCP** instead. Recommended: **adopt
-Playwright MCP** and delete the custom contract — every capability maps 1:1:
+App Studio implements the upstream streamable-HTTP lifecycle at the
+Infrastructure data-plane proxy:
 
-- navigate → `browser_navigate`
-- rendered state / role+text assertions → `browser_snapshot` (accessibility tree)
-- screenshot → `browser_take_screenshot`
-- console / pageerror capture → `browser_console_messages`
+1. `POST initialize` negotiates the MCP protocol and captures
+   `Mcp-Session-Id`.
+2. `POST notifications/initialized` completes initialization.
+3. A persistent `GET` event stream is opened with `Mcp-Session-Id` and
+   `MCP-Protocol-Version`.
+4. `POST` requests carry `tools/list` and `tools/call` messages, echoing the
+   session and protocol headers after negotiation.
+5. `DELETE` closes the session while the GET stream is still alive; App Studio
+   then cancels and drains the stream.
 
-Rejected alternative: keep `/v1/inspect` and just templatize the app-studio
-image. That preserves the backend but keeps an app-studio-owned image + a
-non-standard contract, i.e. it doesn't actually adopt "the same tooling." Only
-choose it if `browser_snapshot` proves insufficient for the assertions the
-inspector makes (see Phase 1 spike).
+The GET stream drains server events and answers heartbeat `ping` requests with
+JSON-RPC responses. Keeping this stream open is the critical fix for the prior
+roughly five-second `Session not found` failures: the Playwright MCP server's
+heartbeat must have a live event channel.
 
-## Plan
+## App Studio-owned safety and evidence
 
-### Phase 0 — confirm the template is production-ready (0.5d)
-- [ ] Verify `browser` template + `Browser` CRD are seeded in the infra provider
-  (`seedtemplates_test.go` references it; confirm the RGD reconciles and an
-  instance reaches `status.ready`).
-- [ ] Confirm app-studio's export can claim `browsers.infrastructure.faros.sh`
-  — the infra identityHash is the same one already used for
-  `applications`/`searxngs` (`372fcfe2…` in dev).
+Each managed session is owned by the caller identity, organization/workspace,
+project, and assistant run. App Studio also holds the shared-browser lock and
+closes the session at run termination, server shutdown, or idle expiry.
 
-### Phase 1 — inspection client spike (1d)
-- [ ] Stand up one `browser` instance by hand; from the backend, drive it over
-  the data-plane proxy (`…/browsers/{name}/proxy`) using the tenant credential
-  the assistant already holds (same hop `hubmcp` uses).
-- [ ] Prove `browser_navigate` + `browser_snapshot` + `browser_console_messages`
-  reproduce the current `inspect_development_preview` result fields. This
-  validates the Decision above before touching the reconciler.
+For a private preview, App Studio validates the preview's authorization
+redirect, mints a short-lived one-use handoff through the hub, and navigates the
+browser to redeem it. The caller's bearer token is not exposed to Chromium.
+Before a browser call, App Studio requires the current source mutation to have
+completed the development-sync fence and requires the preview to be ready.
+Model navigation is constrained to the server-resolved preview origin.
 
-### Phase 2 — Studio owns a shared Browser instance (1d)
-- [ ] `apis/ai/v1alpha1/types_studio.go`: add `StudioBrowser` (mirror
-  `StudioSearch`: `Disabled`, `Size`, `ResourceRef`) to `StudioSpec.Browser`
-  and `StudioServiceStatus` to `StudioStatus.Browser`.
-- [ ] `controller/studio/controller.go`: generalize `converge`/`ensureInstance`/
-  `deleteInstance`/`finalize` to iterate over both services (search + browser),
-  or add a parallel browser path. Add `BrowserInstanceName = "app-studio-browser"`
-  and `browserTemplate = "browser"`.
-- [ ] `api/studio_sessions.go`: add `browserResourceRef` →
-  `fetchProjectTemplate("browser")`, set it on Studio create alongside search.
-- [ ] Regenerate CRDs/schemas (`studios.ai.faros.sh`) — note this bumps the
-  studios APIResourceSchema; re-bootstrap the export (see Ops caveat).
+After each successful native call, App Studio performs a server-owned safety
+observation: a fresh `browser_snapshot` (unless the call itself was a snapshot)
+and an internal `browser_tabs` listing. Reported URLs and tab URLs must remain
+on the preview origin. These safety receipts are not added to model-visible
+evidence; the model receives the original native MCP receipt, and the evidence
+reducer derives bounded verification from that receipt. There is no bespoke
+server-side assertion envelope.
 
-### Phase 3 — permission claim + bootstrap (0.5d)
-- [ ] Add `browsers.infrastructure.faros.sh` to the export's permission
-  claims in the **three** sync points: `init_cmd.go`
-  (`instanceClaimResources`), `manifest.yaml`, `catalogentry.yaml` — with the
-  infra identityHash (same as the other infra claims).
-- [ ] Re-bootstrap; confirm tenant bindings apply the new claim (`Accepted`, not
-  `Rejected`).
+If an MCP session is lost, App Studio never replays a mutating interaction. It
+returns an explicit `outcome_unknown` result with `replayed: false`. A safe
+read may be reconstructed once on a fresh session, but only when no prior
+interaction is pending; otherwise App Studio returns an unverifiable result
+and requires a new successful snapshot. Read reconstruction is therefore not
+used to claim that an uncertain interaction happened.
 
-### Phase 4 — cut the backend over (1d)
-- [ ] `api/assistant_preview_inspection.go`: replace the `/v1/inspect` HTTP
-  client with the data-plane MCP client from Phase 1; resolve the shared
-  instance from `Studio.status.browser` (fixed name `app-studio-browser`),
-  exactly as search is addressed by fixed name.
-- [ ] Delete `ConfigurePreviewInspection(APP_STUDIO_BROWSER_WORKER_URL)` from
-  `main.go`; drop the env var.
-- [ ] Update the `inspect_development_preview` / `get_preview_console_logs` tool
-  handlers to the new result mapping.
+## Historical migration context
 
-### Phase 5 — delete the old worker (0.5d)
-- [ ] Remove `providers/app-studio/browser-worker/` (src, Dockerfile,
-  package.json).
-- [ ] Remove the tilt resources: `app-studio-browser-worker`,
-  `docker-build-app-studio-browser-worker`, `run-app-studio-browser-worker`,
-  and the `resource_deps`/`dev-agent-image` wiring in `Tiltfile.cluster`.
-- [ ] Remove Makefile targets (`build/run/test/docker-build-app-studio-browser-worker`,
-  `APP_STUDIO_BROWSER_WORKER_*` vars) and the Helm/chart wiring.
-- [ ] Grep for `browser-worker`, `BROWSER_WORKER`, `8090`, `/v1/inspect` to
-  ensure nothing dangles.
+The retired App Studio browser worker exposed `POST /v1/inspect` from an
+App-Studio-owned image and evaluated assertions inside that bespoke service.
+That design was replaced by the shared Infrastructure `Browser` instance and
+the standard Playwright MCP toolset. The old aggregate inspection model was not
+preserved as a new wrapper: direct native receipts are the browser evidence,
+while App Studio's origin, session, sync, private-preview, and no-replay rules
+remain the product-specific boundary.
 
-## Ops caveat (learned the hard way this session)
+## Verification
 
-Re-bootstrapping the app-studio export is **not** free:
-- `ApplyAPIExport` **deletes and recreates** the export when it can't update in
-  place. That changes the export's `identityHash` **and reassigns its shard**,
-  which forces every tenant APIBinding to re-bind and can cascade-delete
-  in-flight Projects. Do Phase 2–3 bootstraps in a quiet window.
-- Every non-built-in permission claim needs the **current** owning-export
-  `identityHash`. The `browsers` claim uses the infra hash — discover it live
-  (`get apiexport infrastructure.providers.faros.sh -o jsonpath=…`), never
-  a memorized value; infra's hash has already rotated once (`4d31761a…` →
-  `372fcfe2…`).
-- After the export changes, tenant bindings may re-add the claim as `Rejected`
-  — patch `state: Accepted` (or fix the hub enablement to accept on re-sync).
+The completed flow was live-verified in local Tilt against `todo-theme-app`:
 
-## Rough size
-
-~4 engineering days. No new image to build/publish (the template uses upstream
-`playwright/mcp`), which is most of the win: app-studio stops owning a browser
-image and a deployment, and preview inspection rides the same data-plane path as
-every other shared instance.
+- navigate succeeded;
+- the first snapshot showed 25% and 3 tasks;
+- a click succeeded;
+- a fresh snapshot showed 50% and 2 tasks; and
+- the interaction result was `interactions_verified`.

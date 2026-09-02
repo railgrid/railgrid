@@ -1,7 +1,7 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
 {{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
-{{- if and (ne (int .Values.replicaCount) 1) (not .Values.workspace.emptyDir) (not .Values.workspace.existingClaim) -}}
-{{- fail "app-studio replicaCount > 1 requires workspace.emptyDir=true: a single ReadWriteOnce PVC cannot back multiple replicas (workspaces are rebuilt from git on adoption)" -}}
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- fail "app-studio replicaCount > 1 is unsupported: the shared Playwright Browser is single-session and its session ownership is process-local" -}}
 {{- end -}}
 {{- if and (eq (default "off" .Values.assistant.runSandbox.mode) "force") (ne (int .Values.replicaCount) 1) -}}
 {{- fail "assistant.runSandbox.mode=force requires replicaCount=1 until coding sandbox claims have distributed CAS" -}}
@@ -14,20 +14,11 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # Replica awareness (durable run claims + project affinity with git
-  # re-hydration on adoption) lets replicas coexist; rolling updates keep
-  # capacity and only move the replaced pod's projects.
+  # The workspace's shared Playwright Browser is single-session and browser
+  # ownership is process-local. Recreate prevents a rolling update from
+  # briefly running two provider pods against that browser.
   strategy:
-    {{- if .Values.workspace.emptyDir }}
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-    {{- else }}
-    # A single RWO workspace volume can only be mounted by one pod: replace,
-    # never overlap.
     type: Recreate
-    {{- end }}
   selector:
     matchLabels:
       {{- include "appstudio.selectorLabels" . | nindent 6 }}
@@ -118,6 +109,10 @@ spec:
               value: {{ .Values.internalPort | quote }}
             - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
+            {{- if .Values.hub.publicURL }}
+            - name: FAROS_HUB_PUBLIC_URL
+              value: {{ .Values.hub.publicURL | quote }}
+            {{- end }}
             {{- if .Values.hub.actionsExternalURL }}
             - name: FAROS_ACTIONS_EXTERNAL_URL
               value: {{ .Values.hub.actionsExternalURL | quote }}
@@ -179,16 +174,16 @@ spec:
             - name: APP_STUDIO_RUN_SANDBOX
               value: {{ .Values.assistant.runSandbox.enabled | quote }}
             {{- end }}
-            - name: APP_STUDIO_PREVIEW_CONSOLE_ENABLED
-              value: {{ .Values.previewConsole.enabled | quote }}
-            {{- if and .Values.previewConsole.enabled (or .Values.previewConsole.signingKeyID .Values.previewConsole.signingKeySecretRef.name) }}
-            - name: APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID
-              value: {{ required "previewConsole.signingKeyID is required when previewConsole.enabled=true" .Values.previewConsole.signingKeyID | quote }}
-            - name: APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY
+            - name: APP_STUDIO_PREVIEW_BRIDGE_ENABLED
+              value: {{ .Values.previewBridge.enabled | quote }}
+            {{- if and .Values.previewBridge.enabled (or .Values.previewBridge.signingKeyID .Values.previewBridge.signingKeySecretRef.name) }}
+            - name: APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY_ID
+              value: {{ required "previewBridge.signingKeyID is required when previewBridge.enabled=true" .Values.previewBridge.signingKeyID | quote }}
+            - name: APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "previewConsole.signingKeySecretRef.name is required when previewConsole.enabled=true" .Values.previewConsole.signingKeySecretRef.name }}
-                  key: {{ .Values.previewConsole.signingKeySecretRef.key | default "private-key.pem" }}
+                  name: {{ required "previewBridge.signingKeySecretRef.name is required when previewBridge.enabled=true" .Values.previewBridge.signingKeySecretRef.name }}
+                  key: {{ .Values.previewBridge.signingKeySecretRef.key | default "private-key.pem" }}
             {{- end }}
             {{- if .Values.store.messageRetention }}
             - name: APP_STUDIO_MESSAGE_RETENTION

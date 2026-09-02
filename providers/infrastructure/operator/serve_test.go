@@ -26,9 +26,9 @@ import (
 	v1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-func TestEnsureProviderServePropagatesPlatformPreviewConsoleJWKS(t *testing.T) {
+func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
 	const jwks = `{"keys":[{"kid":"current"}]}`
-	t.Setenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS", "  "+jwks+"  ")
+	t.Setenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS", "  "+jwks+"  ")
 	client := fake.NewSimpleClientset()
 	provider := &v1alpha1.InfrastructureProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
@@ -51,14 +51,14 @@ func TestEnsureProviderServePropagatesPlatformPreviewConsoleJWKS(t *testing.T) {
 		t.Fatalf("get managed provider Deployment: %v", err)
 	}
 	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS" {
+		if env.Name == "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS" {
 			if env.Value != jwks {
 				t.Errorf("verification JWKS = %q, want trimmed platform value %q", env.Value, jwks)
 			}
 			return
 		}
 	}
-	t.Error("managed provider Deployment lacks FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS")
+	t.Error("managed provider Deployment lacks FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS")
 }
 
 func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {

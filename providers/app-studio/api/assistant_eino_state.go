@@ -73,6 +73,8 @@ type projectEinoAssistantRunState struct {
 	projectRepositoryRef             string
 	toolPrompt                       string
 	toolDiscovery                    *projectEinoAssistantToolDiscovery
+	nativeBrowserToolCatalog         []projectMCPTool
+	nativeBrowserCatalogCached       bool
 	agentOptimizationMode            string
 	dynamicToolCatalogDigest         string
 	selectedDynamicToolNames         map[string]struct{}
@@ -102,6 +104,7 @@ type projectEinoAssistantRunState struct {
 	verificationSummary              string
 	verificationBlockers             []string
 	previewEvidence                  projectAssistantPreviewEvidence
+	nativeBrowserInteractionPending  bool
 	developmentSyncRevision          uint64
 	developmentSyncStatus            string
 	developmentSyncFailure           string
@@ -507,7 +510,7 @@ type projectEinoAssistantTransientPreviewImage struct {
 	MIMEType   string
 }
 
-const projectEinoAssistantPreviewImageIntro = "Screenshot captured by the preceding development preview inspection."
+const projectEinoAssistantPreviewImageIntro = "Screenshot captured by the preceding preview or browser observation."
 
 func (s *projectEinoAssistantRunState) RegisterTransientPreviewImage(result, base64Data, mimeType string) string {
 	return s.RegisterTransientPreviewImageForTool(projectToolInspectDevelopmentPreview, result, base64Data, mimeType)
@@ -537,6 +540,91 @@ func (s *projectEinoAssistantRunState) RegisterTransientPreviewImageForTool(tool
 		return persistent
 	}
 	return string(encoded)
+}
+
+// RegisterNativeBrowserReceipt keeps Playwright screenshot pixels in the
+// existing transient vision bridge. The returned receipt is safe for durable
+// event/model text: image blocks are removed, while status and textual blocks
+// remain available for evidence and follow-up reasoning.
+func (s *projectEinoAssistantRunState) RegisterNativeBrowserReceipt(toolName, result string) string {
+	sanitized, base64Data, mimeType := projectEinoAssistantSanitizeNativeBrowserReceipt(result)
+	if strings.TrimSpace(base64Data) == "" || mimeType != "image/png" {
+		return sanitized
+	}
+	return s.RegisterTransientPreviewImageForTool(toolName, sanitized, base64Data, mimeType)
+}
+
+// NativeBrowserInteractionPending reports whether a successful native browser
+// interaction still needs a later authoritative snapshot. A lost session must
+// not be replaced by a snapshot of a newly authenticated hub page, because that
+// would make the prior interaction appear verified against the wrong document.
+func (s *projectEinoAssistantRunState) NativeBrowserInteractionPending() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeBrowserInteractionPending
+}
+
+func projectEinoAssistantSanitizeNativeBrowserReceipt(result string) (string, string, string) {
+	var payload any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &payload); err != nil {
+		return result, "", ""
+	}
+	firstData, firstMIME := "", ""
+	imageCount := 0
+	var sanitize func(any) (any, bool)
+	sanitize = func(value any) (any, bool) {
+		switch current := value.(type) {
+		case map[string]any:
+			if strings.EqualFold(projectToolString(current["type"]), "image") {
+				imageCount++
+				if firstData == "" {
+					firstData = projectToolString(current["data"])
+					firstMIME = strings.ToLower(strings.TrimSpace(projectToolString(current["mimeType"])))
+					if firstMIME == "" {
+						firstMIME = strings.ToLower(strings.TrimSpace(projectToolString(current["mime_type"])))
+					}
+				}
+				return nil, true
+			}
+			out := make(map[string]any, len(current))
+			for key, child := range current {
+				safeChild, removed := sanitize(child)
+				if removed {
+					continue
+				}
+				out[key] = safeChild
+			}
+			return out, false
+		case []any:
+			out := make([]any, 0, len(current))
+			for _, child := range current {
+				safeChild, removed := sanitize(child)
+				if removed {
+					continue
+				}
+				out = append(out, safeChild)
+			}
+			return out, false
+		default:
+			return value, false
+		}
+	}
+	safePayload, _ := sanitize(payload)
+	if imageCount > 0 {
+		if root, ok := safePayload.(map[string]any); ok {
+			root["screenshotStatus"] = "captured"
+			root["screenshotImageCount"] = imageCount
+			safePayload = root
+		}
+	}
+	encoded, err := json.Marshal(safePayload)
+	if err != nil {
+		return `{"status":"unavailable","summary":"native browser receipt omitted from persistence"}`, firstData, firstMIME
+	}
+	return string(encoded), firstData, firstMIME
 }
 
 func (s *projectEinoAssistantRunState) AcceptProgressMessage(message string) bool {
@@ -669,7 +757,7 @@ func (s *projectEinoAssistantRunState) progressReminderPending() bool {
 func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result string) string {
 	persistent := projectEinoAssistantPersistentToolResult(name, result)
 	baseName := projectToolBaseName(name)
-	if s == nil || (baseName != projectToolGetPreviewConsoleLogs && baseName != projectToolReadAttachment) {
+	if s == nil || baseName != projectToolReadAttachment {
 		return persistent
 	}
 
@@ -745,7 +833,7 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			continue
 		}
 		switch projectToolBaseName(toolName) {
-		case projectToolGetPreviewConsoleLogs, projectToolReadAttachment:
+		case projectToolReadAttachment:
 			result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
 			if !ok {
 				expanded = append(expanded, message)
@@ -767,6 +855,19 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			pendingImages = append(pendingImages, projectEinoAssistantPreviewImageMessage(preview))
 			changed = true
 		default:
+			if projectAssistantNativeBrowserToolName(toolName) {
+				preview, ok := s.transientPreviewImages[strings.TrimSpace(placeholder.TransientImageReference)]
+				if !ok {
+					expanded = append(expanded, message)
+					continue
+				}
+				cloned := *message
+				cloned.Content = projectEinoAssistantPreviewResultWithoutImageReference(message.Content)
+				expanded = append(expanded, &cloned)
+				pendingImages = append(pendingImages, projectEinoAssistantPreviewImageMessage(preview))
+				changed = true
+				continue
+			}
 			expanded = append(expanded, message)
 		}
 	}
@@ -852,6 +953,12 @@ func (s *projectEinoAssistantRunState) SetToolDiscovery(discovery projectEinoAss
 	if s.dynamicToolCatalogDigest != digest {
 		s.selectedDynamicToolNames = map[string]struct{}{}
 	}
+	if discovery.BrowserCatalogCached {
+		if catalog := projectAssistantNativeBrowserCatalogFromTools(discovery.BrowserTools); projectAssistantNativeBrowserCatalogComplete(catalog) {
+			s.nativeBrowserToolCatalog = catalog
+			s.nativeBrowserCatalogCached = true
+		}
+	}
 	s.dynamicToolCatalogDigest = digest
 	s.toolDiscovery = &discovery
 	s.toolPrompt = discovery.Prompt
@@ -911,6 +1018,11 @@ func (s *projectEinoAssistantRunState) ApplyDynamicToolSearchResult(result strin
 				available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
 			}
 		}
+		for _, tool := range s.toolDiscovery.BrowserTools {
+			if tool != nil {
+				available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
+			}
+		}
 	}
 	for _, match := range decoded.Matches {
 		name := projectAssistantToolKey(match.Name)
@@ -935,6 +1047,18 @@ func (s *projectEinoAssistantRunState) ToolDiscovery() (projectEinoAssistantTool
 		return projectEinoAssistantToolDiscovery{}, false
 	}
 	return *s.toolDiscovery, true
+}
+
+func (s *projectEinoAssistantRunState) NativeBrowserToolCatalog() ([]projectMCPTool, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.nativeBrowserCatalogCached {
+		return nil, false
+	}
+	return cloneProjectMCPTools(s.nativeBrowserToolCatalog), true
 }
 
 func (s *projectEinoAssistantRunState) ToolPrompt() string {
@@ -1053,6 +1177,8 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.messages = cloneChatMessages(state.Messages)
 	s.lastToolMessages = cloneChatMessages(state.LastToolMessages)
 	s.catalogDigest = strings.TrimSpace(state.CatalogDigest)
+	s.nativeBrowserToolCatalog = projectAssistantNativeBrowserCatalogFromMCPTools(state.NativeBrowserToolCatalog)
+	s.nativeBrowserCatalogCached = projectAssistantNativeBrowserCatalogComplete(s.nativeBrowserToolCatalog)
 	s.selectedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.SelectedSkillReceipts))
 	s.loadedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.LoadedSkillReceipts)+len(state.SelectedSkillReceipts))
 	s.selectedContextResourceReceipts = cloneProjectAssistantContextResourceReceipts(state.SelectedContextResourceReceipts)
@@ -1096,6 +1222,10 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.previewEvidence = state.PreviewEvidence
 	if s.previewEvidence.Revision != s.sourceMutationRevision {
 		s.previewEvidence = projectAssistantPreviewEvidence{}
+	}
+	s.nativeBrowserInteractionPending = state.NativeBrowserInteractionPending
+	if s.previewEvidence.Revision != s.sourceMutationRevision {
+		s.nativeBrowserInteractionPending = false
 	}
 	s.repeatedActionSignature = projectEinoAssistantSanitizeActionSignature(state.RepeatedActionSignature)
 	s.repeatedActionToolName = projectToolBaseName(state.RepeatedActionToolName)
@@ -1314,6 +1444,7 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.verificationSummary = ""
 	s.verificationBlockers = nil
 	s.previewEvidence = projectAssistantPreviewEvidence{}
+	s.nativeBrowserInteractionPending = false
 	s.runtimeWarmupAttempts = 0
 	s.verifiedWorkspaceDigest = ""
 	s.completedReadCalls = map[string]uint64{}
@@ -2257,13 +2388,15 @@ func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) 
 	}
 	messages = cloneChatMessages(messages)
 	for index := range messages {
-		if messages[index].Role == "tool" &&
-			(projectToolBaseName(messages[index].Name) == projectToolGetPreviewConsoleLogs ||
-				projectToolBaseName(messages[index].Name) == projectToolReadAttachment) {
-			messages[index].Content = projectEinoAssistantPersistentToolResult(
-				messages[index].Name,
-				messages[index].Content,
-			)
+		if messages[index].Role != "tool" {
+			continue
+		}
+		if projectAssistantNativeBrowserToolName(messages[index].Name) {
+			messages[index].Content = s.RegisterNativeBrowserReceipt(messages[index].Name, messages[index].Content)
+			continue
+		}
+		if projectToolBaseName(messages[index].Name) == projectToolReadAttachment {
+			messages[index].Content = projectEinoAssistantPersistentToolResult(messages[index].Name, messages[index].Content)
 		}
 	}
 	s.mu.Lock()
@@ -2349,6 +2482,9 @@ func (s *projectEinoAssistantRunState) RecordToolMessage(msg chatMessage) {
 	if s == nil {
 		return
 	}
+	if projectAssistantNativeBrowserToolName(msg.Name) {
+		msg.Content = s.RegisterNativeBrowserReceipt(msg.Name, msg.Content)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cloned := cloneChatMessages([]chatMessage{msg})[0]
@@ -2363,6 +2499,10 @@ func (s *projectEinoAssistantRunState) RecordToolMessage(msg chatMessage) {
 
 func (s *projectEinoAssistantRunState) recordPreviewEvidenceLocked(message chatMessage) {
 	toolName := projectToolBaseName(message.Name)
+	if projectAssistantNativeBrowserToolName(toolName) {
+		s.recordNativeBrowserEvidenceLocked(toolName, message.Content)
+		return
+	}
 	if toolName != projectToolInspectDevelopmentPreview && toolName != projectToolInteractDevelopmentPreview {
 		return
 	}
@@ -2422,6 +2562,109 @@ func (s *projectEinoAssistantRunState) recordPreviewEvidenceLocked(message chatM
 		evidence.InteractionVerified = true
 		evidence.Outcome = "interactions_verified"
 	}
+	s.previewEvidence = evidence
+}
+
+func (s *projectEinoAssistantRunState) recordNativeBrowserEvidenceLocked(toolName, content string) {
+	var receipt struct {
+		Status  string          `json:"status"`
+		Phase   string          `json:"phase"`
+		IsError bool            `json:"isError"`
+		Error   json.RawMessage `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &receipt); err != nil {
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(receipt.Status))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(receipt.Phase))
+	}
+	rawError := strings.TrimSpace(string(receipt.Error))
+	failed := receipt.IsError || rawError != "" && rawError != "null"
+	if !failed {
+		switch status {
+		case "failed", "error", "canceled", "cancelled", "timed_out", "partial_failure":
+			failed = true
+		}
+	}
+	// An outcome-unknown mutation is not evidence that the interaction was
+	// accepted, and it must not leave a pending interaction for a later
+	// snapshot to certify. Preserve any evidence already certified for this
+	// revision; this receipt only tells us that the current action cannot be
+	// safely classified.
+	if status == "outcome_unknown" {
+		if projectAssistantNativeBrowserInteraction(toolName) {
+			s.nativeBrowserInteractionPending = false
+		}
+		return
+	}
+	// An unverifiable observation is deliberately non-evidence. In
+	// particular, do not let a receipt carrying incidental text or a page URL
+	// overwrite an earlier certified receipt. The native browser currently
+	// uses this status when the MCP session was lost while an interaction was
+	// pending; the next snapshot belongs to a newly initialized session and
+	// therefore cannot settle that old interaction. Require a new interaction
+	// in the replacement session instead of carrying the pending flag across
+	// the session boundary.
+	if status == "unverifiable" {
+		s.nativeBrowserInteractionPending = false
+		return
+	}
+	if !failed && toolName == browserMCPToolSnapshot &&
+		(!projectAssistantNativeBrowserSnapshotHasSubstantiveContent(content) || projectAssistantNativeBrowserSnapshotPageURL(content) == "") {
+		// A syntactically valid receipt is not evidence by itself. Keep any
+		// pending interaction and previously certified evidence until a later
+		// snapshot contains both a real accessibility observation and its
+		// authoritative page URL.
+		return
+	}
+	evidence := projectAssistantPreviewEvidence{
+		Revision: s.sourceMutationRevision,
+		Scope:    "native_browser_receipt",
+	}
+	if failed {
+		evidence.Outcome = "failed"
+		if projectAssistantNativeBrowserInteraction(toolName) {
+			s.nativeBrowserInteractionPending = false
+		}
+		s.previewEvidence = evidence
+		return
+	}
+	if projectAssistantNativeBrowserInteraction(toolName) {
+		// A mutation receipt only confirms that Playwright accepted the action.
+		// Require a later successful accessibility snapshot before exposing
+		// interaction evidence to completion consumers.
+		s.nativeBrowserInteractionPending = true
+	} else if toolName == browserMCPToolSnapshot {
+		evidence.RenderedStateObserved = true
+		if s.nativeBrowserInteractionPending {
+			evidence.InteractionVerified = true
+			s.nativeBrowserInteractionPending = false
+		}
+	} else if toolName == browserMCPToolNavigate || toolName == "browser_navigate_back" || toolName == "browser_navigate_forward" {
+		// Navigation changes the document the preceding interaction referred to.
+		s.nativeBrowserInteractionPending = false
+	}
+	if evidence.Revision == s.previewEvidence.Revision {
+		// A later receipt from the same source revision may add evidence, but a
+		// console/tabs read must not erase a prior successful interaction or
+		// rendered observation.
+		evidence.RenderedStateObserved = evidence.RenderedStateObserved || s.previewEvidence.RenderedStateObserved
+		if !s.nativeBrowserInteractionPending {
+			evidence.InteractionVerified = evidence.InteractionVerified || s.previewEvidence.InteractionVerified
+		}
+	}
+	switch {
+	case evidence.InteractionVerified:
+		evidence.Outcome = "interactions_verified"
+	case evidence.RenderedStateObserved:
+		evidence.Outcome = "rendered_verified"
+	default:
+		evidence.Outcome = "observed"
+	}
+	// Native receipts carry no App Studio assertion results. Deliberately leave
+	// all assertion fields false rather than manufacturing an assertion pass from
+	// arbitrary page text.
 	s.previewEvidence = evidence
 }
 
@@ -2528,6 +2771,8 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		VerificationSummary:              strings.TrimSpace(s.verificationSummary),
 		VerificationBlockers:             append([]string(nil), s.verificationBlockers...),
 		PreviewEvidence:                  s.previewEvidence,
+		NativeBrowserInteractionPending:  s.nativeBrowserInteractionPending,
+		NativeBrowserToolCatalog:         cloneProjectMCPTools(s.nativeBrowserToolCatalog),
 		RepeatedActionSignature:          s.repeatedActionSignature,
 		RepeatedActionToolName:           s.repeatedActionToolName,
 		RepeatedActionCount:              s.repeatedActionCount,

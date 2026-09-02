@@ -91,7 +91,7 @@ func projectEinoAssistantDynamicToolCatalogDigest(discovery projectEinoAssistant
 		Parameters  string `json:"parameters,omitempty"`
 		Risk        string `json:"risk,omitempty"`
 	}
-	items := make([]contract, 0, len(discovery.MCPTools)+1)
+	items := make([]contract, 0, len(discovery.MCPTools)+len(discovery.BrowserTools)+1)
 	if discovery.IncludeCommitBridge {
 		commitSpec := projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit}
 		for _, tool := range projectAssistantLocalToolRegistry(nil).Tools(true) {
@@ -106,6 +106,16 @@ func projectEinoAssistantDynamicToolCatalogDigest(discovery projectEinoAssistant
 		})
 	}
 	for _, tool := range discovery.MCPTools {
+		if tool == nil {
+			continue
+		}
+		spec := tool.Spec()
+		items = append(items, contract{
+			Name: projectAssistantToolKey(spec.Name), Description: strings.TrimSpace(spec.Description),
+			Parameters: string(spec.Parameters), Risk: string(spec.Risk),
+		})
+	}
+	for _, tool := range discovery.BrowserTools {
 		if tool == nil {
 			continue
 		}
@@ -144,7 +154,7 @@ func projectEinoAssistantDynamicTools(
 	discovery projectEinoAssistantToolDiscovery,
 ) []projectAssistantTool {
 	policy := projectAssistantToolCatalogPolicy(req)
-	out := make([]projectAssistantTool, 0, len(discovery.MCPTools)+1)
+	out := make([]projectAssistantTool, 0, len(discovery.MCPTools)+len(discovery.BrowserTools)+1)
 	if server != nil && discovery.IncludeCommitBridge {
 		for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(server.projectAssistantToolRegistry().Tools(true), policy), req.CollaborationMode) {
 			if tool != nil && tool.Spec().Risk == projectAssistantToolRiskCommit {
@@ -153,6 +163,7 @@ func projectEinoAssistantDynamicTools(
 		}
 	}
 	out = append(out, projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, policy), req.CollaborationMode)...)
+	out = append(out, projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.BrowserTools, policy), req.CollaborationMode)...)
 	return out
 }
 

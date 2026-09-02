@@ -37,11 +37,11 @@ config.define_string('kcp-image-repo')
 # dev-token at /login. Dex itself always runs so toggling doesn't rebuild
 # the resource graph.
 config.define_bool('sso')
-# Global replica count for the hub + every faros provider Deployment (dex,
-# Postgres, and the image-cache stub stay at 1 regardless — they are dev
-# scaffolding, not HA subjects). Default 1 keeps the dev loop light; set 2 to
-# exercise the real multi-replica behavior each component documents at its
-# deploy site (leader election, tunnel-ownership relay, run claims, …):
+# Global replica count for the hub + HA-capable faros provider Deployments
+# (App Studio, dex, Postgres, and the image-cache stub stay at 1). Default 1
+# keeps the dev loop light; set 2 to exercise the real multi-replica behavior
+# each component documents at its deploy site (leader election,
+# tunnel-ownership relay, run claims, …):
 #
 #   make tilt-cluster REPLICA_COUNT=2
 #   tilt up -f Tiltfile.cluster -- --replicas=2
@@ -451,23 +451,34 @@ k8s_resource(
 # Envoy gateway ClusterIP that *.kcp.localhost resolves to (see kcp's
 # gateway.yaml addresses + the hostAliases in its shard/front-proxy manifests).
 gateway_ip = '10.96.2.2'
+hub_service_name = 'faros-hub'
 
 # Keep host-side sslip.io loopback behavior while making the same app hosts
 # reachable from in-cluster development runtimes. This is a cluster-only
 # CoreDNS template; production clusters and per-project pod hostAliases are
 # untouched.
-app_studio_preview_dns_apply = 'hack/scripts/configure-tilt-preview-dns.sh %s %s %s' % (
-    k8s_context(), app_base_domain, gateway_ip)
-local_resource(
-    'app-studio-preview-dns',
-    # Apply in the update command so dependants do not become Ready until the
-    # CoreDNS block exists. This is intentionally one-shot: Tilt starts a new
-    # update before stopping the old serve process, so an exit cleanup races
-    # and can erase the freshly applied block.
-    cmd=app_studio_preview_dns_apply,
-    deps=['Tiltfile.cluster', 'hack/scripts/configure-tilt-preview-dns.sh'],
-    labels=['providers-app-studio'],
-)
+app_studio_preview_dns_apply = '''
+set -eu
+CTX=%s
+HUB_NAMESPACE=%s
+HUB_SERVICE=%s
+hub_ip=''
+for _ in $(seq 1 60); do
+  hub_ip="$(kubectl --context "$CTX" -n "$HUB_NAMESPACE" get svc "$HUB_SERVICE" \
+    -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+  if [ -n "$hub_ip" ] && [ "$hub_ip" != 'None' ]; then
+    break
+  fi
+  sleep 1
+done
+if [ -z "$hub_ip" ] || [ "$hub_ip" = 'None' ]; then
+  echo 'faros hub Service did not expose a ClusterIP' >&2
+  exit 1
+fi
+hack/scripts/configure-tilt-preview-dns.sh "%s" "%s" "%s" "%s" "$hub_ip"
+'''.strip() % (
+    k8s_context(), hub_namespace, hub_service_name,
+    k8s_context(), app_base_domain, gateway_ip, hub_browser_host)
 
 hub_host_aliases = [
     # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
@@ -912,6 +923,20 @@ k8s_resource(
     port_forwards=['9443:9443'],
     resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls', 'dex'],
     labels=['hub'],
+)
+
+local_resource(
+    'app-studio-preview-dns',
+    # Apply in the update command so dependants do not become Ready until the
+    # CoreDNS block exists. This is intentionally one-shot: Tilt starts a new
+    # update before stopping the old serve process, so an exit cleanup races
+    # and can erase the freshly applied block. The exact hub hostname must
+    # point at the in-cluster Service because Browser pods cannot reach the
+    # host-side sslip.io loopback address.
+    cmd=app_studio_preview_dns_apply,
+    deps=['Tiltfile.cluster', 'hack/scripts/configure-tilt-preview-dns.sh'],
+    resource_deps=['faros-hub'],
+    labels=['providers-app-studio'],
 )
 
 # ---------------------------------------------------------------------------
@@ -1377,11 +1402,11 @@ local_resource(
 
 # --- providers-app-studio ---
 local_resource(
-    'app-studio-preview-console-key',
-    cmd='make app-studio-preview-console-dev-key',
+    'app-studio-preview-bridge-key',
+    cmd='make app-studio-preview-bridge-dev-key',
     deps=[
         'Makefile',
-        'providers/app-studio/hack/preview-console-dev-keys.mjs',
+        'providers/app-studio/hack/preview-bridge-dev-keys.mjs',
     ],
     labels=['providers-app-studio'],
 )
@@ -1515,27 +1540,29 @@ for _line in str(read_file(app_studio_hash_file, '')).splitlines():
     if _line.startswith('code=') and not app_studio_code_hash:
         app_studio_code_hash = _line[len('code='):].strip()
 
-# At REPLICA_COUNT=2: durable run claims + project affinity live in the shared
-# providers-db Postgres, workspaces are emptyDir caches rebuilt from git on
-# adoption (docs/app-studio-replica-awareness.md).
+# App Studio deliberately stays at one replica even when REPLICA_COUNT=2. Its
+# durable run claims and project affinity are replica-aware, but every workspace
+# has one shared, single-session Playwright Browser and browser ownership is
+# still process-local (docs/app-studio-replica-awareness.md).
 #
 # The controller manager watches the APIExportEndpointSlice in the PROVIDER
 # workspace, so the synced kubeconfig must be the workspace-scoped one init
-# writes (.kcp/app-studio-provider.kubeconfig). previewConsole is disabled in
+# writes (.kcp/app-studio-provider.kubeconfig). previewBridge is disabled in
 # pod mode for now: the dev signing-key flow generates the key id at runtime,
 # which chart values can't consume at render time — App Studio serves without
-# console instrumentation (its documented degraded mode).
+# the signed annotation bridge (its documented degraded mode).
 provider_kubeconfig_sync('app-studio', '.kcp/app-studio-provider.kubeconfig', ['providers-app-studio'])
 provider_pod(
     'app-studio', 8085,
     container_port=8081,
     chart_extra=[
-        'replicaCount=%s' % replica_count,
+        'replicaCount=1',
         'store.databaseURL=%s' % providers_db_url('appstudio'),
+        'hub.publicURL=%s' % hub_external_url,
         'hub.actionsExternalURL=https://faros-hub.%s.svc:9443' % hub_namespace,
         'hub.actionsCABundleConfigMap.name=app-studio-actions-ca',
         'hub.actionsCABundleConfigMap.key=ca-bundle.pem',
-        'previewConsole.enabled=false',
+        'previewBridge.enabled=false',
         'apiExport.infraIdentityHash=%s' % app_studio_infra_hash,
         'apiExport.codeIdentityHash=%s' % app_studio_code_hash,
     ],

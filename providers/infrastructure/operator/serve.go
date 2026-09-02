@@ -148,9 +148,9 @@ func EnsureProviderServe(
 	if cr.Spec.Development.AgentImage != "" {
 		env = append(env, corev1.EnvVar{Name: "FAROS_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
 	}
-	if verificationJWKS := strings.TrimSpace(os.Getenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS")); verificationJWKS != "" {
+	if verificationJWKS := strings.TrimSpace(os.Getenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS")); verificationJWKS != "" {
 		env = append(env, corev1.EnvVar{
-			Name:  "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS",
+			Name:  "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS",
 			Value: verificationJWKS,
 		})
 	}

@@ -62,6 +62,18 @@ test('leaves only primary preview actions visible in the toolbar', async () => {
   assert.doesNotMatch(toolbar, />Switch template</)
 })
 
+test('keeps preview tooltips above the iframe and annotation overlays', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const toolbar = await readFile(new URL('./DevelopmentPreviewToolbar.vue', import.meta.url), 'utf8')
+  const toolbarRoot = toolbar.slice(toolbar.indexOf('<header'), toolbar.indexOf('>', toolbar.indexOf('<header')))
+  const previewStart = app.indexOf('v-else-if="activeWorkbenchTab?.kind === \'preview\'"')
+  const preview = app.slice(previewStart, app.indexOf("v-else-if=\"activeWorkbenchTab?.kind === 'review'\"", previewStart))
+
+  assert.match(toolbarRoot, /class="[^"]*\brelative\b[^"]*\bz-40\b[^"]*"/)
+  assert.match(preview, /class="pointer-events-none absolute inset-0 z-30"/)
+  assert.match(preview, /<iframe/)
+})
+
 test('selects one mutually exclusive preview toolbar layout from its measured width', async () => {
   const { previewToolbarLayout } = await importTypeScriptModule('./previewToolbarLayout.ts')
   assert.equal(previewToolbarLayout(900), 'expanded')
@@ -109,9 +121,9 @@ test('keeps annotation visible as a first-class preview action with an anchored 
 
 test('renders hover comments in a parent-owned, pointer-transparent preview overlay', async () => {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(app, /type PreviewConsoleAnnotationPinHover/)
+  assert.match(app, /type PreviewBridgeAnnotationPinHover/)
   assert.match(app, /onAnnotationPinHover: handleDevelopmentPreviewAnnotationPinHover/)
-  assert.match(app, /function handleDevelopmentPreviewAnnotationPinHover\(hover: PreviewConsoleAnnotationPinHover\)/)
+  assert.match(app, /function handleDevelopmentPreviewAnnotationPinHover\(hover: PreviewBridgeAnnotationPinHover\)/)
   assert.match(app, /hover\.pagePath !== pagePath/)
   assert.match(app, /candidate\.pagePath === pagePath/)
   const hoverHandler = app.slice(app.indexOf('function handleDevelopmentPreviewAnnotationPinHover'), app.indexOf('function toggleDevelopmentPreviewAnnotation'))

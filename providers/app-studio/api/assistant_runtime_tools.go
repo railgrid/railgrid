@@ -166,17 +166,15 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 		AddInput("initialize-verification")
 	workflow.AddLambdaNode("collect-diagnostic-logs", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationLogs(runCtx))).
 		AddInput("resolve-development-runtime")
-	workflow.AddLambdaNode("collect-browser-console", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx))).
-		AddInput("collect-diagnostic-logs")
 	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
-		AddInput("collect-browser-console")
+		AddInput("collect-diagnostic-logs")
 	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
 		AddInput("collect-project-readiness")
 	workflow.End().AddInput("format-runtime-verification")
 	graphTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolVerifyDevelopmentRuntime,
-		"Run post-edit operational verification in one read: current workspace synchronization, live process and log health, and preview reachability, with advisory browser-console evidence for supported browser apps. This does not independently verify rendered content, interactions, data flow, application behavior, or acceptance criteria.",
+		"Run post-edit operational verification in one read: current workspace synchronization, live process and log health, and preview reachability. This does not independently verify rendered content, interactions, data flow, application behavior, or acceptance criteria.",
 		compose.WithGraphName("app-studio-verify-project-runtime"),
 	)
 	if err != nil {
@@ -200,7 +198,6 @@ type projectAssistantRuntimeVerificationContext struct {
 	RuntimeInput             projectAssistantRuntimeWorkflowInput
 	Runtime                  *projectAssistantRuntimeWorkflowResult
 	Logs                     *projectAssistantRuntimeLogsResult
-	BrowserConsole           *projectAssistantBrowserConsoleResult
 	RequireProcessEvidence   bool
 }
 
@@ -433,71 +430,6 @@ func collectProjectAssistantRuntimeVerificationLogs(runCtx projectAssistantWorkf
 	}
 }
 
-func collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
-	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
-		if input == nil {
-			return nil, errors.New("runtime verification context is required")
-		}
-		currentRunCtx := input.RunContext
-		if currentRunCtx.Project == nil {
-			currentRunCtx = runCtx
-		}
-		if currentRunCtx.Server == nil || !previewConsoleProjectSupported(currentRunCtx.Project) {
-			return input, nil
-		}
-		console, err := currentRunCtx.Server.getProjectPreviewConsoleLogs(projectAssistantToolCallRequest{
-			Identity: currentRunCtx.Identity,
-			Project:  currentRunCtx.Project,
-			Arguments: map[string]any{
-				"levels": []string{"warn", "error", "pageerror", "unhandledrejection"},
-				"limit":  previewConsoleMaxToolEvents,
-			},
-		})
-		if err != nil {
-			input.BrowserConsole = &projectAssistantBrowserConsoleResult{
-				Status:  "unavailable",
-				Summary: "Browser console evidence is temporarily unavailable.",
-			}
-			return input, nil
-		}
-		result := &projectAssistantBrowserConsoleResult{
-			Status:        console.Status,
-			Summary:       console.Summary,
-			DroppedCount:  console.DroppedCount,
-			RedactedCount: console.RedactedCount,
-			ReceivedCount: console.ReceivedCount,
-		}
-		for _, event := range console.Events {
-			switch event.Level {
-			case "error", "pageerror", "unhandledrejection":
-				result.ErrorCount++
-			case "warn":
-				result.WarningCount++
-			}
-		}
-		result.Summary = projectAssistantBrowserConsoleVerificationSummary(result)
-		input.BrowserConsole = result
-		return input, nil
-	}
-}
-
-func projectAssistantBrowserConsoleVerificationSummary(result *projectAssistantBrowserConsoleResult) string {
-	if result == nil {
-		return ""
-	}
-	if result.Status != "available" && result.Status != "empty" {
-		return "Browser console evidence is " + strings.ReplaceAll(result.Status, "_", " ") + "."
-	}
-	if result.ErrorCount == 0 && result.WarningCount == 0 {
-		return "No browser-console warnings or errors were captured in the current preview session."
-	}
-	return fmt.Sprintf(
-		"Browser console captured %d error-class and %d warning event(s) in the current preview session.",
-		result.ErrorCount,
-		result.WarningCount,
-	)
-}
-
 // projectAssistantLastSyncFailure reports why the project's most recent
 // background workspace sync failed, or "" when the last one succeeded (or none
 // has run). Safe on a run context missing a server or project.
@@ -523,7 +455,6 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		Runtime:                 input.Runtime,
 		PreviewURL:              input.Runtime.PreviewURL,
 		Logs:                    input.Logs,
-		BrowserConsole:          input.BrowserConsole,
 	}
 	if reason := strings.TrimSpace(input.SandboxCheckpointFailure); reason != "" {
 		result.Status = "not_ready"
@@ -591,30 +522,6 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		result.Summary = "Required development runtime evidence is unavailable."
 		result.Blockers = []string{"development runtime returned an unsupported verification status"}
 		return result, nil
-	}
-	if input.BrowserConsole != nil {
-		switch input.BrowserConsole.Status {
-		case "not_connected", "expired", "unsupported", "unavailable":
-			result.Warnings = append(result.Warnings, "Browser console evidence is unavailable; this advisory signal did not block operational verification.")
-		}
-		if input.BrowserConsole.WarningCount > 0 {
-			result.Warnings = append(result.Warnings, fmt.Sprintf(
-				"Browser console reported %d warning event(s).",
-				input.BrowserConsole.WarningCount,
-			))
-		}
-		if input.BrowserConsole.ErrorCount > 0 {
-			result.Warnings = append(result.Warnings, fmt.Sprintf(
-				"Browser console reported %d error, page-error, or unhandled-rejection event(s); this untrusted advisory evidence did not change runtime readiness.",
-				input.BrowserConsole.ErrorCount,
-			))
-		}
-		if input.BrowserConsole.DroppedCount > 0 {
-			result.Warnings = append(result.Warnings, fmt.Sprintf(
-				"Browser console dropped %d event(s) before verification.",
-				input.BrowserConsole.DroppedCount,
-			))
-		}
 	}
 	diagnosticBlockers := []string(nil)
 	if input.Logs != nil && len(input.Logs.Blockers) > 0 {

@@ -204,7 +204,7 @@ test('authorization request failures only keep polling when transient', () => {
 })
 
 test('current document handshake is wired to bounded preview recovery', () => {
-	assert.match(appSource, /onState: handleDevelopmentPreviewConsoleState/)
+	assert.match(appSource, /onState: handleDevelopmentPreviewBridgeState/)
 	assert.match(appSource, /developmentPreviewRecoveryAction\(attempt, developmentPreviewRecoveryReloadAttempted\.value\)/)
 	assert.match(appSource, /if \(action\.kind === 'reload'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
 	assert.match(appSource, /if \(action\.kind === 'background'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
