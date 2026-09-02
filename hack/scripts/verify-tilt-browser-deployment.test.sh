@@ -59,9 +59,23 @@ regular_dns = section(
     "local_resource(\n    'app-studio-preview-dns',",
     "\n\nlocal_resource(\n    'kro-mgmt-down',",
 )
+regular_infrastructure = section(
+    tilt,
+    "local_resource(\n    'infrastructure',",
+    "\n\nlocal_resource(\n    'infrastructure-register',",
+)
 require(
     "preview_hub_public_host" in regular_dns,
     "regular Tilt preview DNS must map the public hub hostname for Browser pods",
+)
+require(
+    "getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {print $1}'" in regular_dns,
+    "regular Tilt preview DNS must select exactly one IPv4 host gateway address",
+)
+require(
+    "getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {{print $1}}'"
+    in regular_infrastructure,
+    "regular Tilt infrastructure must select exactly one IPv4 host gateway address",
 )
 
 cluster_dns_setup = section(

@@ -711,7 +711,7 @@ KRO_KUBECONFIG=%s
 CTX=%s
 GW=%s
 gateway_ip=''
-host_gateway="$(docker exec %s getent hosts host.docker.internal 2>/dev/null | cut -d' ' -f1)"
+host_gateway="$(docker exec %s getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {print $1}')"
 if [ -z "$host_gateway" ]; then
   host_gateway="$(docker inspect -f '%s' %s)"
 fi
@@ -801,7 +801,7 @@ local_resource(
     cmd='make build-infrastructure-provider',
     serve_cmd=('''
 set -eu
-host_gateway="$(docker exec {kro_node} getent hosts host.docker.internal 2>/dev/null | cut -d' ' -f1)"
+host_gateway="$(docker exec {kro_node} getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {{print $1}}')"
 if [ -z "$host_gateway" ]; then
   host_gateway="$(docker inspect -f '{docker_gateway_format}' {kro_node})"
 fi
