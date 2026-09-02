@@ -77,6 +77,7 @@ Examples:
 Usage:
 - Use grep only to answer a concrete unresolved question. If prior tool results already answer that question, use them instead of searching again.
 - Do not use grep for open-ended exploration or successive rounds of speculative search.
+- The optional path may identify either a project-relative file or directory.
 - Narrow the search to the most relevant project-relative path, file glob, or language type.
 - You can call multiple tools in a single response. Batch independent targeted searches.
 - Once the current question and relevant edit locations are resolved, read the most relevant file and advance to the next allowed task action. Use another targeted grep only for a different concrete unresolved question.

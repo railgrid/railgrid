@@ -523,6 +523,53 @@ func sandboxFileTypeMatch(filePath, fileType string) bool {
 	return ext == fileType
 }
 
+func sandboxGrepGlobMatch(pattern, candidate string) bool {
+	if sandboxGlobMatch(pattern, candidate) {
+		return true
+	}
+	pattern = strings.TrimPrefix(strings.TrimSpace(pattern), "/")
+	return pattern != "" && !strings.Contains(pattern, "/") && sandboxGlobMatch(pattern, path.Base(candidate))
+}
+
+func (c projectAssistantDataPlaneSandboxClient) workspaceGrepFiles(
+	ctx context.Context,
+	id identity,
+	ref dataPlaneRef,
+	request projectAssistantSandboxWorkspaceRequest,
+) ([]string, map[string]projectAssistantSandboxReadWireFile, uint64, string, error) {
+	listed, listErr := c.workspaceList(ctx, id, ref, projectAssistantSandboxWorkspaceRequest{Path: request.Path, Limit: workspace.MaxListLimit})
+	if listErr == nil {
+		paths := make([]string, 0, len(listed.Entries))
+		for _, entry := range listed.Entries {
+			if strings.EqualFold(entry.Type, "file") && sandboxFileTypeMatch(entry.Path, request.FileType) && sandboxGrepGlobMatch(request.Glob, entry.Path) {
+				paths = append(paths, entry.Path)
+			}
+		}
+		if len(paths) == 0 {
+			return paths, map[string]projectAssistantSandboxReadWireFile{}, listed.SourceRevision, listed.SourceDigest, nil
+		}
+		files, revision, digest, _, err := c.workspaceReadFiles(ctx, id, ref, paths)
+		return paths, files, revision, digest, err
+	}
+
+	clean, cleanErr := sandboxWorkspacePath(request.Path, false)
+	if cleanErr != nil {
+		return nil, nil, 0, "", listErr
+	}
+	files, revision, digest, status, readErr := c.workspaceReadFiles(ctx, id, ref, []string{clean})
+	if readErr != nil || status == http.StatusNotFound {
+		return nil, nil, 0, "", listErr
+	}
+	if _, ok := files[clean]; !ok {
+		return nil, nil, 0, "", listErr
+	}
+	paths := []string{}
+	if sandboxFileTypeMatch(clean, request.FileType) && sandboxGrepGlobMatch(request.Glob, clean) {
+		paths = append(paths, clean)
+	}
+	return paths, files, revision, digest, nil
+}
+
 func (c projectAssistantDataPlaneSandboxClient) workspaceGrep(ctx context.Context, id identity, ref dataPlaneRef, request projectAssistantSandboxWorkspaceRequest) (projectAssistantSandboxWorkspaceResponse, error) {
 	pattern := request.GrepPattern
 	if strings.TrimSpace(pattern) == "" {
@@ -532,17 +579,7 @@ func (c projectAssistantDataPlaneSandboxClient) workspaceGrep(ctx context.Contex
 	if err != nil {
 		return projectAssistantSandboxWorkspaceResponse{}, fmt.Errorf("invalid grep pattern: %w", err)
 	}
-	listed, err := c.workspaceList(ctx, id, ref, projectAssistantSandboxWorkspaceRequest{Path: request.Path, Limit: workspace.MaxListLimit})
-	if err != nil {
-		return projectAssistantSandboxWorkspaceResponse{}, err
-	}
-	paths := make([]string, 0, len(listed.Entries))
-	for _, entry := range listed.Entries {
-		if strings.EqualFold(entry.Type, "file") && sandboxFileTypeMatch(entry.Path, request.FileType) && sandboxGlobMatch(request.Glob, entry.Path) {
-			paths = append(paths, entry.Path)
-		}
-	}
-	files, revision, digest, _, err := c.workspaceReadFiles(ctx, id, ref, paths)
+	paths, files, revision, digest, err := c.workspaceGrepFiles(ctx, id, ref, request)
 	if err != nil {
 		return projectAssistantSandboxWorkspaceResponse{}, err
 	}

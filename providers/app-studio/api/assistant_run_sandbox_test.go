@@ -1875,6 +1875,92 @@ func TestProjectAssistantDataPlaneSandboxClientUsesWorkerWorkspaceWire(t *testin
 	}
 }
 
+func TestProjectAssistantDataPlaneSandboxClientGrepSupportsFileAndDirectoryPaths(t *testing.T) {
+	var operations []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/workspace/list"):
+			var request projectAssistantSandboxListWireRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode list request: %v", err)
+			}
+			operations = append(operations, "list:"+request.Path)
+			switch request.Path {
+			case "src/style.css":
+				http.Error(w, "readdirent /workspace/src/style.css: not a directory", http.StatusBadRequest)
+			case "src":
+				_ = json.NewEncoder(w).Encode(projectAssistantSandboxListWireResponse{
+					Entries: []projectAssistantSandboxListWireEntry{
+						{Path: "src/main.js", Type: "file", Size: 12},
+						{Path: "src/style.css", Type: "file", Size: 38},
+					},
+					SourceRevision: 12,
+					SourceDigest:   "project",
+				})
+			default:
+				http.Error(w, "no such file or directory", http.StatusNotFound)
+			}
+		case strings.HasSuffix(r.URL.Path, "/workspace/read"):
+			var request projectAssistantSandboxReadWireRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode read request: %v", err)
+			}
+			operations = append(operations, "read:"+strings.Join(request.Paths, ","))
+			if len(request.Paths) != 1 || request.Paths[0] != "src/style.css" {
+				http.Error(w, "file not found", http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(projectAssistantSandboxReadWireResponse{
+				Files: []projectAssistantSandboxReadWireFile{{
+					Path: "src/style.css", Content: ".settings-card {\n}\n.settings-card {\n}\n", Bytes: 38, Digest: "style",
+				}},
+				SourceRevision: 12,
+				SourceDigest:   "project",
+			})
+		default:
+			t.Fatalf("unexpected workspace path %s", r.URL.Path)
+		}
+	})
+	client := projectAssistantDataPlaneSandboxClient{server: &Server{
+		hubBase: "http://sandbox.test", mcpInsecureSkipTLSVerify: true,
+		sandboxDataPlaneClientFactory: func(time.Duration) *http.Client {
+			return &http.Client{Transport: sandboxRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, r)
+				return recorder.Result(), nil
+			})}
+		},
+	}}
+	id := identity{clusterID: "cluster", token: "token"}
+	ref := dataPlaneRef{Resource: "instances", Name: "as-run-shop-123", Component: "workspace"}
+
+	for _, searchPath := range []string{"src/style.css", "src"} {
+		response, err := client.Workspace(context.Background(), id, ref, projectAssistantSandboxWorkspaceRequest{
+			Action: "grep", Path: searchPath, GrepPattern: `\.settings-card \{`, Glob: "*.css", FileType: "css",
+		})
+		if err != nil {
+			t.Fatalf("grep path %q: %v", searchPath, err)
+		}
+		if response.SourceRevision != 12 || response.SourceDigest != "sha256:project" || len(response.Matches) != 2 {
+			t.Fatalf("grep path %q response = %#v", searchPath, response)
+		}
+		if response.Matches[0].Path != "src/style.css" || response.Matches[0].Line != 1 || response.Matches[1].Line != 3 {
+			t.Fatalf("grep path %q matches = %#v", searchPath, response.Matches)
+		}
+	}
+
+	_, err := client.Workspace(context.Background(), id, ref, projectAssistantSandboxWorkspaceRequest{
+		Action: "grep", Path: "src/missing.css", GrepPattern: "settings", Glob: "*.css",
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace list endpoint returned 404") {
+		t.Fatalf("missing file grep error = %v", err)
+	}
+	if got, want := strings.Join(operations, ";"), "list:src/style.css;read:src/style.css;list:src;read:src/style.css;list:src/missing.css;read:src/missing.css"; got != want {
+		t.Fatalf("grep operations = %q, want %q", got, want)
+	}
+}
+
 func TestProjectAssistantDataPlaneSandboxCheckpointWithNoChangesUsesDiffFence(t *testing.T) {
 	var paths []string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
