@@ -24,6 +24,8 @@
     "src/resourceName.test.ts",
     "src/tableRefs.ts",
     "src/tableRefs.test.ts",
+    "src/journey.ts",
+    "src/journey.test.ts",
     "src/route.ts",
     "src/navigation.ts",
     "src/route.test.ts",

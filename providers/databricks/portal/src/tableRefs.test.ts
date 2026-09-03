@@ -1,8 +1,10 @@
 import {
   importPrerequisiteMessage,
+  importPrerequisitesReady,
   nextValidWarehouseRef,
   warehousesForConnection,
 } from './tableRefs.js'
+import type { InitializationState } from './registrationTypes.js'
 
 interface WarehouseRef {
   name: string
@@ -28,8 +30,21 @@ const warehouses: WarehouseRef[] = [
   { name: 'orders-large', connectionRef: 'orders' },
 ]
 
+const ready: InitializationState = { connections: 'success', warehouses: 'success', tables: 'success' }
+const loading: InitializationState = { connections: 'loading', warehouses: 'success', tables: 'success' }
+const failed: InitializationState = { connections: 'error', warehouses: 'success', tables: 'success' }
+
+assertEqual(importPrerequisitesReady('warehouse', ready, 'orders', '', warehouses), true, 'warehouse browse is ready after successful initialization and connection selection')
+assertEqual(importPrerequisitesReady('warehouse', loading, 'orders', '', warehouses), false, 'warehouse browse waits for initialization')
+assertEqual(importPrerequisitesReady('warehouse', failed, 'orders', '', warehouses), false, 'warehouse browse stays disabled after initialization failure')
+assertEqual(importPrerequisitesReady('warehouse', ready, '', '', warehouses), false, 'warehouse browse requires a selected connection')
+assertEqual(importPrerequisitesReady('table', ready, 'orders', 'orders-sql', warehouses), true, 'table browse accepts a same-connection warehouse')
+assertEqual(importPrerequisitesReady('table', ready, 'orders', 'finance-sql', warehouses), false, 'table browse rejects a warehouse from another connection')
+assertEqual(importPrerequisitesReady('table', ready, 'orders', '', warehouses), false, 'table browse requires a selected warehouse')
+
 assertEqual(importPrerequisiteMessage([], warehouses), 'Add a connection before importing tables.', 'missing connection prerequisite')
 assertEqual(importPrerequisiteMessage(['orders'], []), 'Add a warehouse before importing tables.', 'missing warehouse prerequisite')
+assertEqual(importPrerequisiteMessage(['orders', 'finance'], [{ name: 'finance-sql', connectionRef: 'finance' }], 'orders'), 'Register a warehouse on the selected connection before importing tables.', 'foreign warehouse does not satisfy selected connection prerequisite')
 assertEqual(importPrerequisiteMessage(['orders'], warehouses), '', 'prerequisites satisfied')
 
 assertArray(warehousesForConnection(warehouses, 'orders').map(wh => wh.name), ['orders-sql', 'orders-large'], 'filters warehouses by connection')

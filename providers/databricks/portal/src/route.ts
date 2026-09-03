@@ -7,6 +7,8 @@ export interface CollectionRoute {
   connection?: string
   table?: string
   warehouse?: string
+  /** A table route with an explicit edit action, not an inline collection panel. */
+  edit?: true
 }
 
 export interface CreateRoute {
@@ -58,6 +60,9 @@ export function parseSubPath(sub: string | null | undefined): DatabricksRoute {
       : { page: 'warehouses' }
   }
   if (parts[0] === 'tables') {
+    if (parts.length === 3 && parts[1] !== '' && parts[2] === 'edit') {
+      return { page: 'tables', table: decodeSegment(parts[1]), edit: true }
+    }
     return parts.length > 1
       ? { page: 'tables', table: decodeSegment(parts.slice(1).join('/')) }
       : { page: 'tables' }
@@ -75,4 +80,9 @@ export function createPath(kind: CreateKind, mode: CreateMode = 'manual'): strin
 
 export function detailPath(page: Exclude<CollectionPage, 'connections'> | 'connections', name: string): string {
   return `${page}/${encodeURIComponent(name)}`
+}
+
+/** Build the provider-relative route for editing a registered table. */
+export function tableEditPath(name: string): string {
+  return `${detailPath('tables', name)}/edit`
 }

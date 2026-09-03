@@ -55,6 +55,12 @@ const { flattenProviderItems, hasActiveNavRoute, isActiveRoute, isProviderItemAc
 const { isFiniteDockPosition } = finiteDockPositionModule
 const { clampDockPosition } = clampDockPositionModule
 
+test('ordinary pages use the shared wide desktop column without becoming full bleed', () => {
+  assert.match(appLayout, /'relative z-10 min-h-0 min-w-0 flex-1'/)
+  assert.match(appLayout, /layoutProps\.fullBleed \? 'h-full min-h-0' : 'mx-auto w-full max-w-7xl'/)
+  assert.doesNotMatch(appLayout, /max-w-5xl/)
+})
+
 test('flat shell modes flatten provider children with qualified labels', () => {
   assert.match(shellNavigationSource, /export function flattenProviderItems\(items: ProviderNavEntry\[\]\)/)
   assert.match(shellNavigationSource, /label: `\$\{item\.label\} \/ \$\{child\.label\}`/)

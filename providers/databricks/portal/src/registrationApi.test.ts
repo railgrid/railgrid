@@ -27,6 +27,14 @@ try {
   const result = await api.registerResources({ kind: 'warehouse', connectionRef: 'sales', items: [{ name: 'orders', warehouseID: 'wh-1' }] })
   assert(result.results[0]?.state === 'created' && requests[1]?.init?.method === 'POST', 'registration contract')
 
+  globalThis.fetch = async () => new Response(JSON.stringify({ results: [{ index: 0, name: 'orders', state: 'failed', message: 'HTTPError: {"error":"token=dapi-secret"}' }] }), { status: 200 })
+  const sanitized = await api.registerResources({ kind: 'warehouse', connectionRef: 'sales', items: [{ name: 'orders', warehouseID: 'wh-1' }] })
+  assert(sanitized.results[0]?.message === 'Registration failed. Retry this item.', 'registration result exposed raw or sensitive provider text')
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ results: [{ index: 0, name: 'orders', state: 'conflict', message: 'A warehouse with this ID is already registered.' }] }), { status: 200 })
+  const actionable = await api.registerResources({ kind: 'warehouse', connectionRef: 'sales', items: [{ name: 'orders', warehouseID: 'wh-1' }] })
+  assert(actionable.results[0]?.message === 'A warehouse with this ID is already registered.', 'safe registration result detail was not preserved')
+
   globalThis.fetch = async () => new Response('{}', { status: 200 })
   await expectProtocol(() => api.discoverWarehouses('sales'), 'missing discovery envelope')
 

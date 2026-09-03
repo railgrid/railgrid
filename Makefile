@@ -207,7 +207,7 @@ build-code-provider: build-code-provider-portal ## Build the code provider binar
 	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
 
 build-databricks-provider-portal: ## Build the Databricks provider's micro-frontend (Vite + TS → portal/dist)
-	cd providers/databricks/portal && npm install --no-audit --no-fund && npm run test:tableRefs && npm run typecheck && npm run build
+	cd providers/databricks/portal && npm install --no-audit --no-fund && npm run test:portal && npm run typecheck && npm run build
 
 build-databricks-provider: build-databricks-provider-portal ## Build the Databricks provider binary (portal embedded)
 	cd providers/databricks && go build $(GOFLAGS) -ldflags "-X main.buildVersion=$(VERSION)" -o $(CURDIR)/$(BINDIR)/databricks-provider .

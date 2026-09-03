@@ -149,7 +149,7 @@ const mainPaddingBottom = computed(() => {
 })
 
 const mainClass = computed(() => [
-  'relative z-10 min-h-0 flex-1',
+  'relative z-10 min-h-0 min-w-0 flex-1',
   layoutProps.fullBleed ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-5 sm:px-8',
 ])
 
@@ -161,11 +161,11 @@ const mainStyle = computed(() => {
 const slotClass = computed(() => [
   'relative z-10',
   // Single source of truth for page content width: every non-full-bleed page
-  // renders in the SAME centered max-w-5xl column so the layout doesn't shift
+  // renders in the SAME centered max-w-7xl column so the layout doesn't shift
   // when navigating. Pages must NOT add their own mx-auto/max-w-* wrapper —
   // that reintroduces per-page width drift. Full-bleed provider workbenches opt
   // out and manage their own width.
-  layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-5xl',
+  layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-7xl',
 ])
 
 // Static destinations precede categorized provider entries. Everything

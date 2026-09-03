@@ -1,4 +1,5 @@
 import { api, setTenant, setTenantSelection, setToken } from './api.js'
+import { formatDatabricksError } from './errors.js'
 
 function assert(condition: unknown, label: string): asserts condition {
   if (!condition) throw new Error(label)
@@ -30,8 +31,49 @@ globalThis.fetch = async (input, init) => {
     },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
+const defaultFetch = globalThis.fetch
 
 try {
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'Databricks audit injected read failure' }), { status: 503, statusText: 'Service Unavailable' })
+  let formattedServiceFailure = ''
+  try {
+    await api.listConnections()
+  } catch (error) {
+    formattedServiceFailure = formatDatabricksError(error)
+  }
+  assert(formattedServiceFailure === 'Databricks service is unavailable. Retry the request.', '503 JSON response exposed transport details')
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ errors: [{ message: 'connections.databricks.faros.sh "no-such-connection" not found' }] }), { status: 200 })
+  let formattedNotFound = ''
+  try {
+    await api.listConnections()
+  } catch (error) {
+    formattedNotFound = formatDatabricksError(error)
+  }
+  assert(formattedNotFound === 'Connection "no-such-connection" not found.', 'GraphQL not-found was not mapped to concise resource copy')
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ errors: [{ message: 'forbidden' }] }), { status: 200 })
+  let formattedForbidden = ''
+  try {
+    await api.listConnections()
+  } catch (error) {
+    formattedForbidden = formatDatabricksError(error)
+  }
+  assert(formattedForbidden === 'You do not have permission to access Databricks resources in this workspace.', 'forbidden response was not mapped to permission copy')
+
+  assert(formatDatabricksError(new Error('ordinary network failure')) === 'Databricks request failed. Retry the request.', 'ordinary runtime Error leaked implementation text')
+  assert(formatDatabricksError(new RangeError('internal parser state')) === 'Databricks request failed. Retry the request.', 'runtime exception leaked implementation text')
+  assert(formatDatabricksError(new Error('ProtocolError: internal parser state')) === 'Databricks request failed. Retry the request.', 'runtime transport label leaked implementation text')
+  assert(formatDatabricksError(new TypeError('Failed to fetch')) === 'Databricks service is unavailable. Retry the request.', 'browser fetch failure was not mapped to service copy')
+  assert(formatDatabricksError({ reason: 'ProtocolError', message: 'Databricks response is malformed; retry the read.' }) === 'Databricks response is malformed; retry the read.', 'protocol message was not preserved without its reason label')
+  assert(formatDatabricksError({ reason: 'ConnectionUnavailable', message: 'Connection is not ready; retry in a few seconds.' }) === 'Connection is not ready; retry in a few seconds.', 'domain message was not preserved without its reason label')
+  assert(formatDatabricksError({ reason: 'TransportError', status: 503, message: '<html>temporary failure</html>' }) === 'Databricks service is unavailable. Retry the request.', 'HTML service body was exposed')
+  assert(formatDatabricksError({ reason: 'HTTPError', message: 'HTTPError: {"error":"token=dapi-secret"}' }) === 'Databricks request failed. Retry the request.', 'HTTP transport label or secret payload was exposed')
+  assert(formatDatabricksError({ reason: 'GraphQLError', message: 'GraphQLError: warehouses.databricks.faros.sh "no-such-warehouse" not found' }) === 'Warehouse "no-such-warehouse" not found.', 'GraphQL transport label was not removed from not-found copy')
+  assert(formatDatabricksError({ reason: 'DomainError', message: 'Databricks request failed: token=dapi-secret' }) === 'Databricks request failed. Retry the request.', 'secret-bearing domain detail was exposed')
+  assert(formatDatabricksError(null) === 'Databricks request failed. Retry the request.', 'unknown error input did not use safe fallback')
+  globalThis.fetch = defaultFetch
+
   await api.saveWarehouse({ name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123' })
   const manifest = JSON.parse(String((requests[0].body.variables as Record<string, unknown>).y)) as { metadata: { name: string } }
   assert(manifest.metadata.name === 'orders-sql', 'valid resource name was changed before apply')

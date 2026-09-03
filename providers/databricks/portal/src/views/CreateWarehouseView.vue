@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { ArrowLeft, LoaderCircle, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { contextGenerationKey } from '../context'
+import { formatDatabricksError } from '../errors'
 import {
   createOperationLocks,
   operationKey,
 } from '../refresh'
 import { resourceNameError } from '../resourceName'
-import type { Connection, ErrorResponse } from '../types'
+import type { DatabricksPrerequisiteKind } from '../journey'
+import type { Connection } from '../types'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
   (event: 'created', name: string): void
+  (event: 'prerequisite', kind: DatabricksPrerequisiteKind): void
 }>()
 
 const connections = ref<Connection[]>([])
@@ -46,11 +49,6 @@ const form = reactive({
 
 const hasConnections = computed(() => connections.value.length > 0)
 
-function errMessage(error: unknown): string {
-  const response = error as Partial<ErrorResponse>
-  return response.reason ? `${response.reason}: ${response.message}` : response.message || String(error)
-}
-
 function isCurrentRead(generation: number, expectedContext: number): boolean {
   return mounted && generation === readGeneration && contextGeneration.value === expectedContext
 }
@@ -76,7 +74,7 @@ async function load(): Promise<ReadToken | null> {
     return { generation, context: expectedContext }
   } catch (error) {
     if (!isCurrentRead(generation, expectedContext)) return null
-    loadError.value = errMessage(error)
+    loadError.value = formatDatabricksError(error)
     return null
   } finally {
     if (isCurrentRead(generation, expectedContext)) loading.value = false
@@ -145,7 +143,7 @@ async function submit(): Promise<void> {
     if (!isCurrentMutation(generation, expectedContext)) return
     emit('created', created.name)
   } catch (error) {
-    await focusFormError(errMessage(error), generation, expectedContext)
+    await focusFormError(formatDatabricksError(error), generation, expectedContext)
   } finally {
     operations.release(lock)
     if (isCurrentMutation(generation, expectedContext)) submitting.value = false
@@ -188,7 +186,10 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
       </p>
       <p v-if="loaded && !hasConnections" class="prerequisite" role="status">
-        Add a connection before registering a warehouse.
+        <span class="prerequisite-copy">Add a connection before registering a warehouse.</span>
+        <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="emit('prerequisite', 'connection')">
+          Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+        </button>
       </p>
         <div class="field">
           <label class="field-label" for="warehouse-connection">Connection</label>
@@ -206,7 +207,11 @@ onBeforeUnmount(() => {
         <div class="field">
           <label class="field-label" for="warehouse-id">Warehouse ID</label>
           <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="loading || submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
-          <span id="warehouse-id-hint" class="field-hint">In Databricks: SQL → SQL Warehouses → open the warehouse. Use the 16-character ID from Connection details (/sql/1.0/warehouses/&lt;id&gt;), not the numeric ?o= workspace ID. The token identity needs “Can use” permission.</span>
+          <span id="warehouse-id-hint" class="field-hint">Use the warehouse’s 16-character ID. The connection token needs “Can use” permission.</span>
+          <details class="field-disclosure">
+            <summary>Where to find the warehouse ID</summary>
+            <p>In Databricks, open SQL → SQL Warehouses → your warehouse → Connection details. Copy the value after <code>/sql/1.0/warehouses/</code>, not the numeric <code>?o=</code> workspace ID.</p>
+          </details>
         </div>
       </div>
       <div class="k-create-actions">

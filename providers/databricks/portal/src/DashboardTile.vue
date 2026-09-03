@@ -10,6 +10,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, ChevronRight, Link2, Package } from 'lucide-vue-next'
 import { api, setTenant, setTenantSelection, setToken } from './api'
+import { formatDatabricksError } from './errors'
 import type { Connection, Warehouse } from './types'
 import {
   createTilePoller,
@@ -18,7 +19,6 @@ import {
   mostRecent,
   navigateFromTile,
   tileClass,
-  tileErrorText,
   type TileContext,
   type TilePoller,
 } from './portalkit/dashboardtile'
@@ -68,7 +68,7 @@ async function load() {
   } catch (e) {
     warehouses.value = []
     connections.value = []
-    error.value = isBenignTileError(e) ? null : tileErrorText(e)
+    error.value = isBenignTileError(e) ? null : formatDatabricksError(e)
   } finally {
     loading.value = false
   }

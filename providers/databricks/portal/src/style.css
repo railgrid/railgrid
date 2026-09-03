@@ -299,9 +299,32 @@ faros-provider-databricks .field-label {
 }
 
 faros-provider-databricks .field-hint {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
   line-height: 1.5;
+}
+
+faros-provider-databricks .field-disclosure {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+faros-provider-databricks .field-disclosure summary {
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  inline-size: fit-content;
+  outline: none;
+}
+
+faros-provider-databricks .field-disclosure summary:focus-visible {
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+
+faros-provider-databricks .field-disclosure p {
+  margin: 6px 0 0;
+  max-width: 68ch;
 }
 
 faros-provider-databricks .mono {
@@ -326,7 +349,7 @@ faros-provider-databricks .props {
 }
 
 faros-provider-databricks .props dt {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 
 faros-provider-databricks .props dd {
@@ -367,9 +390,136 @@ faros-provider-databricks .warning {
 }
 
 faros-provider-databricks .empty {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   margin: 0;
+}
+
+/* First-use guidance stays within AppLayout's canonical content column. Keep
+ * the surface compact and top-aligned so large monitors do not turn a short
+ * onboarding message into a vertically centered billboard. */
+faros-provider-databricks .databricks-first-run {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent, #8b6bff) 7%, transparent), transparent 44%),
+    var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 0;
+  overflow: hidden;
+  padding: 24px clamp(24px, 3vw, 40px);
+}
+
+faros-provider-databricks .databricks-first-run__lead {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+faros-provider-databricks .databricks-first-run__icon {
+  color: var(--color-accent, #8b6bff);
+  height: 24px;
+  margin-top: 2px;
+  width: 24px;
+}
+
+faros-provider-databricks .databricks-first-run__copy h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 7px;
+}
+
+faros-provider-databricks .databricks-first-run__copy p {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+  max-width: 62ch;
+}
+
+faros-provider-databricks .databricks-first-run__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 2;
+}
+
+faros-provider-databricks .databricks-first-run__actions svg {
+  height: 14px;
+  width: 14px;
+}
+
+faros-provider-databricks .databricks-journey {
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none;
+  margin: 28px 0 0;
+  padding: 0;
+}
+
+faros-provider-databricks .databricks-journey__step {
+  align-items: flex-start;
+  border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  color: var(--color-text-secondary, #8a8ca6);
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 15px 16px 0 0;
+}
+
+faros-provider-databricks .databricks-journey__step--complete,
+faros-provider-databricks .databricks-journey__step--current {
+  border-top-color: color-mix(in srgb, var(--color-accent, #8b6bff) 72%, var(--color-border-default));
+}
+
+faros-provider-databricks .databricks-journey__marker {
+  align-items: center;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 3px;
+  display: inline-flex;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
+  font-size: 10px;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+faros-provider-databricks .databricks-journey__marker svg {
+  height: 12px;
+  width: 12px;
+}
+
+faros-provider-databricks .databricks-journey__step--complete .databricks-journey__marker {
+  color: var(--color-success, #2fd6a0);
+}
+
+faros-provider-databricks .databricks-journey__step--current .databricks-journey__marker {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  border-color: var(--color-accent, #8b6bff);
+  color: var(--color-accent, #8b6bff);
+}
+
+faros-provider-databricks .databricks-journey__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+faros-provider-databricks .databricks-journey__copy strong {
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+faros-provider-databricks .databricks-journey__copy small {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 faros-provider-databricks .import-backdrop {
@@ -421,8 +571,8 @@ faros-provider-databricks .import-actions {
 
 faros-provider-databricks .import-head { align-items: flex-start; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 faros-provider-databricks .import-head h2 { font-size: 16px; font-weight: 600; margin: 2px 0 3px; }
-faros-provider-databricks .import-head p { color: var(--color-text-muted, #5d5f78); font-size: 11px; margin: 0; }
-faros-provider-databricks .import-eyebrow { color: var(--color-text-muted, #5d5f78); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+faros-provider-databricks .import-head p { color: var(--color-text-secondary, #8a8ca6); font-size: 11px; margin: 0; }
+faros-provider-databricks .import-eyebrow { color: var(--color-text-secondary, #8a8ca6); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 faros-provider-databricks .import-head .databricks-dialog-close svg { height: 15px; width: 15px; }
 
 faros-provider-databricks .import-steps {
@@ -434,7 +584,7 @@ faros-provider-databricks .import-steps {
   padding: 0 18px;
 }
 
-faros-provider-databricks .import-steps li { border-bottom: 2px solid transparent; color: var(--color-text-muted, #5d5f78); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 9px 4px 8px; text-align: center; text-transform: uppercase; }
+faros-provider-databricks .import-steps li { border-bottom: 2px solid transparent; color: var(--color-text-secondary, #8a8ca6); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 9px 4px 8px; text-align: center; text-transform: uppercase; }
 faros-provider-databricks .import-steps li[aria-current='step'] { border-bottom-color: var(--color-accent, #8b6bff); color: var(--color-accent, #8b6bff); }
 faros-provider-databricks .import-body { min-height: 260px; overflow-y: auto; padding: 18px; }
 faros-provider-databricks .import-stack,
@@ -447,7 +597,14 @@ faros-provider-databricks .review-row strong,
 faros-provider-databricks .result-summary strong { font-size: 13px; font-weight: 600; }
 faros-provider-databricks .review-row small,
 faros-provider-databricks .result-summary small,
-faros-provider-databricks .result-row small { color: var(--color-text-muted, #5d5f78); font-size: 11px; line-height: 1.45; }
+faros-provider-databricks .result-row small { color: var(--color-text-secondary, #8a8ca6); font-size: 11px; line-height: 1.45; }
+faros-provider-databricks .result-row > code {
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 faros-provider-databricks .review-row,
 faros-provider-databricks .result-row { align-items: center; background: var(--color-surface-overlay, #171927); border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 4px; display: grid; gap: 10px; padding: 10px 12px; }
@@ -464,7 +621,7 @@ faros-provider-databricks .lazy-tree-expander svg.expanded { transform: rotate(9
 faros-provider-databricks .lazy-tree-expander-spacer { height: 16px; width: 16px; }
 faros-provider-databricks .lazy-tree-copy { display: grid; gap: 2px; min-width: 0; }
 faros-provider-databricks .lazy-tree-copy strong { color: var(--color-text-primary, #e9e9f2); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-muted, #5d5f78); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-secondary, #8a8ca6); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 faros-provider-databricks .lazy-tree-error { color: var(--color-danger, #ff5d5d); font-size: 11px; margin: 5px 0 6px 40px; }
 faros-provider-databricks .lazy-tree-more { margin: 5px 0 5px 40px; }
 faros-provider-databricks .lazy-tree-root-more { justify-self: start; margin-top: 6px; }
@@ -477,7 +634,13 @@ faros-provider-databricks .result-state.created { background: var(--color-succes
 faros-provider-databricks .result-state.existing { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); }
 faros-provider-databricks .result-state.conflict,
 faros-provider-databricks .result-state.failed { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
-faros-provider-databricks .prerequisite { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); border-radius: 4px; color: var(--color-warning, #f0a63a); font-size: 12px; padding: 10px 12px; }
+faros-provider-databricks .prerequisite { align-items: center; background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); border-radius: 4px; color: var(--color-text-primary, #e9e9f2); display: flex; font-size: 12px; gap: 12px; justify-content: space-between; padding: 10px 12px; }
+faros-provider-databricks .prerequisite-copy { min-width: 0; }
+faros-provider-databricks .prerequisite-action { flex: 0 0 auto; margin-left: auto; }
+faros-provider-databricks .initialization-status { min-height: 18px; }
+faros-provider-databricks .initialization-phase,
+faros-provider-databricks .initialization-summary { align-items: center; color: var(--color-text-secondary, #8a8ca6); display: flex; font-size: 11px; gap: 7px; margin: 0; }
+faros-provider-databricks .initialization-summary--ready { color: var(--color-success, #2fd6a0); }
 faros-provider-databricks .import-loading { align-items: center; color: var(--color-text-secondary, #8a8ca6); display: flex; font-size: 12px; gap: 7px; margin: 12px 0 0; }
 faros-provider-databricks .import-loading svg,
 faros-provider-databricks .import-actions svg { height: 14px; width: 14px; }
@@ -489,11 +652,23 @@ faros-provider-databricks .import-spacer { flex: 1; }
 @keyframes provider-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 620px) {
+  /* Keep collection copy readable when Refresh and create actions cannot sit
+   * beside it on a narrow touch viewport. */
+  faros-provider-databricks .page-head { flex-wrap: wrap; }
+  faros-provider-databricks .page-head > :first-child { flex: 1 1 100%; min-width: 0; }
+  faros-provider-databricks .page-head > .actions { flex: 1 1 100%; justify-content: flex-start; }
+  faros-provider-databricks .databricks-first-run__lead { grid-template-columns: minmax(0, 1fr); }
+  faros-provider-databricks .databricks-first-run__actions { grid-column: 1; }
+  faros-provider-databricks .databricks-journey { gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  faros-provider-databricks .databricks-journey__step { border-left: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-top: 0; padding: 0 0 0 14px; }
   faros-provider-databricks .import-backdrop {
     align-items: stretch;
     padding: 10px calc(10px + var(--app-inset-right, 0px)) calc(10px + var(--app-inset-bottom, 0px)) calc(10px + var(--app-inset-left, 0px));
   }
   faros-provider-databricks .import-dialog { max-height: calc(100vh - 20px); }
+  faros-provider-databricks .prerequisite { align-items: flex-start; flex-wrap: wrap; }
+  faros-provider-databricks .prerequisite-copy { flex: 1 1 100%; }
+  faros-provider-databricks .prerequisite-action { margin-left: 0; }
   faros-provider-databricks .review-row,
   faros-provider-databricks .result-row { grid-template-columns: minmax(0, 1fr); }
 }

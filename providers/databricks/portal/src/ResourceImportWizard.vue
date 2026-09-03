@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, Database, LoaderCircle, X } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Database, LoaderCircle, X } from 'lucide-vue-next'
 import { api } from './api'
 import { contextGenerationKey } from './context'
+import { formatDatabricksError } from './errors'
+import type { DatabricksPrerequisiteKind } from './journey'
 import LazyCheckboxTree from './LazyCheckboxTree.vue'
 import {
   REGISTRATION_LIMIT,
@@ -15,6 +17,7 @@ import {
   type RegistrationTreeNode,
   type TreePage,
 } from './registrationTree'
+import { importPrerequisitesReady } from './tableRefs'
 import {
   materializeRegistrationResults,
   mergeRegistrationResults,
@@ -35,7 +38,7 @@ import type {
   RemoteTable,
   RemoteWarehouse,
 } from './registrationTypes'
-import type { Connection, ErrorResponse, Table, Warehouse } from './types'
+import type { Connection, Table, Warehouse } from './types'
 
 type Kind = 'warehouse' | 'table'
 type Step = 'source' | 'browse' | 'review' | 'results'
@@ -53,7 +56,7 @@ const props = withDefaults(defineProps<{ kind: Kind; routeOwned?: boolean }>(), 
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'registered'): void
-  (event: 'navigate', path: 'connections' | 'warehouses'): void
+  (event: 'prerequisite', kind: DatabricksPrerequisiteKind): void
 }>()
 
 const root = ref<HTMLElement | null>(null)
@@ -88,25 +91,36 @@ let mounted = false
 // keyed replacement. Keep this instance inert during that scheduling window.
 let mountedContextGeneration: number | null = null
 let previousFocus: HTMLElement | null = null
+const routeHeading = ref<HTMLElement | null>(null)
+const routeAnnouncement = ref('')
 
 const plural = computed(() => props.kind === 'warehouse' ? 'warehouses' : 'tables')
 const matchingWarehouses = computed(() => warehouses.value.filter(item => item.connectionRef === connectionRef.value))
+const selectedConnectionReady = computed(() => !!connectionRef.value && connections.value.some(item => item.name === connectionRef.value))
 const selectedNodes = computed(() => tree.value.selectedLeafIds.map(id => tree.value.nodes[id]).filter((node): node is RegistrationTreeNode => !!node && isLeaf(node)))
 const requiredInitialization = computed<readonly InitializationResource[]>(() => props.kind === 'table' ? ['connections', 'warehouses', 'tables'] : ['connections', 'warehouses'])
 const initializationPending = computed(() => requiredInitialization.value.some(resource => initializationState[resource] === 'loading'))
+const initializationReady = computed(() => requiredInitialization.value.every(resource => initializationState[resource] === 'success'))
+const sameConnectionWarehouseMissing = computed(() => props.kind === 'table'
+  && initializationState.warehouses === 'success'
+  && selectedConnectionReady.value
+  && matchingWarehouses.value.length === 0)
+const browseReady = computed(() => selectedConnectionReady.value
+  && importPrerequisitesReady(props.kind, initializationState, connectionRef.value, warehouseRef.value, warehouses.value))
+const browseGuidanceID = computed(() => `databricks-${props.kind}-browse-guidance`)
+const browseGuidance = computed(() => {
+  const blocker = initializationBlocker()
+  if (blocker) return blocker
+  if (!selectedConnectionReady.value) return 'Create or select a Databricks connection before browsing.'
+  if (props.kind === 'table' && !matchingWarehouses.value.some(item => item.name === warehouseRef.value)) {
+    return 'Register and select a SQL warehouse on this connection before browsing.'
+  }
+  return ''
+})
 const dialogBusy = computed(() => rootLoading.value || branchChecking.value || submitting.value || initializationPending.value || Object.values(tree.value.nodes).some(node => node.loading))
 const failedResultIndices = computed(() => retryableRegistrationIndices(results.value))
 const retryableResults = computed(() => failedResultIndices.value.filter(index => !!registrationItems.value[index]))
 const stepLabel = computed(() => ({ source: 'Choose source', browse: `Browse ${plural.value}`, review: 'Review', results: 'Results' })[step.value])
-
-function message(cause: unknown): string {
-  if (cause && typeof cause === 'object') {
-    const failure = cause as Partial<ErrorResponse>
-    if (failure.reason && failure.message) return `${failure.reason}: ${failure.message}`
-    if (failure.message) return failure.message
-  }
-  return cause instanceof Error ? cause.message : String(cause)
-}
 
 function phaseLabel(resource: InitializationResource): string {
   return resource === 'connections' ? 'connections' : resource === 'warehouses' ? 'registered warehouses' : 'registered tables'
@@ -136,6 +150,11 @@ function isCurrentFocus(token: ContinuationToken): boolean {
   return focusGeneration === token.generation && mountedContextGeneration === token.context && contextGeneration.value === token.context
 }
 
+function queryRoot<T extends HTMLElement>(selector: string): T | null {
+  const element = root.value
+  return element && typeof element.querySelector === 'function' ? element.querySelector<T>(selector) : null
+}
+
 function contextChangedError(): Error {
   return new Error('Connection changed while selecting the branch; nothing was selected.')
 }
@@ -162,7 +181,7 @@ async function loadInitializationPhase(resource: InitializationResource, expecte
     initializationState[resource] = 'success'
   } catch (cause) {
     if (!isCurrentInitialization(resource, token)) return
-    initializationState[resource] = 'error'; initializationErrors[resource] = message(cause)
+    initializationState[resource] = 'error'; initializationErrors[resource] = formatDatabricksError(cause)
   }
 }
 
@@ -246,7 +265,7 @@ async function loadRoot(append = false): Promise<ContinuationToken | null> {
     return treeToken
   } catch (cause) {
     if (isCurrentTree(treeToken)) {
-      rootError.value = message(cause)
+      rootError.value = formatDatabricksError(cause)
       return treeToken
     }
   }
@@ -263,7 +282,7 @@ async function loadNodePage(id: string, append = false): Promise<void> {
     const page = await fetchChildren(node, append ? node.nextPageToken : undefined, treeToken)
     if (!isCurrentTree(treeToken) || tree.value.nodes[id] !== node) return
     appendTreePage(tree.value, id, page)
-  } catch (cause) { if (isCurrentTree(treeToken) && tree.value.nodes[id] === node) node.error = message(cause) }
+  } catch (cause) { if (isCurrentTree(treeToken) && tree.value.nodes[id] === node) node.error = formatDatabricksError(cause) }
   finally { if (isCurrentTree(treeToken) && tree.value.nodes[id] === node) node.loading = false }
 }
 
@@ -289,9 +308,13 @@ async function toggleNode(id: string, checked: boolean): Promise<void> {
   const remaining = REGISTRATION_LIMIT - tree.value.selectedLeafIds.length
   branchChecking.value = true
   const result = await exhaustBranchSelection(tree.value, id, async (parent, pageToken) => {
-    const page = await fetchChildren(parent, pageToken, treeToken)
-    if (!isCurrentTree(treeToken)) throw contextChangedError()
-    return page
+    try {
+      const page = await fetchChildren(parent, pageToken, treeToken)
+      if (!isCurrentTree(treeToken)) throw contextChangedError()
+      return page
+    } catch (cause) {
+      throw new Error(formatDatabricksError(cause))
+    }
   }, remaining)
   if (isCurrentTree(treeToken)) {
     if (result.complete && result.state) { tree.value = result.state; tree.value.nodes[id].expanded = true }
@@ -307,8 +330,8 @@ async function fromSource(): Promise<void> {
   const expectedContext = contextGeneration.value
   error.value = null
   const blocker = initializationBlocker(); if (blocker) { error.value = blocker; return }
-  if (!connectionRef.value) { error.value = 'Select a connection.'; return }
-  if (props.kind === 'table' && !warehouseRef.value) { error.value = 'Select a registered warehouse on this connection.'; return }
+  if (!selectedConnectionReady.value) { error.value = 'Select a connection.'; return }
+  if (props.kind === 'table' && !matchingWarehouses.value.some(item => item.name === warehouseRef.value)) { error.value = 'Select a registered warehouse on this connection.'; return }
   resetTree(); step.value = 'browse'
   const treeToken = await loadRoot()
   if (!treeToken || !isCurrentTree(treeToken) || contextGeneration.value !== expectedContext) return
@@ -362,7 +385,7 @@ async function register(): Promise<void> {
     results.value = materializeRegistrationResults(registrationItemsSnapshot, [])
     step.value = 'results'
     if (!isCurrentSubmission(submissionToken)) return
-    error.value = message(cause)
+    error.value = formatDatabricksError(cause)
     focusStep()
   }
   finally { if (isCurrentSubmission(submissionToken)) submitting.value = false }
@@ -381,7 +404,7 @@ async function retryFailed(): Promise<void> {
     const response = await api.registerResources({ kind: props.kind, connectionRef: coordinatesSnapshot.connectionRef, warehouseRef: props.kind === 'table' ? coordinatesSnapshot.warehouseRef : undefined, items: retryItems })
     if (!isCurrentSubmission(submissionToken)) return
     results.value = mergeRegistrationResults(results.value, retryItems, response.results, entries.map(entry => entry.index)); emitRegisteredIfNeeded(response.results)
-  } catch (cause) { if (isCurrentSubmission(submissionToken)) error.value = message(cause) }
+  } catch (cause) { if (isCurrentSubmission(submissionToken)) error.value = formatDatabricksError(cause) }
   finally { if (isCurrentSubmission(submissionToken)) submitting.value = false }
 }
 
@@ -392,19 +415,52 @@ function back(): void {
   else if (step.value === 'review') { registrationFrozen.value = false; step.value = 'browse' }
   focusStep()
 }
-function navigateTo(path: 'connections' | 'warehouses'): void {
+function resolvePrerequisite(kind: DatabricksPrerequisiteKind): void {
   if (!isMountedContextCurrent()) return
   previousFocus = null
-  emit('navigate', path)
+  emit('prerequisite', kind)
 }
 function focusStep(): void {
-  if (props.routeOwned || !mounted) return
+  if (!mounted) return
   if (!isMountedContextCurrent()) return
   const token = { generation: ++focusGeneration, context: contextGeneration.value }
   void nextTick(() => {
     if (mounted && isCurrentFocus(token)) {
-      root.value?.querySelector<HTMLElement>('.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
+      const selector = step.value === 'source'
+        ? '.import-body select:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled)'
+        : step.value === 'browse'
+          ? '[role="treeitem"][tabindex="0"],.import-body button:not(:disabled)'
+          : step.value === 'review'
+            ? '.import-body input:not(:disabled),.import-body button:not(:disabled)'
+            : '.import-body button:not(:disabled)'
+      // Route-owned registration is a real page transition. Put focus on its
+      // heading so the destination is announced consistently, even when the
+      // first control is disabled while prerequisites settle.
+      const target = props.routeOwned ? routeHeading.value ?? queryRoot<HTMLElement>(selector) : queryRoot<HTMLElement>(selector)
+      target?.focus()
+      if (props.routeOwned) announceRoute(routeStepAnnouncement())
     }
+  })
+}
+
+function routeStepAnnouncement(): string {
+  if (step.value === 'source') {
+    if (initializationPending.value) return `Register ${plural.value}. Loading prerequisites.`
+    if (!browseReady.value) return `Register ${plural.value}. ${browseGuidance.value}`
+    return `Register ${plural.value}. Choose a source, then browse Databricks metadata.`
+  }
+  if (step.value === 'browse') return `Browse ${plural.value}. Select resources to continue to review.`
+  if (step.value === 'review') return `Review selected ${plural.value} before registering them.`
+  return `Registration results for ${plural.value} are ready.`
+}
+
+function announceRoute(message: string): void {
+  if (!props.routeOwned) return
+  // Clear first so a repeated visit to the same route still produces a live
+  // region announcement for assistive technology.
+  routeAnnouncement.value = ''
+  void nextTick(() => {
+    if (mounted && isMountedContextCurrent()) routeAnnouncement.value = message
   })
 }
 function focusDialog(): void {
@@ -413,7 +469,7 @@ function focusDialog(): void {
   const token = { generation: ++focusGeneration, context: contextGeneration.value }
   void nextTick(() => {
     if (mounted && isCurrentFocus(token)) {
-      root.value?.querySelector<HTMLElement>('.import-head button:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
+      queryRoot<HTMLElement>('.import-head button:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
     }
   })
 }
@@ -434,8 +490,9 @@ function backdropPointerDown(event: PointerEvent): void {
   if (!props.routeOwned && event.target === event.currentTarget) close()
 }
 function dialogTabStops(): HTMLElement[] {
-  if (!root.value) return []
-  return [...root.value.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),[role="treeitem"][tabindex="0"]')]
+  const element = root.value
+  if (!element || typeof element.querySelectorAll !== 'function') return []
+  return [...element.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),[role="treeitem"][tabindex="0"]')]
     .filter(element => element.tabIndex === 0)
 }
 function keydown(event: KeyboardEvent): void {
@@ -457,6 +514,8 @@ onMounted(() => {
   if (!props.routeOwned) {
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     focusDialog()
+  } else {
+    focusStep()
   }
   void initialize().then(token => {
     if (token && isCurrentInitializationRun(token)) focusStep()
@@ -475,17 +534,38 @@ onBeforeUnmount(() => {
 <template>
   <div :class="props.routeOwned ? 'k-create-page' : 'import-backdrop'" @pointerdown="backdropPointerDown">
     <button v-if="props.routeOwned" class="k-btn k-btn--ghost k-back-action" type="button" :disabled="submitting" @click="close"><ArrowLeft :stroke-width="1.75" /> {{ kind === 'table' ? 'Tables' : 'Warehouses' }}</button>
-    <header v-if="props.routeOwned" class="k-create-header"><h2 id="registration-title" class="k-create-title">Register {{ plural }}</h2><p id="registration-description" class="k-create-description">Browse Databricks metadata and register selected {{ plural }}.</p></header>
-    <section ref="root" :class="['import-dialog', { 'k-create-surface k-create-surface--wide': props.routeOwned }]" :role="props.routeOwned ? undefined : 'dialog'" :aria-modal="props.routeOwned ? undefined : 'true'" aria-labelledby="registration-title" aria-describedby="registration-description" :aria-busy="dialogBusy ? 'true' : 'false'" @keydown="keydown">
+    <header v-if="props.routeOwned" class="k-create-header"><h2 id="registration-title" ref="routeHeading" class="k-create-title" tabindex="-1">Register {{ plural }}</h2><p id="registration-description" class="k-create-description">Browse Databricks metadata and register selected {{ plural }}.</p></header>
+    <p v-if="props.routeOwned" class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ routeAnnouncement }}</p>
+    <section ref="root" :class="['import-dialog', { 'import-dialog--route k-create-surface k-create-surface--wide': props.routeOwned }]" :role="props.routeOwned ? undefined : 'dialog'" :aria-modal="props.routeOwned ? undefined : 'true'" aria-labelledby="registration-title" aria-describedby="registration-description" :aria-busy="dialogBusy ? 'true' : 'false'" @keydown="keydown">
       <header v-if="!props.routeOwned" class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-btn k-btn--ghost databricks-dialog-close" type="button" aria-label="Close" :disabled="submitting" @click="close"><X :stroke-width="1.75" /></button></header>
       <ol class="import-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
       <div class="import-body">
         <div v-if="step === 'source'" class="import-stack">
           <label class="field"><span class="field-label">Connection</span><select class="k-input" v-model="connectionRef" :disabled="initializationPending || submitting"><option v-for="item in connections" :key="item.name" :value="item.name">{{ item.name }}</option></select><span class="field-hint">Discovery uses this connection's Databricks credentials.</span></label>
           <label v-if="kind === 'table'" class="field"><span class="field-label">Query warehouse</span><select class="k-input" v-model="warehouseRef" :disabled="initializationPending || submitting"><option value="" disabled>Select warehouse</option><option v-for="item in matchingWarehouses" :key="item.name" :value="item.name">{{ item.name }}</option></select><span class="field-hint">Imported tables remain bound to this same-connection warehouse.</span></label>
-          <div class="initialization-status" :aria-busy="initializationPending ? 'true' : 'false'" aria-live="polite"><p v-for="resource in requiredInitialization" :key="resource" class="initialization-phase"><span v-if="initializationState[resource] === 'loading'">Loading {{ phaseLabel(resource) }}…</span><span v-else-if="initializationState[resource] === 'error'" class="error" role="alert">{{ phaseLabel(resource) }} could not be loaded: {{ initializationErrors[resource] }}.</span><span v-else-if="initializationState[resource] === 'success'" class="muted">{{ phaseLabel(resource) }} loaded.</span><button v-if="initializationState[resource] === 'error'" class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="retryInitialization(resource)">Retry</button></p></div>
-          <div v-if="!connections.length && !initializationPending && initializationState.connections === 'success'" class="prerequisite">A connection is required. <button class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="navigateTo('connections')">Go to connections</button></div>
-          <div v-else-if="kind === 'table' && !warehouses.length && !initializationPending && initializationState.warehouses === 'success'" class="prerequisite">A registered warehouse is required. <button class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="navigateTo('warehouses')">Go to warehouses</button></div>
+          <div class="initialization-status" :aria-busy="initializationPending ? 'true' : 'false'">
+            <p v-if="initializationReady" :class="['initialization-summary', { 'initialization-summary--ready': browseReady }]" role="status" aria-live="polite">{{ browseReady ? 'Prerequisites ready.' : 'Prerequisite checks complete.' }}</p>
+            <template v-else v-for="resource in requiredInitialization" :key="resource">
+              <p v-if="initializationState[resource] === 'loading'" class="initialization-phase" role="status" aria-live="polite">Loading {{ phaseLabel(resource) }}…</p>
+              <p v-else-if="initializationState[resource] === 'error'" class="initialization-phase error" role="alert" aria-live="assertive">
+                <span>{{ phaseLabel(resource) }} could not be loaded: {{ initializationErrors[resource] }}</span>
+                <button class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="retryInitialization(resource)">Retry</button>
+              </p>
+            </template>
+          </div>
+          <div v-if="!connections.length && !initializationPending && initializationState.connections === 'success'" class="prerequisite" role="status">
+            <span class="prerequisite-copy">A connection is required.</span>
+            <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('connection')">
+              Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+            </button>
+          </div>
+          <div v-else-if="sameConnectionWarehouseMissing" class="prerequisite" role="status">
+            <span class="prerequisite-copy">A registered warehouse on this connection is required.</span>
+            <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('warehouse')">
+              Register warehouse <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+            </button>
+          </div>
+          <p v-if="!browseReady" :id="browseGuidanceID" class="sr-only">{{ browseGuidance }}</p>
         </div>
         <LazyCheckboxTree v-else-if="step === 'browse'" :tree="tree" :label="`Available ${plural}`" :root-loading="rootLoading" :root-error="rootError" :root-next-page-token="rootNextPageToken" :busy="branchChecking || submitting" @expand="expandNode" @toggle="toggleNode" @load-more="loadMore" />
         <div v-else-if="step === 'review'" class="review-list" :aria-busy="submitting ? 'true' : 'false'"><label v-for="entry in reviewEntries" :key="entry.key" class="review-row"><span><strong>{{ entry.label }}</strong><small>{{ 'warehouseID' in entry.item ? entry.item.warehouseID : `${entry.item.catalog}.${entry.item.schema}.${entry.item.table}` }}</small></span><span class="field"><span class="field-label">Faros resource name</span><input class="k-input" v-model="entry.name" autocomplete="off" :disabled="submitting || registrationFrozen" /><small v-if="resourceNameError(entry.name, 'Resource name')" class="error">{{ resourceNameError(entry.name, 'Resource name') }}</small></span></label><p v-if="reviewValidationError" class="error" role="alert">{{ reviewValidationError }}</p><p class="muted">Nothing is created until you confirm. Existing resources are never overwritten.</p></div>
@@ -494,7 +574,7 @@ onBeforeUnmount(() => {
         <p v-if="submitting" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Registering selected {{ plural }}…</p>
         <p v-if="error" class="error" role="alert" aria-live="assertive">{{ error }}</p>
       </div>
-      <footer :class="props.routeOwned ? 'k-create-actions' : 'import-actions'"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="props.routeOwned && step !== 'results'" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="close">Cancel</button><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="initializationPending || submitting" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="close">Done</button></footer>
+      <footer :class="props.routeOwned ? 'k-create-actions' : 'import-actions'"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="props.routeOwned && step !== 'results'" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="close">Cancel</button><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="!browseReady || initializationPending || submitting" :aria-describedby="!browseReady ? browseGuidanceID : undefined" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="close">Done</button></footer>
     </section>
   </div>
 </template>

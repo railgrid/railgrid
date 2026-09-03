@@ -395,7 +395,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppLayout :full-bleed="isFullBleedProvider">
-    <div class="flex h-full min-h-0 flex-col">
+    <div class="flex h-full min-h-0 min-w-0 flex-col">
       <!-- Portal chrome. Lives outside the provider's own element so the
            name/version/status come from the catalog, not the provider. -->
       <header v-if="catalogSettled && entry && !isFullBleedProvider" class="mb-4 flex flex-wrap items-center gap-3">
@@ -532,7 +532,7 @@ onBeforeUnmount(() => {
       <div
         v-if="accessAllowed"
         ref="mountRef"
-        class="min-h-0 flex-1"
+        class="min-h-0 min-w-0 flex-1"
       />
     </div>
   </AppLayout>

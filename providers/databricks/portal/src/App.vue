@@ -5,11 +5,22 @@ import { setBasePath, setTenant, setTenantSelection, setToken } from './api'
 import { contextGenerationKey } from './context'
 import { navigationDetail } from './navigation'
 import { setOperationContext } from './refresh'
+import {
+  clearDatabricksReturnIntent,
+  databricksJourneyTenantKey,
+  databricksJourneyStorage,
+  destinationAfterPrerequisite,
+  prerequisiteCreatePath,
+  readDatabricksReturnIntent,
+  writeDatabricksReturnIntent,
+  type DatabricksPrerequisiteKind,
+  type DatabricksReturnPath,
+} from './journey'
 import ResourceImportWizard from './ResourceImportWizard.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import type { FarosContext } from './types'
-import { collectionPath, createPath, detailPath, parseSubPath, type DatabricksRoute } from './route'
+import { collectionPath, createPath, detailPath, parseSubPath, tableEditPath, type DatabricksRoute } from './route'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import CreateConnectionView from './views/CreateConnectionView.vue'
@@ -24,6 +35,17 @@ const props = defineProps<{ ctx: FarosContext | null }>()
 
 const route = computed<DatabricksRoute>(() => parseSubPath(props.ctx?.subPath))
 const hasTenant = computed(() => !!props.ctx?.tenant)
+const journeyStorage = databricksJourneyStorage()
+const journeyTenantKey = () => props.ctx?.tenant
+  ? databricksJourneyTenantKey(props.ctx.tenant, props.ctx.orgUUID, props.ctx.workspaceUUID)
+  : null
+const activeJourneyPath = () => {
+  const activeRoute = route.value
+  return activeRoute.page === 'create'
+    ? createPath(activeRoute.kind, activeRoute.mode)
+    : collectionPath(activeRoute.page)
+}
+const prerequisiteReturnPath = ref<DatabricksReturnPath | null>(null)
 // A provider view may stay mounted while the host rotates a token or changes
 // workspaces. Keying each resource surface forces the old context's data and
 // timer out before the new context begins loading.
@@ -41,8 +63,14 @@ watch(() => props.ctx?.basePath, v => setBasePath(v), { immediate: true })
 watch(() => props.ctx?.token, v => setToken(v), { immediate: true })
 watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
 watch(
-  () => [props.ctx?.orgUUID, props.ctx?.workspaceUUID] as const,
-  ([orgUUID, workspaceUUID]) => setTenantSelection(orgUUID, workspaceUUID),
+  () => [props.ctx?.tenant, props.ctx?.orgUUID, props.ctx?.workspaceUUID, props.ctx?.subPath] as const,
+  ([, orgUUID, workspaceUUID]) => {
+    const tenantKey = journeyTenantKey()
+    prerequisiteReturnPath.value = tenantKey
+      ? readDatabricksReturnIntent(journeyStorage, tenantKey, activeJourneyPath())
+      : null
+    setTenantSelection(orgUUID, workspaceUUID)
+  },
   { immediate: true },
 )
 watch(
@@ -59,11 +87,17 @@ watch(
   { immediate: true, flush: 'sync' },
 )
 
-function navigate(path: string, replace = false): void {
+function dispatchNavigation(path: string, replace = false): void {
   rootRef.value?.dispatchEvent(new CustomEvent('faros-navigate', {
     detail: navigationDetail(path, replace),
     bubbles: true,
   }))
+}
+
+function navigate(path: string, replace = false): void {
+  prerequisiteReturnPath.value = null
+  clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
+  dispatchNavigation(path, replace)
 }
 
 function openCreate(kind: 'connection' | 'warehouse' | 'table', mode: 'manual' | 'browse' = 'manual'): void {
@@ -71,16 +105,49 @@ function openCreate(kind: 'connection' | 'warehouse' | 'table', mode: 'manual' |
 }
 
 function cancelCreate(path: 'connections' | 'warehouses' | 'tables'): void {
-  navigate(collectionPath(path), true)
+  const returnPath = prerequisiteReturnPath.value
+  prerequisiteReturnPath.value = null
+  clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
+  dispatchNavigation(returnPath ?? collectionPath(path), true)
 }
 
 function created(kind: 'connection' | 'warehouse' | 'table', name: string): void {
+  if (kind !== 'table' && prerequisiteReturnPath.value) {
+    const destination = destinationAfterPrerequisite(kind, prerequisiteReturnPath.value)
+    if (!destination.keepReturnIntent) {
+      prerequisiteReturnPath.value = null
+      clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
+    } else {
+      const tenantKey = journeyTenantKey()
+      if (tenantKey) writeDatabricksReturnIntent(journeyStorage, tenantKey, prerequisiteReturnPath.value, destination.path)
+    }
+    dispatchNavigation(destination.path, true)
+    return
+  }
   const page = kind === 'connection' ? 'connections' : kind === 'warehouse' ? 'warehouses' : 'tables'
   navigate(detailPath(page, name), true)
 }
 
-function importNavigate(path: 'connections' | 'warehouses'): void {
-  navigate(collectionPath(path), true)
+function beginPrerequisite(kind: DatabricksPrerequisiteKind, returnPath: DatabricksReturnPath): void {
+  prerequisiteReturnPath.value = returnPath
+  const prerequisitePath = prerequisiteCreatePath(kind)
+  const tenantKey = journeyTenantKey()
+  if (tenantKey) writeDatabricksReturnIntent(journeyStorage, tenantKey, returnPath, prerequisitePath)
+  dispatchNavigation(prerequisitePath)
+}
+
+function beginBrowsePrerequisite(kind: DatabricksPrerequisiteKind, resource: 'warehouse' | 'table'): void {
+  beginPrerequisite(kind, createPath(resource, 'browse') as DatabricksReturnPath)
+}
+
+function beginManualPrerequisite(kind: DatabricksPrerequisiteKind, resource: 'warehouse' | 'table'): void {
+  beginPrerequisite(kind, createPath(resource, 'manual') as DatabricksReturnPath)
+}
+
+function beginActiveBrowsePrerequisite(kind: DatabricksPrerequisiteKind): void {
+  const activeRoute = route.value
+  if (activeRoute.page !== 'create' || (activeRoute.kind !== 'warehouse' && activeRoute.kind !== 'table')) return
+  beginBrowsePrerequisite(kind, activeRoute.kind)
 }
 
 </script>
@@ -105,13 +172,21 @@ function importNavigate(path: 'connections' | 'warehouses'): void {
         :key="`create-warehouse:${contextVersion}`"
         @cancel="cancelCreate('warehouses')"
         @created="(name: string) => created('warehouse', name)"
+        @prerequisite="(kind: DatabricksPrerequisiteKind) => beginManualPrerequisite(kind, 'warehouse')"
       />
       <CreateTableView
         v-else-if="route.page === 'create' && route.kind === 'table' && route.mode === 'manual'"
         :key="`create-table:${contextVersion}`"
         @cancel="cancelCreate('tables')"
         @created="(name: string) => created('table', name)"
-        @navigate="importNavigate"
+        @prerequisite="(kind: DatabricksPrerequisiteKind) => beginManualPrerequisite(kind, 'table')"
+      />
+      <CreateTableView
+        v-else-if="route.page === 'tables' && route.table && route.edit"
+        :key="`edit-table:${route.table}:${contextVersion}`"
+        :edit-name="route.table"
+        @cancel="cancelCreate('tables')"
+        @created="(name: string) => created('table', name)"
       />
       <ResourceImportWizard
         v-else-if="route.page === 'create' && (route.kind === 'warehouse' || route.kind === 'table') && route.mode === 'browse'"
@@ -119,11 +194,11 @@ function importNavigate(path: 'connections' | 'warehouses'): void {
         :kind="route.kind"
         route-owned
         @close="cancelCreate(route.kind === 'warehouse' ? 'warehouses' : 'tables')"
-        @navigate="importNavigate"
+        @prerequisite="beginActiveBrowsePrerequisite"
       />
       <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`connection-detail:${route.connection}:${contextVersion}`" :name="route.connection" @back="navigate('connections')" />
       <WarehouseDetailView v-else-if="route.page === 'warehouses' && route.warehouse" :key="`warehouse-detail:${route.warehouse}:${contextVersion}`" :name="route.warehouse" @back="navigate('warehouses')" />
-      <TableDetailView v-else-if="route.page === 'tables' && route.table" :key="`table-detail:${route.table}:${contextVersion}`" :name="route.table" @back="navigate('tables')" />
+      <TableDetailView v-else-if="route.page === 'tables' && route.table && !route.edit" :key="`table-detail:${route.table}:${contextVersion}`" :name="route.table" @back="navigate('tables')" />
 
       <!-- Keep collection controls and the horizontal table scroll position
            alive across create/detail routes. Keying the cache by the context
@@ -140,12 +215,15 @@ function importNavigate(path: 'connections' | 'warehouses'): void {
           :key="`warehouses:${contextVersion}`"
           @create="(mode: 'manual' | 'browse') => openCreate('warehouse', mode)"
           @open="(n: string) => navigate(detailPath('warehouses', n))"
+          @prerequisite="(kind: DatabricksPrerequisiteKind) => beginBrowsePrerequisite(kind, 'warehouse')"
         />
         <TablesView
           v-else-if="route.page === 'tables' && !route.table"
           :key="`tables:${contextVersion}`"
           @create="(mode: 'manual' | 'browse') => openCreate('table', mode)"
           @open="(n: string) => navigate(detailPath('tables', n))"
+          @edit="(n: string) => navigate(tableEditPath(n))"
+          @prerequisite="(kind: DatabricksPrerequisiteKind) => beginBrowsePrerequisite(kind, 'table')"
         />
       </KeepAlive>
     </template>

@@ -543,7 +543,7 @@ variant — consistency across the embedded micro-frontends is the whole point.
 ### Page content width — one column, set centrally
 
 Page content width is owned by **`AppLayout`**, not by pages. The layout slot
-renders every non-full-bleed page in one centered `mx-auto w-full max-w-5xl`
+renders every non-full-bleed page in one centered `mx-auto w-full max-w-7xl`
 column, so the content doesn't resize or shift when navigating between pages.
 
 - **Do NOT add your own `mx-auto` / `max-w-*` wrapper** to a page or provider

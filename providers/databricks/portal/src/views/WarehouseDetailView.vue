@@ -9,7 +9,8 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
-import type { ErrorResponse, Warehouse } from '../types'
+import { formatDatabricksError, isTenantMissingError } from '../errors'
+import type { Warehouse } from '../types'
 import {
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
@@ -117,11 +118,6 @@ const statCards = computed<ResourceStatCard[]>(() => [
   },
 ])
 
-function errMessage(e: unknown): string {
-  const err = e as ErrorResponse
-  return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
-}
-
 function requestRefresh(mode: ResourceRefreshMode): void {
   if (mode === 'foreground') {
     refreshMode.value = 'foreground'
@@ -194,7 +190,7 @@ async function saveEdit() {
     editing.value = false
     load()
   } catch (e) {
-    await focusSaveError(errMessage(e))
+    await focusSaveError(formatDatabricksError(e))
   } finally {
     saving.value = false
     operations.release(lock)
@@ -223,7 +219,7 @@ async function remove() {
     operations.tombstone(lock, current.uid)
     emit('back')
   } catch (e) {
-    mutationError.value = errMessage(e)
+    mutationError.value = formatDatabricksError(e)
   } finally {
     deleting.value = false
     operations.release(lock)
@@ -247,8 +243,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     }
   } catch (e) {
     if (!refresh.isCurrent(requestID)) return
-    const err = e as ErrorResponse
-    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
+    error.value = isTenantMissingError(e) ? null : formatDatabricksError(e)
   } finally {
     if (refresh.isCurrent(requestID)) {
       if (mode === 'foreground') loading.value = false

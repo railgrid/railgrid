@@ -7,6 +7,7 @@ import type {
   TableColumn,
   Warehouse,
 } from './types.js'
+import { formatDatabricksRegistrationMessage, graphqlResponseError, providerRequestError } from './errors.js'
 import { resourceNameError } from './resourceName.js'
 import type { RegistrationItem, RegistrationResult, RemoteCatalog, RemotePage, RemoteSchema, RemoteTable, RemoteWarehouse } from './registrationTypes.js'
 
@@ -145,11 +146,10 @@ async function providerJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${serviceBasePath}${path}`, { ...init, credentials: 'same-origin', headers: { ...serviceHeaders(init?.body ? { 'Content-Type': 'application/json' } : undefined), ...(init?.headers ?? {}) } })
   const text = await response.text()
   let body: unknown = {}
-  if (text) { try { body = JSON.parse(text) } catch { body = { message: text } } }
+  if (text) { try { body = JSON.parse(text) } catch { body = text } }
   assertContextUnchanged(generation)
   if (!response.ok) {
-    const failure = body as Partial<ErrorResponse>
-    throw <ErrorResponse>{ reason: failure.reason || (response.status === 403 ? 'Forbidden' : 'HTTPError'), message: failure.message || response.statusText || 'Databricks provider request failed' }
+    throw providerRequestError(response.status, body, response.statusText || 'Databricks provider request failed')
   }
   return body as T
 }
@@ -320,7 +320,7 @@ function validateDiscoveryPage<T>(body: unknown, kind: DiscoveryKind): RemotePag
 function validateRegistrationResponse(body: unknown, itemCount: number): { results: RegistrationResult[] } {
   if (!isRecord(body) || !Array.isArray(body.results)) throw protocolError('Databricks registration response must contain a results array; retry the request.')
   const seen = new Set<number>()
-  body.results.forEach((result, index) => {
+  const results = body.results.map((result, index): RegistrationResult => {
     const label = `registration result ${index}`
     if (!isRecord(result)) throw protocolError(`Databricks ${label} is malformed; retry the request.`)
     const resultIndex = requireField(result, 'index', label)
@@ -330,8 +330,16 @@ function validateRegistrationResponse(body: unknown, itemCount: number): { resul
     if (typeof state !== 'string' || !REGISTRATION_STATES.has(state as RegistrationResult['state'])) throw protocolError(`Databricks ${label} has an invalid state; retry the request.`)
     optionalString(result, 'name', label)
     optionalString(result, 'message', label)
+    const typedState = state as RegistrationResult['state']
+    const message = formatDatabricksRegistrationMessage(result.message, typedState)
+    return {
+      index: resultIndex,
+      state: typedState,
+      ...(typeof result.name === 'string' ? { name: result.name } : {}),
+      ...(message ? { message } : {}),
+    }
   })
-  return body as unknown as { results: RegistrationResult[] }
+  return { results }
 }
 
 function queryString(values: Record<string, string | undefined>): string {
@@ -357,7 +365,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
   // Reject a response from an old context before parsing or mapping it.
   assertContextUnchanged(generation)
   if (!res.ok) {
-    throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
+    throw providerRequestError(res.status, undefined, res.statusText || 'Databricks resources could not be loaded.')
   }
   let parsed: unknown = {}
   if (text) {
@@ -374,7 +382,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
       throw protocolError('GraphQL returned malformed errors; retry the read.')
     }
     if (body.errors.length) {
-      throw <ErrorResponse>{ reason: 'GraphQLError', message: body.errors.map(error => String((error as { message: string }).message)).join('; ') }
+      throw graphqlResponseError(body.errors.map(error => String((error as { message: string }).message)).join('; '))
     }
   }
   return (body.data ?? {}) as T

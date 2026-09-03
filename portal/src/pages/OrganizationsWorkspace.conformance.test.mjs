@@ -1443,6 +1443,11 @@ test('provider hard refresh waits for the hydrated AppLayout mount outlet', () =
   assert.equal((loader.match(/mountRef\.value !== mount/g) ?? []).length, 2)
 })
 
+test('provider mount chain can shrink wide provider content into its local overflow boundary', () => {
+  assert.match(providerFrame, /<div class="flex h-full min-h-0 min-w-0 flex-col">/)
+  assert.match(providerFrame, /ref="mountRef"[\s\S]*class="min-h-0 min-w-0 flex-1"/)
+})
+
 test('provider binding reads and disables ignore stale tenant work', () => {
   const refreshStart = providersStore.indexOf('async function refreshBindings()')
   const refreshEnd = providersStore.indexOf('\n\n  // enable hits', refreshStart)

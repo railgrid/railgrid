@@ -3,12 +3,12 @@ import { ArrowLeft, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { inject, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { contextGenerationKey } from '../context'
+import { formatDatabricksError } from '../errors'
 import {
   createOperationLocks,
   operationKey,
 } from '../refresh'
 import { resourceNameError } from '../resourceName'
-import type { ErrorResponse } from '../types'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
@@ -43,11 +43,6 @@ const form = reactive({
   token: '',
 })
 
-function errMessage(error: unknown): string {
-  const response = error as Partial<ErrorResponse>
-  return response.reason ? `${response.reason}: ${response.message}` : response.message || String(error)
-}
-
 function isCurrentRead(generation: number, expectedContext: number): boolean {
   return mounted && generation === readGeneration && contextGeneration.value === expectedContext
 }
@@ -69,7 +64,7 @@ async function load(): Promise<ReadToken | null> {
     return { generation, context: expectedContext }
   } catch (error) {
     if (!isCurrentRead(generation, expectedContext)) return null
-    loadError.value = errMessage(error)
+    loadError.value = formatDatabricksError(error)
     return null
   } finally {
     if (isCurrentRead(generation, expectedContext)) loading.value = false
@@ -131,7 +126,7 @@ async function submit(): Promise<void> {
     if (!isCurrentMutation(generation, expectedContext)) return
     emit('created', created.name)
   } catch (error) {
-    await focusFormError(errMessage(error), generation, expectedContext)
+    await focusFormError(formatDatabricksError(error), generation, expectedContext)
   } finally {
     operations.release(lock)
     if (isCurrentMutation(generation, expectedContext)) submitting.value = false
@@ -186,9 +181,13 @@ onBeforeUnmount(() => {
         <div class="field">
           <label class="field-label" for="connection-token">Token</label>
           <input id="connection-token" class="k-input" v-model="form.token" :disabled="loading || submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-token-hint" class="field-hint">Create a personal access token in Databricks: avatar → Settings → Developer → Access tokens → Manage → Generate new token. Its identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</span>
+          <span id="connection-token-hint" class="field-hint">Use a Databricks personal access token with access to the resources you plan to import.</span>
+          <details class="field-disclosure">
+            <summary>Where to find it and required access</summary>
+            <p>In Databricks, open your avatar → Settings → Developer → Access tokens. The token identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</p>
+          </details>
         </div>
-        <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the status on the connection detail page.</p>
+        <p class="muted">Faros stores the token as a Secret in this workspace. Connection status shows whether Databricks accepted it.</p>
       </div>
       <div class="k-create-actions">
         <span v-if="formError" id="connection-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>

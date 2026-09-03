@@ -13,6 +13,7 @@ export interface ErrorResponse {
   reason: string
   message: string
   retryable?: boolean
+  status?: number
 }
 
 export interface ConditionInfo {

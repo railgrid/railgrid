@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import DatabricksEmptyState from '../components/DatabricksEmptyState.vue'
 import SplitCreateButton from '../components/SplitCreateButton.vue'
+import type { DatabricksJourneyAction, DatabricksPrerequisiteKind } from '../journey'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
+import { formatDatabricksError, isTenantMissingError } from '../errors'
 import { confirmDialog } from '../portalkit/confirm'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
-import type { Connection, ErrorResponse, Warehouse } from '../types'
+import type { Connection, Warehouse } from '../types'
 import {
   createAdaptiveRefreshTimer,
   createCoalescedRead,
@@ -34,7 +37,11 @@ import {
   warehouseFilters,
 } from '../databricksPagination'
 
-const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'create', mode: 'manual' | 'browse'): void }>()
+const emit = defineEmits<{
+  (e: 'open', name: string): void
+  (e: 'create', mode: 'manual' | 'browse'): void
+  (e: 'prerequisite', kind: DatabricksPrerequisiteKind): void
+}>()
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
@@ -71,6 +78,7 @@ let authorityGeneration = 0
 
 function invalidateCompleteAuthority(): void {
   authorityGeneration += 1
+  firstPageSettled.value = false
   completeRead.invalidate()
   supportRead.invalidate()
   serverPageRead.invalidate()
@@ -79,6 +87,19 @@ function invalidateCompleteAuthority(): void {
 const rows = computed<Array<Record<string, unknown>>>(() => warehouses.value
   .filter(wh => !operations.isTombstoned(operationKey('warehouse', wh.name), wh.uid))
   .map(wh => ({ ...wh })))
+const firstPageSettled = ref(false)
+const pendingDeletions = new Map<string, string | undefined>()
+const showFirstRun = computed(() => firstPageSettled.value
+  && !error.value
+  && rows.value.length === 0
+  && warehousePage.value === 1
+  && !hasActiveFilters(warehouseQuery.value, warehouseFiltersValue.value))
+
+function handleFirstRunAction(action: DatabricksJourneyAction): void {
+  if (action === 'create-connection') emit('prerequisite', 'connection')
+  else if (action === 'browse-warehouses') emit('create', 'browse')
+  else if (action === 'manual-warehouse') emit('create', 'manual')
+}
 
 function warehouseStateTone(state: unknown): 'success' | 'warning' | 'danger' | 'muted' {
   switch (String(state || '').toUpperCase()) {
@@ -94,14 +115,14 @@ function warehouseStateTone(state: unknown): 'success' | 'warning' | 'danger' | 
 
 const filterDefinitions = computed(() => warehouseFilters(connections.value))
 
-function errMessage(e: unknown): string {
-  const err = e as ErrorResponse
-  return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
-}
-
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 
 function requestRefresh(mode: ResourceRefreshMode): void {
+  // Preserve an already-authoritative empty surface through foreground and
+  // background revalidation. An acknowledged delete is different: keep
+  // first-run hidden until the next complete first page confirms the resource
+  // is gone.
+  if (pendingDeletions.size > 0) firstPageSettled.value = false
   if (mode === 'foreground') {
     refreshMode.value = 'foreground'
     loading.value = true
@@ -174,6 +195,7 @@ function warehouseRequestIsCurrent(requestID: number, request: WarehouseRequest)
 }
 
 function handleWarehouseChange(change: ResourceTableChange): void {
+  firstPageSettled.value = false
   const canReuseCurrentServerPage = warehouseMode.value === 'server' && isCompleteFirstCursorPage({
     page: warehousePage.value,
     cursor: warehouseCursor.value,
@@ -245,11 +267,13 @@ async function remove(row: Record<string, unknown>) {
   try {
     await api.deleteWarehouse(wh.name)
     invalidateCompleteAuthority()
+    firstPageSettled.value = false
+    pendingDeletions.set(wh.name, wh.uid)
     operations.tombstone(lock, wh.uid)
     warehouses.value = warehouses.value.filter(item => item.name !== wh.name)
     load()
   } catch (e) {
-    mutationError.value = errMessage(e)
+    mutationError.value = formatDatabricksError(e)
   } finally {
     operations.release(lock)
   }
@@ -344,12 +368,21 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
         warehouses.value = warehousePageResult.items
         warehouseCursor.value = request.cursor
         warehousePageInfo.value = nextPageInfo
-        if (isCompleteFirstCursorPage({
+        const completeFirstPage = isCompleteFirstCursorPage({
           page: request.page,
           cursor: request.cursor,
           pageInfo: warehousePageInfo.value,
-        })) {
+        })
+        if (completeFirstPage) {
           operations.reconcile('warehouse', warehousePageResult.items.map(({ name, uid }) => ({ name, uid })))
+          for (const [name, pendingUID] of pendingDeletions) {
+            const current = warehousePageResult.items.find(warehouse => warehouse.name === name)
+            const replacement = current?.uid !== undefined && (pendingUID === undefined || current.uid !== pendingUID)
+            if (!current || replacement) pendingDeletions.delete(name)
+          }
+          firstPageSettled.value = pendingDeletions.size === 0
+        } else if (request.page === 1 && !request.cursor) {
+          firstPageSettled.value = false
         }
       }
     }
@@ -365,8 +398,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     const staleServerPage = serverPageGeneration !== undefined && serverPageGeneration !== authorityGeneration
     const staleServerRequest = !(current.active || current.mode === 'client') && !warehouseRequestIsCurrent(requestID, request)
     if (!mounted || staleWalk || staleSupport || staleServerPage || staleServerRequest) return
-    const err = e as ErrorResponse
-    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
+    error.value = isTenantMissingError(e) ? null : formatDatabricksError(e)
   } finally {
     fullWalkPending = false
     supportReadPending = false
@@ -402,23 +434,29 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="page">
+  <section :class="['page', { 'page--first-run': showFirstRun }]">
     <header class="page-head">
       <div>
         <h2 class="page-title">Warehouses</h2>
         <p class="page-meta">SQL warehouses available to imported Databricks tables. Click one to inspect status and defaults.</p>
       </div>
-      <SplitCreateButton kind="warehouse" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
+      <SplitCreateButton v-if="!showFirstRun" kind="warehouse" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
     </header>
-
-    <p v-if="loaded && !connections.length" class="empty">Add a connection first, then import warehouses under it.</p>
 
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>
       <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
+    <DatabricksEmptyState
+      v-if="showFirstRun"
+      kind="warehouse"
+      :has-connections="connections.length > 0"
+      @action="handleFirstRunAction"
+    />
+
     <ResourceTable
+      v-else
       :columns="[
         { key: 'name', label: 'Name', primary: true },
         { key: 'connectionRef', label: 'Connection' },
