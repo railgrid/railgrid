@@ -1,5 +1,17 @@
 # Databricks provider
 
+> [!IMPORTANT]
+> **Read-only mirror — do not push or open PRs here.**
+> The standalone [`faroshq/provider-databricks`](https://github.com/faroshq/provider-databricks)
+> repository is **automatically synced** from the
+> [`faroshq/faros`](https://github.com/faroshq/faros) monorepo
+> (path `providers/databricks/`) via
+> [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
+> the mirror, so direct changes here are overwritten. File issues and PRs
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
+> See the [provider publishing documentation](https://github.com/faroshq/faros/blob/main/docs/provider-publishing.md)
+> for details.
+
 A faros provider that exposes imported Databricks SQL Warehouse tables to faros
 workspaces. The provider owns Databricks `Connection`, `Warehouse`, and `Table`
 resources in the tenant workspace. App Studio consumes existing `Table`
