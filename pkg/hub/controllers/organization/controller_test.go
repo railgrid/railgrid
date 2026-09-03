@@ -41,6 +41,7 @@ type fakeProvisioner struct {
 	wsCalls        []string
 	memCalls       []membershipCall
 	childCalls     []childWorkspaceCall
+	nameCalls      []displayNameCall
 	farosBindCalls []childWorkspaceCall
 	adminCalls     []workspaceAdminCall
 	mcpCalls       []childWorkspaceCall
@@ -48,6 +49,7 @@ type fakeProvisioner struct {
 	wsErr          error
 	memErr         error
 	childErr       error
+	nameErr        error
 	farosBindErr   error
 	adminErr       error
 	mcpErr         error
@@ -66,6 +68,12 @@ type membershipCall struct {
 type childWorkspaceCall struct {
 	OrgUUID string
 	WSUUID  string
+}
+
+type displayNameCall struct {
+	OrgUUID     string
+	WSUUID      string
+	DisplayName string
 }
 
 type workspaceAdminCall struct {
@@ -93,6 +101,13 @@ func (f *fakeProvisioner) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUI
 	defer f.mu.Unlock()
 	f.childCalls = append(f.childCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
 	return f.childErr
+}
+
+func (f *fakeProvisioner) EnsureChildWorkspaceDisplayName(_ context.Context, orgUUID, wsUUID, displayName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nameCalls = append(f.nameCalls, displayNameCall{OrgUUID: orgUUID, WSUUID: wsUUID, DisplayName: displayName})
+	return f.nameErr
 }
 
 func (f *fakeProvisioner) EnsureChildWorkspaceFarosBinding(_ context.Context, orgUUID, wsUUID string) error {
@@ -150,6 +165,14 @@ func (f *fakeProvisioner) ChildWorkspaceCalls() []childWorkspaceCall {
 	defer f.mu.Unlock()
 	out := make([]childWorkspaceCall, len(f.childCalls))
 	copy(out, f.childCalls)
+	return out
+}
+
+func (f *fakeProvisioner) DisplayNameCalls() []displayNameCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]displayNameCall, len(f.nameCalls))
+	copy(out, f.nameCalls)
 	return out
 }
 
@@ -280,6 +303,10 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	childCalls := prov.ChildWorkspaceCalls()
 	if len(childCalls) != 1 || childCalls[0].OrgUUID != org.Name || childCalls[0].WSUUID != wsUUID {
 		t.Errorf("expected exactly one EnsureChildWorkspace call for %s/%s, got %v", org.Name, wsUUID, childCalls)
+	}
+	nameCalls := prov.DisplayNameCalls()
+	if len(nameCalls) != 1 || nameCalls[0].OrgUUID != org.Name || nameCalls[0].WSUUID != wsUUID || nameCalls[0].DisplayName != defaultWorkspaceDisplayName {
+		t.Errorf("expected exactly one EnsureChildWorkspaceDisplayName call for %s/%s with %q, got %v", org.Name, wsUUID, defaultWorkspaceDisplayName, nameCalls)
 	}
 	farosCalls := prov.FarosBindCalls()
 	if len(farosCalls) != 1 || farosCalls[0].OrgUUID != org.Name || farosCalls[0].WSUUID != wsUUID {
@@ -483,6 +510,48 @@ func TestReconciler_ChildWorkspaceFailureSurfacesInStatus(t *testing.T) {
 	// Heal and re-reconcile.
 	prov.childErr = nil
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "frank"}}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
+		t.Fatalf("re-get organization: %v", err)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
+		t.Errorf("expected Ready=True/OrganizationReady after recovery; got %#v", org.Status.Conditions)
+	}
+}
+
+func TestReconciler_DisplayNameFailureSurfacesInStatus(t *testing.T) {
+	scheme := newTestScheme(t)
+	user := newUser("grace", "Grace")
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(user).
+		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
+		Build()
+
+	prov := &fakeProvisioner{nameErr: errors.New("annotation write denied")}
+	r := &Reconciler{client: c, provisioner: prov}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "grace"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got tenancyv1alpha1.User
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "grace"}, &got); err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	var org tenancyv1alpha1.Organization
+	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
+		t.Fatalf("get organization: %v", err)
+	}
+	// The workspace itself provisioned, but it would surface under its
+	// UUID — the step must not report Ready until the name is stamped.
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionFalse, reasonDefaultWorkspaceProvisioningFailed) {
+		t.Errorf("expected DefaultWorkspaceReady=False/DefaultWorkspaceProvisioningFailed; got %#v", org.Status.Conditions)
+	}
+
+	// Heal and re-reconcile.
+	prov.nameErr = nil
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "grace"}}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {

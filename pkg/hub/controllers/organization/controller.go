@@ -106,6 +106,13 @@ type WorkspaceProvisioner interface {
 	// Idempotent (per O-11).
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 
+	// EnsureChildWorkspaceDisplayName stamps the display-name
+	// annotation on the child Workspace when none is set yet, so the
+	// default workspace surfaces under a human-readable name instead
+	// of its UUID. Never overwrites an existing name — a user rename
+	// must survive reconciles. Idempotent.
+	EnsureChildWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID, displayName string) error
+
 	// EnsureChildWorkspaceFarosBinding materializes an APIBinding to
 	// root:faros:providers.core.faros.sh inside the child team
 	// Workspace, with the permission claims faros controllers need.
@@ -464,6 +471,17 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	default:
 		if err := r.provisioner.EnsureChildWorkspace(ctx, org.Name, wsUUID); err != nil {
 			logger.Error(err, "Provisioning default child Workspace failed; will retry")
+			childCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonDefaultWorkspaceProvisioningFailed,
+				Message: err.Error(),
+			}
+		} else if err := r.provisioner.EnsureChildWorkspaceDisplayName(ctx, org.Name, wsUUID, defaultWorkspaceDisplayName); err != nil {
+			// The workspace exists but is still surfacing under its UUID.
+			// Keep the condition False so the reconcile retries: the UMI
+			// entry below advertises "default" and the two must agree.
+			logger.Error(err, "Stamping default child Workspace displayName failed; will retry")
 			childCond = metav1.Condition{
 				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
 				Status:  metav1.ConditionFalse,

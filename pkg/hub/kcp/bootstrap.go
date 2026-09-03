@@ -933,6 +933,15 @@ func (b *Bootstrapper) SetWorkspaceDisplayName(ctx context.Context, orgUUID, wsU
 	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDisplayNameAnnotation, displayName)
 }
 
+// EnsureChildWorkspaceDisplayName stamps the display-name annotation
+// only when the Workspace does not carry one yet. Reconcilers use this
+// to give bootstrap-provisioned workspaces a human-readable default
+// without clobbering a rename the user made since — the absence check
+// runs inside the update loop, so a rename that lands mid-flight wins.
+func (b *Bootstrapper) EnsureChildWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID, displayName string) error {
+	return b.patchWorkspaceAnnotationIfAbsent(ctx, orgUUID, wsUUID, WorkspaceDisplayNameAnnotation, displayName)
+}
+
 // GetWorkspaceDisplayName reads the display-name annotation. Empty
 // string if absent. Workspace-not-found surfaces as IsNotFound.
 func (b *Bootstrapper) GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error) {
@@ -1007,8 +1016,18 @@ func (b *Bootstrapper) patchWorkspaceAnnotation(ctx context.Context, orgUUID, ws
 // request. The conditional read is repeated after conflicts and treats any
 // existing value (including an older or malformed value) as authoritative.
 func (b *Bootstrapper) patchWorkspaceDeletionAnnotationIfAbsent(ctx context.Context, orgUUID, wsUUID, value string) error {
+	return b.patchWorkspaceAnnotationIfAbsent(ctx, orgUUID, wsUUID, WorkspaceDeletionAnnotation, value)
+}
+
+// patchWorkspaceAnnotationIfAbsent writes an annotation only while the
+// Workspace carries no non-empty value for it. Unlike
+// patchWorkspaceAnnotation, the absence check runs on every attempt of
+// the get/modify/update loop: a competing writer that lands first —
+// either before the first read or via a conflict retry — is treated as
+// authoritative and the write is dropped.
+func (b *Bootstrapper) patchWorkspaceAnnotationIfAbsent(ctx context.Context, orgUUID, wsUUID, key, value string) error {
 	if orgUUID == "" || wsUUID == "" {
-		return fmt.Errorf("patchWorkspaceDeletionAnnotationIfAbsent: orgUUID and wsUUID are required")
+		return fmt.Errorf("patchWorkspaceAnnotationIfAbsent: orgUUID and wsUUID are required")
 	}
 	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
@@ -1024,13 +1043,13 @@ func (b *Bootstrapper) patchWorkspaceDeletionAnnotationIfAbsent(ctx context.Cont
 			return err
 		}
 		annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
-		if existing, present := annos[WorkspaceDeletionAnnotation]; present && existing != "" {
+		if existing, present := annos[key]; present && existing != "" {
 			return nil
 		}
 		if annos == nil {
 			annos = map[string]string{}
 		}
-		annos[WorkspaceDeletionAnnotation] = value
+		annos[key] = value
 		if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
 			return fmt.Errorf("setting annotations: %w", err)
 		}
