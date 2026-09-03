@@ -403,7 +403,7 @@ onUnmounted(() => {
         <h2 class="page-title">Connections</h2>
         <p class="page-meta">Databricks workspaces available to tables in this faros workspace.</p>
       </div>
-      <div v-if="!showFirstRun" class="actions">
+      <div v-if="loaded && !showFirstRun" class="actions">
         <button class="k-btn k-btn--primary" type="button" @click="emit('create')">Add connection</button>
       </div>
     </header>

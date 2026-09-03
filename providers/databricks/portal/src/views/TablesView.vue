@@ -420,7 +420,7 @@ onUnmounted(() => {
           <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" />
           {{ loading ? 'Refreshing…' : 'Refresh' }}
         </button>
-        <SplitCreateButton v-if="!showFirstRun" kind="table" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
+        <SplitCreateButton v-if="loaded && !showFirstRun" kind="table" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
       </div>
     </header>
 
