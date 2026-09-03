@@ -60,14 +60,14 @@ const gated = computed(() =>
 const candidateNames = computed(() => gated.value.map((p) => p.name))
 
 // Responsive column count follows the dashboard's actual content width, not
-// the browser viewport. AppLayout caps this column at max-w-7xl and the nav can
-// consume different amounts of the viewport, so viewport sizing made cards
-// unusably narrow at both phone and ultrawide sizes.
+// the browser viewport. AppLayout's column is fluid and the nav can consume
+// different amounts of the viewport, so viewport sizing made cards unusably
+// narrow at both phone and ultrawide sizes.
 const pageRef = ref<HTMLElement | null>(null)
 const pageWidth = ref(1280)
 const TILE_GAP = 16
-const MIN_TILE_WIDTH = 240
-const MAX_DASHBOARD_COLUMNS = 4
+const MIN_TILE_WIDTH = 320
+const MAX_DASHBOARD_COLUMNS = 8
 let pageResizeObserver: ResizeObserver | null = null
 let fallbackResize: (() => void) | null = null
 

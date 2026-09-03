@@ -161,11 +161,12 @@ const mainStyle = computed(() => {
 const slotClass = computed(() => [
   'relative z-10',
   // Single source of truth for page content width: every non-full-bleed page
-  // renders in the SAME centered max-w-7xl column so the layout doesn't shift
+  // renders in the SAME fluid full-width column so the layout doesn't shift
   // when navigating. Pages must NOT add their own mx-auto/max-w-* wrapper —
-  // that reintroduces per-page width drift. Full-bleed provider workbenches opt
-  // out and manage their own width.
-  layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-7xl',
+  // that reintroduces per-page width drift. Wide-screen density comes from
+  // responsive grid columns inside each page, not from capping the column.
+  // Full-bleed provider workbenches opt out and manage their own width.
+  layoutProps.fullBleed ? 'h-full min-h-0' : 'w-full',
 ])
 
 // Static destinations precede categorized provider entries. Everything

@@ -55,9 +55,9 @@ const { flattenProviderItems, hasActiveNavRoute, isActiveRoute, isProviderItemAc
 const { isFiniteDockPosition } = finiteDockPositionModule
 const { clampDockPosition } = clampDockPositionModule
 
-test('ordinary pages use the shared wide desktop column without becoming full bleed', () => {
+test('ordinary pages use the shared fluid desktop column without becoming full bleed', () => {
   assert.match(appLayout, /'relative z-10 min-h-0 min-w-0 flex-1'/)
-  assert.match(appLayout, /layoutProps\.fullBleed \? 'h-full min-h-0' : 'mx-auto w-full max-w-7xl'/)
+  assert.match(appLayout, /layoutProps\.fullBleed \? 'h-full min-h-0' : 'w-full'/)
   assert.doesNotMatch(appLayout, /max-w-5xl/)
 })
 

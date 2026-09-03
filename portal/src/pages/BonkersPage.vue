@@ -104,7 +104,7 @@ function handleLogout() {
 
     <!-- Main content -->
     <main class="min-w-0 flex-1 overflow-y-auto">
-      <div class="mx-auto w-full max-w-5xl px-8 py-5">
+      <div class="w-full px-8 py-5">
         <header class="mb-6 flex items-center justify-between">
           <h1 class="flex items-center gap-2 text-[17px] font-bold">
             <ShieldAlert class="h-5 w-5 text-accent" :stroke-width="1.75" />

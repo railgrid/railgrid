@@ -557,7 +557,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 : 'No provider in this catalog publishes a self-hosting recipe yet.'
             }}
           </div>
-          <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
             <li
               v-for="p in availableToSelfHost"
               :key="p.name"
@@ -659,7 +659,7 @@ function dependencyNotice(p: ProviderDTO): string {
           No providers match your search.
         </div>
 
-        <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           <template v-for="(p, i) in orderedCards" :key="p.name">
           <!-- Full-width section divider inside the same grid, so the cards
                below it keep their column alignment. -->

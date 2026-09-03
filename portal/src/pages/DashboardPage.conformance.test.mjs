@@ -11,8 +11,8 @@ test('dashboard inherits the shared provider page width and padding from AppLayo
 })
 
 test('dashboard sizes its grid from the shared content column without crushing tiles', () => {
-  assert.match(page, /const MIN_TILE_WIDTH = 240/)
-  assert.match(page, /const MAX_DASHBOARD_COLUMNS = 4/)
+  assert.match(page, /const MIN_TILE_WIDTH = 320/)
+  assert.match(page, /const MAX_DASHBOARD_COLUMNS = 8/)
   assert.match(page, /const pageWidth = ref\(1280\)/)
   assert.match(page, /new ResizeObserver\(measure\)/)
   assert.match(page, /Math\.max\(1, Math\.min\(MAX_DASHBOARD_COLUMNS, columns\)\)/)
