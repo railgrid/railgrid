@@ -344,11 +344,20 @@ func projectAssistantRunSandboxInstanceReadiness(obj *unstructured.Unstructured,
 	}
 	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 	if strings.EqualFold(strings.TrimSpace(phase), "failed") || strings.EqualFold(strings.TrimSpace(phase), "error") {
+		// A failed phase is not a durable verdict on its own: Infrastructure
+		// derives it from any Ready=False condition, and the kro backend holds
+		// Ready=False ("cluster mutated") while its first provisioning pass
+		// converges, so every fresh instance transits Failed. Only a failed
+		// validation ends the wait early; anything else keeps polling until
+		// the ready timeout expires.
+		if detail, invalid := projectAssistantRunSandboxInvalidCondition(obj); invalid {
+			return false, true, detail
+		}
 		message, _, _ := unstructured.NestedString(obj.Object, "status", "message")
 		if strings.TrimSpace(message) == "" {
 			message = "instance reported a failed phase"
 		}
-		return false, true, message
+		return false, false, message
 	}
 
 	rawGeneration, found, err := unstructured.NestedFieldNoCopy(obj.Object, "metadata", "generation")
@@ -375,6 +384,9 @@ func projectAssistantRunSandboxInstanceReadiness(obj *unstructured.Unstructured,
 	if err != nil || !found {
 		return false, false, "status.conditions is missing"
 	}
+	if detail, invalid := projectAssistantRunSandboxInvalidCondition(obj); invalid {
+		return false, true, detail
+	}
 	readyCondition := false
 	for _, raw := range conditions {
 		condition, ok := raw.(map[string]any)
@@ -382,18 +394,6 @@ func projectAssistantRunSandboxInstanceReadiness(obj *unstructured.Unstructured,
 			continue
 		}
 		conditionType, _ := condition["type"].(string)
-		if strings.EqualFold(strings.TrimSpace(conditionType), "valid") {
-			status, _ := condition["status"].(string)
-			if !strings.EqualFold(strings.TrimSpace(status), "true") {
-				reasonText, _ := condition["reason"].(string)
-				message, _ := condition["message"].(string)
-				detail := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(reasonText), strings.TrimSpace(message)}, ": "))
-				if detail == "" {
-					detail = "instance values are not valid"
-				}
-				return false, true, detail
-			}
-		}
 		if conditionType != "Ready" {
 			continue
 		}
@@ -439,6 +439,39 @@ func projectAssistantRunSandboxInstanceReadiness(obj *unstructured.Unstructured,
 		}
 	}
 	return true, false, ""
+}
+
+// projectAssistantRunSandboxInvalidCondition reports whether the instance
+// carries a non-true Valid condition — the one terminal signal in an instance
+// status. Validation is evaluated before provisioning, so its verdict does not
+// churn while the backend converges the runtime graph.
+func projectAssistantRunSandboxInvalidCondition(obj *unstructured.Unstructured) (string, bool) {
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found {
+		return "", false
+	}
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		conditionType, _ := condition["type"].(string)
+		if !strings.EqualFold(strings.TrimSpace(conditionType), "valid") {
+			continue
+		}
+		status, _ := condition["status"].(string)
+		if strings.EqualFold(strings.TrimSpace(status), "true") {
+			return "", false
+		}
+		reasonText, _ := condition["reason"].(string)
+		message, _ := condition["message"].(string)
+		detail := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(reasonText), strings.TrimSpace(message)}, ": "))
+		if detail == "" {
+			detail = "instance values are not valid"
+		}
+		return detail, true
+	}
+	return "", false
 }
 
 // projectAssistantRunSandboxObservedGenerationValue accepts the numeric forms

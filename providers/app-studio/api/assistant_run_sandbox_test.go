@@ -918,6 +918,79 @@ func TestProjectAssistantRunSandboxInstanceReadyTimeoutIncludesStatus(t *testing
 	}
 }
 
+func TestProjectAssistantRunSandboxInstanceReadinessRetriesTransientFailedPhase(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	failed := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"generation": int64(1)},
+		"status": map[string]any{
+			"phase":   "Failed",
+			"message": "resource reconciliation failed: cluster mutated",
+			"conditions": []any{map[string]any{
+				"type":               "Ready",
+				"status":             "False",
+				"observedGeneration": int64(1),
+			}},
+		},
+	}}
+	ready, terminal, reason := projectAssistantRunSandboxInstanceReadiness(failed, components)
+	if ready || terminal {
+		t.Fatalf("readiness = %t terminal = %t reason = %q, want transient failed phase to stay retryable", ready, terminal, reason)
+	}
+	if !strings.Contains(reason, "cluster mutated") {
+		t.Fatalf("reason = %q, want the mirrored backend message", reason)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadinessFailedValidationIsTerminal(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	invalid := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"generation": int64(1)},
+		"status": map[string]any{
+			"phase":   "Failed",
+			"message": "values failed validation",
+			"conditions": []any{map[string]any{
+				"type":    "Valid",
+				"status":  "False",
+				"reason":  "InvalidValues",
+				"message": "name is required",
+			}},
+		},
+	}}
+	ready, terminal, reason := projectAssistantRunSandboxInstanceReadiness(invalid, components)
+	if ready || !terminal {
+		t.Fatalf("readiness = %t terminal = %t reason = %q, want failed validation to end the wait", ready, terminal, reason)
+	}
+	if !strings.Contains(reason, "InvalidValues") || !strings.Contains(reason, "name is required") {
+		t.Fatalf("reason = %q, want the validation detail", reason)
+	}
+}
+
+func TestProjectAssistantRunSandboxInstanceReadyWaitOutlivesTransientFailedPhase(t *testing.T) {
+	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
+	failed := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"generation": int64(1)},
+		"status": map[string]any{
+			"phase":   "Failed",
+			"message": "resource reconciliation failed: cluster mutated",
+		},
+	}}
+	ready := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"generation": int64(1)}}}
+	_ = unstructured.SetNestedField(ready.Object, readyRunSandboxStatus(1), "status")
+	objects := []*unstructured.Unstructured{failed, ready}
+	calls := 0
+	err := waitForProjectAssistantRunSandboxInstanceReady(context.Background(), 100*time.Millisecond, time.Millisecond, components, func(context.Context) (*unstructured.Unstructured, error) {
+		object := objects[calls]
+		calls++
+		return object, nil
+	})
+	if err != nil {
+		t.Fatalf("readiness wait = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("readiness polls = %d, want failed then ready", calls)
+	}
+}
+
 func TestProjectAssistantRunSandboxInstanceReadinessRequiresCurrentRuntimeState(t *testing.T) {
 	components := map[string]projectTemplateComponent{"workspace": {WorkspacePath: "."}}
 	tests := []struct {
