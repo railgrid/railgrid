@@ -99,6 +99,69 @@ func TestAssistantConversationSequenceSchemaPreservesProjectHighWaterMark(t *tes
 	}
 }
 
+func TestAssistantPointLookupIndexesHaveIndependentMigration(t *testing.T) {
+	indexStatements := assistantLookupIndexSchemaStatements()
+	statements := strings.Join(indexStatements, "\n")
+	for _, want := range []string{
+		"app_studio_assistant_thread_events_turn_idx",
+		"app_studio_assistant_thread_events_turn_sequence_idx",
+		"WHERE turn_id <> ''",
+		"app_studio_assistant_run_events_lookup_idx",
+		"run_id, event_type, sequence DESC",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("assistant point lookup schema missing %q", want)
+		}
+	}
+	for _, statement := range indexStatements {
+		if !strings.Contains(statement, "CREATE INDEX CONCURRENTLY IF NOT EXISTS") {
+			t.Fatalf("assistant lookup index is not online-safe: %s", statement)
+		}
+	}
+	if assistantLookupIndexSchemaVersion != "assistant-point-lookups-online-v2" {
+		t.Fatalf("assistant point lookup schema version = %q", assistantLookupIndexSchemaVersion)
+	}
+	if strings.Contains(tryLockAssistantLookupIndexes, "xact") || !strings.Contains(tryLockAssistantLookupIndexes, "pg_try_advisory_lock") {
+		t.Fatalf("online index lock can block with a transaction snapshot: %q", tryLockAssistantLookupIndexes)
+	}
+}
+
+func TestAssistantLookupIndexRepairIsIdempotentAndRepairsInvalidBuilds(t *testing.T) {
+	const (
+		name   = "app_studio_assistant_thread_events_turn_sequence_idx"
+		create = "CREATE INDEX CONCURRENTLY IF NOT EXISTS " + name + " ON events (sequence)"
+	)
+	if got := assistantLookupIndexRepairStatements(name, create, true, true); len(got) != 0 {
+		t.Fatalf("valid index repair = %#v, want no work", got)
+	}
+	if got := assistantLookupIndexRepairStatements(name, create, false, false); len(got) != 1 || got[0] != create {
+		t.Fatalf("missing index repair = %#v, want concurrent create", got)
+	}
+	if got := assistantLookupIndexRepairStatements(name, create, true, false); len(got) != 2 ||
+		!strings.HasPrefix(got[0], "DROP INDEX CONCURRENTLY IF EXISTS") || got[1] != create {
+		t.Fatalf("invalid index repair = %#v, want concurrent drop and rebuild", got)
+	}
+}
+
+func TestAssistantRunEventBatchLookupUsesBoundedIndexedLateralReads(t *testing.T) {
+	for _, want := range []string{
+		"unnest($5::text[]) WITH ORDINALITY",
+		"CROSS JOIN LATERAL",
+		"org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4",
+		"run_id=requested.run_id AND event_type=$6",
+		"ORDER BY sequence DESC",
+		"LIMIT $7",
+		"ORDER BY requested.requested_order, matched.sequence",
+	} {
+		if !strings.Contains(listAssistantRunEventsByRunsQuery, want) {
+			t.Fatalf("assistant run event batch lookup query missing %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(listAssistantRunEventsByRunsQuery), "row_number") {
+		t.Fatal("assistant run event batch lookup still ranks the complete matched event set")
+	}
+}
+
 func TestNormalizePostgresJSONBSanitizesNullCodePoint(t *testing.T) {
 	raw := json.RawMessage(`{
 		"message": "before\u0000after",
@@ -196,6 +259,22 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
 	defer s.Close()
+	for _, name := range assistantLookupIndexNames() {
+		exists, valid, indexErr := assistantLookupIndexState(ctx, s.db, name)
+		if indexErr != nil {
+			t.Fatal(indexErr)
+		}
+		if !exists || !valid {
+			t.Fatalf("assistant lookup index %q state = exists:%t valid:%t", name, exists, valid)
+		}
+	}
+	var onlineIndexMigrationCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM app_studio_message_schema_migrations WHERE version=$1`, assistantLookupIndexSchemaVersion).Scan(&onlineIndexMigrationCount); err != nil {
+		t.Fatalf("inspect assistant lookup index migration: %v", err)
+	}
+	if onlineIndexMigrationCount != 1 {
+		t.Fatalf("assistant lookup index migration markers = %d, want 1", onlineIndexMigrationCount)
+	}
 
 	var retiredTable sql.NullString
 	if err := s.db.QueryRowContext(ctx, `SELECT to_regclass('app_studio_assistant_work_items')`).Scan(&retiredTable); err != nil {
@@ -291,6 +370,70 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 		Type: "turn.completed", Payload: json.RawMessage(`{"turn":"turn-1"}`), CreatedAt: turn.UpdatedAt,
 	}, approval.Sequence); err != nil {
 		t.Fatalf("SaveAssistantTurnWithEvent: %v", err)
+	}
+}
+
+func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+
+	schemaName := fmt.Sprintf("app_studio_point_lookup_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer cleanupDB.Close()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatalf("OpenPostgres: %v", err)
+	}
+	defer s.Close()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-a"}
+	otherScope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-b"}
+	now := time.Now().UTC()
+	for _, candidate := range []Scope{scope, otherScope} {
+		if err := s.AppendMessage(ctx, candidate, Message{ID: "assistant-1", Role: "assistant", Content: candidate.ProjectUID, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveAssistantRun(ctx, candidate, AssistantRun{ID: "run-1", Mode: AssistantRunModeDefault, Status: AssistantRunStatusRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendAssistantRunEvent(ctx, candidate, AssistantRunEvent{
+			RunID: "run-1", Type: "tool_result", CallID: "call-" + candidate.ProjectUID,
+			ToolName: "interact_development_preview", Payload: json.RawMessage(`{"scope":"` + candidate.ProjectUID + `"}`), CreatedAt: now,
+		}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	messages, err := s.GetMessagesByIDs(ctx, scope, []string{"assistant-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Content != scope.ProjectUID {
+		t.Fatalf("postgres scoped message lookup = %#v", messages)
+	}
+	events, err := s.ListAssistantRunEventsByRuns(ctx, scope, []string{"run-1"}, "tool_result", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].CallID != "call-project-a" || string(events[0].Payload) != `{"scope":"project-a"}` {
+		t.Fatalf("postgres scoped run event lookup = %#v", events)
 	}
 }
 

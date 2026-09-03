@@ -55,10 +55,10 @@ free.
 | `--color-accent-glow` | `rgba(139,107,255,.30)` | `rgba(107,72,232,.18)` | The ONLY glow source |
 | `--color-text-primary` | `#e9e9f2` | `#14152a` | Headings, values |
 | `--color-text-secondary` | `#8a8ca6` | `#565975` | Body, table cells |
-| `--color-text-muted` | `#5d5f78` | `#8d8fa6` | Labels, hints, idle nav |
-| `--color-success` | `#2fd6a0` | `#0c9c66` | + `-subtle` at 12% alpha (light: `#e5f6ef`), + `-border` at 30% |
-| `--color-warning` | `#f0a63a` | `#c07508` | + `-subtle` (light: `#fdf2e0`) |
-| `--color-danger` | `#ff5d5d` | `#d63a40` | + `-subtle` (light: `#fcebec`), + `-hover` (`#ff7676` / `#bf2f35`) |
+| `--color-text-muted` | `#8587a1` | `#60637b` | Labels, hints, idle nav; AA for normal text on every surface layer |
+| `--color-success` | `#2fd6a0` | `#067246` | + `-subtle` at 12% alpha (light: `#e5f6ef`), + `-border` at 30% |
+| `--color-warning` | `#f0a63a` | `#8f5500` | + `-subtle` (light: `#fdf2e0`) |
+| `--color-danger` | `#ff5d5d` | `#b22a32` | + `-subtle` (light: `#fcebec`), + `-hover` (`#ff7676` / `#9f202a`) |
 | `--color-danger-surface`, `--color-surface-base`, `--color-text-error`, `--color-on-accent` | aliases | aliases | Compatibility aliases (= danger-subtle / surface / danger / `#0a0b12` dark, `#fff` light) so no `var()` ever falls through to a stale literal |
 
 Rules:
@@ -73,6 +73,11 @@ Rules:
   regression.
 - Semantic color (success/warning/danger) is not the accent. Don't use the
   violet for status, and don't use green/red for actions.
+- Normal-size token text must retain at least 4.5:1 contrast on every surface
+  where it appears. The current worst cases are dark `text-muted` on
+  `surface-hover` (4.56:1), light `text-muted` on `surface-hover` (4.62:1),
+  and light success/warning/danger on their subtle fills (5.36:1 / 5.47:1 /
+  5.58:1 respectively).
 
 ## 3. Radius law
 

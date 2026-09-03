@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -393,6 +394,13 @@ func newHandler(apiServer *api.Server, healthStates ...*controllerHealth) (http.
 		clean := strings.TrimPrefix(req.URL.Path, "/")
 		if clean != "" {
 			if servePortalAsset(w, req, distFS, clean) {
+				return
+			}
+			// Missing executable/style/image requests must fail as assets. Serving
+			// the SPA document with 200 here turns a retired lazy chunk into a
+			// misleading JavaScript MIME error and can conceal broken manifests.
+			if strings.HasPrefix(clean, "assets/") || path.Ext(clean) != "" {
+				http.NotFound(w, req)
 				return
 			}
 		}

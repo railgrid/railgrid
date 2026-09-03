@@ -204,7 +204,7 @@ test('landing intake uses a compact Faros composer with concrete prompts and a r
   assert.match(preProjectComposerSource, /class="ml-auto flex min-w-0 items-center justify-end gap-1"/)
   assert.match(preProjectComposerSource, /role="menu"/)
   assert.match(appSource, /<ArrowUp class="h-4 w-4" :stroke-width="1\.75" \/>/)
-  assert.doesNotMatch(appSource, /Auto/)
+  assert.doesNotMatch(appSource, />\s*Auto\s*</)
 
   assert.match(appSource, /const landingStarterPrompts: LandingStarterPrompt\[\] = \[/)
   assert.match(appSource, /v-for="starter in landingStarterPrompts"/)
@@ -312,7 +312,7 @@ test('pre-project attachments stay parent-owned across both intake surfaces and 
   assert.match(startPath, /requestedThreadID/)
   assert.match(startPath, /firstProjectSubmissionWithThread\(submission, requestedThreadID\)/)
   assert.match(startPath, /canonicalThreadID/)
-  assert.match(startPath, /listAssistantThreadItems\(props\.ctx, projectName, canonicalThreadID\)/)
+  assert.match(startPath, /listAssistantThreadItemPage\(props\.ctx, projectName, canonicalThreadID\)/)
   assert.match(appSource, /retryPreProjectAttachment/)
   assert.match(appSource, /retryAction: 'delete'/)
   assert.match(appSource, /api\.deleteAssistantAttachment\(props\.ctx, attachment\.projectName, attachment\.receipt\.id\)/)

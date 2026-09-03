@@ -24,7 +24,7 @@ export function assistantSkillsRequestIsCurrent(
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Check,
   Loader2,
@@ -75,6 +75,13 @@ const activationSkillID = ref('')
 let activationRequestSerial = 0
 const managementError = ref<string | null>(null)
 const statusMessage = ref<string | null>(null)
+const detailDialogRef = ref<HTMLElement | null>(null)
+const detailCloseRef = ref<HTMLButtonElement | null>(null)
+let detailOpener: HTMLElement | null = null
+let inertWorkspace: HTMLElement | null = null
+let workspaceWasInert = false
+let previousBodyOverflow = ''
+let detailModalActive = false
 
 watch(() => props.skills, (skills) => {
   localSkills.value = [...skills]
@@ -142,6 +149,7 @@ function clearFeedback() {
 function selectSkill(skill: ProjectAssistantSkill, options: { clearFeedback?: boolean } = {}) {
   if (actionBusy.value) return
   if (options.clearFeedback !== false) clearFeedback()
+  if (!selectedSkill.value) detailOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   selectedSkillID.value = skill.id
   focusedSkill.value = skill
   selectedDetail.value = null
@@ -157,12 +165,74 @@ function closeSkillDetail() {
   detailError.value = null
 }
 
-function handleDetailKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && selectedSkill.value && !actionBusy.value) closeSkillDetail()
+function setDetailModalEnvironment(active: boolean) {
+  if (active === detailModalActive) return
+  detailModalActive = active
+  if (active) {
+    inertWorkspace = document.querySelector<HTMLElement>('[data-app-studio-workspace]')
+    workspaceWasInert = inertWorkspace?.inert ?? false
+    if (inertWorkspace) inertWorkspace.inert = true
+    previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return
+  }
+  if (inertWorkspace && !workspaceWasInert) inertWorkspace.inert = false
+  inertWorkspace = null
+  workspaceWasInert = false
+  document.body.style.overflow = previousBodyOverflow
 }
 
-onMounted(() => document.addEventListener('keydown', handleDetailKeydown))
-onBeforeUnmount(() => document.removeEventListener('keydown', handleDetailKeydown))
+function detailFocusableControls(): HTMLElement[] {
+  return Array.from(detailDialogRef.value?.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  ) ?? [])
+}
+
+function handleDetailKeydown(event: KeyboardEvent) {
+  if (!selectedSkill.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!actionBusy.value) closeSkillDetail()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = detailFocusableControls()
+  if (!focusable.length) {
+    event.preventDefault()
+    detailDialogRef.value?.focus()
+    return
+  }
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (!detailDialogRef.value?.contains(document.activeElement)) {
+    event.preventDefault()
+    ;(event.shiftKey ? last : first).focus()
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+watch(() => Boolean(selectedSkill.value), async (open) => {
+  if (open) {
+    if (!detailOpener) detailOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setDetailModalEnvironment(true)
+    await nextTick()
+    detailCloseRef.value?.focus({ preventScroll: true })
+    return
+  }
+  setDetailModalEnvironment(false)
+  const opener = detailOpener
+  detailOpener = null
+  await nextTick()
+  if (opener?.isConnected) opener.focus({ preventScroll: true })
+})
+
+onBeforeUnmount(() => setDetailModalEnvironment(false))
 
 async function loadDetail(skill: ProjectAssistantSkill) {
   if (!props.projectName) return
@@ -265,14 +335,14 @@ function friendlyError(error: unknown, fallback: string): string {
         <input
           v-model="query"
           type="search"
-          class="h-9 w-full rounded-md border border-border-default bg-surface pl-9 pr-9 text-[12px] text-text-primary outline-none transition focus:border-accent/50"
+          class="app-studio-touch-target h-9 w-full rounded-md border border-border-default bg-surface pl-9 pr-9 text-[12px] text-text-primary outline-none transition focus:border-accent/50"
           placeholder="Search skills"
           aria-label="Search skills"
         />
         <button
           v-if="query"
           type="button"
-          class="absolute right-2 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+          class="app-studio-touch-target absolute right-2 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
           aria-label="Clear skill search"
           @click="query = ''"
         >
@@ -281,7 +351,7 @@ function friendlyError(error: unknown, fallback: string): string {
       </label>
       <button
           type="button"
-          class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
           :disabled="catalogLoading || actionBusy || !projectName"
           aria-label="Refresh skills"
           @click="refreshCatalog()"
@@ -299,7 +369,7 @@ function friendlyError(error: unknown, fallback: string): string {
     <div v-if="managementError || props.error" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] leading-5 text-danger" role="alert">
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
       <span>{{ managementError || props.error }}</span>
-      <button v-if="props.error" type="button" class="ml-auto shrink-0 font-medium underline underline-offset-2" @click="refreshCatalog()">Retry</button>
+      <button v-if="props.error" type="button" class="app-studio-touch-target ml-auto shrink-0 font-medium underline underline-offset-2" @click="refreshCatalog()">Retry</button>
     </div>
     <div v-if="props.warnings.length" class="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-subtle p-3 text-[12px] leading-5 text-warning" role="status">
       <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
@@ -327,48 +397,48 @@ function friendlyError(error: unknown, fallback: string): string {
           <Plug class="h-7 w-7 text-text-muted" :stroke-width="1.5" />
           <div class="mt-2 text-[13px] font-medium text-text-secondary">{{ emptyStateText }}</div>
         </div>
-        <div v-else class="mt-2 grid gap-x-4 gap-y-0.5 md:grid-cols-2" role="list" aria-label="Installed skills">
-          <button
-            v-for="skill in filteredSkills"
-            :key="skill.id"
-            type="button"
-            role="listitem"
-            class="group flex min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            :class="skill.id === selectedSkillID ? 'bg-accent-subtle' : ''"
-            :disabled="actionBusy"
-            :aria-busy="activationSkillID === skill.id ? 'true' : undefined"
-            :aria-label="`${skill.name}, ${statusLabel(skill)}. Select to view details.`"
-            :aria-pressed="skill.id === selectedSkillID"
-            @click="selectSkill(skill)"
-          >
-            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised text-accent">
-              <Plug class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
-            </span>
-            <span class="min-w-0 flex-1">
-              <span class="flex min-w-0 items-center gap-2">
-                <span class="truncate text-[13px] font-medium text-text-primary">{{ skill.name }}</span>
+        <ul v-else class="mt-2 grid gap-x-4 gap-y-0.5 md:grid-cols-2" aria-label="Installed skills">
+          <li v-for="skill in filteredSkills" :key="skill.id" class="min-w-0">
+            <button
+              type="button"
+              class="group flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              :class="skill.id === selectedSkillID ? 'bg-accent-subtle' : ''"
+              :disabled="actionBusy"
+              :aria-busy="activationSkillID === skill.id ? 'true' : undefined"
+              :aria-label="`${skill.name}, ${statusLabel(skill)}. Select to view details.`"
+              aria-haspopup="dialog"
+              @click="selectSkill(skill)"
+            >
+              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised text-accent">
+                <Plug class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
               </span>
-              <span class="mt-0.5 block truncate text-[11px] text-text-secondary">{{ skill.description || 'No description provided.' }}</span>
-              <span class="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
-                <span>{{ sourceLabel(skill) }}</span>
-                <span aria-hidden="true">·</span>
-                <code class="truncate font-mono" :title="skill.packageName || skill.id">{{ skill.packageName || skill.id }}</code>
+              <span class="min-w-0 flex-1">
+                <span class="flex min-w-0 items-center gap-2">
+                  <span class="truncate text-[13px] font-medium text-text-primary">{{ skill.name }}</span>
+                </span>
+                <span class="mt-0.5 block truncate text-[11px] text-text-secondary">{{ skill.description || 'No description provided.' }}</span>
+                <span class="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
+                  <span>{{ sourceLabel(skill) }}</span>
+                  <span aria-hidden="true">·</span>
+                  <code class="truncate font-mono" :title="skill.packageName || skill.id">{{ skill.packageName || skill.id }}</code>
+                </span>
               </span>
-            </span>
-            <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" aria-label="Enabled" />
-            <span v-else class="h-5 w-5 shrink-0 rounded-full border border-border-default" aria-label="Disabled" />
-            <span v-if="activationSkillID === skill.id" class="flex shrink-0 items-center gap-1 text-[11px] text-accent" role="status" aria-label="Saving skill">
-              <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
-              <span>Saving…</span>
-            </span>
-          </button>
-        </div>
+              <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" aria-label="Enabled" />
+              <span v-else class="h-5 w-5 shrink-0 rounded-full border border-border-default" aria-label="Disabled" />
+              <span v-if="activationSkillID === skill.id" class="flex shrink-0 items-center gap-1 text-[11px] text-accent" role="status" aria-label="Saving skill">
+                <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                <span>Saving…</span>
+              </span>
+            </button>
+          </li>
+        </ul>
       </div>
 
     </section>
 
-    <div v-if="selectedSkill" class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 p-4 backdrop-blur-[2px]" @mousedown.self="closeSkillDetail">
-        <section class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`" :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined">
+    <Teleport to="#app-studio-overlay-root">
+      <div v-if="selectedSkill" class="fixed inset-0 flex items-center justify-center bg-surface/60 p-4 [z-index:var(--app-studio-z-modal-backdrop)] backdrop-blur-[2px]" role="presentation" @mousedown.self="closeSkillDetail">
+        <section ref="detailDialogRef" tabindex="-1" class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`" :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined" @keydown="handleDetailKeydown">
           <header class="flex items-start gap-4 px-6 pb-5 pt-6">
             <span class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-accent-subtle text-accent">
               <Plug class="h-7 w-7" :stroke-width="1.5" aria-hidden="true" />
@@ -390,15 +460,20 @@ function friendlyError(error: unknown, fallback: string): string {
                 role="switch"
                 :aria-checked="selectedSkill.enabled !== false"
                 :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
-                class="relative h-7 w-12 shrink-0 rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60"
-                :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
+                class="flex h-11 w-12 shrink-0 items-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="actionBusy"
                 @click="toggleSelectedSkill"
               >
-                <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
+                <span
+                  aria-hidden="true"
+                  class="relative block h-7 w-12 shrink-0 rounded-sm transition"
+                  :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
+                >
+                  <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
+                </span>
               </button>
             </div>
-            <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
+            <button ref="detailCloseRef" type="button" class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
               <X class="h-5 w-5" :stroke-width="1.75" />
             </button>
           </header>
@@ -429,6 +504,7 @@ function friendlyError(error: unknown, fallback: string): string {
             <code v-if="selectedDigest" class="ml-auto max-w-48 truncate font-mono" :title="selectedDigest">{{ selectedDigest }}</code>
           </footer>
         </section>
-    </div>
+      </div>
+    </Teleport>
   </div>
 </template>

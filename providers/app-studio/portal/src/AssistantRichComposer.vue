@@ -1079,6 +1079,7 @@ defineExpose({
     <AssistantCommandPalette
       :open="commandPaletteOpen"
       :command-query="commandPaletteQuery"
+      :preserve-composer-focus="commandPaletteFromSlash"
       :ctx="ctx"
       :providers="providers"
       :skills="skills"
@@ -1122,7 +1123,7 @@ defineExpose({
               <button
                 v-if="chip.status === 'error' && chip.retryAction"
                 type="button"
-                class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 :aria-label="chip.retryAction === 'delete' ? 'Retry attachment removal' : 'Retry attachment upload'"
                 :title="chip.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
                 @click="retryAttachment(chip)"
@@ -1132,7 +1133,7 @@ defineExpose({
               <button
                 v-if="chip.status !== 'deleting'"
                 type="button"
-                class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 aria-label="Remove attachment"
                 title="Remove attachment"
                 @click="removeAttachment(chip)"
@@ -1188,11 +1189,11 @@ defineExpose({
     <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-2">
       <div class="flex min-w-0 items-center gap-0.5">
         <div ref="addMenuRootRef" class="contents">
-          <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 z-30 min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">
+          <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">
             <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Add</div>
             <button
               type="button"
-              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               role="menuitem"
               @click="openAttachmentPicker"
             >
@@ -1201,7 +1202,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               role="menuitem"
               @click="openPalette"
             >
@@ -1212,7 +1213,7 @@ defineExpose({
           <button
             ref="attachmentMenuTriggerRef"
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+            class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
             :disabled="disabled"
             title="Add files, skill, resource, or command"
             aria-label="Add files or open slash commands"

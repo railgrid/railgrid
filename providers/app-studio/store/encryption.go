@@ -384,6 +384,36 @@ func (s *encryptedStore) ListAssistantThreadEvents(ctx context.Context, scope Sc
 	return events, nil
 }
 
+func (s *encryptedStore) ListAssistantThreadEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	events, err := s.inner.ListAssistantThreadEventsBefore(ctx, scope, threadID, beforeSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range events {
+		if err := s.decryptAssistantThreadEvent(scope, &events[index]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *encryptedStore) ListAssistantThreadTurnEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	events, err := s.inner.ListAssistantThreadTurnEventsBefore(ctx, scope, threadID, beforeSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range events {
+		if err := s.decryptAssistantThreadEvent(scope, &events[index]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *encryptedStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error) {
+	return s.inner.GetAssistantThreadTurnStartSequence(ctx, scope, threadID, turnID)
+}
+
 // Thread titles are part of the user-authored transcript and must follow the
 // same at-rest protection as thread event payloads.  The title column remains
 // text for compatibility with existing schemas; an encrypted assistant-run
@@ -564,6 +594,19 @@ func (s *encryptedStore) ListMessages(ctx context.Context, scope Scope, limit in
 
 func (s *encryptedStore) LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error) {
 	items, err := s.inner.LoadRecentMessages(ctx, scope, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if err := s.decryptMessage(scope, &items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (s *encryptedStore) GetMessagesByIDs(ctx context.Context, scope Scope, messageIDs []string) ([]Message, error) {
+	items, err := s.inner.GetMessagesByIDs(ctx, scope, messageIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -762,6 +805,19 @@ func (s *encryptedStore) AppendAssistantRunEvent(ctx context.Context, scope Scop
 
 func (s *encryptedStore) ListAssistantRunEvents(ctx context.Context, scope Scope, runID string, afterSequence int64, limit int) ([]AssistantRunEvent, error) {
 	events, err := s.inner.ListAssistantRunEvents(ctx, scope, runID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range events {
+		if err := s.decryptAssistantRunEvent(scope, &events[i]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *encryptedStore) ListAssistantRunEventsByRuns(ctx context.Context, scope Scope, runIDs []string, eventType string, perRunLimit int) ([]AssistantRunEvent, error) {
+	events, err := s.inner.ListAssistantRunEventsByRuns(ctx, scope, runIDs, eventType, perRunLimit)
 	if err != nil {
 		return nil, err
 	}

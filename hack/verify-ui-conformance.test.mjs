@@ -683,6 +683,20 @@ test('accepts both theme-correct on-accent fallbacks without allowing raw foregr
   assert.match(rawColors[0].path, /providers\/fixture\/portal\/src\/style\.css$/)
 })
 
+test('accepts current and standalone-compatible muted token fallbacks', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/style.css': [
+      '.current { color: var(--color-text-muted, #8587a1); }',
+      '.standalone { color: var(--color-text-muted, #5d5f78); }',
+      '.raw { color: #5d5f78; }',
+      '',
+    ].join('\n'),
+  })
+  const rawColors = fixture.run().diagnostics.filter((diagnostic) => diagnostic.rule === RULES.RAW_COLOR)
+  assert.equal(rawColors.length, 1)
+  assert.equal(rawColors[0].match, '#5d5f78')
+})
+
 test('rejects unknown color token declarations in authority stylesheets', () => {
   const fixture = fixtureRepo({
     'providers/fixture/portal/src/style.css': ':root { --color-surafce: #0a0b12; }\n',

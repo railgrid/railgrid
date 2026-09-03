@@ -139,7 +139,7 @@ const emit = defineEmits<{
             <dd class="mt-1 truncate font-mono text-text-secondary" :title="saved.baseURL">{{ saved.baseURL }}</dd>
           </dl>
           <div class="flex flex-wrap items-center gap-1">
-            <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50" :disabled="saving" @click="emit('openEditor', saved.id)">
+            <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50" :disabled="saving" @click="emit('openEditor', saved.id)">
               <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> Edit
             </button>
             <span
@@ -157,7 +157,7 @@ const emit = defineEmits<{
                 <Star class="h-3.5 w-3.5" :stroke-width="1.75" /> Make default
               </button>
             </span>
-            <button type="button" class="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger disabled:opacity-50" :disabled="saving" :aria-label="`Delete ${saved.name}`" @click="emit('delete', saved.id)">
+            <button type="button" class="app-studio-touch-target ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger disabled:opacity-50" :disabled="saving" :aria-label="`Delete ${saved.name}`" @click="emit('delete', saved.id)">
               <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
             </button>
           </div>
@@ -252,7 +252,7 @@ const emit = defineEmits<{
             <div class="flex flex-wrap items-center justify-between gap-2">
               <h5 id="model-selection-heading" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Model</h5>
               <span class="inline-flex" :title="!canDiscover ? (googleServiceAccountMode ? 'Vertex AI model discovery is not available yet.' : 'Enter a credential before finding models.') : undefined">
-                <button type="button" class="k-btn k-btn--ghost h-8 px-2.5 text-[11px]" :disabled="saving || discoveryLoading || !canDiscover" @click="emit('discover')">
+                <button type="button" class="app-studio-touch-target k-btn k-btn--ghost h-8 px-2.5 text-[11px]" :disabled="saving || discoveryLoading || !canDiscover" @click="emit('discover')">
                   <Loader2 v-if="discoveryLoading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
                   <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
                   {{ discoveryLoading ? 'Finding models…' : 'Find models' }}
@@ -275,7 +275,7 @@ const emit = defineEmits<{
             <div v-if="recommendedDiscoveredModels.length" class="grid gap-2" aria-label="Recommended models">
               <span class="text-[9px] font-semibold uppercase tracking-wide text-text-muted">Recommended for App Studio</span>
               <div class="flex flex-wrap gap-2">
-                <button v-for="available in recommendedDiscoveredModels" :key="available.id" type="button" class="rounded-sm border border-accent/25 bg-accent-subtle px-2.5 py-1.5 font-mono text-[10px] font-medium text-accent transition hover:border-accent/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="saving" @click="emit('selectDiscoveredModel', available)">
+                <button v-for="available in recommendedDiscoveredModels" :key="available.id" type="button" class="app-studio-touch-target rounded-sm border border-accent/25 bg-accent-subtle px-2.5 py-1.5 font-mono text-[10px] font-medium text-accent transition hover:border-accent/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="saving" @click="emit('selectDiscoveredModel', available)">
                   {{ available.name }}
                 </button>
               </div>

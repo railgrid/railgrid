@@ -140,6 +140,24 @@ func TestPortalAssets(t *testing.T) {
 	} else if err != nil {
 		t.Fatalf("stat main.js: %v", err)
 	}
+	var chunks []string
+	for _, name := range []string{"page-element", "tile-element", "styles"} {
+		matches, err := fs.Glob(distFS, "assets/"+name+"-*.js")
+		if err != nil {
+			t.Fatalf("glob %s portal chunk: %v", name, err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("%s portal chunks = %v, want one content-hashed chunk", name, matches)
+		}
+		chunks = append(chunks, matches[0])
+	}
+	componentCSS, err := fs.Glob(distFS, "assets/page-element-*.css")
+	if err != nil {
+		t.Fatalf("glob component CSS: %v", err)
+	}
+	if len(componentCSS) != 1 {
+		t.Fatalf("component CSS = %v, want one content-hashed stylesheet", componentCSS)
+	}
 
 	h, err := newHandler(nil)
 	if err != nil {
@@ -149,15 +167,29 @@ func TestPortalAssets(t *testing.T) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	for _, tc := range []struct {
+	tests := []struct {
 		path         string
+		status       int
 		contentType  string
 		bodyContains string
 	}{
-		{path: "/main.js", contentType: "javascript", bodyContains: "faros-provider-app-studio"},
-		{path: "/icon.svg", contentType: "image/svg+xml", bodyContains: "<svg"},
-		{path: "/does-not-exist", contentType: "text/html", bodyContains: "App Studio provider"},
-	} {
+		{path: "/main.js", status: http.StatusOK, contentType: "javascript", bodyContains: "faros-provider-app-studio"},
+		{path: "/" + componentCSS[0], status: http.StatusOK, contentType: "text/css"},
+		{path: "/icon.svg", status: http.StatusOK, contentType: "image/svg+xml", bodyContains: "<svg"},
+		{path: "/does-not-exist", status: http.StatusOK, contentType: "text/html", bodyContains: "App Studio provider"},
+		{path: "/assets/retired-chunk.js", status: http.StatusNotFound, contentType: "text/plain", bodyContains: "404 page not found"},
+		{path: "/missing.css", status: http.StatusNotFound, contentType: "text/plain", bodyContains: "404 page not found"},
+	}
+	for _, chunk := range chunks {
+		tests = append(tests, struct {
+			path         string
+			status       int
+			contentType  string
+			bodyContains string
+		}{path: "/" + chunk, status: http.StatusOK, contentType: "javascript"})
+	}
+
+	for _, tc := range tests {
 		res, err := srv.Client().Get(srv.URL + tc.path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", tc.path, err)
@@ -168,7 +200,7 @@ func TestPortalAssets(t *testing.T) {
 					t.Errorf("close %s response body: %v", tc.path, err)
 				}
 			}()
-			if got, want := res.StatusCode, http.StatusOK; got != want {
+			if got, want := res.StatusCode, tc.status; got != want {
 				t.Fatalf("GET %s status = %d, want %d", tc.path, got, want)
 			}
 			if got := res.Header.Get("Content-Type"); !strings.Contains(got, tc.contentType) {

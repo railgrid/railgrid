@@ -1,124 +1,151 @@
-import { createApp, h, reactive, type App as VueApp } from 'vue'
-import App from './App.vue'
-import DashboardTile from './DashboardTile.vue'
 import type { FarosContext } from './types'
+import {
+  installCurrentAppStudioLazyLoaders,
+  loadCurrentAppStudioSurface,
+  type LazySurface,
+} from './lazyLoaderRegistry'
 
 const TAG = 'faros-provider-app-studio'
 const TILE_TAG = 'faros-dashboard-tile-app-studio'
-type NavigationOptions = { replace?: boolean }
+const PROVIDER_BOOTSTRAP_RETRY_EVENT = 'faros-provider-bootstrap-retry'
 
-class ProjectsElement extends HTMLElement {
-  private app: VueApp | null = null
-  private host: HTMLDivElement | null = null
-  private overlayRoot: HTMLDivElement | null = null
-  private state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
+interface LazyMount {
+  setContext(context: FarosContext | null): void
+  unmount(): void
+}
 
-  set farosContext(v: FarosContext | null) {
-    this.state.ctx = v
+type MountModule = {
+  mount(element: HTMLElement, context: FarosContext | null): LazyMount
+}
+
+function loadCurrentMount(surface: LazySurface): Promise<MountModule> {
+  return loadCurrentAppStudioSurface<MountModule>(globalThis, surface)
+}
+
+abstract class LazyAppStudioElement extends HTMLElement {
+  private context: FarosContext | null = null
+  private generation = 0
+  private mountHandle: LazyMount | null = null
+
+  protected abstract loadMount(): Promise<MountModule>
+
+  set farosContext(value: FarosContext | null) {
+    this.context = value
+    this.mountHandle?.setContext(value)
   }
 
   get farosContext(): FarosContext | null {
-    return this.state.ctx
+    return this.context
   }
 
   connectedCallback(): void {
-    if (this.app) return
-    this.style.display = 'block'
-    this.style.height = '100%'
-    this.style.width = '100%'
-    this.style.minHeight = '0'
-    this.host = document.createElement('div')
-    this.host.className = 'h-full min-h-0 w-full'
-    // Keep Vue Teleport targets inside the provider element. App Studio's
-    // Tailwind bundle is scoped to this custom element in main.ts; a body
-    // target would render the overlay markup outside that scope and lose all
-    // provider utilities in the host portal.
-    this.overlayRoot = document.createElement('div')
-    this.overlayRoot.id = 'app-studio-overlay-root'
-    this.overlayRoot.className = 'app-studio-overlay-root'
-    this.appendChild(this.host)
-    this.appendChild(this.overlayRoot)
-    this.app = createApp({
-      render: () =>
-        h(App, {
-          ctx: this.state.ctx,
-          navigate: (path: string, options?: NavigationOptions) => this.navigate(path, options),
-          requestFullBleed: (fullBleed: boolean) => this.requestFullBleed(fullBleed),
-        }),
+    if (this.mountHandle) return
+    this.startLoad()
+  }
+
+  private startLoad(): void {
+    if (!this.isConnected) return
+    const generation = ++this.generation
+    const status = document.createElement('p')
+    status.className = 'k-loading-reveal'
+    Object.assign(status.style, {
+      margin: '0',
+      padding: '16px',
+      color: 'var(--color-text-muted, #8587a1)',
+      fontSize: '14px',
     })
-    this.app.mount(this.host)
+    status.setAttribute('role', 'status')
+    status.setAttribute('aria-live', 'polite')
+    status.textContent = 'Loading App Studio…'
+    this.replaceChildren(status)
+    void this.loadMount()
+      .then(({ mount }) => {
+        if (generation !== this.generation || !this.isConnected) return
+        this.mountHandle = mount(this, this.context)
+      })
+      .catch(() => {
+        if (generation !== this.generation || !this.isConnected) return
+        const error = document.createElement('div')
+        Object.assign(error.style, {
+          display: 'grid',
+          gap: '12px',
+          padding: '16px',
+          color: 'var(--color-danger, #ff5d5d)',
+          fontSize: '14px',
+        })
+        error.setAttribute('role', 'alert')
+        error.setAttribute('aria-live', 'assertive')
+        const message = document.createElement('p')
+        message.textContent = 'App Studio could not be loaded.'
+        const retry = document.createElement('button')
+        retry.type = 'button'
+        // The page and tile styles are intentionally lazy. Keep this failure
+        // action usable before either bundle has loaded by relying on the
+        // host-owned button primitive plus intrinsic touch-safe dimensions.
+        retry.className = 'k-btn k-btn--danger'
+        Object.assign(retry.style, {
+          width: 'fit-content',
+          minHeight: '44px',
+        })
+        retry.textContent = 'Retry loading App Studio'
+        retry.addEventListener('click', () => {
+          // A failed dynamic import can point at a hashed chunk retired by a
+          // same-version deployment. Retrying that captured loader cannot
+          // recover; ask the host to invalidate and reload main.js so this
+          // stable wrapper receives the deployment's current lazy loaders.
+          const handled = !this.dispatchEvent(new CustomEvent(PROVIDER_BOOTSTRAP_RETRY_EVENT, {
+            bubbles: true,
+            composed: true,
+            cancelable: true,
+            detail: { providerName: 'app-studio' },
+          }))
+          // Direct and legacy embeddings have no host loader. Preserve their
+          // local retry behavior for transient failures.
+          if (!handled) this.startLoad()
+        })
+        error.append(message, retry)
+        this.replaceChildren(error)
+      })
   }
 
   disconnectedCallback(): void {
-    this.app?.unmount()
-    this.app = null
-    if (this.host?.parentNode === this) this.removeChild(this.host)
-    this.host = null
-    if (this.overlayRoot?.parentNode === this) this.removeChild(this.overlayRoot)
-    this.overlayRoot = null
-  }
-
-  private navigate(path: string, options: NavigationOptions = {}): void {
-    this.dispatchEvent(
-      new CustomEvent('faros-navigate', {
-        detail: { path, ...(options.replace === true ? { replace: true } : {}) },
-        bubbles: true,
-      }),
-    )
-  }
-
-  private requestFullBleed(fullBleed: boolean): void {
-    this.dispatchEvent(
-      new CustomEvent('faros-layout-change', {
-        detail: { fullBleed },
-        bubbles: true,
-      }),
-    )
+    this.generation++
+    this.mountHandle?.unmount()
+    this.mountHandle = null
+    this.replaceChildren()
   }
 }
 
-if (!customElements.get(TAG)) {
-  customElements.define(TAG, ProjectsElement)
-}
-
-// AppStudioDashboardTileElement is the console's dashboard summary card. Kept
-// separate from the page element so the dashboard never constructs the full
-// App Studio app — by far the heaviest provider bundle — to render four rows.
-export class AppStudioDashboardTileElement extends HTMLElement {
-  private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
-  private _host: HTMLDivElement | null = null
-
-  set farosContext(v: FarosContext | null) {
-    this._state.ctx = v
-  }
-  get farosContext(): FarosContext | null {
-    return this._state.ctx
-  }
-
-  connectedCallback(): void {
-    if (this._vueApp) return
-    this._host = document.createElement('div')
-    this._host.className = 'app-studio-tile-host'
-    this.appendChild(this._host)
-    this._vueApp = createApp({
-      render: () => h(DashboardTile, { context: this._state.ctx }),
-    })
-    this._vueApp.mount(this._host)
-  }
-
-  disconnectedCallback(): void {
-    if (this._vueApp) {
-      this._vueApp.unmount()
-      this._vueApp = null
-    }
-    if (this._host && this._host.parentNode === this) {
-      this.removeChild(this._host)
-    }
-    this._host = null
+class ProjectsElement extends LazyAppStudioElement {
+  protected loadMount(): Promise<MountModule> {
+    return loadCurrentMount('page')
   }
 }
 
-if (!customElements.get(TILE_TAG)) {
-  customElements.define(TILE_TAG, AppStudioDashboardTileElement)
+class AppStudioDashboardTileElement extends LazyAppStudioElement {
+  protected loadMount(): Promise<MountModule> {
+    return loadCurrentMount('tile')
+  }
+}
+
+// ProviderFrame reloads main.js when the deployed provider version changes,
+// but the browser cannot redefine an existing custom element. Keep the small
+// registered wrapper and refresh its lazy loaders on every current bootstrap.
+// The generation check is inside this side-effect boundary because removing a
+// prepared classic script does not prevent its body from executing later.
+export function registerAppStudioElements(bootstrapGeneration: string | undefined): boolean {
+  const installed = installCurrentAppStudioLazyLoaders<MountModule>(globalThis, bootstrapGeneration, {
+    page: () => import('./page-element'),
+    tile: () => import('./tile-element'),
+  })
+  if (!installed) return false
+
+  if (!customElements.get(TAG)) {
+    customElements.define(TAG, ProjectsElement)
+  }
+
+  if (!customElements.get(TILE_TAG)) {
+    customElements.define(TILE_TAG, AppStudioDashboardTileElement)
+  }
+  return true
 }

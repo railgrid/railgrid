@@ -1,11 +1,11 @@
 /*
  * App Studio provider styles — self-contained Tailwind build.
  *
- * This provider renders in LIGHT DOM via <faros-provider-app-studio> and ships
- * its OWN compiled Tailwind; it is no longer scanned by the host portal's
- * @source directives. main.ts imports this file with ?inline (so the Tailwind
- * Vite plugin processes it at build time) and injects the result as a single
- * <style> tag in the host document — the host loads only main.js.
+ * This provider renders in LIGHT DOM via <faros-provider-app-studio> and
+ * <faros-dashboard-tile-app-studio>, and ships its OWN compiled Tailwind; it is
+ * no longer scanned by the host portal's @source directives. styles.ts imports
+ * this file with ?inline (so the Tailwind Vite plugin processes it at build
+ * time) and injects the result when either lazy provider surface first connects.
  *
  * Three rules keep it a good light-DOM citizen:
  *
@@ -62,7 +62,7 @@
   --color-on-accent: var(--color-on-accent, #0a0b12);
   --color-text-primary: var(--color-text-primary, #e9e9f2);
   --color-text-secondary: var(--color-text-secondary, #8a8ca6);
-  --color-text-muted: var(--color-text-muted, #5d5f78);
+  --color-text-muted: var(--color-text-muted, #8587a1);
   --color-success: var(--color-success, #2fd6a0);
   --color-success-subtle: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
   --color-warning: var(--color-warning, #f0a63a);
@@ -79,16 +79,27 @@ details[open] > summary .landing-prompt-chevron {
   transform: rotate(90deg);
 }
 
-faros-provider-app-studio,
-faros-provider-app-studio *,
-faros-provider-app-studio *::before,
-faros-provider-app-studio *::after {
+:scope,
+:scope *,
+:scope *::before,
+:scope *::after {
   box-sizing: border-box;
+}
+
+:scope {
+  /* Shared layer order for App Studio overlays. Components should consume
+     these tokens instead of introducing one-off numeric z-index values. */
+  --app-studio-z-dropdown: 20;
+  --app-studio-z-menu: 30;
+  --app-studio-z-modal-backdrop: 40;
+  --app-studio-z-modal: 50;
+  --app-studio-z-toast: 60;
+  --app-studio-z-tooltip: 70;
 }
 
 /* The custom element owns this target; teleported overlays should not add a
    layout box to the provider while remaining descendants of the scoped root. */
-faros-provider-app-studio .app-studio-overlay-root {
+.app-studio-overlay-root {
   display: contents;
 }
 
@@ -101,32 +112,35 @@ faros-provider-app-studio .app-studio-overlay-root {
   transform: none;
 }
 
-@keyframes app-studio-running-ripple {
-  from { background-position: 100% 0; }
-  to { background-position: -100% 0; }
-}
-
-faros-provider-app-studio .conversation-running-ripple {
-  color: transparent;
-  background-image: linear-gradient(
-    90deg,
-    var(--color-text-muted) 0%,
-    var(--color-text-secondary) 35%,
-    var(--color-text-primary) 50%,
-    var(--color-text-secondary) 65%,
-    var(--color-text-muted) 100%
-  );
-  background-position: 100% 0;
-  background-size: 220% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: app-studio-running-ripple 1.65s linear infinite;
+.conversation-running-ripple {
+  color: var(--color-text-secondary);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  faros-provider-app-studio .conversation-running-ripple {
-    color: var(--color-text-secondary);
-    background: none;
-    animation: none;
+  :scope,
+  :scope *,
+  :scope *::before,
+  :scope *::after {
+    animation-delay: 0s !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Opt-in helpers for controls that need larger or persistently visible touch
+   affordances without changing their compact pointer layout. */
+@media (hover: none), (any-pointer: coarse) {
+  .app-studio-touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .app-studio-touch-visible {
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
   }
 }

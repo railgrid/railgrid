@@ -150,7 +150,7 @@ watch(
 <template>
   <div ref="rootRef" :class="tileClass.root">
     <div v-if="loading && !hasSnapshot" :class="tileClass.message">Loading projects&hellip;</div>
-    <div v-else-if="error && !hasSnapshot" :class="tileClass.error">Failed to load: {{ error }}</div>
+    <div v-else-if="error && !hasSnapshot" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }}</div>
 
     <template v-else>
       <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">

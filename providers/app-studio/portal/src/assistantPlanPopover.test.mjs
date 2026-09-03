@@ -99,11 +99,18 @@ test('protects live plan progress from stale sequence or revision events', async
   assert.match(appSource, /rawItem\.type === 'plan' && rawItem\.data[\s\S]*assistantPlanEventIsNewer\(metadata, rawItem, event\)/)
 })
 
-test('renders the running label with a Codex-style gradient ripple', async () => {
+test('renders the running label quietly without animated gradient text', async () => {
   const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
-  assert.match(style, /@keyframes app-studio-running-ripple/)
-  assert.match(style, /\.conversation-running-ripple[\s\S]*linear-gradient[\s\S]*background-clip: text[\s\S]*animation: app-studio-running-ripple 1\.65s linear infinite/)
-  assert.match(style, /prefers-reduced-motion: reduce[\s\S]*\.conversation-running-ripple[\s\S]*animation: none/)
+  assert.match(style, /\.conversation-running-ripple\s*\{\s*color: var\(--color-text-secondary\);\s*\}/)
+  assert.doesNotMatch(style, /@keyframes app-studio-running-ripple|background-clip: text/)
+})
+
+test('uses semantic overlay layers and hides decorative plan icons', async () => {
+  const popover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
+  assert.match(popover, /\[z-index:var\(--app-studio-z-dropdown\)\]/)
+  assert.match(popover, /\[z-index:var\(--app-studio-z-modal-backdrop\)\]/)
+  assert.match(popover, /\[z-index:var\(--app-studio-z-modal\)\]/)
+  assert.equal((popover.match(/aria-hidden="true"/g) ?? []).length, 4)
 })
 
 test('offers an explicit Default-mode implementation turn after the latest completed plan', async () => {

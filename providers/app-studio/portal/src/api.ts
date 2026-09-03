@@ -116,7 +116,13 @@ interface ProjectAPIRequestOptions {
 
 const ASSISTANT_THREAD_PAGE_SIZE = 500
 const MAX_ASSISTANT_THREAD_PAGES = 100
+const ASSISTANT_THREAD_ITEM_PAGE_TURNS = 20
 const PREVIEW_BRIDGE_TIMEOUT_MESSAGE = 'preview bridge request timed out'
+
+export interface ProjectAssistantThreadItemPage {
+  items: ProjectAssistantThreadItem[]
+  nextCursor: string
+}
 
 async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
@@ -1099,9 +1105,30 @@ export const api = {
     )
   },
 
+  async listAssistantThreadItemPage(
+    ctx: FarosContext | null,
+    name: string,
+    threadID: string,
+    beforeSequence = '',
+  ): Promise<ProjectAssistantThreadItemPage> {
+    const query = new URLSearchParams({ limit: String(ASSISTANT_THREAD_ITEM_PAGE_TURNS) })
+    if (beforeSequence.trim()) query.set('beforeSequence', beforeSequence.trim())
+    const body = await request<{ items?: ProjectAssistantThreadItem[]; nextCursor?: string }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items?${query.toString()}`,
+    )
+    return {
+      items: Array.isArray(body.items) ? body.items : [],
+      nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor.trim() : '',
+    }
+  },
+
+  // Compatibility helper for call sites that only need the newest bounded
+  // window. Interactive history uses listAssistantThreadItemPage so older
+  // turns remain explicitly addressable without an unbounded response.
   async listAssistantThreadItems(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
-    const body = await request<{ items: ProjectAssistantThreadItem[] }>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items`)
-    return body.items ?? []
+    return (await api.listAssistantThreadItemPage(ctx, name, threadID)).items
   },
 
   /** List durable project-scoped receipts; content parts carry only these references. */

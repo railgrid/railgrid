@@ -51,7 +51,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="relative min-w-0 max-w-52">
     <button
       type="button"
-      class="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
+      class="app-studio-touch-target inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
       :disabled="disabled"
       aria-haspopup="dialog"
       :aria-expanded="open"
@@ -70,13 +70,13 @@ onBeforeUnmount(() => {
       role="dialog"
       aria-modal="false"
       aria-label="How should App Studio respond?"
-      class="fixed inset-x-2 bottom-2 z-50 max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border-default bg-surface-overlay p-1.5 shadow-xl md:absolute md:inset-x-auto md:bottom-9 md:left-0 md:max-h-[min(28rem,calc(100dvh-7rem))] md:w-[360px]"
+      class="fixed inset-x-2 bottom-2 [z-index:var(--app-studio-z-dropdown)] max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border-default bg-surface-overlay p-1.5 shadow-xl md:absolute md:inset-x-auto md:bottom-9 md:left-0 md:max-h-[min(28rem,calc(100dvh-7rem))] md:w-[360px]"
     >
       <div class="px-1.5 py-1 text-[11px] text-text-muted">How should App Studio respond?</div>
       <button
         type="button"
         :aria-pressed="mode === 'default'"
-        class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
+        class="app-studio-touch-target flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('default')"
       >
         <Sparkles class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
@@ -89,7 +89,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         :aria-pressed="mode === 'plan'"
-        class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
+        class="app-studio-touch-target flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('plan')"
       >
         <ClipboardList class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         :aria-pressed="mode === 'review'"
-        class="flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
+        class="app-studio-touch-target flex w-full items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('review')"
       >
         <SearchCheck class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />

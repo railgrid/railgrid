@@ -68,6 +68,21 @@ test('rich composer exposes one combined Files picker while retaining command en
   assert.doesNotMatch(source, /Screenshot|Text file/)
 })
 
+test('composer Add triggers and each compact menu action opt into coarse-pointer targets', async () => {
+  const [rich, preProject, app] = await Promise.all([
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(rich, /ref="attachmentMenuTriggerRef"[\s\S]*?class="app-studio-touch-target flex h-7 w-7[^\"]*"/)
+  assert.match(rich, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
+  assert.match(rich, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openPalette"/)
+  assert.match(preProject, /ref="attachmentMenuTriggerRef"[\s\S]*?class="app-studio-touch-target flex h-7 w-7[^\"]*"/)
+  assert.match(preProject, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
+  assert.match(app, /ref="landingImportTriggerRef"[\s\S]*?role="menuitem"\s+class="app-studio-touch-target flex w-full[^\"]*"/)
+})
+
 test('rich composer renders image uploads through the lifecycle-safe thumbnail preview', async () => {
   const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
   const preview = await readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8')
@@ -134,6 +149,12 @@ test('rich attachment removal retries deletion without re-uploading the file', a
   assert.ok(retryBody.indexOf('void removeAttachment(chip)') < retryBody.indexOf('void uploadAttachment(chip.file, chip.clientID)'), 'delete retry must not enqueue an upload')
   assert.match(source, /:retry-action="chip\.retryAction"/)
   assert.match(source, /attachmentStatusLabel\(chip\)/)
+  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
+  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*aria-label="Remove attachment"/)
+
+  const preProject = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
+  assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
+  assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*aria-label="Remove attachment"/)
 })
 
 test('cancelled uploads retain a recoverable File and treat absent draft deletes as success', async () => {

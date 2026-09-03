@@ -117,7 +117,7 @@ watch(() => props.annotations.length, (count) => {
       :id="panelID"
       v-show="open"
       role="tooltip"
-      class="absolute bottom-full left-0 z-40 mb-2 max-h-80 w-[min(32rem,calc(100vw-3rem))] overflow-auto rounded-lg border border-border-default bg-surface-overlay text-left shadow-2xl"
+      class="absolute bottom-full left-0 [z-index:var(--app-studio-z-dropdown)] mb-2 max-h-80 w-[min(32rem,calc(100vw-3rem))] overflow-auto rounded-lg border border-border-default bg-surface-overlay text-left shadow-2xl"
     >
       <div
         v-for="(annotation, index) in annotations"

@@ -5,7 +5,8 @@
   "description": "App Studio provider portal bundle, shared with the projects provider UI source.",
   "type": "module",
   "scripts": {
-    "build": "vite build && cp index.html icon.svg dist/ && touch dist/.gitkeep",
+    "build": "vite build && cp index.html icon.svg dist/ && touch dist/.gitkeep && node scripts/check-build-budget.mjs",
+    "test:bundle-budget": "node scripts/check-build-budget.mjs",
     "dev": "vite",
     "test": "node run-tests.mjs",
     "test:workbench": "node --test src/workbench.test.mjs",

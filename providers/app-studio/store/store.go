@@ -202,9 +202,24 @@ type Store interface {
 	SaveAssistantTurnWithEvent(ctx context.Context, scope Scope, turn AssistantTurn, event AssistantThreadEvent, expectedSequence int64) error
 	AppendAssistantThreadEvent(ctx context.Context, scope Scope, event AssistantThreadEvent, expectedSequence int64) (AssistantThreadEvent, error)
 	ListAssistantThreadEvents(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantThreadEvent, error)
+	// ListAssistantThreadEventsBefore returns the newest events below the
+	// exclusive sequence bound in chronological order. A zero bound means the
+	// current tail. The store must perform a reverse, limit-bounded lookup.
+	ListAssistantThreadEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error)
+	// ListAssistantThreadTurnEventsBefore applies the same bounded reverse lookup
+	// while excluding thread-level metadata events, which never contribute to the
+	// transcript. This prevents metadata-only tails from consuming the complete
+	// history materialization budget.
+	ListAssistantThreadTurnEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error)
+	// GetAssistantThreadTurnStartSequence returns the canonical turn.started
+	// sequence without loading the turn's potentially large event stream.
+	GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error)
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
+	// GetMessagesByIDs performs a scope-bound point lookup without walking the
+	// project's chronological message index.
+	GetMessagesByIDs(ctx context.Context, scope Scope, messageIDs []string) ([]Message, error)
 	GetAssistantApprovalPreference(ctx context.Context, scope Scope, actor string) (AssistantApprovalPreference, error)
 	SetAssistantApprovalPreference(ctx context.Context, scope Scope, preference AssistantApprovalPreference) (AssistantApprovalPreference, error)
 	CreateProjectBootstrapPermit(ctx context.Context, scope Scope, actor, promptDigest string) error
@@ -219,6 +234,9 @@ type Store interface {
 	LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error)
 	AppendAssistantRunEvent(ctx context.Context, scope Scope, event AssistantRunEvent, expectedSequence int64) (AssistantRunEvent, error)
 	ListAssistantRunEvents(ctx context.Context, scope Scope, runID string, afterSequence int64, limit int) ([]AssistantRunEvent, error)
+	// ListAssistantRunEventsByRuns returns at most perRunLimit newest matching
+	// events for each requested run in the complete project scope.
+	ListAssistantRunEventsByRuns(ctx context.Context, scope Scope, runIDs []string, eventType string, perRunLimit int) ([]AssistantRunEvent, error)
 	AppendAssistantConversationItem(ctx context.Context, scope Scope, item AssistantConversationItem) (AssistantConversationItem, error)
 	ListAssistantConversationItems(ctx context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error

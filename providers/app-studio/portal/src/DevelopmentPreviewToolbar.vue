@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
 <template>
   <header
     ref="root"
-    class="preview-toolbar relative z-40 flex min-w-0 items-center justify-between gap-3"
+    class="preview-toolbar relative [z-index:var(--app-studio-z-dropdown)] flex min-w-0 items-center justify-between gap-3"
     :data-preview-toolbar-layout="layout"
     @focusout="handleFocusOut"
   >
@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
       <button
         v-if="layout !== 'collapsed'"
         type="button"
-        class="preview-toolbar__primary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target preview-toolbar__primary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
         :class="annotationMode
           ? 'border-accent/40 bg-accent-subtle text-accent'
           : 'border-border-subtle bg-surface text-text-secondary hover:bg-surface-hover hover:text-text-primary'"
@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
       <button
         v-if="layout === 'expanded'"
         type="button"
-        class="preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="syncDisabled"
         :aria-label="syncBusy ? 'Syncing preview' : 'Sync preview'"
         :data-k-tip="syncBusy ? 'Syncing preview…' : 'Sync preview'"
@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
       <button
         v-if="layout === 'expanded'"
         type="button"
-        class="preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="openDisabled"
         :aria-label="openLabel"
         :data-k-tip="openLabel"
@@ -199,7 +199,7 @@ onBeforeUnmount(() => {
         <button
           ref="overflowTrigger"
           type="button"
-          class="flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           data-k-tip="More preview actions"
           aria-label="More preview actions"
           aria-haspopup="menu"
@@ -213,7 +213,7 @@ onBeforeUnmount(() => {
         <div
           v-if="overflowOpen"
           ref="overflowMenu"
-          class="absolute right-0 top-10 z-50 w-52 rounded-md border border-border-default bg-surface-overlay p-1 shadow-xl"
+          class="absolute right-0 top-10 [z-index:var(--app-studio-z-menu)] w-52 rounded-md border border-border-default bg-surface-overlay p-1 shadow-xl"
           role="menu"
           aria-label="Preview actions"
           @keydown="handleMenuKeydown"
@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
             v-if="layout === 'collapsed'"
             type="button"
             role="menuitemcheckbox"
-            class="preview-toolbar__overflow-annotation flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target preview-toolbar__overflow-annotation flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="annotationDisabled"
             :aria-checked="annotationMode"
             @click="runAnnotation"
@@ -236,7 +236,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             role="menuitem"
-            class="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="syncDisabled"
             @click="runSync"
           >
@@ -247,7 +247,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             role="menuitem"
-            class="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="openDisabled"
             @click="runOpenBrowser"
           >

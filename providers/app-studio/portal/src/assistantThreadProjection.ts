@@ -315,10 +315,13 @@ function itemRevision(item: ProjectAssistantThreadItem): number {
 function mergeActionFeeds(
   current: unknown,
   projected: unknown,
+  preferCurrent: boolean,
 ): unknown {
-  if (!Array.isArray(current) || !Array.isArray(projected)) return projected ?? current
-  const merged = [...current]
-  for (const value of projected) {
+  if (!Array.isArray(current) || !Array.isArray(projected)) {
+    return preferCurrent ? current ?? projected : projected ?? current
+  }
+  const merged = [...(preferCurrent ? projected : current)]
+  for (const value of preferCurrent ? current : projected) {
     const id = value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string'
       ? (value as { id: string }).id
       : ''
@@ -351,7 +354,7 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
       ? { ...(next.metadata ?? {}), ...(existing.metadata ?? {}) }
       : { ...(existing.metadata ?? {}), ...(next.metadata ?? {}) }
     if (existing.metadata?.assistantActionFeed || next.metadata?.assistantActionFeed) {
-      metadata.assistantActionFeed = mergeActionFeeds(existing.metadata?.assistantActionFeed, next.metadata?.assistantActionFeed)
+      metadata.assistantActionFeed = mergeActionFeeds(existing.metadata?.assistantActionFeed, next.metadata?.assistantActionFeed, existingIsNewer)
     }
     if (existing.metadata?.assistantProgress || next.metadata?.assistantProgress) {
       metadata.assistantProgress = mergeAssistantProgressValues(existing.metadata?.assistantProgress, next.metadata?.assistantProgress, nextRevision > existingRevision)
@@ -375,6 +378,24 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
     if (left.role === right.role) return 0
     return left.role === 'user' ? -1 : 1
   })
+}
+
+/**
+ * Replace the durable transcript with one server-owned page. Existing messages
+ * in that page are reconciled against a newer in-flight stream snapshot, while
+ * messages absent from the page survive only when explicitly identified as
+ * live. This keeps terminal turns from accumulating across refreshes.
+ */
+export function mergeLiveAssistantThreadMessages(
+  current: ProjectMessage[],
+  projected: ProjectMessage[],
+  liveMessageIDs: ReadonlySet<string>,
+): ProjectMessage[] {
+  const projectedIDs = new Set(projected.map((message) => message.id))
+  return mergeAssistantThreadMessages(
+    current.filter((message) => liveMessageIDs.has(message.id) || projectedIDs.has(message.id)),
+    projected,
+  )
 }
 
 /**

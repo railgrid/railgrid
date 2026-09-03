@@ -83,6 +83,14 @@ test('text attachment previews stay bounded, use the first meaningful line, and 
   assert.doesNotMatch(previewSource, /v-html/)
 })
 
+test('attachment actions remain named and expose coarse-pointer hit targets', async () => {
+  const previewSource = await readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8')
+  assert.equal((previewSource.match(/app-studio-touch-target/g) ?? []).length, 2)
+  assert.match(previewSource, /aria-label="Remove attachment"/)
+  assert.match(previewSource, /Retry attachment (?:removal|upload)/)
+  assert.equal((previewSource.match(/aria-hidden="true"/g) ?? []).length >= 4, true)
+})
+
 test('derives attachment errors from the candidates that are still present', async () => {
   const {
     ASSISTANT_ATTACHMENT_RESOLUTION_ERROR,

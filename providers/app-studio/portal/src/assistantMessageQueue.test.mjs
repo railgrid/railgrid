@@ -100,4 +100,6 @@ test('composer and queue controls expose queue-by-default and explicit steering'
   assert.match(queueView, /Turn off queueing/)
   assert.match(queueView, /'Steer'/)
   assert.match(queueView, /@click="\$emit\('steer', message\)"/)
+  assert.match(queueView, /\[z-index:var\(--app-studio-z-menu\)\]/)
+  assert.equal((queueView.match(/app-studio-touch-target/g) ?? []).length, 7)
 })

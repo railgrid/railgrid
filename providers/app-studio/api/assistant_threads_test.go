@@ -18,12 +18,79 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/mux"
+
 	"github.com/faroshq/provider-app-studio/store"
 )
+
+type assistantThreadWindowCountingStore struct {
+	store.Store
+	beforeCalls    int
+	forwardCalls   int
+	turnStartCalls int
+}
+
+type assistantThreadEnrichmentCountingStore struct {
+	store.Store
+	runEventCalls    int
+	runEventLimit    int
+	runIDs           []string
+	messageCalls     int
+	messageLookupIDs []string
+}
+
+type assistantThreadFairRunEnrichmentStore struct {
+	store.Store
+	lookupCalls int
+	runIDs      []string
+	shortEvent  store.AssistantRunEvent
+}
+
+func (s *assistantThreadFairRunEnrichmentStore) ListAssistantRunEventsByRuns(_ context.Context, _ store.Scope, runIDs []string, _ string, _ int) ([]store.AssistantRunEvent, error) {
+	s.lookupCalls++
+	s.runIDs = append([]string(nil), runIDs...)
+	return []store.AssistantRunEvent{s.shortEvent}, nil
+}
+
+func (s *assistantThreadEnrichmentCountingStore) ListAssistantRunEventsByRuns(_ context.Context, _ store.Scope, runIDs []string, _ string, perRunLimit int) ([]store.AssistantRunEvent, error) {
+	s.runEventCalls++
+	s.runEventLimit = perRunLimit
+	s.runIDs = append([]string(nil), runIDs...)
+	return []store.AssistantRunEvent{}, nil
+}
+
+func (s *assistantThreadEnrichmentCountingStore) GetMessagesByIDs(_ context.Context, _ store.Scope, messageIDs []string) ([]store.Message, error) {
+	s.messageCalls++
+	s.messageLookupIDs = append([]string(nil), messageIDs...)
+	return []store.Message{}, nil
+}
+
+func (s *assistantThreadWindowCountingStore) ListAssistantThreadEvents(ctx context.Context, scope store.Scope, threadID string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.forwardCalls++
+	return s.Store.ListAssistantThreadEvents(ctx, scope, threadID, afterSequence, limit)
+}
+
+func (s *assistantThreadWindowCountingStore) ListAssistantThreadEventsBefore(ctx context.Context, scope store.Scope, threadID string, beforeSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.beforeCalls++
+	return s.Store.ListAssistantThreadEventsBefore(ctx, scope, threadID, beforeSequence, limit)
+}
+
+func (s *assistantThreadWindowCountingStore) ListAssistantThreadTurnEventsBefore(ctx context.Context, scope store.Scope, threadID string, beforeSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.beforeCalls++
+	return s.Store.ListAssistantThreadTurnEventsBefore(ctx, scope, threadID, beforeSequence, limit)
+}
+
+func (s *assistantThreadWindowCountingStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope store.Scope, threadID, turnID string) (int64, error) {
+	s.turnStartCalls++
+	return s.Store.GetAssistantThreadTurnStartSequence(ctx, scope, threadID, turnID)
+}
 
 func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 	progress := projectAssistantProgressSnapshot{
@@ -116,6 +183,332 @@ func TestMaterializeAssistantThreadItemsPreservesTypedCommentaryAndTerminalPhase
 	}
 	if terminal == nil || terminal.Content != "Here is the answer." || terminal.Status != "completed" {
 		t.Fatalf("terminal item = %#v", terminal)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowPagesCompleteTurns(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	counting := &assistantThreadWindowCountingStore{Store: messages}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-window", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, CreatedAt: now}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedSequence := int64(1)
+	for turnNumber := 1; turnNumber <= 5; turnNumber++ {
+		turnID := fmt.Sprintf("turn-%d", turnNumber)
+		itemID := fmt.Sprintf("user-%d", turnNumber)
+		item := assistantThreadItem{ID: itemID, TurnID: turnID, Type: assistantThreadEventUserMessage, Status: "completed", Content: itemID, CreatedAt: now.Add(time.Duration(turnNumber) * time.Minute)}
+		payload, marshalErr := json.Marshal(map[string]any{"item": item})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		turn, createErr := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+			ID: turnID, ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: fmt.Sprintf("client-%d", turnNumber),
+			Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+			Status: store.AssistantTurnStatusInProgress, CreatedAt: item.CreatedAt, UpdatedAt: item.CreatedAt,
+		}, []store.AssistantThreadEvent{
+			{Type: assistantThreadEventTurnStarted, CreatedAt: item.CreatedAt},
+			{Type: assistantThreadEventItemCompleted, ItemID: itemID, Payload: payload, CreatedAt: item.CreatedAt},
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		expectedSequence += 2
+		turn.Status = store.AssistantTurnStatusCompleted
+		turn.UpdatedAt = item.CreatedAt.Add(time.Second)
+		if saveErr := messages.SaveAssistantTurnWithEvent(ctx, scope, turn, store.AssistantThreadEvent{
+			Type: assistantThreadEventTurnCompleted, CreatedAt: turn.UpdatedAt,
+		}, expectedSequence); saveErr != nil {
+			t.Fatal(saveErr)
+		}
+		expectedSequence++
+	}
+
+	recentEvents, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent := materializeAssistantThreadItems(recentEvents)
+	if len(recent) != 2 || recent[0].ID != "user-4" || recent[1].ID != "user-5" {
+		t.Fatalf("recent items = %#v, want final two complete turns", recent)
+	}
+	if nextCursor != recentEvents[0].Sequence {
+		t.Fatalf("next cursor = %d, want oldest returned sequence %d", nextCursor, recentEvents[0].Sequence)
+	}
+	if err := server.validateAssistantThreadItemPageBeforeSequence(ctx, scope, thread.ID, nextCursor); err != nil {
+		t.Fatalf("server-issued recent cursor rejected: %v", err)
+	}
+	if counting.forwardCalls != 1 || counting.beforeCalls != 1 {
+		t.Fatalf("recent lookup calls = forward:%d reverse:%d, want one validation and one bounded reverse lookup", counting.forwardCalls, counting.beforeCalls)
+	}
+
+	olderEvents, olderCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, nextCursor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := materializeAssistantThreadItems(olderEvents)
+	if len(older) != 2 || older[0].ID != "user-2" || older[1].ID != "user-3" {
+		t.Fatalf("older items = %#v, want preceding two complete turns", older)
+	}
+	if olderCursor != olderEvents[0].Sequence {
+		t.Fatalf("older cursor = %d, want oldest returned sequence %d", olderCursor, olderEvents[0].Sequence)
+	}
+	if err := server.validateAssistantThreadItemPageBeforeSequence(ctx, scope, thread.ID, olderCursor); err != nil {
+		t.Fatalf("server-issued older cursor rejected: %v", err)
+	}
+
+	oldestEvents, oldestCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, olderCursor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldest := materializeAssistantThreadItems(oldestEvents)
+	if len(oldest) != 1 || oldest[0].ID != "user-1" || oldestCursor != 0 {
+		t.Fatalf("oldest page = %#v cursor=%d, want first turn and terminal cursor", oldest, oldestCursor)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowNeverEmitsCursorWithoutTurnStart(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-invalid-cursor", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, CreatedAt: now}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedSequence := int64(1)
+	for _, turnID := range []string{"turn-one", "turn-two"} {
+		created, appendErr := messages.AppendAssistantThreadEvent(ctx, scope, store.AssistantThreadEvent{
+			ThreadID: thread.ID, TurnID: turnID, Type: assistantThreadEventItemCompleted,
+			ItemID: "user-" + turnID, CreatedAt: now,
+		}, expectedSequence)
+		if appendErr != nil {
+			t.Fatal(appendErr)
+		}
+		expectedSequence = created.Sequence
+	}
+
+	if _, cursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1); err == nil || cursor != 0 || !strings.Contains(err.Error(), assistantThreadEventTurnStarted) {
+		t.Fatalf("invalid turn boundary result cursor=%d err=%v, want no cursor and turn.started invariant error", cursor, err)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowCompletesTurnAcrossStorePages(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	counting := &assistantThreadWindowCountingStore{Store: messages}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	events := []store.AssistantThreadEvent{
+		{Type: assistantThreadEventThreadCreated, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnCompleted, CreatedAt: now},
+		{TurnID: "turn-heavy", Type: assistantThreadEventTurnStarted, CreatedAt: now},
+	}
+	for index := 0; index < assistantThreadEventWindowPageSize+25; index++ {
+		events = append(events, store.AssistantThreadEvent{
+			TurnID: "turn-heavy", Type: assistantThreadEventItemDelta,
+			ItemID: "assistant-heavy", Payload: json.RawMessage(`{"delta":"x"}`), CreatedAt: now,
+		})
+	}
+	events = append(events, store.AssistantThreadEvent{TurnID: "turn-heavy", Type: assistantThreadEventTurnCompleted, CreatedAt: now})
+	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-boundary", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recent, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != assistantThreadEventWindowPageSize+27 {
+		t.Fatalf("recent heavy turn event count = %d, want %d", len(recent), assistantThreadEventWindowPageSize+27)
+	}
+	if recent[0].Type != assistantThreadEventTurnStarted || recent[len(recent)-1].Type != assistantThreadEventTurnCompleted {
+		t.Fatalf("recent heavy turn boundaries = %q ... %q", recent[0].Type, recent[len(recent)-1].Type)
+	}
+	if nextCursor != recent[0].Sequence {
+		t.Fatalf("next cursor = %d, want heavy turn boundary %d", nextCursor, recent[0].Sequence)
+	}
+	if counting.beforeCalls != 2 {
+		t.Fatalf("reverse page calls = %d, want 2 to cross the store page boundary", counting.beforeCalls)
+	}
+	if err := server.validateAssistantThreadItemPageBeforeSequence(ctx, scope, thread.ID, nextCursor); err != nil {
+		t.Fatalf("server-issued cursor rejected: %v", err)
+	}
+	if counting.forwardCalls != 1 {
+		t.Fatalf("cursor validation forward reads = %d, want one bounded lookup", counting.forwardCalls)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowSkipsOversizedTurnAndKeepsOlderHistoryReachable(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	counting := &assistantThreadWindowCountingStore{Store: messages}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	oldItem := assistantThreadItem{
+		ID: "user-old", TurnID: "turn-old", Type: assistantThreadEventUserMessage,
+		Status: "completed", Content: "older message", CreatedAt: now,
+	}
+	oldPayload, err := json.Marshal(map[string]any{"item": oldItem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []store.AssistantThreadEvent{
+		{Type: assistantThreadEventThreadCreated, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventItemCompleted, ItemID: oldItem.ID, Payload: oldPayload, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnCompleted, CreatedAt: now},
+		{TurnID: "turn-oversized", Type: assistantThreadEventTurnStarted, CreatedAt: now},
+	}
+	for index := 0; index < assistantThreadEventWindowPageSize*assistantThreadEventWindowMaxPages; index++ {
+		events = append(events, store.AssistantThreadEvent{
+			TurnID: "turn-oversized", Type: assistantThreadEventItemDelta,
+			ItemID: "assistant-oversized", Payload: json.RawMessage(`{"delta":"x"}`), CreatedAt: now,
+		})
+	}
+	events = append(events, store.AssistantThreadEvent{TurnID: "turn-oversized", Type: assistantThreadEventTurnCompleted, CreatedAt: now})
+	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-oversized", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recent, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 0 || nextCursor != 5 {
+		t.Fatalf("oversized turn page = %d events cursor=%d, want empty page cursor=5", len(recent), nextCursor)
+	}
+	if counting.beforeCalls != assistantThreadEventWindowMaxPages || counting.turnStartCalls != 1 {
+		t.Fatalf("oversized lookup calls = before:%d start:%d, want %d bounded pages and one start lookup", counting.beforeCalls, counting.turnStartCalls, assistantThreadEventWindowMaxPages)
+	}
+	if err := server.validateAssistantThreadItemPageBeforeSequence(ctx, scope, thread.ID, nextCursor); err != nil {
+		t.Fatalf("oversized-turn continuation cursor rejected: %v", err)
+	}
+	olderEvents, olderCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, nextCursor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := materializeAssistantThreadItems(olderEvents)
+	if olderCursor != 0 || len(older) != 1 || older[0].ID != oldItem.ID {
+		t.Fatalf("older history = %#v cursor=%d, want complete older turn and terminal cursor", older, olderCursor)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowSkipsMetadataOnlyTailAndKeepsOlderHistoryReachable(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	counting := &assistantThreadWindowCountingStore{Store: messages}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	oldItem := assistantThreadItem{
+		ID: "user-old", TurnID: "turn-old", Type: assistantThreadEventUserMessage,
+		Status: "completed", Content: "older message", CreatedAt: now,
+	}
+	oldPayload, err := json.Marshal(map[string]any{"item": oldItem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []store.AssistantThreadEvent{
+		{Type: assistantThreadEventThreadCreated, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventItemCompleted, ItemID: oldItem.ID, Payload: oldPayload, CreatedAt: now},
+		{TurnID: "turn-old", Type: assistantThreadEventTurnCompleted, CreatedAt: now},
+	}
+	for index := 0; index < assistantThreadEventWindowPageSize*assistantThreadEventWindowMaxPages+1; index++ {
+		events = append(events, store.AssistantThreadEvent{
+			Type: assistantThreadEventThreadUpdated, Payload: json.RawMessage(`{"title":"updated"}`), CreatedAt: now,
+		})
+	}
+	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-metadata-tail", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recent, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := materializeAssistantThreadItems(recent)
+	if nextCursor != 0 || len(items) != 1 || items[0].ID != oldItem.ID {
+		t.Fatalf("metadata-tail history = %#v cursor=%d, want older complete turn and terminal cursor", items, nextCursor)
+	}
+	if counting.beforeCalls != 1 || counting.turnStartCalls != 0 {
+		t.Fatalf("metadata-tail lookups = before:%d start:%d, want one bounded turn-event page and no empty turn lookup", counting.beforeCalls, counting.turnStartCalls)
+	}
+}
+
+func TestListAssistantThreadItemsRejectsInvalidHistoryCursor(t *testing.T) {
+	messages := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	now := time.Now().UTC()
+	thread, err := messages.CreateAssistantThread(context.Background(), scope, store.AssistantThread{
+		ID: "thread-cursor", ActorID: "test-user", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, CreatedAt: now}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = messages.CreateAssistantTurn(context.Background(), scope, store.AssistantTurn{
+		ID: "turn-cursor", ThreadID: thread.ID, ActorID: "test-user", ClientUserMessageID: "client-cursor",
+		Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		Status: store.AssistantTurnStatusCompleted, CreatedAt: now, UpdatedAt: now,
+	}, []store.AssistantThreadEvent{
+		{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{Type: assistantThreadEventItemStarted, ItemID: "assistant-cursor", Payload: json.RawMessage(`{"item":{"id":"assistant-cursor","turnID":"turn-cursor","type":"agentMessage","status":"in_progress"}}`), CreatedAt: now},
+		{Type: assistantThreadEventTurnCompleted, CreatedAt: now},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := newAssistantTurnDetailServer(messages)
+	router := mux.NewRouter()
+	server.Register(router)
+	for _, test := range []struct {
+		name   string
+		cursor string
+	}{
+		{name: "malformed", cursor: "not-a-sequence"},
+		{name: "zero", cursor: "0"},
+		{name: "negative", cursor: "-1"},
+		{name: "mid-turn", cursor: "3"},
+		{name: "missing", cursor: "999"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := assistantTurnDetailHTTPTestRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-cursor/items?beforeSequence="+test.cursor, "test-user")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("history cursor status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+		})
+	}
+
+	valid := assistantTurnDetailHTTPTestRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-cursor/items?beforeSequence=2", "test-user")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, valid)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid history cursor status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
 	}
 }
 
@@ -230,6 +623,48 @@ func TestAttachAssistantThreadMessagePresentationRepairsHistoricalItems(t *testi
 	}
 }
 
+func TestAttachAssistantThreadMessagePresentationReadsRecentEndOfLargeHistory(t *testing.T) {
+	ctx := context.Background()
+	memoryStore := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	for index := 0; index < 5_001; index++ {
+		if err := memoryStore.AppendMessage(ctx, scope, store.Message{
+			ID: fmt.Sprintf("old-%05d", index), Role: "assistant",
+			CreatedAt: now.Add(time.Duration(index) * time.Millisecond), UpdatedAt: now.Add(time.Duration(index) * time.Millisecond),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	progress := projectAssistantProgressSnapshot{
+		Version: 1, Messages: []string{}, MessageSequences: []int{}, WorkedDurationMS: 91_000,
+	}
+	if err := memoryStore.AppendMessage(ctx, scope, store.Message{
+		ID: "assistant-recent", Role: "assistant",
+		Metadata:  map[string]any{projectAssistantMetadataProgress: progress},
+		CreatedAt: now.Add(5_002 * time.Millisecond), UpdatedAt: now.Add(5_002 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := server.attachAssistantThreadMessagePresentation(ctx, scope, []assistantThreadItem{{
+		ID: "assistant-recent", TurnID: "run-recent", Type: assistantThreadEventAssistantMessage,
+		Status: "completed", CreatedAt: now.Add(5_002 * time.Millisecond),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(items[0].Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := projectAssistantProgressSnapshotFromMetadata(data[projectAssistantMetadataProgress])
+	if !ok || got.WorkedDurationMS != progress.WorkedDurationMS {
+		t.Fatalf("recent historical progress = %#v, want duration %d", data, progress.WorkedDurationMS)
+	}
+}
+
 func TestAttachAssistantThreadDynamicToolPresentationRepairsHistoricalInteraction(t *testing.T) {
 	ctx := context.Background()
 	memoryStore := store.NewMemoryStore()
@@ -288,6 +723,108 @@ func TestAttachAssistantThreadDynamicToolPresentationRepairsHistoricalInteractio
 		repaired.Outcome != "2 actions applied · 0/1 assertions matched" || repaired.Diagnostic == nil ||
 		repaired.Diagnostic.Operation != projectToolInteractDevelopmentPreview {
 		t.Fatalf("repaired action = %#v", repaired)
+	}
+}
+
+func TestAttachAssistantThreadDynamicToolPresentationSharesBudgetAcrossRuns(t *testing.T) {
+	ctx := context.Background()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	shortCallID := "short-call"
+	payload, err := json.Marshal(projectAssistantRunToolResultPayload{
+		Result: `{"status":"succeeded","steps":[],"assertions":[]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrichmentStore := &assistantThreadFairRunEnrichmentStore{
+		Store: store.NewMemoryStore(),
+		shortEvent: store.AssistantRunEvent{
+			RunID: "run-short", Sequence: 1, Type: projectAssistantRunToolResultEventType,
+			CallID: shortCallID, ToolName: projectToolInteractDevelopmentPreview, Payload: payload,
+		},
+	}
+	server := NewWithWorkspace(nil, enrichmentStore, nil, "", false)
+	legacyItem := func(id, runID, callID string) assistantThreadItem {
+		action := projectAssistantActionFeedItem{
+			ID: projectAssistantActionPublicID(callID), Kind: projectAssistantActionFeedItemOther,
+			Status: projectAssistantActionFeedStatusFailed, Title: "Action failed",
+		}
+		data, marshalErr := json.Marshal(action)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return assistantThreadItem{
+			ID: id, TurnID: runID, Type: assistantThreadEventDynamicToolCall,
+			Status: "failed", Content: "Action failed", Data: data,
+		}
+	}
+	legacyItems := make([]assistantThreadItem, 0, 21)
+	for index := 1; index <= 20; index++ {
+		legacyItems = append(legacyItems, legacyItem(
+			fmt.Sprintf("long-item-%d", index), fmt.Sprintf("run-long-%d", index), fmt.Sprintf("missing-long-call-%d", index),
+		))
+	}
+	legacyItems = append(legacyItems, legacyItem("short-item", "run-short", shortCallID))
+	items, err := server.attachAssistantThreadDynamicToolPresentation(ctx, scope, legacyItems)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrichmentStore.lookupCalls != 1 || len(enrichmentStore.runIDs) != 21 || enrichmentStore.runIDs[20] != "run-short" {
+		t.Fatalf("enrichment lookup calls=%d runs=%#v, want one batch covering all 21 runs", enrichmentStore.lookupCalls, enrichmentStore.runIDs)
+	}
+	if items[0].Content != "Action failed" {
+		t.Fatalf("unmatched long-ledger item changed = %#v", items[0])
+	}
+	if items[20].Content != "Interacted with preview" || items[20].Status != "completed" {
+		t.Fatalf("21st run item was starved = %#v", items[20])
+	}
+}
+
+func TestAssistantThreadCompatibilityEnrichmentIsBounded(t *testing.T) {
+	ctx := context.Background()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	counting := &assistantThreadEnrichmentCountingStore{Store: store.NewMemoryStore()}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+
+	legacyAction := projectAssistantActionFeedItem{
+		ID: "missing-action", Kind: projectAssistantActionFeedItemOther,
+		Status: projectAssistantActionFeedStatusFailed, Title: "Action failed",
+	}
+	legacyData, err := json.Marshal(legacyAction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamicItem := assistantThreadItem{
+		ID: "legacy-action", TurnID: "run-with-long-ledger", Type: assistantThreadEventDynamicToolCall,
+		Status: "failed", Content: "Action failed", Data: legacyData,
+	}
+	dynamicItems, err := server.attachAssistantThreadDynamicToolPresentation(ctx, scope, []assistantThreadItem{dynamicItem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counting.runEventCalls != 1 || counting.runEventLimit != assistantThreadCompatibilityRunEventLimit {
+		t.Fatalf("run event enrichment lookup calls=%d per-run limit=%d, want one bounded lookup with limit %d", counting.runEventCalls, counting.runEventLimit, assistantThreadCompatibilityRunEventLimit)
+	}
+	if len(dynamicItems) != 1 || dynamicItems[0].Content != dynamicItem.Content || string(dynamicItems[0].Data) != string(dynamicItem.Data) {
+		t.Fatalf("bounded dynamic enrichment changed canonical item = %#v", dynamicItems)
+	}
+
+	messageItem := assistantThreadItem{
+		ID: "assistant-beyond-scan-budget", TurnID: "run-message", Type: assistantThreadEventAssistantMessage,
+		Status: "completed", Content: "Canonical response",
+	}
+	messageItems, err := server.attachAssistantThreadMessagePresentation(ctx, scope, []assistantThreadItem{messageItem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counting.messageCalls != 1 {
+		t.Fatalf("message enrichment calls = %d, want one scoped ID lookup", counting.messageCalls)
+	}
+	if len(counting.messageLookupIDs) != 1 || counting.messageLookupIDs[0] != messageItem.ID {
+		t.Fatalf("message enrichment IDs = %#v, want only %q", counting.messageLookupIDs, messageItem.ID)
+	}
+	if len(messageItems) != 1 || messageItems[0].Content != messageItem.Content || messageItems[0].Status != messageItem.Status || len(messageItems[0].Data) != 0 {
+		t.Fatalf("bounded message enrichment changed canonical item = %#v", messageItems)
 	}
 }
 

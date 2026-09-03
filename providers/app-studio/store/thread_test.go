@@ -97,7 +97,123 @@ func TestAssistantThreadTurnItemContract(t *testing.T) {
 					t.Fatalf("event %d sequence = %d", index, event.Sequence)
 				}
 			}
+			recent, err := s.ListAssistantThreadEventsBefore(ctx, scope, thread.ID, 0, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recent) != 2 || recent[0].Sequence != 4 || recent[1].Sequence != 5 {
+				t.Fatalf("recent reverse page = %#v, want chronological sequences 4 and 5", recent)
+			}
+			older, err := s.ListAssistantThreadEventsBefore(ctx, scope, thread.ID, recent[0].Sequence, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(older) != 2 || older[0].Sequence != 2 || older[1].Sequence != 3 {
+				t.Fatalf("older reverse page = %#v, want chronological sequences 2 and 3", older)
+			}
+			turnStart, err := s.GetAssistantThreadTurnStartSequence(ctx, scope, thread.ID, turn2.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turnStart != 5 {
+				t.Fatalf("turn 2 start sequence = %d, want 5", turnStart)
+			}
 		})
+	}
+}
+
+func TestAssistantThreadTurnEventWindowExcludesThreadMetadata(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := fixture.new(t)
+			scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+			thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-turn-events", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, []AssistantThreadEvent{
+				{Type: "thread.created", CreatedAt: now},
+				{TurnID: "turn-old", Type: "turn.started", CreatedAt: now},
+				{TurnID: "turn-old", Type: "turn.completed", CreatedAt: now},
+				{Type: "thread.updated", CreatedAt: now},
+				{Type: "thread.updated", CreatedAt: now},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			events, err := s.ListAssistantThreadTurnEventsBefore(ctx, scope, thread.ID, 0, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 2 || events[0].Sequence != 2 || events[1].Sequence != 3 {
+				t.Fatalf("turn event window = %#v, want chronological sequences 2 and 3", events)
+			}
+			if events[0].TurnID != "turn-old" || events[1].TurnID != "turn-old" {
+				t.Fatalf("turn event IDs = %#v, want only turn-old", events)
+			}
+		})
+	}
+}
+
+func TestMemoryAssistantThreadSequenceIndexesTrackAndCleanUp(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	events := []AssistantThreadEvent{
+		{Type: "thread.created", CreatedAt: now},
+		{TurnID: "turn-old", Type: "turn.started", CreatedAt: now},
+		{TurnID: "turn-old", Type: "turn.completed", CreatedAt: now},
+	}
+	for index := 0; index < 10_001; index++ {
+		events = append(events, AssistantThreadEvent{Type: "thread.updated", CreatedAt: now})
+	}
+	thread, err := memory.CreateAssistantThread(ctx, scope, AssistantThread{
+		ID: "thread-indexed", ActorID: "alice", CreatedAt: now, UpdatedAt: now,
+	}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forward, err := memory.ListAssistantThreadEvents(ctx, scope, thread.ID, 10_002, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forward) != 2 || forward[0].Sequence != 10_003 || forward[1].Sequence != 10_004 {
+		t.Fatalf("indexed forward page = %#v, want sequences 10003 and 10004", forward)
+	}
+	if _, err := memory.AppendAssistantThreadEvent(ctx, scope, AssistantThreadEvent{
+		ThreadID: thread.ID, TurnID: "turn-old", Type: "turn.started", CreatedAt: now,
+	}, 10_004); err != nil {
+		t.Fatal(err)
+	}
+	start, err := memory.GetAssistantThreadTurnStartSequence(ctx, scope, thread.ID, "turn-old")
+	if err != nil || start != 2 {
+		t.Fatalf("indexed turn start = %d, %v; want 2", start, err)
+	}
+	if memory.threadTurnStarts[scope][thread.ID]["turn-old"] != 2 {
+		t.Fatalf("maintained turn-start index = %#v", memory.threadTurnStarts[scope][thread.ID])
+	}
+
+	if err := memory.DeleteAssistantThread(ctx, scope, thread.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := memory.threadTurnStarts[scope]; ok {
+		t.Fatalf("turn-start scope index retained after deleting its final thread: %#v", memory.threadTurnStarts[scope])
+	}
+	if _, ok := memory.threadTurnEvents[scope]; ok {
+		t.Fatalf("turn-event scope index retained after deleting its final thread: %#v", memory.threadTurnEvents[scope])
 	}
 }
 
@@ -414,6 +530,69 @@ func TestMemoryStoreDeleteAssistantThreadEnforcesOwnershipAndActiveTurns(t *test
 	}
 	if _, err := memory.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20); !errors.Is(err, ErrAssistantThreadNotFound) {
 		t.Fatalf("events after delete = %v, want not found", err)
+	}
+}
+
+func TestMemoryStoreDeleteAssistantThreadRemovesOnlyOwnedRunEventLookups(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	createThreadRun := func(threadID, turnID, callID string) {
+		t.Helper()
+		thread, err := memory.CreateAssistantThread(ctx, scope, AssistantThread{
+			ID: threadID, ActorID: "alice", CreatedAt: now, UpdatedAt: now,
+		}, []AssistantThreadEvent{{Type: "thread.created", CreatedAt: now}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn, err := memory.CreateAssistantTurn(ctx, scope, AssistantTurn{
+			ID: turnID, ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-" + turnID,
+			Status: AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now,
+		}, []AssistantThreadEvent{{Type: "turn.started", CreatedAt: now}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		turn.Status = AssistantTurnStatusCompleted
+		if err := memory.SaveAssistantTurn(ctx, scope, turn); err != nil {
+			t.Fatal(err)
+		}
+		if err := memory.SaveAssistantRun(ctx, scope, AssistantRun{
+			ID: turnID, Mode: AssistantRunModeDefault, Status: AssistantRunStatusCompleted, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := memory.AppendAssistantRunEvent(ctx, scope, AssistantRunEvent{
+			RunID: turnID, Type: "tool_result", CallID: callID,
+			ToolName: "interact_development_preview", Payload: json.RawMessage(`{"status":"succeeded"}`), CreatedAt: now,
+		}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createThreadRun("thread-delete", "turn-delete", "call-delete")
+	createThreadRun("thread-keep", "turn-keep", "call-keep")
+
+	before, err := memory.ListAssistantRunEventsByRuns(ctx, scope, []string{"turn-delete", "turn-keep"}, "tool_result", 1)
+	if err != nil || len(before) != 2 {
+		t.Fatalf("run event lookups before delete = %#v, %v", before, err)
+	}
+	if err := memory.DeleteAssistantThread(ctx, scope, "thread-delete", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := memory.ListAssistantRunEventsByRuns(ctx, scope, []string{"turn-delete", "turn-keep"}, "tool_result", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].RunID != "turn-keep" || after[0].CallID != "call-keep" {
+		t.Fatalf("run event lookups after delete = %#v, want only retained thread", after)
+	}
+	for key := range memory.assistantEventLookup[scope] {
+		if key.runID == "turn-delete" {
+			t.Fatalf("deleted turn lookup key retained: %#v", key)
+		}
+	}
+	if len(memory.assistantEventLookup[scope]) != 1 {
+		t.Fatalf("lookup map size after delete = %d, want retained thread entry only", len(memory.assistantEventLookup[scope]))
 	}
 }
 

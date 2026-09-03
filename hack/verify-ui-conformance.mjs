@@ -94,7 +94,10 @@ const DARK_FALLBACKS = Object.freeze({
   'accent-glow': ['rgba(139,107,255,.3)'],
   'text-primary': ['#e9e9f2'],
   'text-secondary': ['#8a8ca6'],
-  'text-muted': ['#5d5f78'],
+  // Standalone provider styles retain the original fallback when host tokens
+  // are unavailable. Accept both documented generations while those bundles
+  // migrate independently; ordinary raw uses of either color remain invalid.
+  'text-muted': ['#8587a1', '#5d5f78'],
   'text-error': ['#ff5d5d'],
   success: ['#2fd6a0'],
   'success-subtle': ['rgba(47,214,160,.12)'],

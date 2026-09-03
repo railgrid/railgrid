@@ -933,3 +933,26 @@ test('stale thread refresh keeps newer live commentary progress and actions', as
   assert.deepEqual(merged.metadata.assistantProgress.messageSequences, [4])
   assert.deepEqual(merged.metadata.assistantActionFeed.map(({ id }) => id), ['call-live'])
 })
+
+test('a stale projection cannot roll back the status of a same-ID action from a newer message revision', async () => {
+  const { mergeAssistantThreadMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const current = [{
+    id: 'assistant-action-status', projectID: 'demo', role: 'assistant', content: '',
+    metadata: {
+      assistantRevision: 9,
+      assistantActionFeed: [{ id: 'call-status', kind: 'run', status: 'succeeded', title: 'Checks passed', severity: 'normal', sequence: 7 }],
+    },
+    createdAt: '2026-08-02T17:42:09Z',
+  }]
+  const projected = [{
+    id: 'assistant-action-status', projectID: 'demo', role: 'assistant', content: '',
+    metadata: {
+      assistantRevision: 8,
+      assistantActionFeed: [{ id: 'call-status', kind: 'run', status: 'running', title: 'Running checks', severity: 'normal', sequence: 6 }],
+    },
+    createdAt: '2026-08-02T17:42:09Z',
+  }]
+
+  const merged = mergeAssistantThreadMessages(current, projected)[0]
+  assert.deepEqual(merged.metadata.assistantActionFeed, current[0].metadata.assistantActionFeed)
+})

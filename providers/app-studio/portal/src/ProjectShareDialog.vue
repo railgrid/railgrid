@@ -402,13 +402,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
   <Teleport to="#app-studio-overlay-root">
     <div
       v-if="open"
-      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-surface/60 p-4 sm:items-center"
+      class="fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-start justify-center overflow-y-auto bg-surface/60 p-4 sm:items-center"
       role="presentation"
       @click.self="close"
     >
       <section
         ref="dialogRef"
-        class="grid w-full max-w-xl gap-0 overflow-hidden rounded-lg border border-border-default bg-surface-raised shadow-xl"
+        class="relative [z-index:var(--app-studio-z-modal)] grid w-full max-w-xl gap-0 overflow-hidden rounded-lg border border-border-default bg-surface-raised shadow-xl"
         role="dialog"
         aria-modal="true"
         :aria-busy="loading"
@@ -423,12 +423,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
           <button
             ref="dialogCloseButton"
             type="button"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Close share dialog"
             :disabled="busy"
             @click="close"
           >
-            <X class="h-4 w-4" :stroke-width="1.75" />
+            <X class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
           </button>
         </header>
 
@@ -442,7 +442,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
             aria-label="Loading sharing settings"
           >
             <div class="flex items-center gap-2 text-[12px] text-text-muted">
-              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
               Checking sharing settings…
             </div>
             <div class="grid gap-3" aria-hidden="true">
@@ -461,14 +461,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 
           <div v-else-if="loadState === 'error'" class="grid gap-3 rounded-md border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger" role="alert">
             <p>{{ loadError || 'Sharing settings could not be loaded.' }}</p>
-            <button type="button" class="justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+            <button type="button" class="app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
           </div>
 
           <template v-else>
             <div v-if="loadState === 'partial'" class="grid gap-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-3 text-[12px] leading-5 text-warning" role="status">
               <p>Some sharing details could not be refreshed. The data that did load is still available.</p>
               <p v-if="loadError || membersError" class="text-[11px]">{{ loadError || membersError }}</p>
-              <button type="button" class="justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+              <button type="button" class="app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
             </div>
 
             <section
@@ -479,7 +479,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               <div class="flex items-start justify-between gap-3 p-4">
                 <div class="flex min-w-0 items-start gap-3">
                   <div class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent-subtle text-accent">
-                    <Rocket class="h-4 w-4" :stroke-width="1.75" />
+                    <Rocket class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
                     <h3 id="project-share-production-title" class="text-[14px] font-semibold text-text-primary">Production app</h3>
@@ -493,12 +493,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 <p class="max-w-[42ch] text-[12px] leading-5 text-text-secondary">Deploy Production before choosing its audience or sharing its link.</p>
                 <button
                   type="button"
-                  class="inline-flex h-9 items-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="busy"
                   @click="openPublishing"
                 >
                   Set up production
-                  <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 </button>
               </div>
 
@@ -509,7 +509,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </div>
                 <button
                   type="button"
-                  class="inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   :disabled="busy"
                   @click="editChannel('production')"
                 >
@@ -521,7 +521,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 <div v-if="link" class="grid gap-1.5">
                   <span class="text-[11px] font-medium text-text-secondary">Production link</span>
                   <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
-                    <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                    <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <input
                       ref="productionLinkInput"
                       :value="link"
@@ -530,13 +530,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       class="min-w-0 flex-1 truncate border-0 bg-transparent p-0 font-mono text-[11px] text-accent outline-none selection:bg-accent-subtle focus-visible:ring-2 focus-visible:ring-accent"
                       @focus="($event.target as HTMLInputElement).select()"
                     >
-                    <button type="button" class="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('production')">
-                      <Check v-if="productionCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
-                      <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <button type="button" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('production')">
+                      <Check v-if="productionCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" aria-hidden="true" />
+                      <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                       {{ productionCopyState === 'copied' ? 'Copied' : 'Copy' }}
                     </button>
-                    <a :href="link" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
-                      Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <a :href="link" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                      Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                     </a>
                   </div>
                   <p v-if="productionCopyState === 'error'" class="text-[11px] text-danger" role="alert">Select the link and copy it manually.</p>
@@ -569,14 +569,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 
                 <section v-if="showViewers" class="grid gap-3 border-t border-border-subtle pt-3" aria-labelledby="project-share-people-title">
                   <div class="flex items-center gap-2">
-                    <Users class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
+                    <Users class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <div>
                       <div id="project-share-people-title" class="text-[11px] font-medium text-text-secondary">Invited people</div>
                       <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Production access only.</p>
                     </div>
                   </div>
                   <p v-if="membersError" class="rounded-md bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status">
-                    Viewer membership could not be refreshed. Existing viewers remain visible. <button type="button" class="font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+                    Viewer membership could not be refreshed. Existing viewers remain visible. <button type="button" class="app-studio-touch-target font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
                   </p>
                   <p v-if="modeDirty" class="text-[11px] leading-4 text-warning" role="status">Save Production access before managing people.</p>
                   <div class="flex flex-wrap items-center gap-2">
@@ -584,8 +584,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       <option value="">Choose a Workspace member</option>
                       <option v-for="member in availableMembers" :key="member.user" :value="member.user">{{ member.user }}</option>
                     </select>
-                    <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canAddMember" @click="addMember">
-                      <Loader2 v-if="grantBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canAddMember" @click="addMember">
+                      <Loader2 v-if="grantBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                       {{ grantBusy ? 'Adding…' : 'Add member' }}
                     </button>
                   </div>
@@ -593,8 +593,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                     <span class="text-[11px] font-medium text-text-secondary">Invite by email</span>
                     <div class="flex flex-wrap items-center gap-2">
                       <input v-model="inviteEmail" type="email" class="k-input min-w-0 flex-1 font-mono text-[12px]" placeholder="name@company.com" aria-label="Invite by email" :disabled="busy || loading || !publicationStateAvailable || !savedRestricted || modeDirty" @keyup.enter="inviteByEmail">
-                      <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canInvite" @click="inviteByEmail">
-                        <Loader2 v-if="inviteBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                      <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canInvite" @click="inviteByEmail">
+                        <Loader2 v-if="inviteBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                         {{ inviteBusy ? 'Inviting…' : 'Send invite' }}
                       </button>
                     </div>
@@ -603,8 +603,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <ul v-if="activeGrants.length" class="grid gap-1.5">
                     <li v-for="grant in activeGrants" :key="grant.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-[12px]">
                       <span class="min-w-0 truncate font-mono text-text-primary">{{ grant.user }}</span>
-                      <button type="button" class="shrink-0 text-[11px] font-medium text-danger hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50" :disabled="busy || !publicationStateAvailable" @click="emit('revoke', grant.name)">
-                        <Loader2 v-if="revokeBusy(grant.name)" class="mr-1 inline-block h-3.5 w-3.5 animate-spin align-[-0.15em]" :stroke-width="1.75" />
+                      <button type="button" class="app-studio-touch-target shrink-0 text-[11px] font-medium text-danger hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50" :disabled="busy || !publicationStateAvailable" @click="emit('revoke', grant.name)">
+                        <Loader2 v-if="revokeBusy(grant.name)" class="mr-1 inline-block h-3.5 w-3.5 animate-spin align-[-0.15em]" :stroke-width="1.75" aria-hidden="true" />
                         {{ revokeBusy(grant.name) ? 'Revoking…' : 'Revoke' }}
                       </button>
                     </li>
@@ -613,15 +613,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </section>
 
                 <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
-                  <button v-if="published" type="button" class="inline-flex h-9 items-center rounded-md border border-danger/40 bg-danger-subtle px-3 text-[12px] font-medium text-danger transition hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy || !publicationStateAvailable" @click="emit('disable')">
-                    <Loader2 v-if="disableBusy" class="mr-1 h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                  <button v-if="published" type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-danger/40 bg-danger-subtle px-3 text-[12px] font-medium text-danger transition hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy || !publicationStateAvailable" @click="emit('disable')">
+                    <Loader2 v-if="disableBusy" class="mr-1 h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                     {{ disableBusy ? 'Disabling access…' : 'Disable access' }}
                   </button>
                   <span v-else />
                   <div class="flex items-center gap-2">
-                    <button type="button" class="inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('production')">Cancel</button>
-                    <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSaveProduction" @click="saveProductionAccess">
-                      <Loader2 v-if="productionSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('production')">Cancel</button>
+                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSaveProduction" @click="saveProductionAccess">
+                      <Loader2 v-if="productionSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                       {{ productionSaveBusy ? (published ? 'Saving…' : 'Enabling…') : (published ? 'Save production access' : 'Enable production access') }}
                     </button>
                   </div>
@@ -638,7 +638,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               <div class="flex items-start justify-between gap-3 p-4">
                 <div class="flex min-w-0 items-start gap-3">
                   <div class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent-subtle text-accent">
-                    <MonitorPlay class="h-4 w-4" :stroke-width="1.75" />
+                    <MonitorPlay class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
                   </div>
                   <div class="min-w-0">
                     <h3 id="project-share-preview-title" class="text-[14px] font-semibold text-text-primary">Development preview</h3>
@@ -653,22 +653,22 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <p class="text-[12px] font-medium text-text-secondary">{{ previewAudienceSummary }}</p>
                   <p v-if="previewLink" class="mt-1 truncate font-mono text-[11px] text-text-muted">{{ previewLink }}</p>
                 </div>
-                <button type="button" class="inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
+                <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
               </div>
 
               <div v-else class="grid gap-3 border-t border-border-subtle px-4 pb-4 pt-3 pl-[3.75rem] max-sm:pl-4">
                 <div v-if="previewLink" class="grid gap-1.5">
                   <span class="text-[11px] font-medium text-text-secondary">Preview link</span>
                   <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
-                    <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                    <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <input ref="previewLinkInput" :value="previewLink" readonly aria-label="Development preview link" class="min-w-0 flex-1 truncate border-0 bg-transparent p-0 font-mono text-[11px] text-accent outline-none selection:bg-accent-subtle focus-visible:ring-2 focus-visible:ring-accent" @focus="($event.target as HTMLInputElement).select()">
-                    <button type="button" class="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('preview')">
-                      <Check v-if="previewCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
-                      <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <button type="button" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('preview')">
+                      <Check v-if="previewCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" aria-hidden="true" />
+                      <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                       {{ previewCopyState === 'copied' ? 'Copied' : 'Copy' }}
                     </button>
-                    <a :href="previewLink" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
-                      Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <a :href="previewLink" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                      Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                     </a>
                   </div>
                   <p v-if="previewCopyState === 'error'" class="text-[11px] text-danger" role="alert">Select the link and copy it manually.</p>
@@ -702,7 +702,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 
                 <section v-if="previewShowViewers" class="grid gap-3 border-t border-border-subtle pt-3" aria-labelledby="project-share-preview-people-title">
                   <div class="flex items-center gap-2">
-                    <Users class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
+                    <Users class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <div>
                       <div id="project-share-preview-people-title" class="text-[11px] font-medium text-text-secondary">Invited people</div>
                       <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Preview access only.</p>
@@ -714,29 +714,29 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       <option value="">Choose a Workspace member</option>
                       <option v-for="member in previewAvailableMembers" :key="member.user" :value="member.user">{{ member.user }}</option>
                     </select>
-                    <button type="button" class="inline-flex h-9 items-center rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canAddPreviewMember" @click="addPreviewMember">Add member</button>
+                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canAddPreviewMember" @click="addPreviewMember">Add member</button>
                   </div>
                   <div class="grid gap-1.5">
                     <span class="text-[11px] font-medium text-text-secondary">Invite by email</span>
                     <div class="flex flex-wrap items-center gap-2">
                       <input v-model="previewInviteEmail" type="email" class="k-input min-w-0 flex-1 font-mono text-[12px]" placeholder="name@company.com" aria-label="Invite by email to the Preview" :disabled="busy || loading || !previewSavedRestricted" @keyup.enter="invitePreviewByEmail">
-                      <button type="button" class="inline-flex h-9 items-center rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canInvitePreview" @click="invitePreviewByEmail">Send invite</button>
+                      <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canInvitePreview" @click="invitePreviewByEmail">Send invite</button>
                     </div>
                     <p class="text-[11px] leading-4 text-text-muted">New users join the Workspace at first sign-in.</p>
                   </div>
                   <ul v-if="previewActiveGrants.length" class="grid gap-1.5">
                     <li v-for="grant in previewActiveGrants" :key="grant.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-[12px]">
                       <span class="min-w-0 truncate font-mono text-text-primary">{{ grant.user }}</span>
-                      <button type="button" class="shrink-0 text-[11px] font-medium text-danger hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50" :disabled="busy" @click="emit('preview-revoke', grant.name)">Revoke</button>
+                      <button type="button" class="app-studio-touch-target shrink-0 text-[11px] font-medium text-danger hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50" :disabled="busy" @click="emit('preview-revoke', grant.name)">Revoke</button>
                     </li>
                   </ul>
                   <p v-else class="text-[11px] text-text-muted">No invited people yet. Workspace members already have access.</p>
                 </section>
 
                 <div class="flex items-center justify-end gap-2 border-t border-border-subtle pt-3">
-                  <button type="button" class="inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('preview')">Cancel</button>
-                  <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSavePreview" @click="savePreviewAccess">
-                    <Loader2 v-if="previewSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                  <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('preview')">Cancel</button>
+                  <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSavePreview" @click="savePreviewAccess">
+                    <Loader2 v-if="previewSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                     {{ previewSaveBusy ? 'Saving…' : 'Save preview access' }}
                   </button>
                 </div>
@@ -752,7 +752,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
           <p class="text-[11px] leading-4 text-text-muted">Production and Preview access are saved separately.</p>
           <button
             type="button"
-            class="inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-4 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-4 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="busy || productionDraftDirty || previewDirty"
             @click="close"
           >

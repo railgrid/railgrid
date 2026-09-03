@@ -6,6 +6,11 @@ import { useProvidersStore } from '@/stores/providers'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore } from '@/stores/theme'
+import {
+  canReloadProviderScriptInDocument,
+  invalidateProviderScript,
+  loadProviderScript,
+} from '@/providers/providerScriptLoader'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 
 // Micro-frontend mount: instead of dropping an iframe, we load the
@@ -113,6 +118,9 @@ const bindingChecking = computed(() =>
 )
 const providerBound = computed(() =>
   !!entry.value && providers.isEnabled(entry.value.name),
+)
+const canRetryProviderBundleInDocument = computed(() =>
+  !!entry.value && canReloadProviderScriptInDocument(entry.value.name),
 )
 const bindingMissing = computed(() =>
   requiresBinding.value &&
@@ -235,9 +243,11 @@ function bindMountEvents() {
   if (!mount || boundMount === mount) return
   boundMount?.removeEventListener('faros-navigate', onNavigate)
   boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
+  boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = mount
   boundMount.addEventListener('faros-navigate', onNavigate)
   boundMount.addEventListener('faros-layout-change', onLayoutChange)
+  boundMount.addEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
 }
 
 // Detach both the live element and any listeners attached to its mount point.
@@ -247,6 +257,7 @@ function clearMountedElement() {
   mountGeneration++
   boundMount?.removeEventListener('faros-navigate', onNavigate)
   boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
+  boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = null
   const element = elementRef.value
   if (element?.parentNode) element.parentNode.removeChild(element)
@@ -276,28 +287,13 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
   loadState.value = 'loading'
   loadError.value = null
 
-  const scriptID = `faros-provider-script-${name}`
-  const v = encodeURIComponent(version ?? '0')
-  const src = `/ui/providers/${name}/main.js?v=${v}`
-
-  // Replace any prior script tag for this provider so version bumps land.
-  document.getElementById(scriptID)?.remove()
-
   // Wait until the element is defined. customElements.whenDefined resolves
   // immediately if the tag is already registered (re-mount on nav).
   const tag = tagFor(name)
   const ready = customElements.whenDefined(tag)
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const s = document.createElement('script')
-      s.id = scriptID
-      s.src = src
-      s.async = true
-      s.onload = () => resolve()
-      s.onerror = () => reject(new Error(`failed to load ${src}`))
-      document.head.appendChild(s)
-    })
+    await loadProviderScript(name, version)
 
     // 5s timeout so a script that loaded but never called customElements.define
     // doesn't hang the loader forever.
@@ -309,6 +305,11 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
     ])
   } catch (e: unknown) {
     if (isCurrentMount(generation, name)) {
+      // A downloaded script can still fail before defining its element.
+      // Generation-aware providers may clear that attempt for in-document
+      // retry; direct-registration providers keep it terminal and offer a page
+      // reload because a detached classic body may still execute late.
+      invalidateProviderScript(name, version)
       loadState.value = 'error'
       loadError.value = e instanceof Error ? e.message : String(e)
       mountRef.value?.replaceChildren()
@@ -381,6 +382,27 @@ function retryCatalog() {
 
 function retryBindings() {
   void providers.refreshBindings().catch(() => {})
+}
+
+function retryProviderBundle() {
+  const provider = entry.value
+  const mount = mountRef.value
+  if (!provider || !mount || !accessAllowed.value) return
+  if (!canReloadProviderScriptInDocument(provider.name)) {
+    window.location.reload()
+    return
+  }
+  invalidateProviderScript(provider.name, provider.version)
+  void loadAndMount(provider.name, provider.version, mount)
+}
+
+function onProviderBootstrapRetry(event: Event) {
+  const providerName = (event as CustomEvent<{ providerName?: unknown }>).detail?.providerName
+  if (providerName !== entry.value?.name || !accessAllowed.value) return
+  // preventDefault is the acknowledgement in this cross-bundle contract. It
+  // tells the retained wrapper not to retry its stale lazy-loader closure.
+  event.preventDefault()
+  retryProviderBundle()
 }
 
 onMounted(() => {
@@ -524,6 +546,9 @@ onBeforeUnmount(() => {
         <div>
           <div class="font-medium">Failed to load provider bundle</div>
           <div class="mt-1 text-xs font-mono">{{ loadError }}</div>
+          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryProviderBundle">
+            {{ canRetryProviderBundleInDocument ? 'Retry' : 'Reload page' }}
+          </button>
         </div>
       </div>
 

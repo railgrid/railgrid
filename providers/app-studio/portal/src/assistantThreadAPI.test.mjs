@@ -26,7 +26,7 @@ function installRequestMocks(pages, calls) {
     const url = new URL(String(path), 'https://app-studio.test')
     const cursor = url.searchParams.get('cursor') ?? ''
     calls.push(url)
-    const page = pages(cursor)
+    const page = pages(cursor, url)
     return {
       ok: true,
       async text() { return JSON.stringify(page) },
@@ -99,5 +99,25 @@ test('rejects repeated cursors and page chains beyond the bounded page limit', a
     assert.equal(boundedCalls.length, 100)
   } finally {
     restoreBounded()
+  }
+})
+
+test('requests bounded assistant item windows and carries the older-history cursor', async () => {
+  const calls = []
+  const restore = installRequestMocks((_cursor, url) => ({
+    items: [{ id: url.searchParams.has('beforeSequence') ? 'older-item' : 'recent-item', sequence: url.searchParams.has('beforeSequence') ? 20 : 40 }],
+    nextCursor: url.searchParams.has('beforeSequence') ? '' : '21',
+  }), calls)
+  try {
+    const recent = await api.listAssistantThreadItemPage(context, 'demo', 'thread-1')
+    const older = await api.listAssistantThreadItemPage(context, 'demo', 'thread-1', recent.nextCursor)
+
+    assert.deepEqual(recent, { items: [{ id: 'recent-item', sequence: 40 }], nextCursor: '21' })
+    assert.deepEqual(older, { items: [{ id: 'older-item', sequence: 20 }], nextCursor: '' })
+    assert.equal(calls[0].searchParams.get('limit'), '20')
+    assert.equal(calls[0].searchParams.has('beforeSequence'), false)
+    assert.equal(calls[1].searchParams.get('beforeSequence'), '21')
+  } finally {
+    restore()
   }
 })

@@ -281,7 +281,7 @@ test('renders one responsive accessible listbox and declares keyboard/back/focus
   assert.match(source, /event\.key === 'ArrowDown'/)
   assert.match(source, /event\.key === 'Enter'/)
   assert.match(source, /event\.key === 'Escape'/)
-  assert.match(source, /searchRef\.value\?\.focus\(\)/)
+  assert.match(source, /searchRef\.value\?\.focus\(\{ preventScroll: true \}\)/)
   assert.match(source, /view\.value === 'resources'.*enterView\('providers'\)/s)
   assert.match(source, /fixed inset-x-2 bottom-2/)
   assert.match(source, /md:absolute/)
@@ -332,10 +332,18 @@ test('consumes palette keys before a closing selection can submit the composer',
   assert.match(composer, /if \(props\.disabled \|\| event\.defaultPrevented\) return/)
 })
 
-test('installs the palette key guard in capture phase for every selection view', async () => {
+test('owns palette keys at the focused combobox or listbox without a document-wide key guard', async () => {
   const source = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
-  assert.match(source, /document\.addEventListener\('keydown', handleKeydown, true\)/)
-  assert.match(source, /document\.removeEventListener\('keydown', handleKeydown, true\)/)
+  assert.doesNotMatch(source, /document\.addEventListener\('keydown'/)
+  assert.match(source, /owner\.addEventListener\('keydown', handleKeydown, true\)/)
+  assert.match(source, /externalFocusOwner\.removeEventListener\('keydown', handleKeydown, true\)/)
+  assert.match(source, /owner\.setAttribute\('role', 'combobox'\)/)
+  assert.match(source, /owner\.setAttribute\('aria-controls', listboxID\)/)
+  assert.match(source, /owner\.setAttribute\('aria-expanded', 'true'\)/)
+  assert.match(source, /:aria-activedescendant="activeOptionID"/)
+  assert.match(source, /ref="listboxRef"[\s\S]*role="listbox"[\s\S]*@keydown="handleKeydown"/)
+  assert.match(source, /<span class="mb-1 block[^>]*>Filter<\/span>/)
+  assert.match(source, /role="option" tabindex="-1"/)
 
   const activateStart = source.indexOf('function activateCurrent()')
   const activateEnd = source.indexOf('\n}\n\nfunction back(', activateStart)
@@ -352,4 +360,38 @@ test('installs the palette key guard in capture phase for every selection view',
   const keydownBody = source.slice(keydownStart, keydownEnd)
   assert.match(keydownBody, /if \(!props\.open\) return/)
   assert.match(keydownBody, /event\.key === 'Enter'[\s\S]*event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)[\s\S]*activateCurrent\(\)/)
+  assert.match(keydownBody, /event\.key === 'Home' \|\| event\.key === 'End'[\s\S]*if \(isEditableKeyboardOwner\(event\.currentTarget\)\) return[\s\S]*event\.preventDefault\(\)/)
+  assert.match(source, /target instanceof HTMLInputElement[\s\S]*target instanceof HTMLTextAreaElement[\s\S]*target\.isContentEditable/)
+})
+
+test('preserves slash typing focus and lets the composer restore focus on close', async () => {
+  const [palette, composer] = await Promise.all([
+    readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(palette, /if \(props\.preserveComposerFocus && paletteOpener\?\.isConnected\)/)
+  assert.match(palette, /bindExternalFocusOwner\(paletteOpener\)/)
+  assert.match(palette, /paletteOpener\.focus\(\{ preventScroll: true \}\)/)
+  assert.match(palette, /releaseExternalFocusOwner\(\)/)
+  assert.match(palette, /:role="preserveComposerFocus && view === 'commands' \? undefined : 'dialog'"/)
+  assert.match(palette, /:aria-label="preserveComposerFocus && view === 'commands' \? undefined : 'Assistant slash commands'"/)
+  assert.match(composer, /:preserve-composer-focus="commandPaletteFromSlash"/)
+  assert.match(composer, /function closePalette\(restoreFocus = true\)[\s\S]*if \(restoreFocus\) focusEditor\(\)/)
+})
+
+test('slash-triggered palette exposes the listbox directly to its external combobox owner', async () => {
+  const { default: AssistantCommandPalette } = await vite.ssrLoadModule('/src/AssistantCommandPalette.vue')
+  const html = await renderToString(createSSRApp(AssistantCommandPalette, {
+    open: true,
+    commandQuery: '',
+    preserveComposerFocus: true,
+    ctx: null,
+    providers: [],
+    skills: [],
+    selectedSkillIDs: [],
+    selectedResources: [],
+  }))
+  assert.doesNotMatch(html, /role="dialog"/)
+  assert.match(html, /role="listbox"/)
+  assert.match(html, /aria-label="Assistant commands"/)
 })

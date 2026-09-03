@@ -302,9 +302,9 @@ test('App Studio owns save state while the extracted surface owns presentation',
 })
 
 test('model creation replaces its route entry and nested navigation accepts replace metadata', async () => {
-  const [app, element] = await Promise.all([
+  const [app, pageElement] = await Promise.all([
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./element.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./page-element.ts', import.meta.url), 'utf8'),
   ])
 
   assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*props\.navigate\(CREATE_MODEL_ROUTE\)/)
@@ -312,8 +312,8 @@ test('model creation replaces its route entry and nested navigation accepts repl
   assert.match(app, /const routeOwnedCreation = isCreateModelRoute\.value && !llmEditingModelID\.value[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app, /const detail = \(e as CustomEvent<\{ path\?: unknown; replace\?: unknown \}>\)\.detail/)
   assert.match(app, /Nested provider tabs have one persisted descriptor rather than their own/)
-  assert.match(element, /navigate: \(path: string, options\?: NavigationOptions\) => this\.navigate\(path, options\)/)
-  assert.match(element, /detail: \{ path, \.\.\.\(options\.replace === true \? \{ replace: true \} : \{\}\) \}/)
+  assert.match(pageElement, /const navigate = \(path: string, options: NavigationOptions = \{\}\)/)
+  assert.match(pageElement, /detail: \{ path, \.\.\.\(options\.replace === true \? \{ replace: true \} : \{\}\) \}/)
 })
 
 test('composer exposes the configured model picker and sends its stable ID', async () => {
@@ -327,6 +327,16 @@ test('composer exposes the configured model picker and sends its stable ID', asy
   assert.match(app, /startAssistantReview[\s\S]*modelID: payload\.modelID/)
   assert.match(picker, /aria-label="Choose model"/)
   assert.match(picker, /aria-haspopup="listbox"/)
+  assert.match(picker, /role="combobox"/)
+  assert.match(picker, /:aria-activedescendant="open \? activeOptionID : undefined"/)
+  assert.match(picker, /@keydown="handleTriggerKeydown"/)
+  assert.match(picker, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/)
+  assert.match(picker, /event\.key === 'Home' \|\| event\.key === 'End'/)
+  assert.match(picker, /event\.key === 'Escape'/)
+  assert.match(picker, /event\.key === 'Tab' && open\.value[\s\S]*closePicker\(false\)/)
+  assert.match(picker, /role="option"[\s\S]*tabindex="-1"/)
+  assert.match(picker, /triggerRef\.value\?\.focus\(\{ preventScroll: true \}\)/)
+  assert.doesNotMatch(picker, /document\.addEventListener\('keydown'/)
 })
 
 test('guards delayed model mutations against context, route, and newer mutation generations', async () => {

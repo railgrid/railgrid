@@ -101,7 +101,7 @@ onBeforeUnmount(() => {
           />
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-accent transition hover:bg-accent-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-45"
+            class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-accent transition hover:bg-accent-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-45"
             :disabled="!editContent.trim()"
             aria-label="Save queued message"
             @click="saveEdit(message)"
@@ -110,7 +110,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             aria-label="Cancel editing queued message"
             @click="cancelEdit"
           >
@@ -121,7 +121,7 @@ onBeforeUnmount(() => {
           <span class="min-w-0 flex-1 truncate text-[12px] text-text-primary" :title="message.content">{{ message.content }}</span>
           <button
             type="button"
-            class="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
+            class="app-studio-touch-target inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
             :disabled="!!steeringID"
             :aria-label="`Steer: ${message.content}`"
             @click="$emit('steer', message)"
@@ -131,7 +131,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+            class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
             :disabled="!!steeringID"
             :aria-label="`Delete queued message: ${message.content}`"
             @click="$emit('remove', message)"
@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             :aria-expanded="openMenuID === message.id"
             :aria-label="`Queued message options: ${message.content}`"
             @click.stop="toggleMenu(message)"
@@ -149,12 +149,12 @@ onBeforeUnmount(() => {
           </button>
           <div
             v-if="openMenuID === message.id"
-            class="absolute right-2 top-9 z-20 min-w-44 rounded-md border border-border-default bg-surface-overlay p-1 shadow-lg"
+            class="absolute right-2 top-9 [z-index:var(--app-studio-z-menu)] min-w-44 rounded-md border border-border-default bg-surface-overlay p-1 shadow-lg"
             role="menu"
           >
             <button
               type="button"
-              class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
               role="menuitem"
               @click="beginEdit(message)"
             >
@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
               role="menuitem"
               @click="closeMenu(); emit('toggleQueueing')"
             >

@@ -18,6 +18,7 @@ import {
   GitBranch,
   Globe,
   GripVertical,
+  History,
   LayoutTemplate,
   Link2,
   Loader2,
@@ -37,7 +38,7 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
-import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError } from './api'
+import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError, type ProjectAssistantThreadItemPage } from './api'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import LayoutSelector from './portalkit/LayoutSelector.vue'
@@ -93,12 +94,13 @@ import {
   assistantThreadItemsToMessages,
   assistantThreadItemsToRuns,
   hideCommentaryRepresentedInTrace,
-  mergeAssistantThreadMessages,
+  mergeLiveAssistantThreadMessages,
   maxAssistantThreadSequence,
   projectAssistantSkills,
   projectAssistantContextResources,
   upsertAssistantActionFeed,
 } from './assistantThreadProjection'
+import { restoreAssistantHistoryFocus } from './assistantHistoryFocus'
 import {
   assistantThreadFocusStorageKey,
   persistAssistantThreadFocus,
@@ -607,6 +609,7 @@ let projectThumbnailLoadSerial = 0
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+let suppressNextConversationAutoScroll = false
 const assistantThreads = ref<ProjectAssistantThread[]>([])
 const activeAssistantThreadID = ref('')
 const activeAssistantThread = computed(() => assistantThreads.value.find((thread) => thread.id === activeAssistantThreadID.value))
@@ -703,6 +706,13 @@ const emptyProjectRedirectPending = ref(false)
 const projectOpenLoading = ref(false)
 const threadHistoryLoading = ref(false)
 const selectingThreadID = ref('')
+const assistantThreadOlderCursor = ref('')
+const assistantThreadOlderLoading = ref(false)
+const assistantThreadHistoryOperation = ref<'earlier' | 'latest' | null>(null)
+const assistantThreadOlderError = ref<string | null>(null)
+const assistantThreadViewingOlderHistory = ref(false)
+const assistantThreadLoadEarlierRef = ref<HTMLButtonElement | null>(null)
+const assistantThreadReturnLatestRef = ref<HTMLButtonElement | null>(null)
 const conversationRefreshing = ref(false)
 const providersLoading = ref(false)
 const busy = ref(false)
@@ -844,6 +854,7 @@ const publishingLoadError = ref<string | null>(null)
 const publishingMembersError = ref<string | null>(null)
 const shareDialogOpen = ref(false)
 const shareButtonRef = ref<HTMLButtonElement | null>(null)
+let shareDialogReturnFocus: HTMLElement | null = null
 const productionTechnicalOpen = ref(false)
 const productionSettingsOpen = ref(false)
 const productionDeployReviewRelease = ref<ProjectRelease | null>(null)
@@ -908,6 +919,7 @@ const developmentTemplateError = ref<string | null>(null)
 const workbench = ref(createDefaultWorkbenchState())
 const workbenchVisible = ref(readWorkbenchVisibility())
 const workbenchToggleRef = ref<HTMLButtonElement | null>(null)
+const mobileWorkbenchBackRef = ref<HTMLButtonElement | null>(null)
 const workbenchPaneRef = ref<HTMLElement | null>(null)
 let workbenchHydrationScopeKey: string | null = null
 let workbenchHydrationProject = ''
@@ -1390,7 +1402,7 @@ function invalidateProjectContextState() {
   createReadinessLoadSerial += 1
   toolLoadSerial += 1
   developmentPreviewAuthorizationSerial += 1
-  assistantThreadRequestSerial += 1
+  beginAssistantThreadRequest()
   approvalModeLoadSerial += 1
   approvalModeSaveSerial += 1
   projectDeletion.invalidate()
@@ -1422,6 +1434,7 @@ function invalidateProjectContextState() {
   activeAssistantProject = ''
   activeAssistantThreadID.value = ''
   activeAssistantThreadSequence = 0
+  resetAssistantThreadItemWindow()
   messageStreaming.value = false
   queuedAssistantMessages.value = []
   queuedAssistantSteeringID.value = ''
@@ -1617,9 +1630,161 @@ function projectAssistantThreadItems(
   hydrateAssistantRuns(items)
   const projected = assistantThreadItemsToMessages(items, projectName)
   const messagesToUse = preserveLiveMessages
-    ? mergeAssistantThreadMessages(messages.value, projected)
+    ? mergeLiveAssistantThreadMessages(messages.value, projected, explicitLiveAssistantThreadMessageIDs())
     : projected
   return messagesToUse.map(toProjectMessageView)
+}
+
+function explicitLiveAssistantThreadMessageIDs(): ReadonlySet<string> {
+  const ids = new Set(
+    messages.value
+      .filter((message) => message.id.startsWith('optimistic-'))
+      .map((message) => message.id),
+  )
+  const run = activeAssistantRun
+  if (!run || assistantRunTerminal(run.status)) return ids
+  if (run.userMessageID) ids.add(run.userMessageID)
+  if (run.activeMessageID) ids.add(run.activeMessageID)
+  for (const message of messages.value) {
+    if (
+      message.metadata?.assistantTurnID === run.id ||
+      message.metadata?.assistantMessageID === run.activeMessageID
+    ) ids.add(message.id)
+  }
+  return ids
+}
+
+function resetAssistantThreadItemWindow() {
+  assistantThreadOlderCursor.value = ''
+  assistantThreadOlderLoading.value = false
+  assistantThreadHistoryOperation.value = null
+  assistantThreadOlderError.value = null
+  assistantThreadViewingOlderHistory.value = false
+}
+
+function beginAssistantThreadRequest(): number {
+  // A thread/project operation supersedes any in-flight historical-page load.
+  // Clear its UI latch immediately; the stale request is fenced by the serial
+  // and must not be allowed to strand the next thread in a loading state.
+  assistantThreadOlderLoading.value = false
+  assistantThreadHistoryOperation.value = null
+  return ++assistantThreadRequestSerial
+}
+
+function commitAssistantThreadItemPage(page: ProjectAssistantThreadItemPage, viewingOlder = false) {
+  assistantThreadOlderCursor.value = page.nextCursor
+  assistantThreadOlderLoading.value = false
+  assistantThreadHistoryOperation.value = null
+  assistantThreadOlderError.value = null
+  assistantThreadViewingOlderHistory.value = viewingOlder
+}
+
+async function restoreAssistantThreadHistoryControlFocus(
+  preferLoadEarlier: boolean,
+  requestSerial: number,
+  projectName: string,
+  threadID: string,
+) {
+  await nextTick()
+  if (
+    requestSerial !== assistantThreadRequestSerial ||
+    selected.value?.name !== projectName ||
+    activeAssistantThreadID.value !== threadID
+  ) return
+  const preferred = preferLoadEarlier ? assistantThreadLoadEarlierRef.value : assistantThreadReturnLatestRef.value
+  const fallback = preferLoadEarlier ? assistantThreadReturnLatestRef.value : assistantThreadLoadEarlierRef.value
+  restoreAssistantHistoryFocus({
+    loading: assistantThreadOlderLoading.value,
+    preferred,
+    fallback,
+    transcript: messagesRef.value,
+  })
+}
+
+async function restoreAssistantThreadLatestFocus(
+  requestSerial: number,
+  projectName: string,
+  threadID: string,
+) {
+  await nextTick()
+  if (
+    requestSerial !== assistantThreadRequestSerial ||
+    selected.value?.name !== projectName ||
+    activeAssistantThreadID.value !== threadID
+  ) return
+  const transcript = messagesRef.value
+  if (!transcript) return
+  transcript.scrollTop = transcript.scrollHeight
+  transcript.focus({ preventScroll: true })
+}
+
+async function loadOlderAssistantThreadItems() {
+  const projectName = selected.value?.name
+  const threadID = activeAssistantThreadID.value
+  const beforeSequence = assistantThreadOlderCursor.value
+  if (!projectName || !threadID || !beforeSequence || assistantThreadOlderLoading.value || messageStreaming.value) return
+
+  const requestSerial = assistantThreadRequestSerial
+  assistantThreadOlderLoading.value = true
+  assistantThreadHistoryOperation.value = 'earlier'
+  assistantThreadOlderError.value = null
+  try {
+    const page = await api.listAssistantThreadItemPage(props.ctx, projectName, threadID, beforeSequence)
+    if (
+      requestSerial !== assistantThreadRequestSerial ||
+      selected.value?.name !== projectName ||
+      activeAssistantThreadID.value !== threadID
+    ) return
+    suppressNextConversationAutoScroll = true
+    messages.value = projectAssistantThreadItems(page.items, projectName)
+    commitAssistantThreadItemPage(page, true)
+    await nextTick()
+    if (messagesRef.value) messagesRef.value.scrollTop = 0
+    await restoreAssistantThreadHistoryControlFocus(Boolean(page.nextCursor), requestSerial, projectName, threadID)
+  } catch (e) {
+    if (
+      requestSerial === assistantThreadRequestSerial &&
+      selected.value?.name === projectName &&
+      activeAssistantThreadID.value === threadID
+    ) assistantThreadOlderError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (requestSerial === assistantThreadRequestSerial) {
+      assistantThreadOlderLoading.value = false
+      assistantThreadHistoryOperation.value = null
+    }
+  }
+}
+
+async function returnToLatestAssistantThreadItems() {
+  const projectName = selected.value?.name
+  const threadID = activeAssistantThreadID.value
+  if (!projectName || !threadID || assistantThreadOlderLoading.value) return
+  const requestSerial = assistantThreadRequestSerial
+  assistantThreadOlderLoading.value = true
+  assistantThreadHistoryOperation.value = 'latest'
+  assistantThreadOlderError.value = null
+  try {
+    const page = await api.listAssistantThreadItemPage(props.ctx, projectName, threadID)
+    if (
+      requestSerial !== assistantThreadRequestSerial ||
+      selected.value?.name !== projectName ||
+      activeAssistantThreadID.value !== threadID
+    ) return
+    // Own the scroll/focus sequence for this navigation. The generic message
+    // watcher would otherwise scroll after the history control receives focus,
+    // leaving keyboard focus above the visible latest transcript.
+    suppressNextConversationAutoScroll = true
+    messages.value = projectAssistantThreadItems(page.items, projectName)
+    commitAssistantThreadItemPage(page)
+    await restoreAssistantThreadLatestFocus(requestSerial, projectName, threadID)
+  } catch (e) {
+    if (requestSerial === assistantThreadRequestSerial) assistantThreadOlderError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (requestSerial === assistantThreadRequestSerial) {
+      assistantThreadOlderLoading.value = false
+      assistantThreadHistoryOperation.value = null
+    }
+  }
 }
 
 function latestAssistantThreadRun(items: ProjectAssistantThreadItem[], turnID = ''): AssistantRun | undefined {
@@ -1816,7 +1981,7 @@ const splitMinimumPercent = computed(() => splitMinimumPercentForWidth(
 const conversationPaneStyle = computed(() => ({
   // A hidden workbench gives the conversation the full desktop canvas while
   // retaining the last split percentage for the next reveal.
-  flexBasis: workbenchVisible.value ? `${renderedSplitWidth.value}%` : '100%',
+  '--conversation-split-basis': workbenchVisible.value ? `${renderedSplitWidth.value}%` : '100%',
   '--conversation-min-width': `${conversationMinimumWidth.value}px`,
 }))
 watch(
@@ -2677,7 +2842,7 @@ watch(
     // the replacement project has hydrated. Detach that stream immediately,
     // while keeping the split-pane shell visible for the replacement load.
     if (selected.value?.name && selected.value.name !== selectedNameFromPath.value) {
-      assistantThreadRequestSerial += 1
+      beginAssistantThreadRequest()
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       activeAssistantSubscription = null
@@ -2772,7 +2937,7 @@ watch(
     productionSettingsOpen.value = false
     productionDeployReviewRelease.value = null
     clearPublishingPoll()
-    if (shareWasOpen) void nextTick(() => shareButtonRef.value?.focus())
+    if (shareWasOpen) restoreShareDialogFocus()
     assistantWorkedDurationClock.clear()
     developmentPreviewRefreshController.invalidate()
     developmentPreviewAuthorizationSerial += 1
@@ -2908,6 +3073,10 @@ watch(settingsProject, (project, previousProject) => {
 })
 
 watch([messages, conversationLoading], async () => {
+  if (suppressNextConversationAutoScroll) {
+    suppressNextConversationAutoScroll = false
+    return
+  }
   await nextTick()
   if (!conversationLoading.value && messagesRef.value) {
     messagesRef.value.scrollTop = messagesRef.value.scrollHeight
@@ -2960,7 +3129,7 @@ async function load() {
   // Invalidate every assistant-thread operation before resetting its visible
   // latches. The request/context guards keep late responses harmless while a
   // replacement load establishes the new project/thread state.
-  assistantThreadRequestSerial += 1
+  beginAssistantThreadRequest()
   // A new route/context load intentionally cancels any pending thread UI
   // latches. In-flight requests remain harmlessly stale via their serial and
   // context guards, while the replacement load owns any new latch state.
@@ -4806,7 +4975,10 @@ async function createProjectAndStartConversation(
     }
     activeAssistantThreadID.value = canonicalThreadID
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), canonicalThreadID)
-    const items = await api.listAssistantThreadItems(props.ctx, projectName, canonicalThreadID)
+    const threadPage = await api.listAssistantThreadItemPage(props.ctx, projectName, canonicalThreadID)
+    if (!current()) return
+    const items = threadPage.items
+    commitAssistantThreadItemPage(threadPage)
     activeAssistantThreadSequence = maxAssistantThreadSequence(items)
     const projected = assistantThreadItemsToMessages(items, projectName)
     const user = projected.find((message) => message.role === 'user' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')?.id)
@@ -5001,7 +5173,7 @@ function enterProject(project: Project) {
 async function openProject(name: string, updateURL = true, requestGuardOverride?: ProjectRequestGuard) {
   if (!name) return
   const requestGuard = requestGuardOverride ?? beginProjectRequest()
-  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  const assistantThreadLoadSerial = beginAssistantThreadRequest()
   const approvalRequestSerial = ++approvalModeLoadSerial
   approvalModeSaveSerial += 1
   approvalModeLoading.value = true
@@ -5021,6 +5193,7 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
     messages.value = []
     assistantThreads.value = []
     activeAssistantThreadID.value = ''
+    resetAssistantThreadItemWindow()
     activeProjectContextFingerprint = ''
     reviewPanelHold.value = null
     resetWorkbench()
@@ -5047,13 +5220,16 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
     hydrateWorkbenchForProject(name)
     assistantThreads.value = threads
     activeAssistantThreadID.value = restoreAssistantThreadFocus(assistantThreadFocusScope(name), threads)
-    const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, name, activeAssistantThreadID.value) : []
+    const threadPage = activeAssistantThreadID.value
+      ? await api.listAssistantThreadItemPage(props.ctx, name, activeAssistantThreadID.value)
+      : { items: [], nextCursor: '' }
     if (
       !projectRequestIsCurrent(requestGuard, name) ||
       assistantThreadLoadSerial !== assistantThreadRequestSerial
     ) return
-    activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
-    messages.value = projectAssistantThreadItems(threadItems, name)
+    commitAssistantThreadItemPage(threadPage)
+    activeAssistantThreadSequence = maxAssistantThreadSequence(threadPage.items)
+    messages.value = projectAssistantThreadItems(threadPage.items, name)
     approvalMode.value = preference?.mode ?? 'on_request'
     await recoverAssistantConversation(name, requestGuard)
     if (!projectRequestIsCurrent(requestGuard, name)) return
@@ -5090,7 +5266,7 @@ async function selectApprovalMode(mode: ProjectAssistantApprovalMode) {
 async function refreshSelectedProjectConversation(projectName: string) {
   if (!projectName || selected.value?.name !== projectName) return
   const requestGuard = beginProjectRequest()
-  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  const assistantThreadLoadSerial = beginAssistantThreadRequest()
   selectingThreadID.value = ''
   const conversationRefreshLatchOwner = beginConversationRefreshLatch()
   try {
@@ -5107,25 +5283,32 @@ async function refreshSelectedProjectConversation(projectName: string) {
     activeProjectContextFingerprint = appContextFingerprint(props.ctx)
     assistantThreads.value = threads
     threadError.value = null
-    const currentThreadID = threads.some((thread) => thread.id === activeAssistantThreadID.value)
+    const previousThreadID = activeAssistantThreadID.value
+    const currentThreadID = threads.some((thread) => thread.id === previousThreadID)
       ? activeAssistantThreadID.value
       : restoreAssistantThreadFocus(assistantThreadFocusScope(projectName), threads)
     activeAssistantThreadID.value = currentThreadID
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), currentThreadID)
-    const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value) : []
+    const threadPage = activeAssistantThreadID.value
+      ? await api.listAssistantThreadItemPage(props.ctx, projectName, activeAssistantThreadID.value)
+      : { items: [], nextCursor: '' }
     if (
       !projectRequestIsCurrent(requestGuard, projectName) ||
       assistantThreadLoadSerial !== assistantThreadRequestSerial
     ) return
-    activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
+    const keepOlderWindow = currentThreadID === previousThreadID && assistantThreadViewingOlderHistory.value
+    if (!keepOlderWindow) commitAssistantThreadItemPage(threadPage)
+    activeAssistantThreadSequence = maxAssistantThreadSequence(threadPage.items)
     // A refresh can race the live stream. Merge the durable list into the live
     // projection while this project/run is still active so a newer delta or
     // commentary item is never rolled back to the request's earlier snapshot.
-    messages.value = projectAssistantThreadItems(
-      threadItems,
-      projectName,
-      messageStreaming.value && activeAssistantProject === projectName,
-    )
+    if (!keepOlderWindow) {
+      messages.value = projectAssistantThreadItems(
+        threadPage.items,
+        projectName,
+        currentThreadID === previousThreadID && messages.value.length > 0,
+      )
+    }
     applyProjectList(projectList)
     await recoverAssistantConversation(projectName, requestGuard)
   } finally {
@@ -5461,12 +5644,12 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
   }
   const previousThreadID = activeAssistantThreadID.value
   const requestGuard = beginProjectRequest()
-  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  const assistantThreadLoadSerial = beginAssistantThreadRequest()
   const threadHistoryLatchOwner = beginThreadHistoryLatch()
   selectingThreadID.value = threadID
   threadError.value = null
   try {
-    const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
+    const page = await api.listAssistantThreadItemPage(props.ctx, projectName, threadID)
     if (
       !projectRequestIsCurrent(requestGuard, projectName) ||
       assistantThreadLoadSerial !== assistantThreadRequestSerial ||
@@ -5482,8 +5665,9 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
     activeAssistantThreadID.value = threadID
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
     reviewPanelHold.value = null
-    activeAssistantThreadSequence = maxAssistantThreadSequence(items)
-    messages.value = projectAssistantThreadItems(items, projectName)
+    commitAssistantThreadItemPage(page)
+    activeAssistantThreadSequence = maxAssistantThreadSequence(page.items)
+    messages.value = projectAssistantThreadItems(page.items, projectName)
     messageStreaming.value = false
     threadRailRef.value?.focusThread?.(threadID)
     return true
@@ -5505,7 +5689,7 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
 async function createAssistantThread() {
   const projectName = selected.value?.name
   if (!projectName || threadActionsDisabled.value) return
-  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  const assistantThreadLoadSerial = beginAssistantThreadRequest()
   const createIsCurrent = () =>
     appComponentMounted &&
     assistantThreadLoadSerial === assistantThreadRequestSerial &&
@@ -5519,6 +5703,7 @@ async function createAssistantThread() {
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
     activeAssistantThreadSequence = 1
+    resetAssistantThreadItemWindow()
     messages.value = []
     setActiveAssistantRun(null)
     activeAssistantProject = ''
@@ -5555,7 +5740,7 @@ async function renameAssistantThread(threadID: string, title: string) {
   const normalizedTitle = title.trim()
   if (!projectName || !threadID || !normalizedTitle || threadActionsDisabled.value) return
   const requestGuard = beginProjectRequest()
-  const renameRequestSerial = ++assistantThreadRequestSerial
+  const renameRequestSerial = beginAssistantThreadRequest()
   const renameIsCurrent = () =>
     projectRequestIsCurrent(requestGuard, projectName) &&
     renameRequestSerial === assistantThreadRequestSerial
@@ -5618,7 +5803,7 @@ async function archiveAssistantThread(threadID: string) {
   const projectName = selected.value?.name
   if (!projectName || !threadID || threadActionsDisabled.value || threadActioningID.value) return
   const requestGuard = beginProjectRequest()
-  const archiveRequestSerial = ++assistantThreadRequestSerial
+  const archiveRequestSerial = beginAssistantThreadRequest()
   const archiveContextFingerprint = requestGuard.contextFingerprint
   const requestIsCurrent = () =>
     projectRequestIsCurrent(requestGuard, projectName) &&
@@ -5767,10 +5952,20 @@ async function recoverAssistantConversation(
   const expectedRunID = activeAssistantProject === projectName ? activeAssistantRun?.id ?? '' : ''
   const turn = await api.getActiveAssistantTurn(props.ctx, projectName, threadID)
   if (!projectRequestIsCurrent(requestGuard, projectName) || activeAssistantThreadID.value !== threadID) return undefined
-  const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
+  const page = await api.listAssistantThreadItemPage(props.ctx, projectName, threadID)
+  const items = page.items
   if (!projectRequestIsCurrent(requestGuard, projectName) || activeAssistantThreadID.value !== threadID) return undefined
   activeAssistantThreadSequence = maxAssistantThreadSequence(items)
-  messages.value = projectAssistantThreadItems(items, projectName, Boolean(turn))
+  const viewingOlderHistory = assistantThreadViewingOlderHistory.value
+  const keepOlderWindow = viewingOlderHistory && !turn
+  const preserveExistingHistory = messages.value.length > 0 && !viewingOlderHistory
+  if (!keepOlderWindow) {
+    commitAssistantThreadItemPage(page)
+    // A run discovered while an older page is mounted moves the conversation
+    // back to its live tail. Do not preserve that historical window while
+    // materializing the active run or the two disjoint pages become mixed.
+    messages.value = projectAssistantThreadItems(items, projectName, (!viewingOlderHistory && Boolean(turn)) || preserveExistingHistory)
+  }
   // A 204 means the stream may have missed its terminal event. The durable
   // thread items are authoritative in that case: materialize their terminal
   // owner, then clear every scoped live control so no stale spinner or input
@@ -6439,9 +6634,23 @@ function developmentPreviewAuthorizationRetryable(error: unknown): boolean {
   return !(error instanceof ProjectAPIRequestError) || error.status === 408 || error.status === 429 || error.status >= 500
 }
 
-function openShareDialog() {
+function openShareDialog(event?: Event) {
   if (!selected.value?.name) return
+  shareDialogReturnFocus = event?.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : shareButtonRef.value
   shareDialogOpen.value = true
+}
+
+function restoreShareDialogFocus() {
+  const target = shareDialogReturnFocus
+  shareDialogReturnFocus = null
+  void nextTick(() => {
+    if (target?.isConnected && !target.hasAttribute('disabled')) target.focus()
+    else shareButtonRef.value?.focus()
+  })
 }
 
 function restoreShareModeFromPublication() {
@@ -6454,7 +6663,7 @@ function closeShareDialog() {
   if (publishingActionBusy.value) return
   restoreShareModeFromPublication()
   shareDialogOpen.value = false
-  void nextTick(() => shareButtonRef.value?.focus())
+  restoreShareDialogFocus()
   if (!publishingInWorkbench.value) {
     clearPromotionPoll()
     clearPublishingPoll()
@@ -6468,6 +6677,7 @@ function openPublishingFromShare() {
   // publish action.
   restoreShareModeFromPublication()
   shareDialogOpen.value = false
+  shareDialogReturnFocus = null
   openBuiltInWorkbenchTab('publishing')
   void nextTick(() => publishingPaneRef.value?.focus())
 }
@@ -6547,25 +6757,26 @@ function revealWorkbenchPane() {
   if (workbenchVisible.value) return
   workbenchVisible.value = true
   writeWorkbenchVisibility(true)
+  if (isMobileWorkbenchLayout()) void nextTick(() => mobileWorkbenchBackRef.value?.focus())
+}
+
+function isMobileWorkbenchLayout(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
 }
 
 function toggleWorkbenchPane(event?: MouseEvent) {
-  const trigger = event?.currentTarget instanceof HTMLElement
+  const clickedTrigger = event?.currentTarget instanceof HTMLElement
     ? event.currentTarget
     : workbenchToggleRef.value
   const nextVisible = !workbenchVisible.value
-  if (!nextVisible) {
-    const activeElement = typeof document !== 'undefined' ? document.activeElement : null
-    if (activeElement && workbenchPaneRef.value?.contains(activeElement)) trigger?.focus()
-  }
+  const returnTrigger = clickedTrigger === mobileWorkbenchBackRef.value ? workbenchToggleRef.value : clickedTrigger
   if (!nextVisible) stopResize()
   workbenchVisible.value = nextVisible
   writeWorkbenchVisibility(nextVisible)
-  if (!nextVisible) {
-    void nextTick(() => {
-      if (trigger?.isConnected && !trigger.hasAttribute('disabled')) trigger.focus()
-    })
-  }
+  void nextTick(() => {
+    const target = nextVisible && isMobileWorkbenchLayout() ? mobileWorkbenchBackRef.value : returnTrigger
+    if (target?.isConnected && !target.hasAttribute('disabled')) target.focus()
+  })
 }
 
 function openBuiltInWorkbenchTab(kind: WorkbenchBuiltInTab) {
@@ -6768,7 +6979,7 @@ async function requestDeleteProject(project: Project) {
       // Detach the deleted project's live conversation before clearing the
       // selection. Route reconciliation will run next, but it must not get a
       // chance to append late assistant events to the landing surface.
-      assistantThreadRequestSerial += 1
+      beginAssistantThreadRequest()
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       activeAssistantSubscription = null
@@ -6924,7 +7135,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         clientUserMessageID: clientRequestID,
       })
       startPostAccepted = true
-      const items = await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value)
+      const page = await api.listAssistantThreadItemPage(props.ctx, projectName, activeAssistantThreadID.value)
+      const items = page.items
+      commitAssistantThreadItemPage(page)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
       // The durable steering receipt now owns the user-message identity.
       // Drop the temporary optimistic row before merging the list so the same
@@ -6990,7 +7203,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       }
       activeAssistantThreadID.value = canonicalThreadID
       persistAssistantThreadFocus(assistantThreadFocusScope(projectName), canonicalThreadID)
-      const items = await api.listAssistantThreadItems(props.ctx, projectName, canonicalThreadID)
+      const page = await api.listAssistantThreadItemPage(props.ctx, projectName, canonicalThreadID)
+      if (!firstSendIsCurrent() || activeAssistantThreadID.value !== canonicalThreadID) return false
+      const items = page.items
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
       const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
       const assistantItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')
@@ -6999,6 +7214,14 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       const user = canonicalMessages.find((message) => message.id === userItem.id)
       const assistant = canonicalMessages.find((message) => message.id === assistantItem.id)
       if (!user || !assistant) throw new Error('assistant turn message projection is incomplete')
+      if (assistantThreadViewingOlderHistory.value) {
+        // An accepted turn belongs to the live tail, not the historical page
+        // that happened to be mounted when the user sent it. Replace the
+        // entire window before applying the start snapshot so omitted recent
+        // turns cannot be bridged by an incoherent old-page/new-turn merge.
+        messages.value = canonicalMessages.map(toProjectMessageView)
+      }
+      commitAssistantThreadItemPage(page)
       started = {
         run: {
           id: canonical.turn.id,
@@ -8295,14 +8518,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
             <input
               v-model="projectQuery"
-              class="h-9 w-full rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+              class="app-studio-touch-target h-9 w-full rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
               placeholder="Search"
               :disabled="loading || !projectsLoaded"
               :aria-busy="loading || !projectsLoaded"
             />
             <button
               v-if="projectQuery"
-              class="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
               title="Clear search"
               @click="projectQuery = ''"
             >
@@ -8322,7 +8545,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <span class="min-w-0 flex-1">{{ projectDeletionError }}</span>
           <button type="button" class="font-medium underline underline-offset-2" @click="projectDeletionRetry?.()">Retry deletion</button>
         </div>
-        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
             <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
@@ -8392,7 +8615,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </div>
               </button>
               <button
-                class="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                class="app-studio-touch-target app-studio-touch-visible absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
                 type="button"
                 title="Delete project"
                 :aria-label="`Delete project ${project.displayName}`"
@@ -8568,7 +8791,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       ref="landingImportTriggerRef"
                       type="button"
                       role="menuitem"
-                      class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+                      class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
                       :disabled="busy"
                       data-k-tip="Import an existing repository"
                       aria-label="Import an existing repository"
@@ -8652,7 +8875,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   />
                   <button
                     type="submit"
-                    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                     :disabled="busy || !canStartProjectFromPrompt"
                     :title="createPromptSubmitTitle"
                     aria-label="Prepare project for review"
@@ -8673,7 +8896,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <Settings2 class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
                   Complete setup before creating
                 </div>
-                <div v-if="createSetupErrorMessage" class="mb-2 text-[12px] text-danger">{{ createSetupErrorMessage }}</div>
+                <div v-if="createSetupErrorMessage" class="mb-2 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">{{ createSetupErrorMessage }}</div>
                 <div class="grid gap-2">
                   <div
                     v-for="item in createSetupItemsForPrompt"
@@ -8736,7 +8959,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
 
-      <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+      <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
           <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
@@ -8751,15 +8974,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-raised/70" :aria-busy="conversationLoading || conversationRefreshing">
     <div ref="splitRegionRef" class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-      <section data-app-studio-conversation-pane class="flex min-h-0 min-w-0 shrink-0 flex-col md:min-w-[var(--conversation-min-width)]" :style="conversationPaneStyle" :class="[
+      <section data-app-studio-conversation-pane class="min-h-0 min-w-0 shrink-0 basis-full flex-col md:flex md:min-w-[var(--conversation-min-width)] md:[flex-basis:var(--conversation-split-basis)]" :style="conversationPaneStyle" :class="[
         'workbench-conversation-pane',
-        workbenchVisible ? 'workbench-conversation-entering' : 'workbench-conversation-leaving',
+        workbenchVisible ? 'hidden workbench-conversation-entering' : 'flex workbench-conversation-leaving',
         splitResizing ? 'transition-none' : '',
       ]">
         <header data-app-studio-titlebar class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3">
           <button
             type="button"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             title="Toggle thread side panel"
             aria-label="Toggle thread side panel"
             :aria-expanded="threadRailExpanded"
@@ -8812,7 +9035,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <button
             ref="workbenchToggleRef"
             type="button"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             :title="workbenchVisible ? 'Hide workbench' : 'Show workbench'"
             :aria-label="workbenchVisible ? 'Hide workbench' : 'Show workbench'"
             :aria-expanded="workbenchVisible"
@@ -8824,7 +9047,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
           <button
             type="button"
-            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
             ref="shareButtonRef"
             title="Share project"
             aria-label="Share project"
@@ -8864,7 +9087,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       >
         {{ threadError }}
       </div>
-      <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+      <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
           <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
@@ -8885,7 +9108,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             ref="messagesRef"
             class="h-full overflow-auto px-4 py-3"
             :class="activePlanMessage ? 'md:pb-16' : ''"
-            :aria-busy="messageStreaming || conversationLoading || conversationRefreshing"
+            :aria-busy="messageStreaming || conversationLoading || conversationRefreshing || assistantThreadOlderLoading"
+            aria-label="Conversation transcript"
+            role="region"
+            tabindex="-1"
           >
           <div v-if="projectRouteFailure" class="flex min-h-full items-center justify-center py-6">
             <div class="w-full max-w-[720px] rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
@@ -8906,7 +9132,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <div class="mt-5 text-[12px] text-text-muted">Loading conversation history…</div>
             </div>
           </div>
-          <div v-else-if="messages.length === 0" class="flex min-h-full items-center justify-center py-6">
+          <div v-else-if="messages.length === 0 && !assistantThreadViewingOlderHistory && !assistantThreadOlderCursor && !assistantThreadOlderError" class="flex min-h-full items-center justify-center py-6">
             <div class="w-full max-w-[720px] rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
               <div class="flex items-start gap-3">
                 <div
@@ -8966,6 +9192,35 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
           </div>
           <div v-else class="mx-auto flex w-full max-w-[820px] flex-col gap-5">
+            <div v-if="assistantThreadOlderCursor || assistantThreadViewingOlderHistory || assistantThreadOlderError" class="flex flex-col items-center gap-2" role="group" aria-label="Older conversation history">
+              <button
+                v-if="assistantThreadViewingOlderHistory"
+                ref="assistantThreadReturnLatestRef"
+                type="button"
+                class="app-studio-touch-target inline-flex min-h-8 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition hover:border-accent/30 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
+                :disabled="assistantThreadOlderLoading"
+                @click="returnToLatestAssistantThreadItems"
+              >
+                <Loader2 v-if="assistantThreadHistoryOperation === 'latest'" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                <ArrowUp v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+                {{ assistantThreadHistoryOperation === 'latest' ? 'Returning to latest messages…' : 'Return to latest' }}
+              </button>
+              <button
+                v-if="assistantThreadOlderCursor"
+                ref="assistantThreadLoadEarlierRef"
+                type="button"
+                class="app-studio-touch-target inline-flex min-h-8 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition hover:border-accent/30 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
+                :disabled="assistantThreadOlderLoading || messageStreaming"
+                @click="loadOlderAssistantThreadItems"
+              >
+                <Loader2 v-if="assistantThreadHistoryOperation === 'earlier'" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                <History v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+                {{ assistantThreadHistoryOperation === 'earlier' ? 'Loading earlier messages…' : 'Load earlier messages' }}
+              </button>
+              <div v-if="assistantThreadOlderError" class="text-[12px] text-danger" role="alert">
+                {{ assistantThreadOlderError }}
+              </div>
+            </div>
             <div
               v-for="message in conversationMessages"
               :key="message.id"
@@ -9035,7 +9290,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </button>
                   <div
                     v-if="expandedMessageTimestampID !== message.id"
-                    class="pointer-events-none absolute right-0 top-full z-20 mt-1 whitespace-nowrap rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-[11px] leading-4 text-text-secondary opacity-0 shadow-lg transition group-hover/timestamp:opacity-100 group-focus-within/timestamp:opacity-100"
+                    class="pointer-events-none absolute right-0 top-full [z-index:var(--app-studio-z-tooltip)] mt-1 whitespace-nowrap rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-[11px] leading-4 text-text-secondary opacity-0 shadow-lg transition group-hover/timestamp:opacity-100 group-focus-within/timestamp:opacity-100"
                   >
                     {{ formatFullTime(message.createdAt) }}
                   </div>
@@ -9229,7 +9484,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     />
                   </div>
                 </div>
-                <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
                   {{ followUpError(pendingFollowUp.interrupt) }}
                 </div>
                 <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -9277,7 +9532,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     </div>
                   </div>
                 </div>
-                <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
                   {{ permissionError(pendingApproval.interrupt) }}
                 </div>
                 <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -9382,7 +9637,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </AssistantRichComposer>
             <button
               :type="assistantComposerShowsStop ? 'button' : 'submit'"
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              class="app-studio-touch-target absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               :class="assistantComposerShowsStop
                 ? 'rounded-full bg-accent text-on-accent enabled:hover:bg-accent-hover disabled:cursor-default'
                 : 'rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none'"
@@ -9444,10 +9699,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           id="app-studio-workbench-pane"
           ref="workbenchPaneRef"
           v-show="workbenchVisible"
-          class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0"
+          class="flex min-h-0 min-w-0 flex-1 flex-col"
           :aria-hidden="!workbenchVisible"
         >
       <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+        <button
+          ref="mobileWorkbenchBackRef"
+          type="button"
+          class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 md:hidden"
+          aria-label="Back to conversation"
+          @click="toggleWorkbenchPane"
+        >
+          <ArrowLeft class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
+        </button>
         <div class="flex min-w-0 flex-1 items-center gap-1">
           <div class="w-fit max-w-full min-w-0 flex-initial overflow-x-auto">
             <div
@@ -9458,7 +9722,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <div
                 v-for="tab in workbench.tabs"
                 :key="tab.id"
-                class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
+                class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing [@media(hover:none)]:h-11 [@media(any-pointer:coarse)]:h-11"
                 :class="workbenchTabButtonClass(tab)"
                 draggable="true"
                 @dragstart="startWorkbenchTabDrag($event, tab)"
@@ -9470,7 +9734,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <button
                   type="button"
                   role="tab"
-                  class="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none"
+                  class="app-studio-touch-target inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                   :id="workbenchTabControlID(tab)"
                   :aria-selected="workbench.activeTabID === tab.id"
                   :aria-controls="workbenchTabPanelID(tab)"
@@ -9491,7 +9755,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <button
                   v-if="tab.closeable"
                   type="button"
-                  class="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
+                  class="app-studio-touch-target mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
                   :title="`Close ${tab.title}`"
                   :aria-label="`Close ${tab.title}`"
                   @click="closeWorkbenchTabByID(tab.id)"
@@ -9503,7 +9767,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </div>
           <button
             type="button"
-            class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
+            class="app-studio-touch-target relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
             :class="hasPendingReview ? 'text-accent' : ''"
             title="New tab"
             aria-label="New tab"
@@ -9520,7 +9784,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div class="flex shrink-0 items-center gap-1">
           <button
             v-if="activeProviderTool"
-            class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+            class="app-studio-touch-target flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Open full provider"
             aria-label="Open full provider"
             @click="openToolFull"
@@ -9687,7 +9951,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
             {{ developmentSyncError || developmentPreviewAuthorizationError }}
           </div>
-          <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
+          <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status" aria-live="polite" aria-atomic="true">
             {{ developmentSyncStatus }}
           </div>
           <div v-if="developmentPreviewURL" class="relative min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
@@ -9703,7 +9967,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 			/>
 			<div
 				v-if="developmentPreviewAnnotationHoverAnnotation"
-				class="pointer-events-none absolute inset-0 z-30"
+					class="pointer-events-none absolute inset-0 [z-index:var(--app-studio-z-tooltip)]"
 				aria-live="polite"
 				aria-atomic="true"
 			>
@@ -9720,7 +9984,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 			</div>
 			<div
 				v-if="developmentPreviewAnnotationDraft"
-				class="absolute z-20 flex flex-col items-stretch gap-3 rounded-lg border border-border-default bg-surface-overlay/95 p-3 shadow-2xl backdrop-blur"
+					class="absolute [z-index:var(--app-studio-z-menu)] flex flex-col items-stretch gap-3 rounded-lg border border-border-default bg-surface-overlay/95 p-3 shadow-2xl backdrop-blur"
 				:style="developmentPreviewAnnotationEditorStyle"
 				role="dialog"
 				:aria-label="developmentPreviewAnnotationEditing ? 'Edit annotation' : 'Add annotation'"
@@ -9739,12 +10003,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 					@keydown.esc.prevent="cancelDevelopmentPreviewAnnotation"
 				/>
 				<div class="flex items-center border-t border-border-subtle pt-2">
-					<button v-if="developmentPreviewAnnotationEditing" type="button" class="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger" title="Delete annotation" aria-label="Delete annotation" @click="deleteDevelopmentPreviewAnnotation">
+					<button v-if="developmentPreviewAnnotationEditing" type="button" class="app-studio-touch-target flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger" title="Delete annotation" aria-label="Delete annotation" @click="deleteDevelopmentPreviewAnnotation">
 						<Trash2 class="h-4 w-4" :stroke-width="1.75" />
 					</button>
 					<div class="ml-auto flex items-center gap-2">
-						<button type="button" class="rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[13px] font-medium text-text-primary transition hover:bg-surface-hover" title="Cancel annotation" @click="cancelDevelopmentPreviewAnnotation">Cancel</button>
-						<button type="button" class="rounded-md bg-text-primary px-3 py-1.5 text-[13px] font-medium text-surface transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!developmentPreviewAnnotationDraft.comment.trim()" @click="commitDevelopmentPreviewAnnotation">Save</button>
+						<button type="button" class="app-studio-touch-target rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[13px] font-medium text-text-primary transition hover:bg-surface-hover" title="Cancel annotation" @click="cancelDevelopmentPreviewAnnotation">Cancel</button>
+						<button type="button" class="app-studio-touch-target rounded-md bg-text-primary px-3 py-1.5 text-[13px] font-medium text-surface transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!developmentPreviewAnnotationDraft.comment.trim()" @click="commitDevelopmentPreviewAnnotation">Save</button>
 					</div>
 				</div>
 			</div>
@@ -9758,7 +10022,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 				<div class="max-w-sm">
 					<div class="text-[13px] font-semibold text-text-primary">Preview did not finish loading</div>
 					<div class="mt-1 text-[12px] leading-5 text-text-muted">The runtime may still be starting. Retry now or use Sync to restart it.</div>
-					<button type="button" class="mt-3 rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-hover" @click="retryDevelopmentPreview">
+					<button type="button" class="app-studio-touch-target mt-3 rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-hover" @click="retryDevelopmentPreview">
 						Retry preview
 					</button>
 				</div>
@@ -9866,7 +10130,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 />
               </div>
             </div>
-            <div v-if="followUpError(pendingFollowUp.interrupt)" class="text-[11px] leading-4 text-danger">
+            <div v-if="followUpError(pendingFollowUp.interrupt)" class="text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
               {{ followUpError(pendingFollowUp.interrupt) }}
             </div>
             <div class="flex flex-wrap gap-2">
@@ -9904,6 +10168,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <span>Command details are unavailable, so allowing this request is disabled. Deny it and retry.</span>
                 </div>
               </div>
+            </div>
+            <div v-if="permissionError(pendingApproval.interrupt)" class="text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+              {{ permissionError(pendingApproval.interrupt) }}
             </div>
             <div class="flex flex-wrap gap-2">
               <button
@@ -9952,7 +10219,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
           <button
             v-if="providerQuery"
-            class="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
+            class="app-studio-touch-target absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
             title="Clear search"
             @click="providerQuery = ''"
           >
@@ -10068,7 +10335,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
         ? 'h-full min-h-0'
-        : 'fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
+        : 'fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
       @click.self="!settingsSurfaceInline && closeSettings()"
     >
       <div
@@ -10095,7 +10362,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <button
             v-if="!settingsInWorkbench && !isModelsRoute && !isCreateModelRoute"
             type="button"
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+            class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
             @click="closeSettings"
           >
@@ -10137,6 +10404,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <div
               v-if="projectSettingsError || projectSettingsStatus"
               class="rounded-md border px-3 py-2 text-[12px]"
+              :role="projectSettingsError ? 'alert' : 'status'"
+              :aria-live="projectSettingsError ? 'assertive' : 'polite'"
+              aria-atomic="true"
               :class="projectSettingsError
                 ? 'border-danger/30 bg-danger-subtle text-danger'
                 : 'border-success/30 bg-success-subtle text-success'"
@@ -10377,8 +10647,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <div class="border-t border-border-subtle bg-surface p-3 sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Access</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionBinding ? 'Policy unchanged' : 'Invite-only after deploy' }}</dd></div>
                     </dl>
                     <div class="flex flex-wrap justify-end gap-2">
-                      <button type="button" class="inline-flex h-9 items-center rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="closeProductionDeployReview">Cancel</button>
-                      <button ref="productionDeployConfirmRef" type="button" class="inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="confirmProductionDeploy">
+                      <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="closeProductionDeployReview">Cancel</button>
+                      <button ref="productionDeployConfirmRef" type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="confirmProductionDeploy">
                         Deploy release
                       </button>
                     </div>
@@ -10397,7 +10667,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <div class="mt-1 text-[12px] text-text-secondary">{{ publishing?.publication?.mode === 'public' ? 'Anyone with the link' : `${productionViewerCount} invited viewer${productionViewerCount === '1' ? '' : 's'}` }}</div>
                       </div>
                       <div class="flex flex-wrap items-center gap-2">
-                        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="openShareDialog">
+                        <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="openShareDialog">
                           <Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access
                         </button>
                         <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
@@ -10414,11 +10684,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
                       </div>
                       <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[11px] leading-4 text-danger" role="alert">{{ publishing.publication.error }}</p>
-                      <div class="flex flex-wrap justify-end gap-2"><button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button></div>
+                      <div class="flex flex-wrap justify-end gap-2"><button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button></div>
                     </div>
                     <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success-subtle p-3 text-success">
                       <div><div class="text-[12px] font-semibold">Production is running</div><div class="mt-1 text-[12px] leading-5">Access is invite-only. Use Share to invite people or make the app public.</div></div>
-                      <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-success/30 bg-surface px-3 text-[12px] font-medium text-success" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button>
+                      <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-success/30 bg-surface px-3 text-[12px] font-medium text-success" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button>
                     </div>
                   </div>
                   <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
@@ -10498,7 +10768,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </div>
                 <div v-if="productionBinding" class="grid gap-2"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div><span class="font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span></div><pre class="max-h-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[11px] leading-4 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre></div>
                 <div v-if="promotionFeedback" role="status" aria-live="polite" class="rounded-lg border px-3 py-2 text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'border-success/30 bg-success-subtle text-success' : 'border-warning/30 bg-warning-subtle text-warning'">{{ promotionFeedback.message }}</div>
-                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[11px] leading-4 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p><div class="flex items-center gap-2"><button type="button" aria-label="Refresh production status" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="promotionBusy || publishingRefreshBusy" @click="refreshProduction"><Loader2 v-if="promotionBusy || publishingRefreshBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />Refresh status</button></div></div>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[11px] leading-4 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p><div class="flex items-center gap-2"><button type="button" aria-label="Refresh production status" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="promotionBusy || publishingRefreshBusy" @click="refreshProduction"><Loader2 v-if="promotionBusy || publishingRefreshBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />Refresh status</button></div></div>
               </div>
             </section>
             <p class="text-[11px] leading-4 text-text-muted">Your development instance keeps running while production is deployed and published.</p>

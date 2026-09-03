@@ -111,6 +111,78 @@ func TestMemoryStoreAssistantRunEventsAreAppendOnlyAndScoped(t *testing.T) {
 	}
 }
 
+func TestAssistantPointLookupsAreScopedAndEncrypted(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := fixture.new(t)
+			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-a"}
+			otherScope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-b"}
+			now := time.Now().UTC()
+			for _, candidate := range []Scope{scope, otherScope} {
+				if err := s.AppendMessage(ctx, candidate, Message{
+					ID: "assistant-1", Role: "assistant", Content: candidate.ProjectUID,
+					Metadata: map[string]any{"scope": candidate.ProjectUID}, CreatedAt: now, UpdatedAt: now,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				for _, runID := range []string{"run-1", "run-2"} {
+					if err := s.SaveAssistantRun(ctx, candidate, AssistantRun{ID: runID, Mode: AssistantRunModeDefault, Status: AssistantRunStatusCompleted, CreatedAt: now, UpdatedAt: now}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			messages, err := s.GetMessagesByIDs(ctx, scope, []string{"missing", "assistant-1", "assistant-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(messages) != 1 || messages[0].Content != scope.ProjectUID || messages[0].Metadata["scope"] != scope.ProjectUID {
+				t.Fatalf("scoped message lookup = %#v", messages)
+			}
+
+			for _, event := range []AssistantRunEvent{
+				{RunID: "run-1", Type: "tool_result", CallID: "call-old", ToolName: "interact_development_preview", Payload: json.RawMessage(`{"result":"old"}`)},
+				{RunID: "run-1", Type: "tool_result", CallID: "call-new", ToolName: "interact_development_preview", Payload: json.RawMessage(`{"result":"new"}`)},
+				{RunID: "run-2", Type: "tool_result", CallID: "call-two", ToolName: "interact_development_preview", Payload: json.RawMessage(`{"result":"two"}`)},
+			} {
+				existing, listErr := s.ListAssistantRunEvents(ctx, scope, event.RunID, 0, 500)
+				if listErr != nil {
+					t.Fatal(listErr)
+				}
+				if _, appendErr := s.AppendAssistantRunEvent(ctx, scope, event, int64(len(existing))); appendErr != nil {
+					t.Fatal(appendErr)
+				}
+			}
+			if _, err := s.AppendAssistantRunEvent(ctx, otherScope, AssistantRunEvent{
+				RunID: "run-1", Type: "tool_result", CallID: "other-call", ToolName: "interact_development_preview", Payload: json.RawMessage(`{"result":"other"}`),
+			}, 0); err != nil {
+				t.Fatal(err)
+			}
+
+			events, err := s.ListAssistantRunEventsByRuns(ctx, scope, []string{"run-1", "run-2", "run-1"}, "tool_result", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 2 || events[0].CallID != "call-new" || string(events[0].Payload) != `{"result":"new"}` || events[1].CallID != "call-two" {
+				t.Fatalf("scoped run event lookup = %#v", events)
+			}
+		})
+	}
+}
+
 func TestMemoryStoreAssistantRunEventCASSerializesWriters(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

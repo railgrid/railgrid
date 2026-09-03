@@ -142,7 +142,7 @@ html.light .k-card {
 .k-badge--success { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
 .k-badge--warning { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
 .k-badge--danger  { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));  color: var(--color-danger, #ff5d5d); }
-.k-badge--muted   { background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #5d5f78); }
+.k-badge--muted   { background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #8587a1); }
 .k-badge__dot {
   width: 5px;
   height: 5px;
@@ -224,7 +224,7 @@ html.light .k-card {
 }
 .k-back-action[aria-disabled="true"],
 .k-back-action[aria-disabled="true"]:hover {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   cursor: not-allowed;
   opacity: 0.4;
   text-decoration: none;
@@ -269,7 +269,7 @@ html.light .k-card {
 .k-create-description {
   max-width: 42rem;
   margin: 6px 0 0;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -334,7 +334,7 @@ html.light .k-create-surface {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .k-input::placeholder {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
 }
 .k-input:focus {
   outline: none;
@@ -479,7 +479,7 @@ html.light .k-menu {
 }
 .k-layout-selector__label {
   padding: 5px 8px 4px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 9px;
   font-weight: 600;
@@ -514,7 +514,7 @@ html.light .k-menu {
 .k-layout-selector__chevron {
   width: 11px;
   height: 11px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
 }
 .k-layout-selector__check {
   width: 13px;
@@ -533,7 +533,7 @@ html.light .k-menu {
   border-radius: 3px;
   background: var(--color-surface-overlay, #171927);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  border-bottom-color: color-mix(in srgb, var(--color-border-default, rgba(255, 255, 255, 0.11)) 60%, var(--color-text-muted, #5d5f78));
+  border-bottom-color: color-mix(in srgb, var(--color-border-default, rgba(255, 255, 255, 0.11)) 60%, var(--color-text-muted, #8587a1));
   color: var(--color-text-secondary, #8a8ca6);
 }
 
@@ -653,7 +653,7 @@ html.light [data-k-tip]::after {
   border-radius: 6px;
   border: 1px dashed var(--color-border-default, rgba(255, 255, 255, 0.11));
   background: var(--color-surface-overlay, #171927);
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 12px;
   text-align: center;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
@@ -960,7 +960,7 @@ html.light [data-k-tip]::after {
   margin: -2px -4px 0 0;
   border: 0;
   background: transparent;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -1228,7 +1228,7 @@ html.light [data-k-tip]::after {
 }
 .k-table__filter-search { display: block; position: relative; }
 .k-table__filter-search > svg {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   height: 14px;
   inset: 50% auto auto 9px;
   pointer-events: none;
@@ -1254,7 +1254,7 @@ html.light [data-k-tip]::after {
   outline: 0;
 }
 .k-table__filter-meta {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 9px;
   letter-spacing: 0.06em;
@@ -1309,7 +1309,7 @@ html.light [data-k-tip]::after {
 }
 .k-table__filter-option[aria-selected="true"] svg { opacity: 1; }
 .k-table__filter-empty {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 12px;
   margin: 0;
   padding: 12px 8px;
@@ -1663,7 +1663,7 @@ html.light [data-k-tip]::after {
 .k-conditions__stale { margin: 0; color: var(--color-warning, #f0a63a); font-size: 12px; }
 .k-conditions__type { font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px; color: var(--color-text-primary, #e9e9f2); }
 .k-conditions__message { white-space: normal; color: var(--color-text-primary, #e9e9f2); }
-.k-conditions__muted { color: var(--color-text-muted, #5d5f78); }
+.k-conditions__muted { color: var(--color-text-muted, #8587a1); }
 
 /* ── Resource page ────────────────────────────────────────────────────────
  * ResourcePage keeps page composition consistent across the host portal and
@@ -1804,7 +1804,7 @@ html.light [data-k-tip]::after {
   gap: 3px;
 }
 .k-resource-stat-card__label {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .1em;
@@ -1827,7 +1827,7 @@ html.light [data-k-tip]::after {
 .k-resource-stat-card__detail {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 10px;
   line-height: 1.35;
 }
@@ -1875,7 +1875,7 @@ html.light [data-k-tip]::after {
 }
 .k-resource-section-card__eyebrow {
   margin: 0 0 4px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
   font-weight: 600;
@@ -1898,7 +1898,7 @@ html.light [data-k-tip]::after {
 .k-resource-section-card__description {
   margin: 4px 0 0;
   max-width: 100%;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -1989,7 +1989,7 @@ html.light [data-k-tip]::after {
   justify-content: space-between;
   gap: 10px;
   padding: 9px 12px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -2013,7 +2013,7 @@ html.light [data-k-tip]::after {
 .k-resource-technical__section { min-width: 0; }
 .k-resource-technical__section-title {
   margin: 0 0 9px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-muted, #8587a1);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .12em;
@@ -2027,7 +2027,7 @@ html.light [data-k-tip]::after {
   margin: 0;
 }
 .k-resource-technical__definition > div { min-width: 0; }
-.k-resource-technical__definition dt { margin: 0 0 3px; color: var(--color-text-muted, #5d5f78); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.k-resource-technical__definition dt { margin: 0 0 3px; color: var(--color-text-muted, #8587a1); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
 .k-resource-technical__definition dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--color-text-primary, #e9e9f2); }
 .k-resource-technical__definition dd.mono,
 .k-resource-technical__pre { font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace); }

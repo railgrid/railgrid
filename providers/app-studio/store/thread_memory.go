@@ -57,6 +57,7 @@ func (s *MemoryStore) CreateAssistantThread(_ context.Context, scope Scope, thre
 		s.threadEvents[scope] = map[string][]AssistantThreadEvent{}
 	}
 	s.threadEvents[scope][prepared.ID] = cloneAssistantThreadEvents(preparedEvents)
+	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ID, preparedEvents...)
 	return prepared, nil
 }
 
@@ -183,6 +184,7 @@ func (s *MemoryStore) SetAssistantThreadTitleIfEmpty(_ context.Context, scope Sc
 	s.assistantThreads[scope][threadID] = thread
 	preparedEvent.Sequence = int64(len(s.threadEvents[scope][threadID])) + 1
 	s.threadEvents[scope][threadID] = append(s.threadEvents[scope][threadID], cloneAssistantThreadEvent(preparedEvent))
+	s.appendAssistantThreadTurnEventsLocked(scope, threadID, preparedEvent)
 	return thread, true, nil
 }
 
@@ -227,6 +229,11 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 				delete(s.assistantRuns[scope], turnID)
 				delete(s.assistantEvents[scope], turnID)
 			}
+			for key := range s.assistantEventLookup[scope] {
+				if key.runID == turnID {
+					delete(s.assistantEventLookup[scope], key)
+				}
+			}
 		}
 		for messageID := range messageIDs {
 			delete(s.messages[scope], messageID)
@@ -261,6 +268,8 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 	}
 	delete(s.assistantTurns[scope], threadID)
 	delete(s.threadEvents[scope], threadID)
+	delete(s.threadTurnEvents[scope], threadID)
+	delete(s.threadTurnStarts[scope], threadID)
 	delete(s.assistantThreads[scope], threadID)
 	if len(s.assistantThreads[scope]) == 0 {
 		delete(s.assistantThreads, scope)
@@ -271,11 +280,20 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 	if len(s.threadEvents[scope]) == 0 {
 		delete(s.threadEvents, scope)
 	}
+	if len(s.threadTurnEvents[scope]) == 0 {
+		delete(s.threadTurnEvents, scope)
+	}
+	if len(s.threadTurnStarts[scope]) == 0 {
+		delete(s.threadTurnStarts, scope)
+	}
 	if len(s.assistantRuns[scope]) == 0 {
 		delete(s.assistantRuns, scope)
 	}
 	if len(s.assistantEvents[scope]) == 0 {
 		delete(s.assistantEvents, scope)
+	}
+	if len(s.assistantEventLookup[scope]) == 0 {
+		delete(s.assistantEventLookup, scope)
 	}
 	if len(s.messages[scope]) == 0 {
 		delete(s.messages, scope)
@@ -313,6 +331,7 @@ func (s *MemoryStore) UpdateAssistantThreadWithEvent(_ context.Context, scope Sc
 	s.assistantThreads[scope][prepared.ID] = prepared
 	preparedEvent.Sequence = expectedSequence + 1
 	s.threadEvents[scope][prepared.ID] = append(events, cloneAssistantThreadEvent(preparedEvent))
+	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ID, preparedEvent)
 	return prepared, cloneAssistantThreadEvent(preparedEvent), nil
 }
 
@@ -365,6 +384,7 @@ func (s *MemoryStore) CreateAssistantTurn(_ context.Context, scope Scope, turn A
 		preparedEvents[index].Sequence = baseSequence + int64(index) + 1
 	}
 	s.threadEvents[scope][prepared.ThreadID] = append(s.threadEvents[scope][prepared.ThreadID], cloneAssistantThreadEvents(preparedEvents)...)
+	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ThreadID, preparedEvents...)
 	thread.Status, thread.UpdatedAt = AssistantThreadStatusActive, prepared.UpdatedAt
 	s.assistantThreads[scope][thread.ID] = thread
 	return cloneAssistantTurn(prepared), nil
@@ -471,6 +491,7 @@ func (s *MemoryStore) SaveAssistantTurnWithEvent(_ context.Context, scope Scope,
 	s.assistantTurns[scope][prepared.ThreadID][prepared.ID] = cloneAssistantTurn(prepared)
 	preparedEvent.Sequence = expectedSequence + 1
 	s.threadEvents[scope][prepared.ThreadID] = append(events, cloneAssistantThreadEvent(preparedEvent))
+	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ThreadID, preparedEvent)
 	thread := s.assistantThreads[scope][prepared.ThreadID]
 	if assistantTurnStatusTerminal(prepared.Status) {
 		thread.Status = AssistantThreadStatusIdle
@@ -501,7 +522,32 @@ func (s *MemoryStore) AppendAssistantThreadEvent(_ context.Context, scope Scope,
 	}
 	prepared.Sequence = expectedSequence + 1
 	s.threadEvents[scope][prepared.ThreadID] = append(events, cloneAssistantThreadEvent(prepared))
+	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ThreadID, prepared)
 	return cloneAssistantThreadEvent(prepared), nil
+}
+
+func (s *MemoryStore) appendAssistantThreadTurnEventsLocked(scope Scope, threadID string, events ...AssistantThreadEvent) {
+	for _, event := range events {
+		if strings.TrimSpace(event.TurnID) == "" {
+			continue
+		}
+		if s.threadTurnEvents[scope] == nil {
+			s.threadTurnEvents[scope] = map[string][]AssistantThreadEvent{}
+		}
+		s.threadTurnEvents[scope][threadID] = append(s.threadTurnEvents[scope][threadID], cloneAssistantThreadEvent(event))
+		if event.Type == "turn.started" {
+			if s.threadTurnStarts[scope] == nil {
+				s.threadTurnStarts[scope] = map[string]map[string]int64{}
+			}
+			if s.threadTurnStarts[scope][threadID] == nil {
+				s.threadTurnStarts[scope][threadID] = map[string]int64{}
+			}
+			turnID := strings.TrimSpace(event.TurnID)
+			if _, exists := s.threadTurnStarts[scope][threadID][turnID]; !exists {
+				s.threadTurnStarts[scope][threadID][turnID] = event.Sequence
+			}
+		}
+	}
 }
 
 func (s *MemoryStore) ListAssistantThreadEvents(_ context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
@@ -514,17 +560,94 @@ func (s *MemoryStore) ListAssistantThreadEvents(_ context.Context, scope Scope, 
 	if _, ok := s.assistantThreads[scope][strings.TrimSpace(threadID)]; !ok {
 		return nil, ErrAssistantThreadNotFound
 	}
-	out := make([]AssistantThreadEvent, 0, limit)
-	for _, event := range s.threadEvents[scope][strings.TrimSpace(threadID)] {
-		if event.Sequence <= afterSequence {
-			continue
-		}
-		out = append(out, cloneAssistantThreadEvent(event))
-		if len(out) == limit {
-			break
-		}
+	events := s.threadEvents[scope][strings.TrimSpace(threadID)]
+	start := sort.Search(len(events), func(index int) bool {
+		return events[index].Sequence > afterSequence
+	})
+	end := start + limit
+	if end > len(events) {
+		end = len(events)
+	}
+	out := make([]AssistantThreadEvent, 0, end-start)
+	for index := start; index < end; index++ {
+		out = append(out, cloneAssistantThreadEvent(events[index]))
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) ListAssistantThreadEventsBefore(_ context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	limit = normalizeLimit(limit)
+	threadID = strings.TrimSpace(threadID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return nil, ErrAssistantThreadNotFound
+	}
+	events := s.threadEvents[scope][threadID]
+	end := len(events)
+	if beforeSequence > 0 {
+		end = sort.Search(len(events), func(index int) bool {
+			return events[index].Sequence >= beforeSequence
+		})
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]AssistantThreadEvent, 0, end-start)
+	for index := start; index < end; index++ {
+		out = append(out, cloneAssistantThreadEvent(events[index]))
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListAssistantThreadTurnEventsBefore(_ context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	limit = normalizeLimit(limit)
+	threadID = strings.TrimSpace(threadID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return nil, ErrAssistantThreadNotFound
+	}
+	events := s.threadTurnEvents[scope][threadID]
+	end := len(events)
+	if beforeSequence > 0 {
+		end = sort.Search(len(events), func(index int) bool {
+			return events[index].Sequence >= beforeSequence
+		})
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]AssistantThreadEvent, 0, end-start)
+	for index := start; index < end; index++ {
+		out = append(out, cloneAssistantThreadEvent(events[index]))
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) GetAssistantThreadTurnStartSequence(_ context.Context, scope Scope, threadID, turnID string) (int64, error) {
+	if err := scope.validate(); err != nil {
+		return 0, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return 0, ErrAssistantThreadNotFound
+	}
+	if sequence := s.threadTurnStarts[scope][threadID][turnID]; sequence > 0 {
+		return sequence, nil
+	}
+	return 0, ErrAssistantTurnNotFound
 }
 
 func encodeThreadCursor(at time.Time, id string) string {

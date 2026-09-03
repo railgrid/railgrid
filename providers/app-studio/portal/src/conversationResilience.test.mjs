@@ -174,7 +174,7 @@ test('regular send adopts the canonical thread returned by the start response', 
   assert.match(acceptedStart, /candidate\.id !== canonicalThreadID && candidate\.id !== requestedThreadID/)
   assert.match(acceptedStart, /activeAssistantThreadID\.value = canonicalThreadID/)
   assert.match(acceptedStart, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), canonicalThreadID\)/)
-  assert.match(acceptedStart, /listAssistantThreadItems\(props\.ctx, projectName, canonicalThreadID\)/)
+  assert.match(acceptedStart, /listAssistantThreadItemPage\(props\.ctx, projectName, canonicalThreadID\)/)
   assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID\)/)
 })
 
@@ -204,7 +204,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   const loadEnd = appSource.indexOf('\n\nfunction handleProjectAPIInitializing', loadStart)
   assert.ok(loadStart >= 0 && loadEnd > loadStart)
   const loadSource = appSource.slice(loadStart, loadEnd)
-  assert.match(loadSource, /assistantThreadRequestSerial \+= 1/)
+  assert.match(loadSource, /beginAssistantThreadRequest\(\)/)
   assert.match(loadSource, /A new route\/context load intentionally cancels any pending thread UI[\s\S]*latches/)
   assert.match(loadSource, /resetProjectOpenLatch\(\)[\s\S]*resetThreadHistoryLatch\(\)[\s\S]*resetConversationRefreshLatch\(\)[\s\S]*resetThreadMutationLatch\(\)/)
   assert.match(appSource, /watch\(\s*\(\) => props\.ctx\?\.subPath \?\? ''[\s\S]*flush: 'sync'/)

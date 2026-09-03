@@ -28,14 +28,17 @@ import (
 // MemoryStore is an in-memory implementation used for tests and explicit
 // local development. It must not be used as a silent production fallback.
 type MemoryStore struct {
-	mu                sync.RWMutex
-	assistantThreads  map[Scope]map[string]AssistantThread
-	assistantTurns    map[Scope]map[string]map[string]AssistantTurn
-	threadEvents      map[Scope]map[string][]AssistantThreadEvent
-	messages          map[Scope]map[string]Message
-	assistantRuns     map[Scope]map[string]AssistantRun
-	assistantEvents   map[Scope]map[string][]AssistantRunEvent
-	conversationItems map[Scope][]AssistantConversationItem
+	mu                   sync.RWMutex
+	assistantThreads     map[Scope]map[string]AssistantThread
+	assistantTurns       map[Scope]map[string]map[string]AssistantTurn
+	threadEvents         map[Scope]map[string][]AssistantThreadEvent
+	threadTurnEvents     map[Scope]map[string][]AssistantThreadEvent
+	threadTurnStarts     map[Scope]map[string]map[string]int64
+	messages             map[Scope]map[string]Message
+	assistantRuns        map[Scope]map[string]AssistantRun
+	assistantEvents      map[Scope]map[string][]AssistantRunEvent
+	assistantEventLookup map[Scope]map[assistantRunEventLookupKey][]AssistantRunEvent
+	conversationItems    map[Scope][]AssistantConversationItem
 	// conversationSequences stores the project stream high-water mark.  It
 	// intentionally outlives retention deletions so a client resuming from an
 	// old sequence can never observe a later item with a reused sequence.
@@ -52,6 +55,10 @@ type MemoryStore struct {
 	attachmentQuota   AttachmentQuota
 }
 
+type assistantRunEventLookupKey struct {
+	runID, eventType string
+}
+
 type projectBootstrapPermit struct {
 	actor, promptDigest, clientRequestID string
 }
@@ -63,9 +70,12 @@ func NewMemoryStore() *MemoryStore {
 		assistantThreads:      map[Scope]map[string]AssistantThread{},
 		assistantTurns:        map[Scope]map[string]map[string]AssistantTurn{},
 		threadEvents:          map[Scope]map[string][]AssistantThreadEvent{},
+		threadTurnEvents:      map[Scope]map[string][]AssistantThreadEvent{},
+		threadTurnStarts:      map[Scope]map[string]map[string]int64{},
 		messages:              map[Scope]map[string]Message{},
 		assistantRuns:         map[Scope]map[string]AssistantRun{},
 		assistantEvents:       map[Scope]map[string][]AssistantRunEvent{},
+		assistantEventLookup:  map[Scope]map[assistantRunEventLookupKey][]AssistantRunEvent{},
 		conversationItems:     map[Scope][]AssistantConversationItem{},
 		conversationSequences: map[Scope]int64{},
 		approvalModes:         map[Scope]map[string]AssistantApprovalPreference{},
@@ -230,6 +240,30 @@ func (s *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, limit i
 		all = all[len(all)-limit:]
 	}
 	return all, nil
+}
+
+func (s *MemoryStore) GetMessagesByIDs(_ context.Context, scope Scope, messageIDs []string) ([]Message, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[string]struct{}, len(messageIDs))
+	messages := make([]Message, 0, len(messageIDs))
+	for _, rawID := range messageIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if message, ok := s.messages[scope][id]; ok {
+			messages = append(messages, cloneMessage(message))
+		}
+	}
+	return messages, nil
 }
 
 func sortedMessages(messages map[string]Message) []Message {
@@ -496,7 +530,13 @@ func (s *MemoryStore) AppendAssistantRunEvent(_ context.Context, scope Scope, ev
 	if currentSequence != expectedSequence {
 		return AssistantRunEvent{}, fmt.Errorf("%w: assistant run %q is at sequence %d, expected %d", ErrAssistantRunEventConflict, event.RunID, currentSequence, expectedSequence)
 	}
-	s.assistantEvents[scope][event.RunID] = append(events, cloneAssistantRunEvent(event))
+	cloned := cloneAssistantRunEvent(event)
+	s.assistantEvents[scope][event.RunID] = append(events, cloned)
+	if s.assistantEventLookup[scope] == nil {
+		s.assistantEventLookup[scope] = map[assistantRunEventLookupKey][]AssistantRunEvent{}
+	}
+	lookupKey := assistantRunEventLookupKey{runID: event.RunID, eventType: event.Type}
+	s.assistantEventLookup[scope][lookupKey] = append(s.assistantEventLookup[scope][lookupKey], cloneAssistantRunEvent(event))
 	return cloneAssistantRunEvent(event), nil
 }
 
@@ -520,6 +560,39 @@ func (s *MemoryStore) ListAssistantRunEvents(_ context.Context, scope Scope, run
 		events = append(events, cloneAssistantRunEvent(event))
 		if len(events) == limit {
 			break
+		}
+	}
+	return events, nil
+}
+
+func (s *MemoryStore) ListAssistantRunEventsByRuns(_ context.Context, scope Scope, runIDs []string, eventType string, perRunLimit int) ([]AssistantRunEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || perRunLimit <= 0 {
+		return []AssistantRunEvent{}, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[string]struct{}, len(runIDs))
+	events := make([]AssistantRunEvent, 0)
+	for _, rawRunID := range runIDs {
+		runID := strings.TrimSpace(rawRunID)
+		if runID == "" {
+			continue
+		}
+		if _, ok := seen[runID]; ok {
+			continue
+		}
+		seen[runID] = struct{}{}
+		stored := s.assistantEventLookup[scope][assistantRunEventLookupKey{runID: runID, eventType: eventType}]
+		start := len(stored) - perRunLimit
+		if start < 0 {
+			start = 0
+		}
+		for index := start; index < len(stored); index++ {
+			events = append(events, cloneAssistantRunEvent(stored[index]))
 		}
 	}
 	return events, nil
@@ -584,11 +657,14 @@ func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) erro
 	delete(s.messages, scope)
 	delete(s.assistantRuns, scope)
 	delete(s.assistantEvents, scope)
+	delete(s.assistantEventLookup, scope)
 	delete(s.conversationItems, scope)
 	delete(s.conversationSequences, scope)
 	delete(s.assistantThreads, scope)
 	delete(s.assistantTurns, scope)
 	delete(s.threadEvents, scope)
+	delete(s.threadTurnEvents, scope)
+	delete(s.threadTurnStarts, scope)
 	delete(s.bootstrapPermits, scope)
 	delete(s.approvalModes, scope)
 	delete(s.projectThumbnails, scope)
@@ -937,6 +1013,11 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 			if assistantRunStatusTerminal(run.Status) && run.UpdatedAt.Before(before) {
 				delete(runs, id)
 				delete(s.assistantEvents[scope], id)
+				for key := range s.assistantEventLookup[scope] {
+					if key.runID == id {
+						delete(s.assistantEventLookup[scope], key)
+					}
+				}
 				items := s.conversationItems[scope][:0]
 				for _, item := range s.conversationItems[scope] {
 					if item.RunID != id {
@@ -952,6 +1033,9 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 		}
 		if len(s.assistantEvents[scope]) == 0 {
 			delete(s.assistantEvents, scope)
+		}
+		if len(s.assistantEventLookup[scope]) == 0 {
+			delete(s.assistantEventLookup, scope)
 		}
 		if len(s.conversationItems[scope]) == 0 {
 			delete(s.conversationItems, scope)
@@ -988,6 +1072,8 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 			delete(threads, threadID)
 			delete(s.assistantTurns[scope], threadID)
 			delete(s.threadEvents[scope], threadID)
+			delete(s.threadTurnEvents[scope], threadID)
+			delete(s.threadTurnStarts[scope], threadID)
 		}
 		if len(threads) == 0 {
 			delete(s.assistantThreads, scope)
@@ -997,6 +1083,12 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 		}
 		if len(s.threadEvents[scope]) == 0 {
 			delete(s.threadEvents, scope)
+		}
+		if len(s.threadTurnEvents[scope]) == 0 {
+			delete(s.threadTurnEvents, scope)
+		}
+		if len(s.threadTurnStarts[scope]) == 0 {
+			delete(s.threadTurnStarts, scope)
 		}
 	}
 	return deleted, nil

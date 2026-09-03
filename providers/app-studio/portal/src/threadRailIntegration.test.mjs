@@ -28,7 +28,7 @@ test('keeps pin and manual read state project scoped and archives through the ca
   const archiveSource = app.slice(app.indexOf('async function archiveAssistantThread'), app.indexOf('\nfunction assistantRunForMessage'))
   assert.match(archiveSource, /await api\.patchAssistantThread\([\s\S]*if \(!requestIsCurrent\(\)\) return[\s\S]*removeAssistantThreadPin\(threadStateScopeKey, threadID\)[\s\S]*removeAssistantThreadReadState\(threadStateScopeKey, threadID\)/)
   assert.match(archiveSource, /const requestGuard = beginProjectRequest\(\)/)
-  assert.match(archiveSource, /const archiveRequestSerial = \+\+assistantThreadRequestSerial/)
+  assert.match(archiveSource, /const archiveRequestSerial = beginAssistantThreadRequest\(\)/)
   assert.match(archiveSource, /projectRequestIsCurrent\(requestGuard, projectName\)[\s\S]*archiveRequestSerial === assistantThreadRequestSerial/)
   assert.match(archiveSource, /const threadMutationLatchOwner = beginThreadMutationLatch\(threadID\)/)
   assert.match(archiveSource, /finally \{[\s\S]*releaseThreadMutationLatch\(threadMutationLatchOwner\)/)
@@ -70,7 +70,7 @@ test('releases stale thread operation latches and restores the active row focus'
 
   const renameSource = app.slice(app.indexOf('async function renameAssistantThread'), app.indexOf('\n\nasync function commitAssistantThreadTitleRename'))
   assert.match(renameSource, /const requestGuard = beginProjectRequest\(\)/)
-  assert.match(renameSource, /const renameRequestSerial = \+\+assistantThreadRequestSerial/)
+  assert.match(renameSource, /const renameRequestSerial = beginAssistantThreadRequest\(\)/)
   assert.match(renameSource, /const renameIsCurrent = \(\) =>[\s\S]*projectRequestIsCurrent\(requestGuard, projectName\)[\s\S]*renameRequestSerial === assistantThreadRequestSerial/)
   assert.match(renameSource, /if \(!renameIsCurrent\(\)\) return/)
   assert.match(renameSource, /if \(renameIsCurrent\(\)\) threadError\.value = e instanceof Error \? e\.message : String\(e\)/)

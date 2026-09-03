@@ -365,18 +365,35 @@ function archiveThread(threadID: string) {
   closeContextMenu(true)
 }
 
-function showContextMenu(threadID: string, left: number, top: number, returnFocus: HTMLElement | null = null) {
-  const menuWidth = 192
-  const menuHeight = 124
+function clampContextMenuPosition(left: number, top: number, menuWidth: number, menuHeight: number) {
   const viewportWidth = typeof window === 'undefined' ? left + menuWidth : window.innerWidth
   const viewportHeight = typeof window === 'undefined' ? top + menuHeight : window.innerHeight
-  contextMenuReturnFocus.value = returnFocus
-  contextMenu.value = {
-    threadID,
+  return {
     left: Math.max(8, Math.min(left, viewportWidth - menuWidth - 8)),
     top: Math.max(8, Math.min(top, viewportHeight - menuHeight - 8)),
   }
-  void nextTick(() => actionMenu.value?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus())
+}
+
+async function positionAndFocusContextMenu(threadID: string) {
+  await nextTick()
+  const menu = actionMenu.value
+  if (!menu || contextMenu.value?.threadID !== threadID) return
+  const rect = menu.getBoundingClientRect()
+  const position = clampContextMenuPosition(contextMenu.value.left, contextMenu.value.top, rect.width, rect.height)
+  contextMenu.value = { threadID, ...position }
+  await nextTick()
+  if (contextMenu.value?.threadID !== threadID) return
+  menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+}
+
+function showContextMenu(threadID: string, left: number, top: number, returnFocus: HTMLElement | null = null) {
+  const menuWidth = 192
+  contextMenuReturnFocus.value = returnFocus
+  contextMenu.value = {
+    threadID,
+    ...clampContextMenuPosition(left, top, menuWidth, 0),
+  }
+  void positionAndFocusContextMenu(threadID)
 }
 
 function openContextMenu(event: MouseEvent, threadID: string) {
@@ -498,7 +515,7 @@ defineExpose({
   <aside
     ref="root"
     :id="THREAD_RAIL_PANEL_ID"
-    class="z-40 h-full shrink-0"
+    class="[z-index:var(--app-studio-z-dropdown)] h-full shrink-0"
     :style="railStyle"
     :class="[
       mobileOpen ? 'absolute inset-y-0 left-0 block w-64' : 'relative hidden md:block',
@@ -531,30 +548,30 @@ defineExpose({
     >
       <div v-show="expanded" class="flex min-w-0 flex-1 flex-col" :aria-hidden="!expanded">
         <div class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-          <MessageSquare class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+          <MessageSquare class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
           <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-text-primary">Threads</span>
         </div>
 
         <div class="grid shrink-0 gap-2 border-b border-border-subtle p-2.5">
           <button
             type="button"
-            class="flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+            class="app-studio-touch-target flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="disabled || busy || Boolean(selectingThreadID)"
             :title="disabled ? 'Finish or stop the current run before starting another thread' : 'New thread'"
             @click="createThread"
           >
-            <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-            <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+            <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
             New thread
           </button>
           <label class="relative block">
             <span class="sr-only">Search threads</span>
-            <Search class="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
+            <Search class="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
             <input
               ref="searchInput"
               v-model="query"
               type="search"
-              class="h-8 w-full rounded-md border border-border-subtle bg-surface pl-8 pr-2 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+              class="app-studio-touch-target h-8 w-full rounded-md border border-border-subtle bg-surface pl-8 pr-2 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
               placeholder="Search threads"
             />
           </label>
@@ -573,7 +590,7 @@ defineExpose({
               <ul class="grid gap-0.5" :aria-label="section.label || 'Threads'">
                 <li v-for="thread in section.threads" :key="thread.id">
                   <div
-                    class="group relative flex h-8 min-w-0 items-center overflow-hidden rounded-md transition"
+                    class="app-studio-touch-target group relative flex h-8 min-w-0 items-center overflow-hidden rounded-md transition"
                     :class="activeThreadID === thread.id
                       ? 'bg-accent-subtle text-accent hover:bg-accent-subtle focus-within:bg-accent-subtle'
                       : 'text-text-secondary hover:bg-surface-hover focus-within:bg-surface-hover'"
@@ -582,7 +599,7 @@ defineExpose({
                     <button
                       type="button"
                       :data-thread-id="thread.id"
-                      class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md bg-transparent py-1 pl-2 pr-1 text-left transition hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                      class="app-studio-touch-target flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md bg-transparent py-1 pl-2 pr-1 text-left transition hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
                       :disabled="disabled || busy || Boolean(selectingThreadID)"
                       :aria-current="activeThreadID === thread.id ? 'page' : undefined"
                       :aria-busy="selectingThreadID === thread.id || actioningThreadID === thread.id ? 'true' : undefined"
@@ -606,29 +623,29 @@ defineExpose({
                       :style="{ backgroundImage: activeThreadID === thread.id ? ACTIVE_THREAD_FADE : RESTING_THREAD_FADE }"
                     />
                     <div
-                      class="pointer-events-none absolute inset-y-0 right-1.5 z-20 flex w-24 items-center gap-0.5 pl-8 pr-1 opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                      class="app-studio-touch-visible pointer-events-none absolute inset-y-0 right-1.5 z-20 flex w-24 items-center gap-0.5 pl-8 pr-1 opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 [@media(hover:none)]:w-32 [@media(any-pointer:coarse)]:w-32"
                       :style="{ backgroundImage: activeThreadID === thread.id ? ACTIVE_THREAD_FADE : HOVER_THREAD_FADE }"
                     >
                       <button
                         type="button"
-                        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition hover:bg-transparent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition hover:bg-transparent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                         :disabled="Boolean(selectingThreadID) || Boolean(actioningThreadID)"
                         :title="pinnedThreadIDSet.has(thread.id) ? 'Unpin thread' : 'Pin thread'"
                         :aria-label="pinnedThreadIDSet.has(thread.id) ? 'Unpin thread' : 'Pin thread'"
                         @click.stop="togglePin(thread.id)"
                       >
-                        <PinOff v-if="pinnedThreadIDSet.has(thread.id)" class="h-3 w-3" :stroke-width="1.75" />
-                        <Pin v-else class="h-3 w-3" :stroke-width="1.75" />
+                        <PinOff v-if="pinnedThreadIDSet.has(thread.id)" class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
+                        <Pin v-else class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
                       </button>
                       <button
                         type="button"
-                        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition hover:bg-transparent hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:cursor-not-allowed disabled:opacity-40"
+                        class="app-studio-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition hover:bg-transparent hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:cursor-not-allowed disabled:opacity-40"
                         title="Archive thread"
                         aria-label="Archive thread"
                         :disabled="disabled || busy || Boolean(actioningThreadID)"
                         @click.stop="archiveThread(thread.id)"
                       >
-                        <Archive class="h-3 w-3" :stroke-width="1.75" />
+                        <Archive class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
                       </button>
                     </div>
                   </div>
@@ -665,7 +682,7 @@ defineExpose({
       role="menu"
       :aria-label="`Actions for ${displayTitle(contextMenuThread)}`"
       data-thread-context-menu
-      class="fixed z-[200] w-48 rounded-md border border-border-default bg-surface-overlay p-1 shadow-2xl"
+      class="fixed [z-index:var(--app-studio-z-menu)] w-48 rounded-md border border-border-default bg-surface-overlay p-1 shadow-2xl"
       :style="{ left: `${contextMenu.left}px`, top: `${contextMenu.top}px` }"
       @focusout="handleContextMenuFocusOut"
       @keydown="handleContextMenuKeydown"
@@ -674,33 +691,33 @@ defineExpose({
       <button
         type="button"
         role="menuitem"
-        class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none"
+        class="app-studio-touch-target flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none"
         @click="togglePin(contextMenuThread.id)"
       >
-        <PinOff v-if="pinnedThreadIDSet.has(contextMenuThread.id)" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Pin v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <PinOff v-if="pinnedThreadIDSet.has(contextMenuThread.id)" class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+        <Pin v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
         {{ pinnedThreadIDSet.has(contextMenuThread.id) ? 'Unpin' : 'Pin' }}
       </button>
       <button
         type="button"
         role="menuitem"
-        class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none"
+        class="app-studio-touch-target flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus:bg-surface-hover focus:outline-none"
         :disabled="contextMenuThread.id === activeThreadID"
         @click="toggleUnread(contextMenuThread.id)"
       >
-        <MailOpen v-if="contextMenuThread.id === activeThreadID || unreadThreadIDSet.has(contextMenuThread.id)" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Mail v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <MailOpen v-if="contextMenuThread.id === activeThreadID || unreadThreadIDSet.has(contextMenuThread.id)" class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+        <Mail v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
         {{ contextMenuThread.id === activeThreadID || unreadThreadIDSet.has(contextMenuThread.id) ? 'Mark read' : 'Mark unread' }}
       </button>
       <div class="my-1 h-px bg-border-subtle" />
       <button
         type="button"
         role="menuitem"
-        class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-danger transition hover:bg-danger-subtle focus:bg-danger-subtle focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+        class="app-studio-touch-target flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-[12px] text-danger transition hover:bg-danger-subtle focus:bg-danger-subtle focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="disabled || busy || Boolean(actioningThreadID)"
         @click="archiveThread(contextMenuThread.id)"
       >
-        <Archive class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <Archive class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
         Archive
       </button>
     </div>

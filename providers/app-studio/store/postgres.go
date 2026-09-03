@@ -36,6 +36,7 @@ const bootstrapPermitSchemaVersion = "project-bootstrap-permit-v1"
 const assistantConversationSchemaVersion = "assistant-conversation-items-v1"
 const assistantConversationSequenceSchemaVersion = "assistant-conversation-sequence-v1"
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
+const assistantLookupIndexSchemaVersion = "assistant-point-lookups-online-v2"
 const assistantApprovalPolicySchemaVersion = "assistant-approval-policy-v2"
 const projectThumbnailSchemaVersion = "project-thumbnail-v1"
 const projectThumbnailEncryptionSchemaVersion = "project-thumbnail-encryption-v2"
@@ -45,6 +46,8 @@ const attachmentSchemaVersion = "project-attachments-v1"
 const attachmentLifecycleSchemaVersion = "project-attachments-lifecycle-v2"
 
 const lockMessageSchemaMigrations = `SELECT pg_advisory_xact_lock(870408091945886937)`
+const tryLockAssistantLookupIndexes = `SELECT pg_try_advisory_lock(870408091945886938)`
+const unlockAssistantLookupIndexes = `SELECT pg_advisory_unlock(870408091945886938)`
 
 const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
 	version text PRIMARY KEY,
@@ -202,6 +205,12 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema migration: %w", err)
 	}
+	// These indexes cover append-heavy tables and may be expensive on an
+	// existing installation. Reconcile them after the migration transaction so
+	// PostgreSQL can build them without blocking concurrent writes.
+	if err := s.ensureAssistantLookupIndexes(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -352,6 +361,113 @@ func assistantThreadSchemaStatements() []string {
 				REFERENCES app_studio_assistant_threads (org_uuid, workspace_uuid, project_name, project_uid, thread_id) ON DELETE CASCADE
 		)`,
 	}
+}
+
+func assistantLookupIndexSchemaStatements() []string {
+	return []string{
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_thread_events_turn_idx
+			ON app_studio_assistant_thread_events (org_uuid, workspace_uuid, project_name, project_uid, thread_id, turn_id, event_type, sequence)`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_thread_events_turn_sequence_idx
+			ON app_studio_assistant_thread_events (org_uuid, workspace_uuid, project_name, project_uid, thread_id, sequence DESC)
+			WHERE turn_id <> ''`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_run_events_lookup_idx
+			ON app_studio_assistant_run_events (org_uuid, workspace_uuid, project_name, project_uid, run_id, event_type, sequence DESC)`,
+	}
+}
+
+func assistantLookupIndexNames() []string {
+	return []string{
+		"app_studio_assistant_thread_events_turn_idx",
+		"app_studio_assistant_thread_events_turn_sequence_idx",
+		"app_studio_assistant_run_events_lookup_idx",
+	}
+}
+
+func assistantLookupIndexRepairStatements(name, createStatement string, exists, valid bool) []string {
+	if exists && valid {
+		return nil
+	}
+	statements := make([]string, 0, 2)
+	if exists {
+		statements = append(statements, "DROP INDEX CONCURRENTLY IF EXISTS "+pq.QuoteIdentifier(name))
+	}
+	return append(statements, createStatement)
+}
+
+func (s *PostgresStore) ensureAssistantLookupIndexes(ctx context.Context) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire assistant lookup index connection: %w", err)
+	}
+	defer conn.Close()
+	lockRetry := time.NewTicker(100 * time.Millisecond)
+	defer lockRetry.Stop()
+	for {
+		var acquired bool
+		if err := conn.QueryRowContext(ctx, tryLockAssistantLookupIndexes).Scan(&acquired); err != nil {
+			return fmt.Errorf("lock assistant lookup index migration: %w", err)
+		}
+		if acquired {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("lock assistant lookup index migration: %w", ctx.Err())
+		case <-lockRetry.C:
+		}
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(unlockCtx, unlockAssistantLookupIndexes)
+	}()
+
+	names := assistantLookupIndexNames()
+	statements := assistantLookupIndexSchemaStatements()
+	for index, name := range names {
+		exists, valid, err := assistantLookupIndexState(ctx, conn, name)
+		if err != nil {
+			return err
+		}
+		for _, statement := range assistantLookupIndexRepairStatements(name, statements[index], exists, valid) {
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("reconcile assistant lookup index %s: %w", name, err)
+			}
+		}
+		exists, valid, err = assistantLookupIndexState(ctx, conn, name)
+		if err != nil {
+			return err
+		}
+		if !exists || !valid {
+			return fmt.Errorf("assistant lookup index %s is not valid after reconciliation", name)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO app_studio_message_schema_migrations(version) VALUES ($1) ON CONFLICT DO NOTHING`, assistantLookupIndexSchemaVersion); err != nil {
+		return fmt.Errorf("record schema migration %s: %w", assistantLookupIndexSchemaVersion, err)
+	}
+	return nil
+}
+
+type assistantLookupIndexQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func assistantLookupIndexState(ctx context.Context, querier assistantLookupIndexQuerier, name string) (bool, bool, error) {
+	var valid bool
+	err := querier.QueryRowContext(ctx, `SELECT index_state.indisvalid
+		FROM pg_class AS index_class
+		JOIN pg_namespace AS index_namespace ON index_namespace.oid = index_class.relnamespace
+		JOIN pg_index AS index_state ON index_state.indexrelid = index_class.oid
+		WHERE index_namespace.nspname = current_schema()
+		  AND index_class.relname = $1
+		  AND index_class.relkind = 'i'`, name).Scan(&valid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("inspect assistant lookup index %s: %w", name, err)
+	}
+	return true, valid, nil
 }
 
 // assistantV2CutoverSchemaStatements intentionally discards pre-V2 assistant
@@ -625,6 +741,45 @@ func (s *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, lim
 	}
 	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 		items[i], items[j] = items[j], items[i]
+	}
+	return items, nil
+}
+
+func (s *PostgresStore) GetMessagesByIDs(ctx context.Context, scope Scope, messageIDs []string) (items []Message, err error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	ids := uniqueNonEmptyStrings(messageIDs)
+	if len(ids) == 0 {
+		return []Message{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT message_id, actor_id, role, content, content_encrypted, content_key_id,
+		metadata, created_at, updated_at
+		FROM app_studio_messages
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND message_id = ANY($5)
+		ORDER BY created_at, message_id`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("get messages by ids: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close messages by ids rows: %w", closeErr)
+		}
+	}()
+	for rows.Next() {
+		message, scanErr := scanMessage(rows, scope)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get messages by ids rows: %w", err)
 	}
 	return items, nil
 }
@@ -1216,6 +1371,55 @@ func (s *PostgresStore) ListAssistantRunEvents(ctx context.Context, scope Scope,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list assistant run events: %w", err)
+	}
+	return events, nil
+}
+
+const listAssistantRunEventsByRunsQuery = `SELECT matched.run_id, matched.sequence, matched.event_type, matched.call_id,
+		matched.tool_name, matched.args_digest, matched.payload, matched.created_at
+	FROM unnest($5::text[]) WITH ORDINALITY AS requested(run_id, requested_order)
+	CROSS JOIN LATERAL (
+		SELECT run_id, sequence, event_type, call_id, tool_name, args_digest, payload, created_at
+		FROM app_studio_assistant_run_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND run_id=requested.run_id AND event_type=$6
+		ORDER BY sequence DESC
+		LIMIT $7
+	) matched
+	ORDER BY requested.requested_order, matched.sequence`
+
+func (s *PostgresStore) ListAssistantRunEventsByRuns(ctx context.Context, scope Scope, runIDs []string, eventType string, perRunLimit int) (events []AssistantRunEvent, err error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	runIDs = uniqueNonEmptyStrings(runIDs)
+	eventType = strings.TrimSpace(eventType)
+	if len(runIDs) == 0 || eventType == "" || perRunLimit <= 0 {
+		return []AssistantRunEvent{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, listAssistantRunEventsByRunsQuery,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		pq.Array(runIDs), eventType, perRunLimit)
+	if err != nil {
+		return nil, fmt.Errorf("list assistant run events by runs: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close assistant run events by runs rows: %w", closeErr)
+		}
+	}()
+	for rows.Next() {
+		event, scanErr := scanAssistantRunEvent(rows, scope)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan assistant run event by runs: %w", scanErr)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list assistant run events by runs rows: %w", err)
 	}
 	return events, nil
 }
@@ -2097,6 +2301,23 @@ func scanAssistantRunEvent(row interface {
 	event.Payload = cloneRawMessage(event.Payload)
 	event.CreatedAt = event.CreatedAt.UTC()
 	return event, nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
 }
 
 var _ Store = (*PostgresStore)(nil)

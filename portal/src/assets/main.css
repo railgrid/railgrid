@@ -65,7 +65,7 @@
   --color-accent-glow: rgba(139, 107, 255, 0.3);
   --color-text-primary: #e9e9f2;
   --color-text-secondary: #8a8ca6;
-  --color-text-muted: #5d5f78;
+  --color-text-muted: #8587a1;
   --color-success: #2fd6a0;
   --color-success-subtle: rgba(47, 214, 160, 0.12);
   --color-success-border: rgba(47, 214, 160, 0.3);
@@ -98,18 +98,18 @@ html.light {
   --color-accent-glow: rgba(107, 72, 232, 0.18);
   --color-text-primary: #14152a;
   --color-text-secondary: #565975;
-  --color-text-muted: #8d8fa6;
-  --color-success: #0c9c66;
+  --color-text-muted: #60637b;
+  --color-success: #067246;
   --color-success-subtle: #e5f6ef;
   --color-success-border: rgba(12, 156, 102, 0.3);
-  --color-warning: #c07508;
+  --color-warning: #8f5500;
   --color-warning-subtle: #fdf2e0;
-  --color-danger: #d63a40;
+  --color-danger: #b22a32;
   --color-danger-subtle: #fcebec;
-  --color-danger-hover: #bf2f35;
+  --color-danger-hover: #9f202a;
   --color-danger-surface: #fcebec;
   --color-surface-base: #f1f1f6;
-  --color-text-error: #d63a40;
+  --color-text-error: #b22a32;
   --color-on-accent: #ffffff;
 }
 

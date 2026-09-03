@@ -114,7 +114,9 @@ test('anchors Share beside the Workbench toggle and preserves its dialog focus c
   const closeStart = app.indexOf('function closeShareDialog()')
   const closeEnd = app.indexOf('function openPublishingFromShare()', closeStart)
   assert.ok(closeStart >= 0 && closeEnd > closeStart)
-  assert.match(app.slice(closeStart, closeEnd), /nextTick\(\(\) => shareButtonRef\.value\?\.focus\(\)\)/)
+  assert.match(app, /function openShareDialog\(event\?: Event\)[\s\S]*event\?\.currentTarget instanceof HTMLElement/)
+  assert.match(app.slice(closeStart, closeEnd), /restoreShareDialogFocus\(\)/)
+  assert.match(app, /function restoreShareDialogFocus\(\)[\s\S]*target\?\.isConnected[\s\S]*else shareButtonRef\.value\?\.focus\(\)/)
 })
 
 test('presents Publishing as a release review with separate configuration and access ownership', () => {
@@ -488,7 +490,7 @@ test('commits a thread selection only after history succeeds and clears the pend
   const selectEnd = app.indexOf('\n\nasync function createAssistantThread', selectStart)
   assert.ok(selectStart >= 0 && selectEnd > selectStart)
   const select = app.slice(selectStart, selectEnd)
-  const requestIndex = select.indexOf('const items = await api.listAssistantThreadItems')
+  const requestIndex = select.indexOf('const page = await api.listAssistantThreadItemPage')
   const commitIndex = select.indexOf('activeAssistantThreadID.value = threadID')
   assert.ok(requestIndex >= 0 && commitIndex > requestIndex)
   assert.ok(select.includes('const previousThreadID = activeAssistantThreadID.value'))

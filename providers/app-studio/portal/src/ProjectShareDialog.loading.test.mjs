@@ -12,6 +12,10 @@ test('keeps the initial Share load layout-stable and announces busy content', ()
   assert.match(dialog, /role="status"[\s\S]*aria-live="polite"[\s\S]*aria-busy="true"/)
   assert.match(dialog, /Checking sharing settings…/)
   assert.match(dialog, /class="shimmer h-8 w-full rounded-md"/)
+  assert.match(dialog, /\[z-index:var\(--app-studio-z-modal-backdrop\)\]/)
+  assert.match(dialog, /\[z-index:var\(--app-studio-z-modal\)\]/)
+  assert.match(dialog, /aria-label="Close share dialog"/)
+  assert.match(dialog, /app-studio-touch-target/)
 })
 
 test('keeps mutation pending state on the action and target that is busy', () => {

@@ -269,7 +269,17 @@ func (s *Server) listProjectAssistantThreadItems(w http.ResponseWriter, r *http.
 		return
 	}
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
-	events, err := s.loadAllAssistantThreadEvents(r.Context(), scope, thread.ID)
+	turnLimit := assistantThreadItemPageTurnLimit(r)
+	beforeSequence, err := assistantThreadItemPageBeforeSequence(r)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	if err := s.validateAssistantThreadItemPageBeforeSequence(r.Context(), scope, thread.ID, beforeSequence); err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	events, nextCursor, err := s.loadAssistantThreadEventWindow(r.Context(), scope, thread.ID, beforeSequence, turnLimit)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return
@@ -284,7 +294,163 @@ func (s *Server) listProjectAssistantThreadItems(w http.ResponseWriter, r *http.
 		s.writeAssistantThreadError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	response := map[string]any{"items": items}
+	if nextCursor > 0 {
+		response["nextCursor"] = strconv.FormatInt(nextCursor, 10)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+const (
+	defaultAssistantThreadItemPageTurns = 20
+	maxAssistantThreadItemPageTurns     = 50
+	assistantThreadEventWindowPageSize  = 500
+	assistantThreadEventWindowMaxPages  = 20
+	// Compatibility enrichment is best-effort. Keep its aggregate auxiliary
+	// reads bounded so one history request cannot reintroduce an unbounded scan
+	// through legacy message or run-event ledgers.
+	assistantThreadCompatibilityRunEventLimit = assistantThreadEventWindowPageSize * assistantThreadEventWindowMaxPages
+)
+
+func assistantThreadItemPageTurnLimit(r *http.Request) int {
+	limit, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if err != nil || limit <= 0 {
+		return defaultAssistantThreadItemPageTurns
+	}
+	if limit > maxAssistantThreadItemPageTurns {
+		return maxAssistantThreadItemPageTurns
+	}
+	return limit
+}
+
+func assistantThreadItemPageBeforeSequence(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("beforeSequence"))
+	if raw == "" {
+		return 0, nil
+	}
+	before, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || before <= 0 {
+		return 0, newValidationError("beforeSequence must be a positive assistant thread history cursor")
+	}
+	return before, nil
+}
+
+// validateAssistantThreadItemPageBeforeSequence keeps the public sequence
+// cursor from cutting through a turn. Server-issued cursors always point at the
+// turn.started event for the oldest turn in the preceding page. One bounded
+// forward lookup is sufficient to reject malformed, stale, or crafted values
+// before materialization can lose later deltas or terminal lifecycle truth.
+func (s *Server) validateAssistantThreadItemPageBeforeSequence(ctx context.Context, scope store.Scope, threadID string, beforeSequence int64) error {
+	if beforeSequence == 0 {
+		return nil
+	}
+	events, err := s.store.ListAssistantThreadEvents(ctx, scope, threadID, beforeSequence-1, 1)
+	if err != nil {
+		return err
+	}
+	if len(events) != 1 || events[0].Sequence != beforeSequence || events[0].Type != assistantThreadEventTurnStarted || strings.TrimSpace(events[0].TurnID) == "" {
+		return newValidationError("beforeSequence is not a valid assistant thread history cursor")
+	}
+	return nil
+}
+
+// loadAssistantThreadEventWindow walks backward from the requested cursor and
+// stops as soon as it has the requested complete turns. Thread-level metadata
+// is filtered by the store, and both per-query and per-request transcript work
+// are bounded (500 turn events x 20 pages). Keeping complete turns preserves
+// item deltas and terminal lifecycle truth. A pathological turn that exceeds
+// the event bound is omitted as one unit and yields its start sequence as the
+// next cursor, keeping older complete turns reachable without returning a
+// corrupt partial projection.
+func (s *Server) loadAssistantThreadEventWindow(
+	ctx context.Context,
+	scope store.Scope,
+	threadID string,
+	beforeSequence int64,
+	turnLimit int,
+) ([]store.AssistantThreadEvent, int64, error) {
+	type turnEvents struct {
+		id     string
+		events []store.AssistantThreadEvent
+	}
+	if turnLimit <= 0 {
+		turnLimit = defaultAssistantThreadItemPageTurns
+	}
+	if turnLimit > maxAssistantThreadItemPageTurns {
+		turnLimit = maxAssistantThreadItemPageTurns
+	}
+
+	// Turns and their events are accumulated newest-first; each event slice is
+	// also newest-first until the final chronological flattening below.
+	turns := make([]turnEvents, 0, turnLimit+1)
+	reachedBeginning := false
+	cursor := beforeSequence
+	for pageIndex := 0; pageIndex < assistantThreadEventWindowMaxPages; pageIndex++ {
+		page, err := s.store.ListAssistantThreadTurnEventsBefore(ctx, scope, threadID, cursor, assistantThreadEventWindowPageSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(page) == 0 {
+			reachedBeginning = true
+			break
+		}
+		for eventIndex := len(page) - 1; eventIndex >= 0; eventIndex-- {
+			event := page[eventIndex]
+			turnID := strings.TrimSpace(event.TurnID)
+			if len(turns) == 0 || turns[len(turns)-1].id != turnID {
+				turns = append(turns, turnEvents{id: turnID})
+			}
+			turns[len(turns)-1].events = append(turns[len(turns)-1].events, event)
+		}
+		cursor = page[0].Sequence
+		if len(page) < assistantThreadEventWindowPageSize || cursor == 1 {
+			reachedBeginning = true
+			break
+		}
+		if len(turns) > turnLimit {
+			break
+		}
+	}
+
+	hasOlder := len(turns) > turnLimit || !reachedBeginning
+	truncatedTurnID := ""
+	oldestTurnComplete := len(turns) > 0 && len(turns[len(turns)-1].events) > 0 &&
+		turns[len(turns)-1].events[len(turns[len(turns)-1].events)-1].Type == assistantThreadEventTurnStarted
+	if !reachedBeginning && !oldestTurnComplete && len(turns) > 0 {
+		truncatedTurnID = strings.TrimSpace(turns[len(turns)-1].id)
+	}
+	if len(turns) > turnLimit {
+		turns = turns[:turnLimit]
+	} else if !reachedBeginning && !oldestTurnComplete && len(turns) > 0 {
+		// The oldest accumulated turn may have started before the hard event
+		// bound. Exclude it so every returned item remains fully materialized.
+		turns = turns[:len(turns)-1]
+	}
+	if len(turns) == 0 && !reachedBeginning {
+		if truncatedTurnID == "" {
+			return nil, 0, fmt.Errorf("assistant thread history store returned no turn-bearing events before its bounded cursor")
+		}
+		startSequence, err := s.store.GetAssistantThreadTurnStartSequence(ctx, scope, threadID, truncatedTurnID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("assistant thread turn %q does not begin with a turn.started event: %w", truncatedTurnID, err)
+		}
+		return nil, startSequence, nil
+	}
+
+	events := make([]store.AssistantThreadEvent, 0)
+	for turnIndex := len(turns) - 1; turnIndex >= 0; turnIndex-- {
+		turn := turns[turnIndex]
+		for eventIndex := len(turn.events) - 1; eventIndex >= 0; eventIndex-- {
+			events = append(events, turn.events[eventIndex])
+		}
+	}
+	if hasOlder && len(events) > 0 {
+		if events[0].Type != assistantThreadEventTurnStarted || strings.TrimSpace(events[0].TurnID) == "" {
+			return nil, 0, fmt.Errorf("assistant thread turn %q does not begin with a turn.started event", events[0].TurnID)
+		}
+		return events, events[0].Sequence, nil
+	}
+	return events, 0, nil
 }
 
 // attachAssistantThreadDynamicToolPresentation repairs generic historical
@@ -299,6 +465,7 @@ func (s *Server) attachAssistantThreadDynamicToolPresentation(ctx context.Contex
 		sequence int
 	}
 	wantedByRun := map[string]map[string][]wantedAction{}
+	runOrder := make([]string, 0)
 	for index := range items {
 		item := items[index]
 		if item.Type != assistantThreadEventDynamicToolCall || strings.TrimSpace(item.TurnID) == "" {
@@ -310,66 +477,66 @@ func (s *Server) attachAssistantThreadDynamicToolPresentation(ctx context.Contex
 		}
 		if wantedByRun[item.TurnID] == nil {
 			wantedByRun[item.TurnID] = map[string][]wantedAction{}
+			runOrder = append(runOrder, item.TurnID)
 		}
 		wantedByRun[item.TurnID][action.ID] = append(wantedByRun[item.TurnID][action.ID], wantedAction{index: index, sequence: action.Sequence})
 	}
-	for runID, wanted := range wantedByRun {
-		after := int64(0)
-		for len(wanted) > 0 {
-			events, err := s.store.ListAssistantRunEvents(ctx, scope, runID, after, projectAssistantRunEventPageSize)
-			if errors.Is(err, store.ErrAssistantRunNotFound) {
-				break
-			}
-			if err != nil {
-				return nil, fmt.Errorf("repair assistant thread action presentation: %w", err)
-			}
-			for _, event := range events {
-				if event.Type != projectAssistantRunToolResultEventType || projectToolBaseName(event.ToolName) != projectToolInteractDevelopmentPreview {
-					continue
-				}
-				publicID := projectAssistantActionPublicID(event.CallID)
-				targets := wanted[publicID]
-				if len(targets) == 0 {
-					continue
-				}
-				var outcome projectAssistantRunToolResultPayload
-				if json.Unmarshal(event.Payload, &outcome) != nil {
-					continue
-				}
-				status := "succeeded"
-				if outcome.Canceled {
-					status = "canceled"
-				} else if outcome.Failed || outcome.Disposition == projectAssistantToolDispositionFailed {
-					status = "failed"
-				}
-				action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
-					ID: event.CallID, Name: event.ToolName, Status: status,
-					Result: json.RawMessage(outcome.Result), Error: outcome.Error,
-				})
-				for _, target := range targets {
-					action.Sequence = target.sequence
-					data, marshalErr := json.Marshal(action)
-					if marshalErr != nil {
-						return nil, fmt.Errorf("encode repaired assistant thread action: %w", marshalErr)
-					}
-					items[target.index].Content = action.Title
-					items[target.index].Data = data
-					switch action.Status {
-					case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
-						items[target.index].Status = "failed"
-					case projectAssistantActionFeedStatusRunning, projectAssistantActionFeedStatusWaiting:
-						items[target.index].Status = "in_progress"
-					default:
-						items[target.index].Status = "completed"
-					}
-				}
-				delete(wanted, publicID)
-			}
-			if len(events) < projectAssistantRunEventPageSize {
-				break
-			}
-			after = events[len(events)-1].Sequence
+	if len(runOrder) == 0 {
+		return items, nil
+	}
+	perRunLimit := assistantThreadCompatibilityRunEventLimit / len(runOrder)
+	if perRunLimit < 1 {
+		perRunLimit = 1
+	}
+	// Historical thread items retain the public hash of the call ID, not the
+	// private raw ID. Fetch a fair, bounded candidate set for every requested
+	// run in one scope-bound lookup, then match those candidates by public hash.
+	events, err := s.store.ListAssistantRunEventsByRuns(ctx, scope, runOrder, projectAssistantRunToolResultEventType, perRunLimit)
+	if err != nil {
+		return nil, fmt.Errorf("repair assistant thread action presentation: %w", err)
+	}
+	for _, event := range events {
+		if projectToolBaseName(event.ToolName) != projectToolInteractDevelopmentPreview {
+			continue
 		}
+		wanted := wantedByRun[event.RunID]
+		publicID := projectAssistantActionPublicID(event.CallID)
+		targets := wanted[publicID]
+		if len(targets) == 0 {
+			continue
+		}
+		var outcome projectAssistantRunToolResultPayload
+		if json.Unmarshal(event.Payload, &outcome) != nil {
+			continue
+		}
+		status := "succeeded"
+		if outcome.Canceled {
+			status = "canceled"
+		} else if outcome.Failed || outcome.Disposition == projectAssistantToolDispositionFailed {
+			status = "failed"
+		}
+		action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+			ID: event.CallID, Name: event.ToolName, Status: status,
+			Result: json.RawMessage(outcome.Result), Error: outcome.Error,
+		})
+		for _, target := range targets {
+			action.Sequence = target.sequence
+			data, marshalErr := json.Marshal(action)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("encode repaired assistant thread action: %w", marshalErr)
+			}
+			items[target.index].Content = action.Title
+			items[target.index].Data = data
+			switch action.Status {
+			case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
+				items[target.index].Status = "failed"
+			case projectAssistantActionFeedStatusRunning, projectAssistantActionFeedStatusWaiting:
+				items[target.index].Status = "in_progress"
+			default:
+				items[target.index].Status = "completed"
+			}
+		}
+		delete(wanted, publicID)
 	}
 	return items, nil
 }
@@ -1535,26 +1702,23 @@ func (s *Server) attachAssistantThreadMessagePresentation(ctx context.Context, s
 		return items, nil
 	}
 
-	cursor := ""
-	for len(wanted) > 0 {
-		page, err := s.store.ListMessages(ctx, scope, 250, cursor)
-		if err != nil {
-			return nil, err
+	messageIDs := make([]string, 0, len(wanted))
+	for messageID := range wanted {
+		messageIDs = append(messageIDs, messageID)
+	}
+	messages, err := s.store.GetMessagesByIDs(ctx, scope, messageIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, message := range messages {
+		indexes, ok := wanted[message.ID]
+		if !ok {
+			continue
 		}
-		for _, message := range page.Items {
-			indexes, ok := wanted[message.ID]
-			if !ok {
-				continue
-			}
-			for _, index := range indexes {
-				items[index] = assistantThreadItemWithMessagePresentation(items[index], message.Metadata)
-			}
-			delete(wanted, message.ID)
+		for _, index := range indexes {
+			items[index] = assistantThreadItemWithMessagePresentation(items[index], message.Metadata)
 		}
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
+		delete(wanted, message.ID)
 	}
 	return items, nil
 }

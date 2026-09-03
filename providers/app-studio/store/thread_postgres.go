@@ -703,3 +703,114 @@ func (s *PostgresStore) ListAssistantThreadEvents(ctx context.Context, scope Sco
 	}
 	return events, nil
 }
+
+func (s *PostgresStore) ListAssistantThreadEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	limit = normalizeLimit(limit)
+	threadID = strings.TrimSpace(threadID)
+	query := `SELECT turn_id,sequence,event_type,item_id,request_id,payload,created_at FROM (
+		SELECT turn_id,sequence,event_type,item_id,request_id,payload,created_at
+		FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID}
+	if beforeSequence > 0 {
+		query += ` AND sequence < $6 ORDER BY sequence DESC LIMIT $7`
+		args = append(args, beforeSequence, limit)
+	} else {
+		query += ` ORDER BY sequence DESC LIMIT $6`
+		args = append(args, limit)
+	}
+	query += `) recent ORDER BY sequence`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list assistant thread events before sequence: %w", err)
+	}
+	defer rows.Close()
+	events := make([]AssistantThreadEvent, 0, limit)
+	for rows.Next() {
+		event := AssistantThreadEvent{ThreadID: threadID}
+		if err := rows.Scan(&event.TurnID, &event.Sequence, &event.Type, &event.ItemID, &event.RequestID, &event.Payload, &event.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan assistant thread event before sequence: %w", err)
+		}
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate assistant thread events before sequence: %w", err)
+	}
+	if len(events) == 0 {
+		if _, err := s.GetAssistantThread(ctx, scope, threadID); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *PostgresStore) ListAssistantThreadTurnEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	limit = normalizeLimit(limit)
+	threadID = strings.TrimSpace(threadID)
+	query := `SELECT turn_id,sequence,event_type,item_id,request_id,payload,created_at FROM (
+		SELECT turn_id,sequence,event_type,item_id,request_id,payload,created_at
+		FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND turn_id <> ''`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID}
+	if beforeSequence > 0 {
+		query += ` AND sequence < $6 ORDER BY sequence DESC LIMIT $7`
+		args = append(args, beforeSequence, limit)
+	} else {
+		query += ` ORDER BY sequence DESC LIMIT $6`
+		args = append(args, limit)
+	}
+	query += `) recent ORDER BY sequence`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list assistant thread turn events before sequence: %w", err)
+	}
+	defer rows.Close()
+	events := make([]AssistantThreadEvent, 0, limit)
+	for rows.Next() {
+		event := AssistantThreadEvent{ThreadID: threadID}
+		if err := rows.Scan(&event.TurnID, &event.Sequence, &event.Type, &event.ItemID, &event.RequestID, &event.Payload, &event.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan assistant thread turn event before sequence: %w", err)
+		}
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate assistant thread turn events before sequence: %w", err)
+	}
+	if len(events) == 0 {
+		if _, err := s.GetAssistantThread(ctx, scope, threadID); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *PostgresStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error) {
+	if err := scope.validate(); err != nil {
+		return 0, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	var sequence int64
+	err := s.db.QueryRowContext(ctx, `SELECT sequence
+		FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND thread_id=$5 AND turn_id=$6 AND event_type='turn.started'
+		ORDER BY sequence ASC LIMIT 1`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID, turnID,
+	).Scan(&sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrAssistantTurnNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get assistant thread turn start sequence: %w", err)
+	}
+	return sequence, nil
+}

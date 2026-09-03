@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="rootRef"
-    class="absolute bottom-3 right-4 z-30 hidden md:block"
+    class="absolute bottom-3 right-4 [z-index:var(--app-studio-z-dropdown)] hidden md:block"
     @pointerenter="scheduleHoverOpen"
     @pointerleave="scheduleHoverClose"
     @focusin="onFocusIn"
@@ -197,9 +197,9 @@ onBeforeUnmount(() => {
       :aria-controls="panelID"
       @click="togglePinned"
     >
-      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
       <span class="min-w-0 truncate font-medium text-text-primary">{{ assistantPlanSummary(plan) }}</span>
-      <ChevronUp class="h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="desktopOpen ? 'rotate-180' : ''" :stroke-width="1.75" />
+      <ChevronUp class="h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="desktopOpen ? 'rotate-180' : ''" :stroke-width="1.75" aria-hidden="true" />
     </button>
   </div>
 
@@ -212,17 +212,17 @@ onBeforeUnmount(() => {
       :aria-controls="mobilePanelID"
       @click="openMobile"
     >
-      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
       <span class="min-w-0 truncate font-medium text-text-primary">{{ assistantPlanSummary(plan) }}</span>
     </button>
   </Teleport>
 
   <Teleport v-if="mounted && mobileOpen" to="#app-studio-overlay-root">
-    <div class="fixed inset-0 z-[100] flex items-end bg-surface/70 backdrop-blur-sm md:hidden" @pointerdown.self="closeMobile()">
+    <div class="fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-end bg-surface/70 backdrop-blur-sm md:hidden" @pointerdown.self="closeMobile()">
       <section
         :id="mobilePanelID"
         ref="mobileSheetRef"
-        class="flex max-h-[75vh] w-full flex-col rounded-t-lg border border-border-subtle bg-surface-raised shadow-2xl"
+        class="relative [z-index:var(--app-studio-z-modal)] flex max-h-[75vh] w-full flex-col rounded-t-lg border border-border-subtle bg-surface-raised shadow-2xl"
         role="dialog"
         aria-modal="true"
         :aria-labelledby="`${mobilePanelID}-title`"
@@ -238,7 +238,7 @@ onBeforeUnmount(() => {
             aria-label="Close plan"
             @click="closeMobile()"
           >
-            <X class="h-4 w-4" :stroke-width="1.75" />
+            <X class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
           </button>
         </header>
         <AssistantPlanSteps :message-id="`${messageId}-mobile`" :plan="plan" mobile />

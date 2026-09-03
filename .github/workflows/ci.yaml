@@ -104,6 +104,9 @@ jobs:
       - name: Install root portal dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Test root portal
+        run: npm test
+
       - name: Build root portal
         run: npm run build
 

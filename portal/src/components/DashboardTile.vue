@@ -7,6 +7,12 @@ import { useTenantStore } from '@/stores/tenant'
 // The fallback body is a card in the same grid as real tiles, so it renders
 // from the same vocabulary rather than approximating it.
 import { tileClass } from '@/portalkit/dashboardtile'
+import { createProviderLoadGeneration } from '@/providers/providerLoadGeneration'
+import {
+  canReloadProviderScriptInDocument,
+  invalidateProviderScript,
+  loadProviderScript,
+} from '@/providers/providerScriptLoader'
 import type { ProviderDTO } from '@/stores/providers'
 import { CircleAlert, Puzzle, ChevronRight, RefreshCw, X } from 'lucide-vue-next'
 
@@ -43,13 +49,10 @@ const router = useRouter()
 const mountRef = ref<HTMLDivElement | null>(null)
 const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle')
+const loadGeneration = createProviderLoadGeneration()
+const canRetryInDocument = computed(() => canReloadProviderScriptInDocument(props.provider.name))
 
 const tagFor = (name: string) => `faros-dashboard-tile-${name}`
-
-// Only used when another component owns the script tag and we have to wait for
-// it. Generous, because it is no longer on the happy path: a wrong answer here
-// shows the wrong card until the next mount.
-const TILE_WAIT_MS = 5000
 
 // Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
 // side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
@@ -67,10 +70,15 @@ const quickLinks = computed(() =>
 )
 
 watch(
-  () => props.provider,
-  async (p) => {
-    if (!p.ready) return
-    await loadAndMount(p.name, p.version)
+  () => [props.provider.name, props.provider.version, props.provider.ready] as const,
+  async ([name, version, ready]) => {
+    const generation = loadGeneration.begin()
+    clearMountedTile()
+    if (!ready) {
+      loadState.value = 'idle'
+      return
+    }
+    await loadAndMount(name, version, generation)
   },
   { immediate: true },
 )
@@ -80,63 +88,37 @@ watch(
   () => pushContext(),
 )
 
-async function loadAndMount(name: string, version: string | undefined) {
+function isCurrentLoad(generation: number, name: string, version: string | undefined): boolean {
+  return loadGeneration.isCurrent(generation) &&
+    props.provider.name === name &&
+    props.provider.version === version &&
+    props.provider.ready
+}
+
+function clearMountedTile() {
+  mountRef.value?.replaceChildren()
+  elementRef.value = null
+}
+
+async function loadAndMount(name: string, version: string | undefined, generation: number) {
+  if (!isCurrentLoad(generation, name, version)) return
   loadState.value = 'loading'
 
-  // Reuse ProviderFrame's script id so we don't double-load the bundle
-  // when both the tile and the page are visible (e.g. user is on the
-  // provider page and the dashboard pre-fetches tiles). customElements
-  // is idempotent — second define() is a no-op.
-  const scriptID = `faros-provider-script-${name}`
   const tag = tagFor(name)
-
-  // Whether THIS call injected the bundle. It decides how the check below
-  // concludes: a script we awaited has finished executing, so the registry is
-  // already final; a script someone else injected may still be in flight.
-  let loadedHere = false
-
-  if (!customElements.get(tag) && !document.getElementById(scriptID)) {
-    loadedHere = true
-    const v = encodeURIComponent(version ?? '0')
-    const src = `/ui/providers/${name}/main.js?v=${v}`
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const s = document.createElement('script')
-        s.id = scriptID
-        s.src = src
-        s.async = true
-        s.onload = () => resolve()
-        s.onerror = () => {
-          s.remove()
-          reject(new Error(`failed to load ${src}`))
-        }
-        document.head.appendChild(s)
-      })
-    } catch {
-      loadState.value = 'error'
-      return
-    }
+  try {
+    // Pass the catalog version even when the element is already defined. App
+    // Studio uses the bootstrap reload to refresh its lazy-loader registry;
+    // page and dashboard callers coalesce through the shared loader.
+    await loadProviderScript(name, version)
+  } catch {
+    if (isCurrentLoad(generation, name, version)) loadState.value = 'error'
+    return
   }
+  if (!isCurrentLoad(generation, name, version)) return
 
-  // Registration is synchronous inside the bundle's IIFE, so once the script
-  // we injected has fired onload the registry is final: either the tag is
-  // there or the provider ships no tile. Deciding on that fact rather than on
-  // a timer is what makes the answer deterministic — the previous version
-  // raced a 1.5s timeout, so a slow bundle (or a busy main thread on a
-  // dashboard mounting a dozen cards at once) reported "no tile" for a
-  // provider that had one, and did so silently.
-  let defined = !!customElements.get(tag)
-
-  if (!defined && !loadedHere) {
-    // Someone else's script tag: it may still be downloading, so this is the
-    // one case that genuinely needs to wait.
-    defined = await Promise.race([
-      customElements.whenDefined(tag).then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), TILE_WAIT_MS)),
-    ])
-  }
-
-  if (!defined) {
+  // Registration is synchronous inside the bootstrap, so a missing tag after
+  // the shared load resolves means this provider intentionally ships no tile.
+  if (!customElements.get(tag)) {
     // No tile element — a normal, opt-in case for most providers. Keep the
     // card (chrome + muted body) rather than dropping it from the grid, but
     // say so once in the console: when a provider DOES ship a tile and this
@@ -149,7 +131,7 @@ async function loadAndMount(name: string, version: string | undefined) {
   }
 
   await nextTick()
-  if (!mountRef.value) return
+  if (!isCurrentLoad(generation, name, version) || !mountRef.value) return
   mountRef.value.replaceChildren()
   const el = document.createElement(tag) as HTMLElement
   mountRef.value.appendChild(el)
@@ -159,7 +141,21 @@ async function loadAndMount(name: string, version: string | undefined) {
 }
 
 function retryLoad() {
-  void loadAndMount(props.provider.name, props.provider.version)
+  if (!canRetryInDocument.value) {
+    window.location.reload()
+    return
+  }
+  const generation = loadGeneration.begin()
+  clearMountedTile()
+  void loadAndMount(props.provider.name, props.provider.version, generation)
+}
+
+function onProviderBootstrapRetry(event: Event) {
+  const providerName = (event as CustomEvent<{ providerName?: unknown }>).detail?.providerName
+  if (providerName !== props.provider.name || !props.provider.ready) return
+  event.preventDefault()
+  invalidateProviderScript(props.provider.name, props.provider.version)
+  retryLoad()
 }
 
 function pushContext() {
@@ -190,9 +186,14 @@ function onNavigate(e: Event) {
   else void router.push(target)
 }
 
-onMounted(() => mountRef.value?.addEventListener('faros-navigate', onNavigate))
+onMounted(() => {
+  mountRef.value?.addEventListener('faros-navigate', onNavigate)
+  mountRef.value?.addEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+})
 onBeforeUnmount(() => {
+  loadGeneration.invalidate()
   mountRef.value?.removeEventListener('faros-navigate', onNavigate)
+  mountRef.value?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
   if (elementRef.value && mountRef.value?.contains(elementRef.value)) {
     mountRef.value.removeChild(elementRef.value)
   }
@@ -260,7 +261,8 @@ onBeforeUnmount(() => {
         <p class="mt-1">This provider's dashboard summary could not be loaded.</p>
         <div class="mt-3 flex flex-wrap items-center gap-3">
           <button type="button" class="tile-no-drag k-btn k-btn--ghost h-8 px-2.5 text-[11px]" @click="retryLoad">
-            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" /> Retry
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ canRetryInDocument ? 'Retry' : 'Reload page' }}
           </button>
           <router-link :to="parentTo" class="tile-no-drag font-medium text-accent hover:text-accent-hover">
             Open provider
