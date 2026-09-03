@@ -5,7 +5,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createRenderer, createSSRApp, h, nextTick, reactive, ref, watch } from 'vue'
+import { createRenderer, createSSRApp, h, isRef, nextTick, reactive, ref, unref, watch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
@@ -264,7 +264,13 @@ async function loadMountedSFC(path) {
   // TypeScript casts in ResourceTable's event handlers are already checked by
   // vue-tsc and are removed here solely to make this custom renderer harness
   // executable without a second SFC transform.
-  const runtimeTemplate = template.replace(/\s+as HTML(?:Input|Select)Element/g, '')
+  const runtimeTemplate = template
+    .replace(/\s+as HTML(?:Input|Select)Element/g, '')
+    // The App template has a few inline TypeScript event-handler parameters.
+    // Vue's runtime compiler accepts the `typescript` expression plugin but
+    // leaves those parameter annotations in the generated function body; the
+    // host-renderer test only needs the equivalent JavaScript expressions.
+    .replace(/\(([A-Za-z_$][\w$]*)\s*:\s*[^)]+\)\s*=>/g, '($1) =>')
   const compiled = compile(runtimeTemplate, {
     mode: 'function',
     prefixIdentifiers: true,
@@ -279,8 +285,9 @@ async function loadMountedSFC(path) {
   // harness without changing the production component.
   module.default.render = (ctx, cache, _props, setupState) => compiledRender(new Proxy(ctx, {
     get(target, key, receiver) {
-      const value = Reflect.get(target, key, receiver)
-      return value === undefined ? setupState?.[key] : value
+      const fallback = setupState?.[key] ?? target?.$?.setupState?.[key]
+      if (fallback !== undefined) return isRef(fallback) ? unref(fallback) : fallback
+      return Reflect.get(target, key, receiver)
     },
   }), cache)
   return module.default
@@ -456,6 +463,30 @@ test('row actions render at the right edge of the primary column', async () => {
   assert.match(html, /class="[^"]*k-table__cell--primary[^"]*"[\s\S]*k-table__primary-content[\s\S]*orders[\s\S]*k-table__primary-actions[\s\S]*Delete/)
   assert.doesNotMatch(html, />Actions<\/th>/)
   assert.equal((html.match(/<td/g) ?? []).length, 3, 'actions are composed into the primary cell instead of a trailing cell')
+})
+
+test('Databricks table wrapper keeps the local primary-column selector attached to the rendered table', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp({
+    render: () => h('div', { class: 'databricks-resource-table' }, h(ResourceTable, {
+      columns: [
+        { key: 'name', label: 'Name', primary: true },
+        { key: 'status', label: 'Status' },
+        { key: 'actions', label: 'Actions' },
+      ],
+      rows: [{ name: 'orders', status: 'Ready', actions: '' }],
+    }, {
+      actions: () => h('button', { type: 'button' }, 'Delete'),
+    })),
+  }))
+  const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+
+  assert.match(html, /<div class="databricks-resource-table">(?:<!--[\s\S]*?-->)?<div class="[^"]*k-table--queryable[^"]*k-table[^"]*k-table--resource[^"]*"/)
+  assert.match(html, /databricks-resource-table">[\s\S]*<th class="[^"]*k-table__heading--primary/)
+  assert.match(style, /\.databricks-resource-table table > thead > tr > th:first-child/)
+  assert.match(style, /\.databricks-resource-table table > tbody > tr:has\(> td:nth-child\(2\)\) > td:first-child/)
+  assert.match(style, /\.databricks-resource-table table \{\s*table-layout: fixed;/)
+  assert.doesNotMatch(style, /\.databricks-resource-table \.k-/)
 })
 
 test('simple tables are an explicit bounded-list variant without query or pagination controls', async () => {
@@ -2058,7 +2089,7 @@ test('collection create controls wait for authority and known-empty surfaces sta
         mounted.instance.setupState.load()
         await nextTick()
         await settleResourceListSupport(pendingReads, testCase.supportKinds)
-        await settleResourceListPage(pendingReads, testCase.pageKind, { items: testCase.rows, continue: null })
+        await settleResourceListPage(pendingReads, testCase.pageKind, { items: testCase.rows, continue: 'opaque-next-page' })
         const table = mounted.find(node => className(node).includes('k-table'))
         assert.equal(table?.props?.['data-row-count'], '1', `${testCase.kind} rows replace onboarding directly after refresh`)
         assert.equal(mounted.find(node => className(node).includes('databricks-first-run')), null, `${testCase.kind} removes onboarding once rows are authoritative`)
@@ -2290,7 +2321,7 @@ test('resource detail views use the shared shell without dropping resource behav
     assert.match(source, /<ResourcePage[\s\S]*:loaded="readState"[\s\S]*:loading="loading"[\s\S]*:error="error"[\s\S]*:stale="loaded && !!error"[\s\S]*retryable[\s\S]*@retry="load"/, `${kind} keeps the read contract`)
     assert.match(source, /<template #summary><ResourceStatCards :cards="statCards" density="compact"/, `${kind} has compact stat cards`)
     assert.match(source, /<template #actions>[\s\S]*Refresh[\s\S]*<details ref="actionsMenu" class="databricks-resource-menu">[\s\S]*Delete /, `${kind} orders Refresh before overflow Delete`)
-    assert.match(source, /<div v-if="[^\n]+" class="databricks-resource-sections">/, `${kind} stacks resource sections`)
+    assert.match(source, /<div v-if="[^\n]+" class="[^\"]*\bdatabricks-resource-sections\b[^\"]*"[^>]*>/, `${kind} keeps resource section modifiers`)
     assert.match(source, /<ResourceSectionCard id="[^\"]+-conditions"[\s\S]*<ConditionsPanel/, `${kind} keeps Conditions in a section card`)
     assert.match(source, /createLatestRefreshController/, `${kind} keeps serialized refresh`)
     assert.match(source, /createAdaptiveRefreshTimer/, `${kind} uses serialized adaptive polling`)
@@ -3194,10 +3225,19 @@ test('route-owned import is a page while modal mode keeps modal semantics', asyn
   assert.doesNotMatch(modalHTML, /class="[^"]*import-dialog--route[^"]*"/)
   assert.doesNotMatch(routeHTML, /role="dialog"/)
   assert.doesNotMatch(routeHTML, /aria-modal=/)
+  assert.match(routeHTML, /class="import-context-rail" aria-labelledby="import-context-title"/)
+  assert.doesNotMatch(modalHTML, /class="import-context-rail"/)
   assert.match(modalHTML, /role="dialog"/)
   assert.match(modalHTML, /aria-modal="true"/)
+  const primaryStart = wizard.indexOf('<div class="import-primary">')
+  const railStart = wizard.indexOf('<aside v-if="props.routeOwned" class="import-context-rail"', primaryStart)
+  assert.ok(primaryStart >= 0 && railStart > primaryStart, 'route workbench places the context rail after the primary column')
+  const primary = wizard.slice(primaryStart, railStart)
+  assert.match(primary, /<ol class="import-steps"/)
+  assert.match(primary, /<div :class="\['import-body', `import-body--\$\{step\}`\]"/)
+  assert.match(primary, /<footer :class="props\.routeOwned \? 'k-create-actions' : 'import-actions'"/)
   assert.match(wizard, /if \(props\.routeOwned\) \{[\s\S]*focusStep\(\)/)
-  assert.match(wizard, /if \(!props\.routeOwned && event\.target === event\.currentTarget\) close\(\)/)
+  assert.match(wizard, /if \(!props\.routeOwned && event\.target === event\.currentTarget\) cancel\(\)/)
   assert.match(wizard, /routeHeading/)
   assert.match(wizard, /routeAnnouncement/)
   assert.match(wizard, /if \(!props\.routeOwned\) \{[\s\S]*previousFocus = document\.activeElement/)
@@ -3214,7 +3254,7 @@ test('route-owned import is a page while modal mode keeps modal semantics', asyn
   assert.match(app, /Keying the cache by the context[\s\S]*generation clears every cached tenant snapshot/)
 })
 
-test('import surfaces preserve the modal cap and fill the shared create column on routes', async () => {
+test('import surfaces preserve modal caps and route width contracts through ultrawide layouts', async () => {
   const [style, shared] = await Promise.all([
     readFile(new URL('./style.css', import.meta.url), 'utf8'),
     readFile(canonicalFarosUIStyle, 'utf8'),
@@ -3229,6 +3269,59 @@ test('import surfaces preserve the modal cap and fill the shared create column o
   assert.match(modalRule, /width:\s*min\(720px,\s*100%\)/)
   assert.match(routeRule, /width:\s*100%/)
   assert.match(routeRule, /max-height:\s*none/)
+  const routePage = style.match(/faros-provider-databricks \.import-route\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(routePage, /margin-inline:\s*0/)
+  assert.match(routePage, /width:\s*100%/)
+  assert.match(routePage, /align-items:\s*stretch[\s\S]*flex-direction:\s*column[\s\S]*justify-content:\s*flex-start/)
+  const routeWorkbench = style.match(/faros-provider-databricks \.import-route \.import-workbench\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(routeWorkbench, /max-inline-size:\s*none/)
+  assert.match(routeWorkbench, /width:\s*100%/)
+  const splitOffset = style.indexOf('@container import-route (min-width: 1200px)')
+  assert.ok(splitOffset >= 0, 'route context split has an explicit 1200px container threshold')
+  const split = style.slice(splitOffset, style.indexOf('\n}', style.indexOf('grid-template-columns', splitOffset)) + 2)
+  assert.match(split, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(20rem,\s*24rem\)/)
+  const splitRailOffset = style.indexOf('faros-provider-databricks .import-route .import-context-rail {', splitOffset)
+  const splitRail = style.slice(splitRailOffset, style.indexOf('\n}', splitRailOffset) + 2)
+  assert.match(splitRail, /align-self:\s*stretch/)
+  const rail = style.match(/faros-provider-databricks \.import-context-rail\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(rail, /background:\s*var\(--color-surface/)
+  const importBody = style.match(/faros-provider-databricks \.import-body\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(importBody, /min-height:\s*260px/)
+  const routeSourceBody = style.match(/faros-provider-databricks \.import-route \.import-body--source\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(routeSourceBody, /min-height:\s*180px/)
+  const routeSourceStack = style.match(/faros-provider-databricks \.import-route \.import-body--source \.import-stack\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(routeSourceStack, /max-inline-size:\s*42rem/)
+  const boundedBody = style.match(/faros-provider-databricks \.import-body--source \.import-stack,\s*faros-provider-databricks \.import-body--review \.review-list,\s*faros-provider-databricks \.import-body--results \.result-list\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(boundedBody, /max-inline-size:\s*68rem/)
+  const browseTree = style.match(/faros-provider-databricks \.import-body--browse > \.lazy-tree\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(browseTree, /max-inline-size:\s*68rem/)
+  assert.match(browseTree, /width:\s*100%/)
+  const ultrawideOffset = style.indexOf('@container import-route (min-width: 1800px)')
+  assert.ok(ultrawideOffset >= 0, 'route layout has an explicit ultrawide container threshold')
+  const ultrawide = style.slice(ultrawideOffset)
+  assert.match(ultrawide, /\.import-route \.import-primary\s*\{[\s\S]*grid-template-columns:\s*minmax\(12rem,\s*14rem\)\s+minmax\(0,\s*1fr\)/)
+  const verticalRailOffset = style.indexOf('faros-provider-databricks .import-route .import-primary > .import-steps {', ultrawideOffset)
+  const verticalRail = style.slice(verticalRailOffset, style.indexOf('\n}', verticalRailOffset) + 2)
+  assert.match(verticalRail, /border-bottom:\s*0/)
+  assert.match(verticalRail, /border-inline-end:\s*1px\s+solid\s+var\(--color-border-subtle/)
+  assert.match(verticalRail, /display:\s*flex[\s\S]*flex-direction:\s*column/)
+  assert.match(verticalRail, /grid-column:\s*1[\s\S]*grid-row:\s*1\s*\/\s*span\s*2/)
+  const activeStepOffset = style.indexOf("faros-provider-databricks .import-route .import-primary > .import-steps li[aria-current='step']", ultrawideOffset)
+  const activeStep = style.slice(activeStepOffset, style.indexOf('\n}', activeStepOffset) + 2)
+  assert.match(activeStep, /border-inline-start-color:\s*var\(--color-accent/)
+  const ultrawideBodyOffset = style.indexOf('faros-provider-databricks .import-route .import-primary > .import-body {', ultrawideOffset)
+  const ultrawideBody = style.slice(ultrawideBodyOffset, style.indexOf('\n}', ultrawideBodyOffset) + 2)
+  assert.match(ultrawideBody, /grid-column:\s*2[\s\S]*grid-row:\s*1/)
+  const ultrawideFooterOffset = style.indexOf('faros-provider-databricks .import-route .import-primary > footer {', ultrawideOffset)
+  const ultrawideFooter = style.slice(ultrawideFooterOffset, style.indexOf('\n}', ultrawideFooterOffset) + 2)
+  assert.match(ultrawideFooter, /grid-column:\s*2[\s\S]*grid-row:\s*2/)
+  const ultrawideSourceOffset = style.indexOf('faros-provider-databricks .import-route .import-body--source .import-stack {', ultrawideOffset)
+  const ultrawideSource = style.slice(ultrawideSourceOffset, style.indexOf('\n}', ultrawideSourceOffset) + 2)
+  assert.match(ultrawideSource, /margin-inline:\s*0/)
+  assert.match(ultrawideSource, /max-inline-size:\s*56rem/)
+  const ultrawideBrowseOffset = style.indexOf('faros-provider-databricks .import-route .import-body--browse > .lazy-tree {', ultrawideOffset)
+  const ultrawideBrowse = style.slice(ultrawideBrowseOffset, style.indexOf('\n}', ultrawideBrowseOffset) + 2)
+  assert.match(ultrawideBrowse, /max-inline-size:\s*none/)
 
   const createSurface = shared.match(/\.k-create-surface\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   const wideSurface = shared.match(/\.k-create-surface--wide\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
@@ -3597,5 +3690,458 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       apiModule.api[testCase.deleteMethod] = originalDelete
       refreshModule.setOperationContext('default')
     }
+  }
+})
+
+// These helpers intentionally mount the provider App with the same custom
+// renderer used by the other mounted SFC checks. They capture the shell event
+// rather than changing ctx.subPath automatically, so push/replace intent stays
+// observable at the provider-to-shell boundary.
+function findMountedComponent(instance, predicate, seen = new Set()) {
+  if (!instance || seen.has(instance)) return null
+  seen.add(instance)
+  if (predicate(instance)) return instance
+
+  function visitVNode(vnode) {
+    if (!vnode || typeof vnode !== 'object') return null
+    if (vnode.component) {
+      const found = findMountedComponent(vnode.component, predicate, seen)
+      if (found) return found
+    }
+    if (Array.isArray(vnode.children)) {
+      for (const child of vnode.children) {
+        const found = visitVNode(child)
+        if (found) return found
+      }
+    }
+    return null
+  }
+
+  return visitVNode(instance.subTree)
+}
+
+function createJourneyStorage() {
+  const values = new Map()
+  return {
+    values,
+    getItem(key) { return values.get(key) ?? null },
+    setItem(key, value) { values.set(key, value) },
+    removeItem(key) { values.delete(key) },
+  }
+}
+
+function storedJourney(storage, tenantKey) {
+  const raw = storage.getItem('faros:databricks:return-intent')
+  if (!raw) return undefined
+  return JSON.parse(raw)[tenantKey]
+}
+
+function mountNavigationApp(App, ctx, storage) {
+  const previousDocument = globalThis.document
+  const previousWindow = globalThis.window
+  const previousHTMLElement = globalThis.HTMLElement
+  const previousCustomEvent = globalThis.CustomEvent
+  const events = []
+  const context = reactive(ctx)
+
+  globalThis.HTMLElement = class {}
+  globalThis.document = {
+    activeElement: null,
+    documentElement: { style: { getPropertyValue: () => '' } },
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '', setAttribute() {}, focus() {}, isConnected: true }),
+    head: { appendChild() {} },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  globalThis.window = {
+    sessionStorage: storage,
+    addEventListener() {},
+    removeEventListener() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    innerHeight: 900,
+    innerWidth: 1200,
+  }
+  if (typeof globalThis.CustomEvent === 'undefined') {
+    globalThis.CustomEvent = class {
+      constructor(type, init = {}) { this.type = type; this.detail = init.detail }
+    }
+  }
+
+  const { renderer, root } = createHostRenderer()
+  const app = renderer.createApp(App, { ctx: context })
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  app.mount(root)
+  const appRoot = findHostNode(root, node => node.type === 'div' && className(node).split(' ').includes('app'))
+  assert.ok(appRoot, 'mounted App exposes its provider root')
+  appRoot.dispatchEvent = event => { events.push(event); return true }
+
+  return {
+    app,
+    context,
+    root,
+    events,
+    instance: app._instance,
+    find: predicate => findHostNode(root, predicate),
+    component: predicate => findMountedComponent(app._instance, predicate),
+    unmount() {
+      app.unmount()
+      if (previousDocument === undefined) delete globalThis.document
+      else globalThis.document = previousDocument
+      if (previousWindow === undefined) delete globalThis.window
+      else globalThis.window = previousWindow
+      if (previousHTMLElement === undefined) delete globalThis.HTMLElement
+      else globalThis.HTMLElement = previousHTMLElement
+      if (previousCustomEvent === undefined) delete globalThis.CustomEvent
+      else globalThis.CustomEvent = previousCustomEvent
+    },
+  }
+}
+
+function componentTypeName(instance) {
+  return instance?.type?.name || instance?.type?.__name || ''
+}
+
+async function loadNavigationApp() {
+  // App imports these components before the helper can replace their SSR
+  // render functions. Loading each through loadMountedSFC first keeps this an
+  // actual App mount while preserving the deterministic host renderer.
+  const App = await loadMountedSFC('/src/App.vue')
+  const components = {}
+  for (const [name, path] of [
+    ['ResourceImportWizard', '/src/ResourceImportWizard.vue'],
+    ['FormSelect', '/src/portalkit/FormSelect.vue'],
+    ['ConfirmDialog', '/src/portalkit/ConfirmDialog.vue'],
+    ['CreateConnectionView', '/src/views/CreateConnectionView.vue'],
+    ['ManualCreateGuidance', '/src/components/ManualCreateGuidance.vue'],
+    ['TablesView', '/src/views/TablesView.vue'],
+    ['DatabricksEmptyState', '/src/components/DatabricksEmptyState.vue'],
+  ]) {
+    try {
+      components[name] = await loadMountedSFC(path)
+    } catch (error) {
+      error.message = `${path}: ${error.message}`
+      throw error
+    }
+  }
+  App.components = { ...(App.components ?? {}), ...components }
+  components.ResourceImportWizard.components = { ...(components.ResourceImportWizard.components ?? {}), FormSelect: components.FormSelect }
+  components.TablesView.components = { ...(components.TablesView.components ?? {}), DatabricksEmptyState: components.DatabricksEmptyState }
+  return App
+}
+
+function installNavigationReads(apiModule, connectionList, warehouseList, tableList = []) {
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listTables: apiModule.api.listTables,
+  }
+  apiModule.api.listConnections = async () => connectionList
+  apiModule.api.listWarehouses = async () => warehouseList
+  apiModule.api.listTables = async () => tableList
+  return original
+}
+
+const navigationConnection = {
+  name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+  secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+}
+const navigationWarehouse = {
+  name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+}
+
+test('mounted App preserves Tables as prerequisite origin for route backlink and Cancel', async () => {
+  const [App, apiModule, journeyModule] = await Promise.all([
+    loadNavigationApp(),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/journey.ts'),
+  ])
+  const original = installNavigationReads(apiModule, [navigationConnection], [navigationWarehouse])
+  const storage = createJourneyStorage()
+  const tenantKey = journeyModule.databricksJourneyTenantKey('root:tenant-a', 'org-a', 'workspace-a')
+  journeyModule.writeDatabricksPrerequisiteIntent(storage, tenantKey, 'tables', 'create/table/browse', 'create/warehouse/browse')
+  const ctx = {
+    tenant: 'root:tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', token: 'token', subPath: 'create/warehouse/browse',
+  }
+  const mounted = mountNavigationApp(App, ctx, storage)
+  try {
+    await flushVue()
+    const back = mounted.find(node => node.type === 'button' && className(node).includes('k-back-action'))
+    assert.ok(back, 'route-owned prerequisite renders a backlink')
+    assert.match(hostText(back), /Tables/, 'route backlink uses the collection origin label')
+    back.props.onClick({})
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'tables', replace: true }, 'route backlink replaces history with the Tables collection')
+  } finally {
+    mounted.unmount()
+  }
+
+  const cancelStorage = createJourneyStorage()
+  journeyModule.writeDatabricksPrerequisiteIntent(cancelStorage, tenantKey, 'tables', 'create/table/browse', 'create/warehouse/browse')
+  const cancelMounted = mountNavigationApp(App, ctx, cancelStorage)
+  try {
+    await flushVue()
+    const cancel = cancelMounted.find(node => node.type === 'button' && hostText(node).includes('Cancel'))
+    assert.ok(cancel, 'route-owned prerequisite renders footer Cancel')
+    cancel.props.onClick({})
+    assert.deepEqual(cancelMounted.events.at(-1)?.detail, { path: 'tables', replace: true }, 'Cancel replaces history with the Tables collection')
+  } finally {
+    cancelMounted.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+  }
+})
+
+test('mounted App sends warehouse results to table browse only for created or existing resources', async () => {
+  const [App, apiModule, journeyModule] = await Promise.all([
+    loadNavigationApp(),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/journey.ts'),
+  ])
+  const original = installNavigationReads(apiModule, [navigationConnection], [navigationWarehouse])
+  try {
+    for (const state of ['created', 'existing', 'failed']) {
+      const storage = createJourneyStorage()
+      const tenantKey = journeyModule.databricksJourneyTenantKey('root:tenant-a', 'org-a', 'workspace-a')
+      journeyModule.writeDatabricksPrerequisiteIntent(storage, tenantKey, 'tables', 'create/table/browse', 'create/warehouse/browse')
+      const mounted = mountNavigationApp(App, {
+        tenant: 'root:tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', token: 'token', subPath: 'create/warehouse/browse',
+      }, storage)
+      try {
+        await flushVue()
+        const wizard = mounted.component(instance => componentTypeName(instance) === 'ResourceImportWizard')
+        assert.ok(wizard, `${state} result case mounted the route-owned wizard`)
+        wizard.setupState.step = 'results'
+        wizard.setupState.results = [{ index: 0, name: 'orders-sql', state }]
+        await flushVue()
+        const done = mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Done')
+        assert.ok(done, `${state} result case renders Done`)
+        done.props.onClick({})
+        assert.deepEqual(
+          mounted.events.at(-1)?.detail,
+          state === 'failed'
+            ? { path: 'tables', replace: true }
+            : { path: 'create/table/browse', replace: true },
+          `${state} results choose the truthful continuation destination`,
+        )
+      } finally {
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+  }
+})
+
+test('mounted App carries tenant-scoped connection to warehouse to table intent', async () => {
+  const [App, apiModule, journeyModule] = await Promise.all([
+    loadNavigationApp(),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/journey.ts'),
+  ])
+  const connection = { ...navigationConnection }
+  const original = installNavigationReads(apiModule, [], [], [])
+  const originalSaveConnection = apiModule.api.saveConnection
+  const storage = createJourneyStorage()
+  const tenantA = journeyModule.databricksJourneyTenantKey('root:tenant-a', 'org-a', 'workspace-a')
+  const tenantB = journeyModule.databricksJourneyTenantKey('root:tenant-b', 'org-b', 'workspace-b')
+  const tenantBIntent = { originPath: 'warehouses', successPath: 'create/warehouse/manual', returnPath: 'create/warehouse/manual', expectedPath: 'create/connection' }
+  storage.setItem('faros:databricks:return-intent', JSON.stringify({ [tenantB]: tenantBIntent }))
+  let connectionCreated = false
+  apiModule.api.listConnections = async () => connectionCreated ? [connection] : []
+  apiModule.api.listWarehouses = async () => []
+  apiModule.api.listTables = async () => []
+  apiModule.api.saveConnection = async payload => {
+    connectionCreated = true
+    return { name: payload.name }
+  }
+  const mounted = mountNavigationApp(App, {
+    tenant: 'root:tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', token: 'token', subPath: 'create/table/browse',
+  }, storage)
+  try {
+    await flushVue()
+    const tableWizard = mounted.component(instance => componentTypeName(instance) === 'ResourceImportWizard')
+    assert.ok(tableWizard, 'table browse route mounted before prerequisite resolution')
+    tableWizard.setupState.resolvePrerequisite('connection')
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'create/connection' }, 'connection prerequisite pushes a new route')
+    assert.deepEqual(storedJourney(storage, tenantA), {
+      originPath: 'tables', successPath: 'create/table/browse', returnPath: 'create/table/browse', expectedPath: 'create/connection',
+    }, 'connection prerequisite stores table origin and eventual table success path for tenant A')
+    assert.deepEqual(storedJourney(storage, tenantB), tenantBIntent, 'tenant B intent remains isolated')
+
+    mounted.context.subPath = 'create/connection'
+    await flushVue()
+    const connectionForm = mounted.component(instance => componentTypeName(instance) === 'CreateConnectionView')
+    assert.ok(connectionForm, 'connection prerequisite route mounted')
+    Object.assign(connectionForm.setupState.form, { name: 'orders', host: connection.host, token: 'token' })
+    await connectionForm.setupState.submit()
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'create/warehouse/browse', replace: true }, 'created connection replaces history with the warehouse prerequisite')
+    assert.deepEqual(storedJourney(storage, tenantA), {
+      originPath: 'tables', successPath: 'create/table/browse', returnPath: 'create/table/browse', expectedPath: 'create/warehouse/browse',
+    }, 'connection completion preserves tenant A origin and table success intent across the warehouse hop')
+    assert.deepEqual(storedJourney(storage, tenantB), tenantBIntent, 'connection completion does not rewrite tenant B intent')
+
+    mounted.context.subPath = 'create/warehouse/browse'
+    await flushVue()
+    const warehouseWizard = mounted.component(instance => componentTypeName(instance) === 'ResourceImportWizard')
+    assert.ok(warehouseWizard, 'warehouse prerequisite route mounted')
+    warehouseWizard.setupState.step = 'results'
+    warehouseWizard.setupState.results = [{ index: 0, name: 'orders-sql', state: 'existing' }]
+    await flushVue()
+    const done = mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Done')
+    assert.ok(done, 'warehouse result renders Done')
+    done.props.onClick({})
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'create/table/browse', replace: true }, 'existing warehouse completes the table journey')
+    assert.equal(storedJourney(storage, tenantA), undefined, 'tenant A intent is consumed after the table browse destination')
+    assert.deepEqual(storedJourney(storage, tenantB), tenantBIntent, 'tenant B intent survives the complete tenant A journey')
+  } finally {
+    mounted.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+    apiModule.api.saveConnection = originalSaveConnection
+  }
+})
+
+test('mounted direct browse routes keep collection backlinks and App push/replace details', async () => {
+  const [App, apiModule] = await Promise.all([loadNavigationApp(), vite.ssrLoadModule('/src/api.ts')])
+  const original = installNavigationReads(apiModule, [navigationConnection], [navigationWarehouse])
+  try {
+    for (const [kind, expectedLabel, expectedPath] of [
+      ['warehouse', 'Warehouses', 'warehouses'],
+      ['table', 'Tables', 'tables'],
+    ]) {
+      const mounted = mountNavigationApp(App, {
+        tenant: 'root:tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', token: 'token', subPath: `create/${kind}/browse`,
+      }, createJourneyStorage())
+      try {
+        await flushVue()
+        const back = mounted.find(node => node.type === 'button' && className(node).includes('k-back-action'))
+        assert.ok(back, `${kind} browse route renders a backlink`)
+        assert.match(hostText(back), new RegExp(expectedLabel), `${kind} browse route uses its collection label`)
+        back.props.onClick({})
+        assert.deepEqual(mounted.events.at(-1)?.detail, { path: expectedPath, replace: true }, `${kind} browse backlink replaces its collection route`)
+
+        mounted.instance.setupState.navigate('tables')
+        mounted.instance.setupState.navigate('warehouses', true)
+        assert.deepEqual(mounted.events.slice(-2).map(event => event.detail), [
+          { path: 'tables' },
+          { path: 'warehouses', replace: true },
+        ], 'App preserves push for ordinary navigation and replace for committed transitions')
+      } finally {
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+  }
+})
+
+test('mounted modal wizard keeps legacy close for Cancel and Done while Back remains internal', async () => {
+  const [Wizard, apiModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = installNavigationReads(apiModule, [navigationConnection], [navigationWarehouse])
+  const previousHTMLElement = globalThis.HTMLElement
+  globalThis.HTMLElement = class {}
+  let cancelEvents = 0
+  let closeEvents = 0
+  const mounted = mountDetailView(Wizard, {
+    kind: 'table', routeOwned: false,
+    onCancel: () => { cancelEvents += 1 },
+    onClose: () => { closeEvents += 1 },
+  }, {})
+  try {
+    await flushVue()
+    const close = mounted.find(node => node.type === 'button' && className(node).includes('databricks-dialog-close'))
+    assert.ok(close, 'modal wizard renders its legacy close control')
+    close.props.onClick({})
+    assert.equal(cancelEvents, 1, 'modal Cancel emits the explicit cancel event')
+    assert.equal(closeEvents, 1, 'modal Cancel also preserves the legacy close event')
+
+    mounted.instance.setupState.step = 'results'
+    mounted.instance.setupState.results = [{ index: 0, name: 'orders', state: 'failed' }]
+    await flushVue()
+    const done = mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Done')
+    assert.ok(done, 'modal result state renders Done')
+    done.props.onClick({})
+    assert.equal(cancelEvents, 1, 'modal Done does not emit cancellation')
+    assert.equal(closeEvents, 2, 'modal Done preserves the legacy close event')
+
+    mounted.instance.setupState.step = 'browse'
+    mounted.instance.setupState.back()
+    assert.equal(mounted.instance.setupState.step, 'source', 'wizard Back returns from browse to source')
+    mounted.instance.setupState.step = 'review'
+    mounted.instance.setupState.back()
+    assert.equal(mounted.instance.setupState.step, 'browse', 'wizard Back returns from review to browse')
+  } finally {
+    mounted.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+    if (previousHTMLElement === undefined) delete globalThis.HTMLElement
+    else globalThis.HTMLElement = previousHTMLElement
+  }
+})
+
+test('mounted Tables empty-state Browse warehouses preserves Tables backlink and Cancel', async () => {
+  const [App, apiModule] = await Promise.all([loadNavigationApp(), vite.ssrLoadModule('/src/api.ts')])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listTablesPage: apiModule.api.listTablesPage,
+  }
+  const storage = createJourneyStorage()
+  const ctx = {
+    tenant: 'root:tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', token: 'token', subPath: 'tables',
+  }
+  apiModule.api.listConnections = async () => [navigationConnection]
+  apiModule.api.listWarehouses = async () => []
+  apiModule.api.listTablesPage = async () => ({ items: [], continue: null })
+  const mounted = mountNavigationApp(App, ctx, storage)
+  try {
+    await flushVue()
+    const browseWarehouses = mounted.find(node => node.type === 'button' && hostText(node).trim().startsWith('Browse warehouses'))
+    assert.ok(browseWarehouses, 'Tables empty state renders the actual Browse warehouses CTA')
+    browseWarehouses.props.onClick({})
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'create/warehouse/browse' }, 'Browse warehouses pushes the warehouse browse prerequisite')
+
+    mounted.context.subPath = 'create/warehouse/browse'
+    await flushVue()
+    const back = mounted.find(node => node.type === 'button' && className(node).includes('k-back-action'))
+    assert.ok(back, 'warehouse prerequisite renders a route-owned backlink')
+    assert.match(hostText(back), /Tables/, 'warehouse prerequisite keeps the Tables origin label')
+    back.props.onClick({})
+    assert.deepEqual(mounted.events.at(-1)?.detail, { path: 'tables', replace: true }, 'warehouse backlink replaces history with Tables')
+  } finally {
+    mounted.unmount()
+  }
+
+  const cancelStorage = createJourneyStorage()
+  const cancelCtx = { ...ctx, subPath: 'tables' }
+  const cancelMounted = mountNavigationApp(App, cancelCtx, cancelStorage)
+  try {
+    await flushVue()
+    const browseWarehouses = cancelMounted.find(node => node.type === 'button' && hostText(node).trim().startsWith('Browse warehouses'))
+    assert.ok(browseWarehouses, 'fresh Tables empty state renders Browse warehouses for Cancel coverage')
+    browseWarehouses.props.onClick({})
+    cancelMounted.context.subPath = 'create/warehouse/browse'
+    await flushVue()
+    const cancel = cancelMounted.find(node => node.type === 'button' && hostText(node).includes('Cancel'))
+    assert.ok(cancel, 'warehouse prerequisite renders footer Cancel')
+    cancel.props.onClick({})
+    assert.deepEqual(cancelMounted.events.at(-1)?.detail, { path: 'tables', replace: true }, 'Cancel replaces history with Tables')
+  } finally {
+    cancelMounted.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTablesPage = original.listTablesPage
   }
 })

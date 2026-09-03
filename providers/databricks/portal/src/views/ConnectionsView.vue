@@ -401,7 +401,7 @@ onUnmounted(() => {
     <header class="page-head">
       <div>
         <h2 class="page-title">Connections</h2>
-        <p class="page-meta">Databricks workspaces available to tables in this faros workspace.</p>
+        <p class="page-meta">Pair a Faros connection name with a Databricks workspace host and token for table imports.</p>
       </div>
       <div v-if="loaded && !showFirstRun" class="actions">
         <button class="k-btn k-btn--primary" type="button" @click="emit('create')">Add connection</button>
@@ -419,8 +419,8 @@ onUnmounted(() => {
       @action="handleFirstRunAction"
     />
 
-    <ResourceTable
-      v-else
+    <div v-else class="databricks-resource-table">
+      <ResourceTable
       :columns="[
         { key: 'name', label: 'Name', primary: true },
         { key: 'host', label: 'Workspace host' },
@@ -482,6 +482,7 @@ onUnmounted(() => {
           />
         </div>
       </template>
-    </ResourceTable>
+      </ResourceTable>
+    </div>
   </section>
 </template>

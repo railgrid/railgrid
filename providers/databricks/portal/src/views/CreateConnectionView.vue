@@ -9,6 +9,7 @@ import {
   operationKey,
 } from '../refresh'
 import { resourceNameError } from '../resourceName'
+import ManualCreateGuidance from '../components/ManualCreateGuidance.vue'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
@@ -161,33 +162,41 @@ onBeforeUnmount(() => {
       <p class="k-create-description">Connect a Databricks workspace for warehouse and table imports.</p>
     </header>
 
-    <form class="k-create-surface" @submit.prevent="submit">
-      <div class="k-create-body">
-      <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading existing connections…</p>
-      <p v-if="loadError" class="error" role="alert" aria-live="assertive">
-        <span>Could not load existing connections: {{ loadError }}</span>
-        <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
-      </p>
-        <div class="field">
-          <label class="field-label" for="connection-name">Name</label>
-          <input id="connection-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" aria-describedby="connection-name-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-name-hint" class="field-hint">How this workspace is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+    <form class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--connection" @submit.prevent="submit">
+      <div class="k-create-body manual-create-body--guided">
+        <div class="manual-create-form-fields manual-create-form-fields--connection">
+          <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading existing connections…</p>
+          <p v-if="loadError" class="error" role="alert" aria-live="assertive">
+            <span>Could not load existing connections: {{ loadError }}</span>
+            <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
+          </p>
+          <div class="manual-create-fields-grid manual-create-fields-grid--connection">
+            <div class="field">
+              <label class="field-label" for="connection-name">Name</label>
+              <input id="connection-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" aria-describedby="connection-name-hint connection-form-error" :aria-invalid="!!formError" />
+              <span id="connection-name-hint" class="field-hint">How this workspace is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="connection-host">Workspace host</label>
+              <input id="connection-host" class="k-input" v-model="form.host" :disabled="loading || submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" aria-describedby="connection-host-hint connection-form-error" :aria-invalid="!!formError" />
+              <span id="connection-host-hint" class="field-hint">Use the HTTPS root URL from the Databricks browser address bar (AWS, Azure, or GCP), with no path.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="connection-token">Token</label>
+              <input id="connection-token" class="k-input" v-model="form.token" :disabled="loading || submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
+              <span id="connection-token-hint" class="field-hint">Use a Databricks personal access token with access to the resources you plan to import.</span>
+              <details class="field-disclosure">
+                <summary>Where to find it and required access</summary>
+                <p>In Databricks, open your avatar → Settings → Developer → Access tokens. The token identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</p>
+              </details>
+            </div>
+            <p class="muted manual-create-security-note">Faros stores the token as a Secret in this workspace. Connection status shows whether Databricks accepted it.</p>
+          </div>
         </div>
-        <div class="field">
-          <label class="field-label" for="connection-host">Workspace host</label>
-          <input id="connection-host" class="k-input" v-model="form.host" :disabled="loading || submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" aria-describedby="connection-host-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-host-hint" class="field-hint">Use the HTTPS root URL from the Databricks browser address bar (AWS, Azure, or GCP), with no path.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="connection-token">Token</label>
-          <input id="connection-token" class="k-input" v-model="form.token" :disabled="loading || submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-token-hint" class="field-hint">Use a Databricks personal access token with access to the resources you plan to import.</span>
-          <details class="field-disclosure">
-            <summary>Where to find it and required access</summary>
-            <p>In Databricks, open your avatar → Settings → Developer → Access tokens. The token identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</p>
-          </details>
-        </div>
-        <p class="muted">Faros stores the token as a Secret in this workspace. Connection status shows whether Databricks accepted it.</p>
+        <ManualCreateGuidance
+          kind="connection"
+          :values="{ name: form.name, host: form.host, tokenPresent: !!form.token }"
+        />
       </div>
       <div class="k-create-actions">
         <span v-if="formError" id="connection-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>

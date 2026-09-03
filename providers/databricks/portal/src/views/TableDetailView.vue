@@ -306,7 +306,7 @@ onUnmounted(() => {
           <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
         </p>
 
-        <div v-if="table" class="databricks-resource-sections">
+        <div v-if="table" class="databricks-resource-sections databricks-resource-sections--table">
           <ResourceSectionCard id="table-overview" eyebrow="Table" title="Overview" description="References, fully qualified name, timestamps, and reconciliation details.">
             <dl class="props">
           <dt>Connection</dt><dd><code>{{ table.connectionRef }}</code></dd>
@@ -333,34 +333,36 @@ onUnmounted(() => {
           <ResourceSectionCard id="table-schema" eyebrow="Schema" title="Columns" description="The latest bounded schema snapshot reported by Databricks." >
             <template #actions><span class="muted">{{ schemaTruncated ? `${table.columns.length} cached columns` : `${table.columns.length} columns` }}</span></template>
             <p v-if="schemaTruncated" class="warning" role="status">{{ schemaNotice }}</p>
-            <ResourceTable
-          :columns="[
-            { key: 'name', label: 'Column', primary: true },
-            { key: 'type', label: 'Type' },
-            { key: 'nullableLabel', label: 'Nullable' },
-            { key: 'comment', label: 'Comment' },
-          ]"
-          :rows="schemaRows"
-          aria-label="Table schema columns"
-          searchable
-          search-placeholder="Search columns…"
-          :filters="[{ key: 'type', label: 'Type' }, { key: 'nullableLabel', label: 'Nullable' }]"
-          paginated
-          :page-size="25"
-          row-key="name"
-          :loaded="schemaLoaded"
-          :loading="schemaPending"
-          :refresh-mode="refreshMode"
-          :error="schemaError"
-          :stale="schemaPending && schemaCached"
-          retryable
-          :interactive="false"
-          empty-text="No columns have been reported yet."
-          @retry="load"
-            >
-              <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
-              <template #type="{ value }"><span class="mono">{{ value }}</span></template>
-            </ResourceTable>
+            <div class="databricks-resource-table">
+              <ResourceTable
+                :columns="[
+                  { key: 'name', label: 'Column', primary: true },
+                  { key: 'type', label: 'Type' },
+                  { key: 'nullableLabel', label: 'Nullable' },
+                  { key: 'comment', label: 'Comment' },
+                ]"
+                :rows="schemaRows"
+                aria-label="Table schema columns"
+                searchable
+                search-placeholder="Search columns…"
+                :filters="[{ key: 'type', label: 'Type' }, { key: 'nullableLabel', label: 'Nullable' }]"
+                paginated
+                :page-size="25"
+                row-key="name"
+                :loaded="schemaLoaded"
+                :loading="schemaPending"
+                :refresh-mode="refreshMode"
+                :error="schemaError"
+                :stale="schemaPending && schemaCached"
+                retryable
+                :interactive="false"
+                empty-text="No columns have been reported yet."
+                @retry="load"
+              >
+                <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
+                <template #type="{ value }"><span class="mono">{{ value }}</span></template>
+              </ResourceTable>
+            </div>
           </ResourceSectionCard>
 
           <ResourceSectionCard id="table-conditions" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and observed generation for this table.">

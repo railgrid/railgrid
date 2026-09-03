@@ -6,6 +6,12 @@
 faros-provider-databricks {
   display: block;
   color: var(--color-text-primary, #e9e9f2);
+  /* Semantic status colors are mixed toward the primary foreground so their
+   * labels remain readable on the light and dark tinted status surfaces. */
+  --databricks-readable-accent: color-mix(in srgb, var(--color-accent, #8b6bff) 74%, var(--color-text-primary, #e9e9f2));
+  --databricks-readable-danger: color-mix(in srgb, var(--color-danger, #ff5d5d) 74%, var(--color-text-primary, #e9e9f2));
+  --databricks-readable-success: color-mix(in srgb, var(--color-success, #2fd6a0) 74%, var(--color-text-primary, #e9e9f2));
+  --databricks-readable-warning: color-mix(in srgb, var(--color-warning, #f0a63a) 74%, var(--color-text-primary, #e9e9f2));
 }
 
 faros-provider-databricks .sr-only {
@@ -126,6 +132,78 @@ faros-provider-databricks .databricks-resource-sections {
   gap: 14px;
 }
 
+@media (min-width: 1600px) {
+  faros-provider-databricks .databricks-resource-sections--connection,
+  faros-provider-databricks .databricks-resource-sections--warehouse {
+    align-items: start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  faros-provider-databricks .databricks-resource-sections--connection > #connection-overview,
+  faros-provider-databricks .databricks-resource-sections--warehouse > #warehouse-overview {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .databricks-resource-sections--connection > #connection-conditions,
+  faros-provider-databricks .databricks-resource-sections--warehouse > #warehouse-conditions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .databricks-resource-sections--connection.databricks-resource-sections--editing > #connection-conditions,
+  faros-provider-databricks .databricks-resource-sections--warehouse.databricks-resource-sections--editing > #warehouse-conditions,
+  faros-provider-databricks .databricks-resource-sections--connection.databricks-resource-sections--editing > #connection-edit,
+  faros-provider-databricks .databricks-resource-sections--warehouse.databricks-resource-sections--editing > #warehouse-edit {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  faros-provider-databricks .databricks-resource-sections--table {
+    align-items: start;
+    display: grid;
+    gap: 14px 18px;
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr);
+  }
+
+  faros-provider-databricks .databricks-resource-sections--table > #table-overview {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .databricks-resource-sections--table > #table-schema {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .databricks-resource-sections--table > #table-conditions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (min-width: 1800px) {
+  /* The shared resource-table contract gives the primary column all remaining
+   * width. On ultrawide Databricks views, switch to a fixed distribution so
+   * identity stays prominent without starving the operational columns. */
+  faros-provider-databricks .databricks-resource-table table {
+    table-layout: fixed;
+  }
+
+  faros-provider-databricks .databricks-resource-table table > thead > tr > th:first-child,
+  faros-provider-databricks .databricks-resource-table table > tbody > tr:has(> td:nth-child(2)) > td:first-child {
+    width: 52%;
+  }
+
+  faros-provider-databricks .databricks-resource-table table > thead > tr > th:not(:first-child),
+  faros-provider-databricks .databricks-resource-table table > tbody > tr:has(> td:nth-child(2)) > td:not(:first-child) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    width: auto;
+  }
+}
+
 faros-provider-databricks .databricks-resource-panel {
   display: flex;
   flex-direction: column;
@@ -135,6 +213,157 @@ faros-provider-databricks .databricks-resource-panel {
 
 faros-provider-databricks .databricks-create-page {
   min-width: 0;
+}
+
+/* ResourceTable renders a fragment (the table plus its teleported tooltip),
+ * so its consumer class cannot fall through from the component invocation.
+ * Keep a real wrapper at each Databricks call site for local table geometry. */
+faros-provider-databricks .databricks-resource-table {
+  min-width: 0;
+}
+
+/* Manual create routes use one fluid surface. The body grid keeps the form
+ * controls dominant while reserving a quiet rail for prerequisites and the
+ * live registration summary. */
+faros-provider-databricks .manual-create-form {
+  container-name: manual-create-form;
+  container-type: inline-size;
+  inline-size: 100%;
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+}
+
+faros-provider-databricks .manual-create-body--guided {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 2fr) minmax(17.5rem, 0.8fr);
+}
+
+faros-provider-databricks .manual-create-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+faros-provider-databricks .manual-create-fields-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+faros-provider-databricks .manual-create-security-note {
+  margin: 0;
+}
+
+faros-provider-databricks .manual-create-support-note {
+  line-height: 1.5;
+  margin: 0;
+}
+
+faros-provider-databricks .manual-create-guidance {
+  border-inline-start: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  grid-column: 2;
+  grid-row: 1;
+  max-inline-size: 75ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 2px 0 4px;
+  padding-inline-start: 18px;
+}
+
+faros-provider-databricks .manual-create-guidance__heading {
+  align-items: center;
+  color: var(--color-text-primary);
+  display: flex;
+  gap: 8px;
+}
+
+faros-provider-databricks .manual-create-guidance__heading svg {
+  color: var(--color-text-muted);
+  flex: none;
+}
+
+faros-provider-databricks .manual-create-guidance__heading h3 {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+}
+
+faros-provider-databricks .manual-create-guidance__description {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 7px 0 0;
+}
+
+faros-provider-databricks .manual-create-guidance__section {
+  border-top: 1px solid var(--color-border-subtle);
+  margin-top: 18px;
+  padding-top: 13px;
+}
+
+faros-provider-databricks .manual-create-guidance__section h4 {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+faros-provider-databricks .manual-create-guidance__section ul,
+faros-provider-databricks .manual-create-guidance__section ol {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding-inline-start: 18px;
+}
+
+faros-provider-databricks .manual-create-guidance__section li {
+  font-size: 11px;
+  line-height: 1.5;
+  padding-inline-start: 2px;
+}
+
+faros-provider-databricks .manual-create-guidance__section li::marker {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 10px;
+}
+
+faros-provider-databricks .manual-create-guidance__values {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+  margin: 10px 0 0;
+}
+
+faros-provider-databricks .manual-create-guidance__values dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+faros-provider-databricks .manual-create-guidance__values dd {
+  color: var(--color-text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+faros-provider-databricks .manual-create-guidance__values code {
+  color: inherit;
+  font-size: inherit;
 }
 
 faros-provider-databricks .databricks-create-head {
@@ -304,6 +533,12 @@ faros-provider-databricks .field-hint {
   line-height: 1.5;
 }
 
+/* Keep imported text-entry placeholders readable; FormSelect owns its
+ * canonical placeholder recipe in PortalKit. */
+faros-provider-databricks .import-dialog input::placeholder {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
 faros-provider-databricks .field-disclosure {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
@@ -381,12 +616,12 @@ faros-provider-databricks .read-error > span {
 
 faros-provider-databricks .error {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
-  color: var(--color-danger, #ff5d5d);
+  color: var(--databricks-readable-danger);
 }
 
 faros-provider-databricks .warning {
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
-  color: var(--color-warning, #f0a63a);
+  color: var(--databricks-readable-warning);
 }
 
 faros-provider-databricks .empty {
@@ -537,9 +772,15 @@ faros-provider-databricks .import-backdrop {
  * result presentation without covering a collection or depending on modal
  * focus restoration. */
 faros-provider-databricks .import-route {
+  align-items: stretch;
+  container-name: import-route;
+  container-type: inline-size;
   display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  margin-inline: 0;
   min-width: 0;
-  justify-content: center;
+  width: 100%;
 }
 
 faros-provider-databricks .import-dialog {
@@ -558,6 +799,136 @@ faros-provider-databricks .import-dialog--route {
   box-shadow: none;
   max-height: none;
   width: 100%;
+}
+
+/* Route-owned browse fills the shared AppLayout column. Keeping the stepper,
+ * body and actions in one primary column makes their left and right edges
+ * agree at every step until the ultrawide task layout takes over. */
+faros-provider-databricks .import-workbench {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+faros-provider-databricks .import-primary {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+faros-provider-databricks .import-primary > :is(.import-steps, .import-body, .import-actions, footer) {
+  width: 100%;
+}
+
+/* Keep the workbench fluid with the route. The rail is intentionally absent
+ * from modal mode. */
+faros-provider-databricks .import-route .import-workbench {
+  margin-inline: 0;
+  max-inline-size: none;
+  width: 100%;
+}
+
+faros-provider-databricks .import-context-rail {
+  background: var(--color-surface, #0a0b12);
+  border-block-start: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  color: var(--color-text-secondary, #8a8ca6);
+  min-width: 0;
+  padding: 18px;
+}
+
+faros-provider-databricks .import-context-rail h3 {
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+}
+
+faros-provider-databricks .import-context-rail p {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 8px 0 0;
+  max-inline-size: 34ch;
+}
+
+faros-provider-databricks .import-context-rail ul {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding-inline-start: 18px;
+}
+
+faros-provider-databricks .import-context-rail li {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  line-height: 1.5;
+  max-inline-size: 34ch;
+  overflow-wrap: anywhere;
+}
+
+faros-provider-databricks .import-context-values {
+  display: grid;
+  gap: 7px 12px;
+  grid-template-columns: minmax(0, 5.5rem) minmax(0, 1fr);
+  margin: 18px 0 0;
+}
+
+faros-provider-databricks .import-context-values dt,
+faros-provider-databricks .import-context-values dd {
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  min-width: 0;
+}
+
+faros-provider-databricks .import-context-values dt {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+faros-provider-databricks .import-context-values dd,
+faros-provider-databricks .import-context-values code {
+  color: var(--color-text-primary, #e9e9f2);
+  overflow-wrap: anywhere;
+}
+
+faros-provider-databricks .import-context-values code {
+  font-size: inherit;
+}
+
+faros-provider-databricks .import-route > header > p {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+@container import-route (min-width: 1200px) {
+  /* Reserve a stable 20–24rem context rail only once there is room for two
+   * columns. Below this breakpoint the rail follows the primary task. */
+  faros-provider-databricks .import-route .import-workbench {
+    align-items: start;
+    column-gap: clamp(24px, 2vw, 32px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  }
+
+  faros-provider-databricks .import-route .import-primary {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .import-route .import-context-rail {
+    align-self: stretch;
+    border-block-start: 0;
+    border-inline-start: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 100%;
+    padding-block: 18px 24px;
+    padding-inline: 24px 18px;
+  }
 }
 
 faros-provider-databricks .import-head,
@@ -587,6 +958,22 @@ faros-provider-databricks .import-steps {
 faros-provider-databricks .import-steps li { border-bottom: 2px solid transparent; color: var(--color-text-secondary, #8a8ca6); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 9px 4px 8px; text-align: center; text-transform: uppercase; }
 faros-provider-databricks .import-steps li[aria-current='step'] { border-bottom-color: var(--color-accent, #8b6bff); color: var(--color-accent, #8b6bff); }
 faros-provider-databricks .import-body { min-height: 260px; overflow-y: auto; padding: 18px; }
+faros-provider-databricks .import-route .import-body--source { min-height: 180px; }
+faros-provider-databricks .import-body--source .import-stack,
+faros-provider-databricks .import-body--review .review-list,
+faros-provider-databricks .import-body--results .result-list {
+  box-sizing: border-box;
+  margin-inline: auto;
+  max-inline-size: 68rem;
+  width: 100%;
+}
+faros-provider-databricks .import-body--browse > .lazy-tree {
+  box-sizing: border-box;
+  margin-inline: auto;
+  max-inline-size: 68rem;
+  width: 100%;
+}
+faros-provider-databricks .import-route .import-body--source .import-stack { max-inline-size: 42rem; }
 faros-provider-databricks .import-stack,
 faros-provider-databricks .review-list,
 faros-provider-databricks .result-list { display: flex; flex-direction: column; gap: 10px; }
@@ -612,35 +999,37 @@ faros-provider-databricks .lazy-tree { display: grid; gap: 0; outline: none; }
 faros-provider-databricks .lazy-tree-group { border-left: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); display: grid; gap: 0; margin-left: 8px; padding-left: 10px; }
 faros-provider-databricks .lazy-tree-item { outline: none; }
 faros-provider-databricks .lazy-tree-item:focus > .lazy-tree-row { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); outline: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 55%, transparent); outline-offset: -1px; }
-faros-provider-databricks .lazy-tree-row { align-items: center; background: transparent; border: 0; border-radius: 3px; display: grid; gap: 6px; grid-template-columns: 14px 14px minmax(0, 1fr); min-height: 30px; padding: 4px 6px; transition: background 140ms ease, outline-color 140ms ease; }
+faros-provider-databricks .lazy-tree-row { align-items: center; background: transparent; border: 0; border-radius: 3px; display: grid; gap: 6px; grid-template-columns: 44px 44px minmax(0, 1fr); min-block-size: 44px; padding: 0 6px; transition: background 140ms ease, outline-color 140ms ease; }
 faros-provider-databricks .lazy-tree-row:not(.disabled):hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 5%, transparent); }
 faros-provider-databricks .lazy-tree-row.disabled { cursor: not-allowed; opacity: .58; }
-faros-provider-databricks .lazy-tree-expander { align-items: center; background: transparent; border: 0; color: var(--color-text-muted, #5d5f78); display: flex; height: 16px; justify-content: center; padding: 0; width: 16px; }
+faros-provider-databricks .lazy-tree-expander { align-items: center; background: transparent; border: 0; color: var(--color-text-muted, #5d5f78); display: flex; height: 44px; justify-content: center; min-height: 44px; min-width: 44px; padding: 0; width: 44px; }
 faros-provider-databricks .lazy-tree-expander svg { height: 14px; transition: transform 140ms ease; width: 14px; }
 faros-provider-databricks .lazy-tree-expander svg.expanded { transform: rotate(90deg); }
-faros-provider-databricks .lazy-tree-expander-spacer { height: 16px; width: 16px; }
+faros-provider-databricks .lazy-tree-expander-spacer { height: 44px; min-height: 44px; min-width: 44px; width: 44px; }
+faros-provider-databricks .lazy-tree-checkbox-hit { align-items: center; cursor: pointer; display: flex; height: 44px; justify-content: center; min-height: 44px; min-width: 44px; width: 44px; }
+faros-provider-databricks .lazy-tree-checkbox-hit input { flex: 0 0 auto; }
 faros-provider-databricks .lazy-tree-copy { display: grid; gap: 2px; min-width: 0; }
 faros-provider-databricks .lazy-tree-copy strong { color: var(--color-text-primary, #e9e9f2); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-secondary, #8a8ca6); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-faros-provider-databricks .lazy-tree-error { color: var(--color-danger, #ff5d5d); font-size: 11px; margin: 5px 0 6px 40px; }
-faros-provider-databricks .lazy-tree-more { margin: 5px 0 5px 40px; }
-faros-provider-databricks .lazy-tree-root-more { justify-self: start; margin-top: 6px; }
+faros-provider-databricks .lazy-tree-error { color: var(--databricks-readable-danger); font-size: 11px; margin: 5px 0 6px 40px; }
+faros-provider-databricks .lazy-tree-more { margin: 5px 0 5px 40px; min-height: 44px; }
+faros-provider-databricks .lazy-tree-root-more { justify-self: start; margin-top: 6px; min-height: 44px; }
 faros-provider-databricks .review-row { align-items: start; grid-template-columns: minmax(0, 1fr) minmax(220px, .8fr); }
 faros-provider-databricks .result-summary { align-items: center; display: flex; gap: 10px; padding: 4px 2px 10px; }
-faros-provider-databricks .result-summary > svg { color: var(--color-accent, #8b6bff); height: 20px; width: 20px; }
+faros-provider-databricks .result-summary > svg { color: var(--databricks-readable-accent); height: 20px; width: 20px; }
 faros-provider-databricks .result-row { grid-template-columns: minmax(120px, .7fr) auto minmax(0, 1fr); }
 faros-provider-databricks .result-state { border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 3px; font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 2px 5px; text-transform: uppercase; }
-faros-provider-databricks .result-state.created { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
-faros-provider-databricks .result-state.existing { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); }
+faros-provider-databricks .result-state.created { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--databricks-readable-success); }
+faros-provider-databricks .result-state.existing { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--databricks-readable-accent); }
 faros-provider-databricks .result-state.conflict,
-faros-provider-databricks .result-state.failed { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+faros-provider-databricks .result-state.failed { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--databricks-readable-danger); }
 faros-provider-databricks .prerequisite { align-items: center; background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); border-radius: 4px; color: var(--color-text-primary, #e9e9f2); display: flex; font-size: 12px; gap: 12px; justify-content: space-between; padding: 10px 12px; }
 faros-provider-databricks .prerequisite-copy { min-width: 0; }
 faros-provider-databricks .prerequisite-action { flex: 0 0 auto; margin-left: auto; }
 faros-provider-databricks .initialization-status { min-height: 18px; }
 faros-provider-databricks .initialization-phase,
 faros-provider-databricks .initialization-summary { align-items: center; color: var(--color-text-secondary, #8a8ca6); display: flex; font-size: 11px; gap: 7px; margin: 0; }
-faros-provider-databricks .initialization-summary--ready { color: var(--color-success, #2fd6a0); }
+faros-provider-databricks .initialization-summary--ready { color: var(--databricks-readable-success); }
 faros-provider-databricks .import-loading { align-items: center; color: var(--color-text-secondary, #8a8ca6); display: flex; font-size: 12px; gap: 7px; margin: 12px 0 0; }
 faros-provider-databricks .import-loading svg,
 faros-provider-databricks .import-actions svg { height: 14px; width: 14px; }
@@ -648,8 +1037,139 @@ faros-provider-databricks .spin { animation: provider-spin .8s linear infinite; 
 faros-provider-databricks .import-actions { border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 faros-provider-databricks .import-spacer { flex: 1; }
 
+faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(button, a) {
+  min-height: 44px;
+}
+
+@container import-route (min-width: 1800px) {
+  /* At ultrawide widths, keep progress in a compact vertical rail while the
+   * task itself owns the flexible column. The rail spans both task rows so
+   * body and footer retain one aligned right edge. */
+  faros-provider-databricks .import-route .import-primary {
+    display: grid;
+    grid-template-columns: minmax(12rem, 14rem) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  faros-provider-databricks .import-route .import-primary > .import-steps {
+    align-items: stretch;
+    border-bottom: 0;
+    border-inline-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+    display: flex;
+    flex-direction: column;
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    padding: 18px 0;
+  }
+
+  faros-provider-databricks .import-route .import-primary > .import-steps li {
+    align-items: center;
+    border-bottom: 0;
+    border-inline-start: 2px solid transparent;
+    display: flex;
+    justify-content: flex-start;
+    min-block-size: 44px;
+    padding: 9px 14px;
+    text-align: start;
+  }
+
+  faros-provider-databricks .import-route .import-primary > .import-steps li[aria-current='step'] {
+    border-inline-start-color: var(--color-accent, #8b6bff);
+  }
+
+  faros-provider-databricks .import-route .import-primary > .import-body {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .import-route .import-primary > footer {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  /* Keep short source forms readable without recentering them inside the
+   * fluid task column. Browse needs the full task width for its tree. */
+  faros-provider-databricks .import-route .import-body--source .import-stack {
+    margin-inline: 0;
+    max-inline-size: 56rem;
+  }
+
+  faros-provider-databricks .import-route .import-body--browse > .lazy-tree {
+    margin-inline: 0;
+    max-inline-size: none;
+  }
+}
+
 
 @keyframes provider-spin { to { transform: rotate(360deg); } }
+
+@container manual-create-form (min-width: 1400px) {
+  /* Short forms use the available left track without stretching each field
+   * into a single long control. The security note occupies the fourth cell
+   * beside the token guidance. */
+  faros-provider-databricks .manual-create-fields-grid--connection,
+  faros-provider-databricks .manual-create-fields-grid--warehouse {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container manual-create-form (min-width: 1600px) {
+  /* Three locator fields remain readable on true ultrawide surfaces. */
+  faros-provider-databricks .manual-create-form-fields--table .form-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container manual-create-form (min-width: 1800px) {
+  /* The rail grows to a quiet, bounded column while the form owns the rest. */
+  faros-provider-databricks .manual-create-body--guided {
+    grid-template-columns: minmax(0, 2fr) minmax(17.5rem, min(32rem, 40%));
+  }
+
+  /* Three columns avoid long controls before the fourth is useful at 4K. */
+  faros-provider-databricks .manual-create-fields-grid--connection,
+  faros-provider-databricks .manual-create-fields-grid--warehouse,
+  faros-provider-databricks .manual-create-form-fields--table .form-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container manual-create-form (min-width: 3000px) {
+  /* At 4K, keep each control below a comfortable reading width. */
+  faros-provider-databricks .manual-create-fields-grid--connection,
+  faros-provider-databricks .manual-create-fields-grid--warehouse,
+  faros-provider-databricks .manual-create-form-fields--table .form-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container manual-create-form (max-width: 960px) {
+  /* Let users reach the controls before the full guidance rail when the form
+   * container stacks. The explicit rows also override wide-screen rules when
+   * a narrow create surface sits inside a wide viewport. */
+  faros-provider-databricks .manual-create-body--guided {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  faros-provider-databricks .manual-create-form-fields {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  faros-provider-databricks .manual-create-guidance {
+    border-block-end: 1px solid var(--color-border-subtle);
+    border-inline-start: 0;
+    grid-column: 1;
+    grid-row: 2;
+    padding: 0 0 18px;
+  }
+
+  faros-provider-databricks .manual-create-fields-grid--connection,
+  faros-provider-databricks .manual-create-fields-grid--warehouse,
+  faros-provider-databricks .manual-create-form-fields--table .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 
 @media (max-width: 620px) {
   /* Keep collection copy readable when Refresh and create actions cannot sit
@@ -671,6 +1191,15 @@ faros-provider-databricks .import-spacer { flex: 1; }
   faros-provider-databricks .prerequisite-action { margin-left: 0; }
   faros-provider-databricks .review-row,
   faros-provider-databricks .result-row { grid-template-columns: minmax(0, 1fr); }
+  faros-provider-databricks .manual-create-form input:not([type='hidden']),
+  faros-provider-databricks .manual-create-form [data-form-select-trigger],
+  faros-provider-databricks .manual-create-form > .manual-create-body--guided + div :is(button, a) {
+    min-height: 44px;
+  }
+  faros-provider-databricks .manual-create-form > .manual-create-body--guided + div {
+    position: static;
+    z-index: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

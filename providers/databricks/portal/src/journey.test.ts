@@ -4,8 +4,10 @@ import {
   databricksJourneyStorage,
   destinationAfterPrerequisite,
   firstRunModel,
+  readDatabricksPrerequisiteIntent,
   prerequisiteCreatePath,
   readDatabricksReturnIntent,
+  writeDatabricksPrerequisiteIntent,
   writeDatabricksReturnIntent,
   type DatabricksJourneyStorage,
 } from './journey.js'
@@ -37,6 +39,8 @@ const storage: DatabricksJourneyStorage = {
 }
 const tenantA = databricksJourneyTenantKey('root:tenant-a', 'org-a', 'workspace-a')
 const tenantB = databricksJourneyTenantKey('root:tenant-b', 'org-b', 'workspace-b')
+writeDatabricksPrerequisiteIntent(storage, tenantA, 'tables', 'create/table/browse', 'create/warehouse/browse')
+equal(readDatabricksPrerequisiteIntent(storage, tenantA, 'create/warehouse/browse'), { originPath: 'tables', successPath: 'create/table/browse' }, 'prerequisite intent keeps cancel origin separate from success destination')
 writeDatabricksReturnIntent(storage, tenantA, 'create/table/browse', 'create/connection')
 equal(readDatabricksReturnIntent(storage, tenantA, 'create/connection'), 'create/table/browse', 'same tenant and prerequisite route restore return intent')
 writeDatabricksReturnIntent(storage, tenantA, 'create/table/browse', 'create/warehouse/browse')
@@ -51,6 +55,8 @@ clearDatabricksReturnIntent(storage)
 equal(readDatabricksReturnIntent(storage, tenantA, 'create/connection'), null, 'normal navigation clears return intent')
 values.set('faros:databricks:return-intent', JSON.stringify({ tenantKey: tenantA, returnPath: 'connections', expectedPath: 'create/connection' }))
 equal(readDatabricksReturnIntent(storage, tenantA, 'create/connection'), null, 'invalid return paths are rejected')
+values.set('faros:databricks:return-intent', JSON.stringify({ tenantKey: tenantA, returnPath: 'create/table/browse', expectedPath: 'create/connection' }))
+equal(readDatabricksPrerequisiteIntent(storage, tenantA, 'create/connection'), { originPath: 'tables', successPath: 'create/table/browse' }, 'legacy single-record intent derives its collection origin')
 
 const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
 Object.defineProperty(globalThis, 'window', {

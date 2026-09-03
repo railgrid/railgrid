@@ -455,8 +455,8 @@ onUnmounted(() => {
       @action="handleFirstRunAction"
     />
 
-    <ResourceTable
-      v-else
+    <div v-else class="databricks-resource-table">
+      <ResourceTable
       :columns="[
         { key: 'name', label: 'Name', primary: true },
         { key: 'connectionRef', label: 'Connection' },
@@ -511,7 +511,8 @@ onUnmounted(() => {
           />
         </div>
       </template>
-    </ResourceTable>
+      </ResourceTable>
+    </div>
 
   </section>
 </template>

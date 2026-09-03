@@ -324,7 +324,7 @@ onUnmounted(() => {
           <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
         </p>
 
-        <div v-if="warehouse" class="databricks-resource-sections">
+        <div v-if="warehouse" class="databricks-resource-sections" :class="['databricks-resource-sections--warehouse', { 'databricks-resource-sections--editing': editing }]">
           <ResourceSectionCard id="warehouse-overview" eyebrow="Warehouse" title="Overview" description="Connection reference, Databricks state, and reconciliation details.">
             <template #actions>
               <button v-if="!editing" class="k-btn k-btn--ghost icon-text" type="button" :disabled="operationLocked(warehouse.name)" @click="startEdit"><Settings2 :size="14" aria-hidden="true" /> Edit warehouse</button>

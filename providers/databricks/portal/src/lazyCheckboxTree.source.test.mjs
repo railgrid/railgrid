@@ -80,23 +80,60 @@ test('split create uses canonical buttons and menu items', async () => {
 test('lazy tree uses dense transparent rows without decorative focus glow', async () => {
   const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
   const wizard = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
+  const tree = await readFile(new URL('./LazyCheckboxTree.vue', import.meta.url), 'utf8')
   const row = styles.match(/faros-provider-databricks \.lazy-tree-row \{([^}]*)\}/)?.[1] ?? ''
+  const expander = styles.match(/faros-provider-databricks \.lazy-tree-expander \{([^}]*)\}/)?.[1] ?? ''
+  const checkboxHit = styles.match(/faros-provider-databricks \.lazy-tree-checkbox-hit \{([^}]*)\}/)?.[1] ?? ''
   const focus = styles.match(/faros-provider-databricks \.lazy-tree-item:focus > \.lazy-tree-row \{([^}]*)\}/)?.[1] ?? ''
   const description = styles.match(/faros-provider-databricks \.lazy-tree-copy small \{([^}]*)\}/)?.[1] ?? ''
   assert.match(row, /background:\s*transparent/)
   assert.match(row, /border:\s*0/)
-  assert.match(row, /min-height:\s*30px/)
+  assert.match(row, /grid-template-columns:\s*44px\s+44px\s+minmax\(0,\s*1fr\)/)
+  assert.match(row, /min-block-size:\s*44px/)
+  for (const hitZone of [expander, checkboxHit]) {
+    assert.match(hitZone, /height:\s*44px/)
+    assert.match(hitZone, /min-height:\s*44px/)
+    assert.match(hitZone, /min-width:\s*44px/)
+    assert.match(hitZone, /width:\s*44px/)
+  }
   assert.doesNotMatch(focus, /box-shadow|accent-glow/)
   assert.match(focus, /outline:/)
   assert.match(styles, /\.lazy-tree-item:focus\s*>\s*\.lazy-tree-row/)
   assert.doesNotMatch(styles, /\.lazy-tree-row input\s*\{/)
   assert.doesNotMatch(styles, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)/)
   assert.doesNotMatch(styles, /faros-provider-databricks select:focus/)
-  assert.match(wizard, /<select[^>]*class="k-input"/)
+  assert.match(wizard, /<FormSelect[\s\S]*:options="connectionOptions"/)
+  assert.doesNotMatch(wizard, /<select\b/)
   assert.match(wizard, /<input[^>]*class="k-input"/)
   assert.doesNotMatch(styles, /faros-provider-databricks input\s*,/)
   assert.doesNotMatch(styles, /faros-provider-databricks input:focus/)
+  assert.match(tree, /function activateFromPointer\(id: string\): void \{\s*focusKey\(id\)\s*activate\(id\)/)
+  assert.match(tree, /class="lazy-tree-checkbox-hit" @click\.stop="activateFromPointer\(id\)"/)
+  assert.match(tree, /@mousedown\.prevent @click\.stop="focusKey\(id\)"/)
   assert.match(description, /overflow:\s*hidden/)
   assert.match(description, /text-overflow:\s*ellipsis/)
   assert.match(description, /white-space:\s*nowrap/)
+})
+
+test('import surfaces keep readable placeholders, semantic status colors, and unique review IDs', async () => {
+  const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+  const canonicalStyles = await readFile(new URL('../../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const wizard = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
+  const providerTokens = styles.match(/faros-provider-databricks \{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const selectPlaceholder = canonicalStyles.match(/\.k-form-select__value\.is-placeholder \{([^}]*)\}/)?.[1] ?? ''
+  const inputPlaceholder = styles.match(/faros-provider-databricks \.import-dialog input::placeholder \{([^}]*)\}/)?.[1] ?? ''
+  for (const token of ['accent', 'danger', 'success', 'warning']) {
+    assert.match(providerTokens, new RegExp(`--databricks-readable-${token}:\\s*color-mix\\([^;]*var\\(--color-${token}`), `${token} has a foreground-aware semantic token`)
+  }
+  assert.match(styles, /\.result-state\.created[^}]*color:\s*var\(--databricks-readable-success\)/)
+  assert.match(styles, /\.result-state\.existing[^}]*color:\s*var\(--databricks-readable-accent\)/)
+  assert.match(styles, /\.result-state\.(?:conflict|failed)[^}]*color:\s*var\(--databricks-readable-danger\)/)
+  assert.match(styles, /\.initialization-summary--ready[^}]*color:\s*var\(--databricks-readable-success\)/)
+  assert.match(selectPlaceholder, /color:\s*var\(--color-text-secondary/)
+  assert.match(inputPlaceholder, /color:\s*var\(--color-text-secondary/)
+
+  assert.match(wizard, /function reviewInputID\(index: number\): string \{ return `import-review-name-\$\{index\}` \}/)
+  assert.match(wizard, /function reviewErrorID\(index: number\): string \{ return `\$\{reviewInputID\(index\)\}-error` \}/)
+  assert.match(wizard, /:for="reviewInputID\(index\)"[\s\S]*:id="reviewInputID\(index\)"[\s\S]*:aria-invalid="reviewEntryError\(entry\) \? 'true' : undefined"[\s\S]*:aria-describedby="reviewEntryError\(entry\) \? reviewErrorID\(index\) : undefined"/)
+  assert.match(wizard, /:id="reviewErrorID\(index\)" class="error" role="alert"/)
 })

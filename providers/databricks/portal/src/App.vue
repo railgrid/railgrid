@@ -11,8 +11,9 @@ import {
   databricksJourneyStorage,
   destinationAfterPrerequisite,
   prerequisiteCreatePath,
-  readDatabricksReturnIntent,
-  writeDatabricksReturnIntent,
+  readDatabricksPrerequisiteIntent,
+  writeDatabricksPrerequisiteIntent,
+  type DatabricksCollectionPath,
   type DatabricksPrerequisiteKind,
   type DatabricksReturnPath,
 } from './journey'
@@ -45,6 +46,9 @@ const activeJourneyPath = () => {
     ? createPath(activeRoute.kind, activeRoute.mode)
     : collectionPath(activeRoute.page)
 }
+// A prerequisite journey has two destinations: the collection the user left
+// (for Back/Cancel) and the create route to continue after success.
+const prerequisiteOriginPath = ref<DatabricksCollectionPath | null>(null)
 const prerequisiteReturnPath = ref<DatabricksReturnPath | null>(null)
 // A provider view may stay mounted while the host rotates a token or changes
 // workspaces. Keying each resource surface forces the old context's data and
@@ -66,9 +70,11 @@ watch(
   () => [props.ctx?.tenant, props.ctx?.orgUUID, props.ctx?.workspaceUUID, props.ctx?.subPath] as const,
   ([, orgUUID, workspaceUUID]) => {
     const tenantKey = journeyTenantKey()
-    prerequisiteReturnPath.value = tenantKey
-      ? readDatabricksReturnIntent(journeyStorage, tenantKey, activeJourneyPath())
+    const intent = tenantKey
+      ? readDatabricksPrerequisiteIntent(journeyStorage, tenantKey, activeJourneyPath())
       : null
+    prerequisiteOriginPath.value = intent?.originPath ?? null
+    prerequisiteReturnPath.value = intent?.successPath ?? null
     setTenantSelection(orgUUID, workspaceUUID)
   },
   { immediate: true },
@@ -94,9 +100,17 @@ function dispatchNavigation(path: string, replace = false): void {
   }))
 }
 
+function clearCurrentJourneyIntent(): void {
+  const tenantKey = journeyTenantKey()
+  // A context without a tenant must not clear another tenant's pending
+  // journey from the shared session store.
+  if (tenantKey) clearDatabricksReturnIntent(journeyStorage, tenantKey)
+}
+
 function navigate(path: string, replace = false): void {
+  prerequisiteOriginPath.value = null
   prerequisiteReturnPath.value = null
-  clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
+  clearCurrentJourneyIntent()
   dispatchNavigation(path, replace)
 }
 
@@ -105,49 +119,119 @@ function openCreate(kind: 'connection' | 'warehouse' | 'table', mode: 'manual' |
 }
 
 function cancelCreate(path: 'connections' | 'warehouses' | 'tables'): void {
-  const returnPath = prerequisiteReturnPath.value
+  const originPath = prerequisiteOriginPath.value
+  prerequisiteOriginPath.value = null
   prerequisiteReturnPath.value = null
-  clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
-  dispatchNavigation(returnPath ?? collectionPath(path), true)
+  clearCurrentJourneyIntent()
+  dispatchNavigation(originPath ?? collectionPath(path), true)
+}
+
+function completePrerequisite(kind: DatabricksPrerequisiteKind, successful: boolean, fallbackPath: DatabricksCollectionPath): void {
+  if (!successful) {
+    cancelCreate(fallbackPath)
+    return
+  }
+
+  const successPath = prerequisiteReturnPath.value
+  if (!successPath) {
+    prerequisiteOriginPath.value = null
+    prerequisiteReturnPath.value = null
+    clearCurrentJourneyIntent()
+    dispatchNavigation(collectionPath(fallbackPath), true)
+    return
+  }
+
+  const destination = destinationAfterPrerequisite(kind, successPath)
+  if (!destination.keepReturnIntent) {
+    prerequisiteOriginPath.value = null
+    prerequisiteReturnPath.value = null
+    clearCurrentJourneyIntent()
+  } else {
+    const tenantKey = journeyTenantKey()
+    if (tenantKey && prerequisiteOriginPath.value) {
+      writeDatabricksPrerequisiteIntent(
+        journeyStorage,
+        tenantKey,
+        prerequisiteOriginPath.value,
+        successPath,
+        destination.path,
+      )
+    }
+  }
+  dispatchNavigation(destination.path, true)
+}
+
+function completeImport(kind: 'warehouse' | 'table', successful: boolean): void {
+  if (kind === 'warehouse' && prerequisiteReturnPath.value) {
+    completePrerequisite('warehouse', successful, 'warehouses')
+    return
+  }
+  if (!successful) {
+    cancelCreate(kind === 'warehouse' ? 'warehouses' : 'tables')
+    return
+  }
+  navigate(collectionPath(kind === 'warehouse' ? 'warehouses' : 'tables'), true)
+}
+
+function completeImportForRoute(successful: boolean): void {
+  const activeRoute = route.value
+  if (activeRoute.page !== 'create' || (activeRoute.kind !== 'warehouse' && activeRoute.kind !== 'table')) return
+  completeImport(activeRoute.kind, successful)
 }
 
 function created(kind: 'connection' | 'warehouse' | 'table', name: string): void {
   if (kind !== 'table' && prerequisiteReturnPath.value) {
-    const destination = destinationAfterPrerequisite(kind, prerequisiteReturnPath.value)
-    if (!destination.keepReturnIntent) {
-      prerequisiteReturnPath.value = null
-      clearDatabricksReturnIntent(journeyStorage, journeyTenantKey())
-    } else {
-      const tenantKey = journeyTenantKey()
-      if (tenantKey) writeDatabricksReturnIntent(journeyStorage, tenantKey, prerequisiteReturnPath.value, destination.path)
-    }
-    dispatchNavigation(destination.path, true)
+    completePrerequisite(kind, true, kind === 'connection' ? 'connections' : 'warehouses')
     return
   }
   const page = kind === 'connection' ? 'connections' : kind === 'warehouse' ? 'warehouses' : 'tables'
   navigate(detailPath(page, name), true)
 }
 
-function beginPrerequisite(kind: DatabricksPrerequisiteKind, returnPath: DatabricksReturnPath): void {
-  prerequisiteReturnPath.value = returnPath
+function beginPrerequisite(
+  kind: DatabricksPrerequisiteKind,
+  resource: 'warehouse' | 'table',
+  originPath: DatabricksCollectionPath,
+  mode: 'manual' | 'browse',
+): void {
+  prerequisiteOriginPath.value = originPath
+  prerequisiteReturnPath.value = createPath(resource, mode) as DatabricksReturnPath
   const prerequisitePath = prerequisiteCreatePath(kind)
   const tenantKey = journeyTenantKey()
-  if (tenantKey) writeDatabricksReturnIntent(journeyStorage, tenantKey, returnPath, prerequisitePath)
+  if (tenantKey) {
+    writeDatabricksPrerequisiteIntent(
+      journeyStorage,
+      tenantKey,
+      originPath,
+      prerequisiteReturnPath.value,
+      prerequisitePath,
+    )
+  }
   dispatchNavigation(prerequisitePath)
 }
 
+function defaultOriginPath(resource: 'warehouse' | 'table'): DatabricksCollectionPath {
+  return resource === 'warehouse' ? 'warehouses' : 'tables'
+}
+
 function beginBrowsePrerequisite(kind: DatabricksPrerequisiteKind, resource: 'warehouse' | 'table'): void {
-  beginPrerequisite(kind, createPath(resource, 'browse') as DatabricksReturnPath)
+  beginPrerequisite(kind, resource, prerequisiteOriginPath.value ?? defaultOriginPath(resource), 'browse')
 }
 
 function beginManualPrerequisite(kind: DatabricksPrerequisiteKind, resource: 'warehouse' | 'table'): void {
-  beginPrerequisite(kind, createPath(resource, 'manual') as DatabricksReturnPath)
+  beginPrerequisite(kind, resource, prerequisiteOriginPath.value ?? defaultOriginPath(resource), 'manual')
 }
 
 function beginActiveBrowsePrerequisite(kind: DatabricksPrerequisiteKind): void {
   const activeRoute = route.value
   if (activeRoute.page !== 'create' || (activeRoute.kind !== 'warehouse' && activeRoute.kind !== 'table')) return
   beginBrowsePrerequisite(kind, activeRoute.kind)
+}
+
+function prerequisiteBackLabel(kind: 'warehouse' | 'table'): string {
+  if (prerequisiteOriginPath.value === 'connections') return 'Connections'
+  if (prerequisiteOriginPath.value === 'tables' || kind === 'table') return 'Tables'
+  return 'Warehouses'
 }
 
 </script>
@@ -192,8 +276,10 @@ function beginActiveBrowsePrerequisite(kind: DatabricksPrerequisiteKind): void {
         v-else-if="route.page === 'create' && (route.kind === 'warehouse' || route.kind === 'table') && route.mode === 'browse'"
         :key="`browse-${route.kind}:${contextVersion}`"
         :kind="route.kind"
+        :back-label="prerequisiteBackLabel(route.kind)"
         route-owned
-        @close="cancelCreate(route.kind === 'warehouse' ? 'warehouses' : 'tables')"
+        @cancel="cancelCreate(route.kind === 'warehouse' ? 'warehouses' : 'tables')"
+        @complete="completeImportForRoute"
         @prerequisite="beginActiveBrowsePrerequisite"
       />
       <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`connection-detail:${route.connection}:${contextVersion}`" :name="route.connection" @back="navigate('connections')" />

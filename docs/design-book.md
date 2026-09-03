@@ -147,6 +147,7 @@ writing any CSS**:
 | `.k-btn` (+ `--primary/--ghost/--text/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; text = transparent, borderless inline action; danger = danger-subtle tint, **no glow** |
 | `.k-back-action` | Intrinsic-width, start-aligned borderless link modifier for `.k-btn`; 12px/500 accent link with a 6px icon gap, accent-hover underline, and no control surface. Vue resource detail pages use `ResourceBackLink`, which always renders a real `href`; only an unmodified primary activation is intercepted for caller-owned SPA `back` routing, while modified and non-primary clicks retain native browser behavior. Disabled state prevents navigation and `back` emission, exposes `aria-disabled="true"`, and leaves keyboard tab order with `tabindex="-1"`. The arrow flips in RTL; coarse and hybrid any-pointer targets are at least 44×44px. Use `.k-back-action` directly for create flows and other non-detail controls. |
 | `.k-input` | 4px overlay-bg input; focus = accent border + 3px subtle ring + glow |
+| `.k-form-select` (+ `__trigger`, `__panel`, `__option`) | Accessible single-select combobox from `portalkit-vue/FormSelect.vue`; composes the input and menu recipes, with viewport-aware teleported listbox positioning |
 | `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over an expanded tabular numeral |
 | `.k-menu` / `.k-menu-item` (+ `--danger`, `.is-selected`, `.k-menu-sep`) | Dropdown/context menu panel + items; selection = accent-subtle, no glow |
 | `.k-layout-selector` (+ `__trigger`, `__menu`, `__item`) | Controlled grid/list presentation menu; compact icon trigger, radio semantics, no glow |
@@ -557,6 +558,11 @@ incrementally.
 - Closed control: exactly `.k-input` (4px, overlay bg, focus ring + glow) with
   a 3.5px chevron in `text-muted`. Native `<select>` popups cannot be styled —
   that's fine; the OS popup is sanctioned. `accent-color` themes what it can.
+- When a product-consistent popup is required, use the shared
+  `portalkit-vue/FormSelect.vue`. It provides single-select combobox/listbox
+  semantics, keyboard navigation, disabled options, and viewport-aware
+  teleported positioning; providers must not copy or restyle its `.k-*`
+  recipes.
 - If search/multi-select is ever needed, build a combobox as: `.k-input`
   trigger + the dropdown-menu panel above + `.k-badge`-style tags for selected
   values. Never a third visual language.

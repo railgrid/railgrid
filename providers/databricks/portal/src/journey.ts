@@ -1,5 +1,6 @@
 export type DatabricksResourceKind = 'connection' | 'warehouse' | 'table'
 export type DatabricksPrerequisiteKind = Exclude<DatabricksResourceKind, 'table'>
+export type DatabricksCollectionPath = 'connections' | 'warehouses' | 'tables'
 export type DatabricksReturnPath =
   | 'create/warehouse/manual'
   | 'create/warehouse/browse'
@@ -21,11 +22,20 @@ export interface DatabricksJourneyStorage {
 }
 
 interface StoredReturnIntent {
-  returnPath: unknown
-  expectedPath: unknown
+  // `returnPath` is the persisted name used by the first implementation. Keep
+  // reading it while new writes use the explicit success-path name below.
+  returnPath?: unknown
+  successPath?: unknown
+  originPath?: unknown
+  expectedPath?: unknown
 }
 
 type StoredReturnIntents = Record<string, StoredReturnIntent>
+
+export interface DatabricksPrerequisiteIntent {
+  originPath: DatabricksCollectionPath
+  successPath: DatabricksReturnPath
+}
 
 export function databricksJourneyTenantKey(tenant?: string | null, orgUUID?: string | null, workspaceUUID?: string | null): string {
   return JSON.stringify([tenant || '', orgUUID || '', workspaceUUID || ''])
@@ -70,10 +80,12 @@ function readStoredIntents(storage: DatabricksJourneyStorage): StoredReturnInten
     // Read the single-record shape written by the first implementation so an
     // upgrade does not strand an in-progress journey. New writes always use
     // the tenant-indexed shape below.
-    if (typeof parsed.tenantKey === 'string' && 'returnPath' in parsed && 'expectedPath' in parsed) {
+    if (typeof parsed.tenantKey === 'string' && ('returnPath' in parsed || 'successPath' in parsed) && 'expectedPath' in parsed) {
       return {
         [parsed.tenantKey]: {
           returnPath: parsed.returnPath,
+          successPath: parsed.successPath,
+          originPath: parsed.originPath,
           expectedPath: parsed.expectedPath,
         },
       }
@@ -82,8 +94,10 @@ function readStoredIntents(storage: DatabricksJourneyStorage): StoredReturnInten
     const intents: StoredReturnIntents = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (key === '__proto__' || !isRecord(value)) continue
-      if ('returnPath' in value && 'expectedPath' in value) {
+      if (('returnPath' in value || 'successPath' in value) && 'expectedPath' in value) {
         intents[key] = { returnPath: value.returnPath, expectedPath: value.expectedPath }
+        if ('successPath' in value) intents[key].successPath = value.successPath
+        if ('originPath' in value) intents[key].originPath = value.originPath
       }
     }
     return intents
@@ -106,11 +120,32 @@ function persistStoredIntents(storage: DatabricksJourneyStorage, intents: Stored
   }
 }
 
-export function readDatabricksReturnIntent(
+function originPathForSuccessPath(successPath: DatabricksReturnPath): DatabricksCollectionPath {
+  return successPath.startsWith('create/table/') ? 'tables' : 'warehouses'
+}
+
+function storedSuccessPath(intent: StoredReturnIntent): DatabricksReturnPath | null {
+  const value = intent.successPath ?? intent.returnPath
+  return isDatabricksReturnPath(value) ? value : null
+}
+
+function storedOriginPath(intent: StoredReturnIntent, successPath: DatabricksReturnPath): DatabricksCollectionPath {
+  return intent.originPath === 'connections' || intent.originPath === 'warehouses' || intent.originPath === 'tables'
+    ? intent.originPath
+    : originPathForSuccessPath(successPath)
+}
+
+/**
+ * Read and consume the intent for one tenant when the expected prerequisite
+ * route is active. The origin is deliberately separate from the success path:
+ * cancellation returns to the collection the user left, while completion can
+ * advance to another create route.
+ */
+export function readDatabricksPrerequisiteIntent(
   storage: DatabricksJourneyStorage | null,
   tenantKey: string,
   activePath: string,
-): DatabricksReturnPath | null {
+): DatabricksPrerequisiteIntent | null {
   if (!storage) return null
   const intents = readStoredIntents(storage)
   if (intents === null) {
@@ -120,14 +155,40 @@ export function readDatabricksReturnIntent(
   const intent = intents[tenantKey]
   if (!intent) return null
 
-  const returnPath = intent.expectedPath === activePath && isDatabricksReturnPath(intent.returnPath)
-    ? intent.returnPath
+  const successPath = storedSuccessPath(intent)
+  const result = intent.expectedPath === activePath && successPath
+    ? { originPath: storedOriginPath(intent, successPath), successPath }
     : null
   // Consume only this tenant's intent. A read for tenant B must not delete or
   // reveal tenant A's pending return path.
   delete intents[tenantKey]
   persistStoredIntents(storage, intents)
-  return returnPath
+  return result
+}
+
+/** Compatibility projection for callers that only need the old success path. */
+export function readDatabricksReturnIntent(
+  storage: DatabricksJourneyStorage | null,
+  tenantKey: string,
+  activePath: string,
+): DatabricksReturnPath | null {
+  return readDatabricksPrerequisiteIntent(storage, tenantKey, activePath)?.successPath ?? null
+}
+
+export function writeDatabricksPrerequisiteIntent(
+  storage: DatabricksJourneyStorage | null,
+  tenantKey: string,
+  originPath: DatabricksCollectionPath,
+  successPath: DatabricksReturnPath,
+  expectedPath: string,
+): void {
+  if (!storage) return
+  const intents = readStoredIntents(storage)
+  if (intents === null) return
+  // Keep `returnPath` as an additive compatibility alias so an older portal
+  // can still resume a journey written by a newer one.
+  intents[tenantKey] = { originPath, successPath, returnPath: successPath, expectedPath }
+  persistStoredIntents(storage, intents)
 }
 
 export function writeDatabricksReturnIntent(
@@ -136,11 +197,7 @@ export function writeDatabricksReturnIntent(
   returnPath: DatabricksReturnPath,
   expectedPath: string,
 ): void {
-  if (!storage) return
-  const intents = readStoredIntents(storage)
-  if (intents === null) return
-  intents[tenantKey] = { returnPath, expectedPath }
-  persistStoredIntents(storage, intents)
+  writeDatabricksPrerequisiteIntent(storage, tenantKey, originPathForSuccessPath(returnPath), returnPath, expectedPath)
 }
 
 export function clearDatabricksReturnIntent(storage: DatabricksJourneyStorage | null, tenantKey?: string | null): void {

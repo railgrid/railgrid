@@ -11,6 +11,8 @@ import {
 import { resourceNameError } from '../resourceName'
 import type { DatabricksPrerequisiteKind } from '../journey'
 import type { Connection } from '../types'
+import FormSelect from '../portalkit/FormSelect.vue'
+import ManualCreateGuidance from '../components/ManualCreateGuidance.vue'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
@@ -48,6 +50,7 @@ const form = reactive({
 })
 
 const hasConnections = computed(() => connections.value.length > 0)
+const connectionOptions = computed(() => connections.value.map(connection => ({ value: connection.name, label: connection.name })))
 
 function isCurrentRead(generation: number, expectedContext: number): boolean {
   return mounted && generation === readGeneration && contextGeneration.value === expectedContext
@@ -178,41 +181,58 @@ onBeforeUnmount(() => {
       <p class="k-create-description">Register a Databricks SQL warehouse for table imports.</p>
     </header>
 
-    <form class="k-create-surface" @submit.prevent="submit">
-      <div class="k-create-body">
-      <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading connections…</p>
-      <p v-if="loadError" class="error" role="alert" aria-live="assertive">
-        <span>Could not load warehouse prerequisites: {{ loadError }}</span>
-        <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
-      </p>
-      <p v-if="loaded && !hasConnections" class="prerequisite" role="status">
-        <span class="prerequisite-copy">Add a connection before registering a warehouse.</span>
-        <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="emit('prerequisite', 'connection')">
-          Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
-        </button>
-      </p>
-        <div class="field">
-          <label class="field-label" for="warehouse-connection">Connection</label>
-          <select id="warehouse-connection" class="k-input" v-model="form.connectionRef" :disabled="loading || submitting || !hasConnections" required aria-required="true" aria-describedby="warehouse-connection-hint warehouse-form-error" :aria-invalid="!!formError">
-            <option value="" disabled>Select connection</option>
-            <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
-          </select>
-          <span id="warehouse-connection-hint" class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
+    <form class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--warehouse" @submit.prevent="submit">
+      <div class="k-create-body manual-create-body--guided">
+        <div class="manual-create-form-fields manual-create-form-fields--warehouse">
+          <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading connections…</p>
+          <p v-if="loadError" class="error" role="alert" aria-live="assertive">
+            <span>Could not load warehouse prerequisites: {{ loadError }}</span>
+            <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
+          </p>
+          <p v-if="loaded && !hasConnections" class="prerequisite" role="status">
+            <span class="prerequisite-copy">Add a connection before registering a warehouse.</span>
+            <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="emit('prerequisite', 'connection')">
+              Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+            </button>
+          </p>
+          <div class="manual-create-fields-grid manual-create-fields-grid--warehouse">
+            <div class="field">
+              <label id="warehouse-connection-label" class="field-label" for="warehouse-connection">Connection</label>
+              <FormSelect
+                id="warehouse-connection"
+                v-model="form.connectionRef"
+                name="connectionRef"
+                :options="connectionOptions"
+                placeholder="Select connection"
+                :disabled="loading || submitting || !hasConnections"
+                required
+                :invalid="!!formError"
+                labelledby="warehouse-connection-label"
+                describedby="warehouse-connection-hint warehouse-form-error"
+              />
+              <span id="warehouse-connection-hint" class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="warehouse-name">Object name</label>
+              <input id="warehouse-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" aria-describedby="warehouse-name-hint warehouse-form-error" :aria-invalid="!!formError" />
+              <span id="warehouse-name-hint" class="field-hint">How this warehouse is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="warehouse-id">Warehouse ID</label>
+              <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="loading || submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
+              <span id="warehouse-id-hint" class="field-hint">Use the warehouse’s 16-character ID. The connection token needs “Can use” permission.</span>
+              <details class="field-disclosure">
+                <summary>Where to find the warehouse ID</summary>
+                <p>In Databricks, open SQL → SQL Warehouses → your warehouse → Connection details. Copy the value after <code>/sql/1.0/warehouses/</code>, not the numeric <code>?o=</code> workspace ID.</p>
+              </details>
+            </div>
+            <p class="muted manual-create-support-note">Faros records the ID; the controller checks Can use and startable access before it reports Ready.</p>
+          </div>
         </div>
-        <div class="field">
-          <label class="field-label" for="warehouse-name">Object name</label>
-          <input id="warehouse-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" aria-describedby="warehouse-name-hint warehouse-form-error" :aria-invalid="!!formError" />
-          <span id="warehouse-name-hint" class="field-hint">How this warehouse is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="warehouse-id">Warehouse ID</label>
-          <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="loading || submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
-          <span id="warehouse-id-hint" class="field-hint">Use the warehouse’s 16-character ID. The connection token needs “Can use” permission.</span>
-          <details class="field-disclosure">
-            <summary>Where to find the warehouse ID</summary>
-            <p>In Databricks, open SQL → SQL Warehouses → your warehouse → Connection details. Copy the value after <code>/sql/1.0/warehouses/</code>, not the numeric <code>?o=</code> workspace ID.</p>
-          </details>
-        </div>
+        <ManualCreateGuidance
+          kind="warehouse"
+          :values="{ name: form.name, connectionRef: form.connectionRef, warehouseID: form.warehouseID }"
+        />
       </div>
       <div class="k-create-actions">
         <span v-if="formError" id="warehouse-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>

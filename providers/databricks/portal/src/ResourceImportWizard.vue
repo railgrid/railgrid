@@ -27,6 +27,7 @@ import {
   summarizeRegistration,
 } from './registrationFlow'
 import { resourceNameError } from './resourceName'
+import FormSelect from './portalkit/FormSelect.vue'
 import type {
   DiscoveryCoordinates,
   InitializationResource,
@@ -45,15 +46,20 @@ type Step = 'source' | 'browse' | 'review' | 'results'
 
 interface ReviewEntry { key: string; label: string; item: RegistrationItem; name: string }
 
+interface ContextRailContent { title: string; description: string; points: readonly string[] }
+
 interface ContinuationToken {
   generation: number
   context: number
 }
 
-const props = withDefaults(defineProps<{ kind: Kind; routeOwned?: boolean }>(), {
+const props = withDefaults(defineProps<{ kind: Kind; routeOwned?: boolean; backLabel?: string }>(), {
   routeOwned: false,
 })
 const emit = defineEmits<{
+  (event: 'cancel'): void
+  (event: 'complete', successful: boolean): void
+  /** @deprecated Use cancel; retained for modal consumers on older portals. */
   (event: 'close'): void
   (event: 'registered'): void
   (event: 'prerequisite', kind: DatabricksPrerequisiteKind): void
@@ -96,6 +102,8 @@ const routeAnnouncement = ref('')
 
 const plural = computed(() => props.kind === 'warehouse' ? 'warehouses' : 'tables')
 const matchingWarehouses = computed(() => warehouses.value.filter(item => item.connectionRef === connectionRef.value))
+const connectionOptions = computed(() => connections.value.map(connection => ({ value: connection.name, label: connection.name })))
+const warehouseOptions = computed(() => matchingWarehouses.value.map(warehouse => ({ value: warehouse.name, label: warehouse.name })))
 const selectedConnectionReady = computed(() => !!connectionRef.value && connections.value.some(item => item.name === connectionRef.value))
 const selectedNodes = computed(() => tree.value.selectedLeafIds.map(id => tree.value.nodes[id]).filter((node): node is RegistrationTreeNode => !!node && isLeaf(node)))
 const requiredInitialization = computed<readonly InitializationResource[]>(() => props.kind === 'table' ? ['connections', 'warehouses', 'tables'] : ['connections', 'warehouses'])
@@ -120,7 +128,54 @@ const browseGuidance = computed(() => {
 const dialogBusy = computed(() => rootLoading.value || branchChecking.value || submitting.value || initializationPending.value || Object.values(tree.value.nodes).some(node => node.loading))
 const failedResultIndices = computed(() => retryableRegistrationIndices(results.value))
 const retryableResults = computed(() => failedResultIndices.value.filter(index => !!registrationItems.value[index]))
+const registrationSucceeded = computed(() => results.value.some(result => result.state === 'created' || result.state === 'existing'))
 const stepLabel = computed(() => ({ source: 'Choose source', browse: `Browse ${plural.value}`, review: 'Review', results: 'Results' })[step.value])
+const backLabel = computed(() => props.backLabel || (props.kind === 'table' ? 'Tables' : 'Warehouses'))
+const duplicateReviewNames = computed(() => {
+  const counts = new Map<string, number>()
+  for (const entry of reviewEntries.value) counts.set(entry.name, (counts.get(entry.name) || 0) + 1)
+  return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([name]) => name))
+})
+const contextRail = computed<ContextRailContent>(() => {
+  if (step.value === 'source') {
+    return {
+      title: 'Choose a source',
+      description: 'Start with the Databricks connection and, for tables, the SQL warehouse that should own the imported metadata.',
+      points: [
+        'Discovery reads metadata through the selected connection.',
+        props.kind === 'table' ? 'Tables remain bound to a warehouse on the same connection.' : 'Warehouse registration keeps the Databricks warehouse reference intact.',
+      ],
+    }
+  }
+  if (step.value === 'browse') {
+    return {
+      title: 'Select what to register',
+      description: `Choose up to ${REGISTRATION_LIMIT} supported ${plural.value} from the Databricks hierarchy. Expand a branch to load its next level.`,
+      points: [
+        'Existing Faros resources are shown but cannot be selected again.',
+        'Only metadata is registered; Databricks data is never copied.',
+      ],
+    }
+  }
+  if (step.value === 'review') {
+    return {
+      title: 'Confirm resource names',
+      description: 'Give each selected item a valid, unique Faros resource name before registration begins.',
+      points: [
+        'Nothing is created until you choose Register.',
+        'Existing resources are never overwritten.',
+      ],
+    }
+  }
+  return {
+    title: 'Registration status',
+    description: 'Review each result before leaving this flow. A failed item can be retried without reselecting the hierarchy.',
+    points: [
+      'Created and existing results are safe to continue from.',
+      'Registration success does not claim that the resource is ready or queryable yet.',
+    ],
+  }
+})
 
 function phaseLabel(resource: InitializationResource): string {
   return resource === 'connections' ? 'connections' : resource === 'warehouses' ? 'registered warehouses' : 'registered tables'
@@ -349,6 +404,13 @@ function validateReviewEntries(entries: readonly ReviewEntry[]): string | null {
   for (const entry of entries) { const invalid = resourceNameError(entry.name, 'Resource name'); if (invalid) return invalid }
   return new Set(entries.map(entry => entry.name)).size === entries.length ? null : 'Each selected resource needs a unique Faros resource name.'
 }
+function reviewEntryError(entry: ReviewEntry): string | null {
+  const invalid = resourceNameError(entry.name, 'Resource name')
+  if (invalid) return invalid
+  return duplicateReviewNames.value.has(entry.name) ? 'Choose a unique Faros resource name.' : null
+}
+function reviewInputID(index: number): string { return `import-review-name-${index}` }
+function reviewErrorID(index: number): string { return `${reviewInputID(index)}-error` }
 const reviewValidationError = computed(() => validateReviewEntries(reviewEntries.value))
 
 function review(): void {
@@ -427,7 +489,7 @@ function focusStep(): void {
   void nextTick(() => {
     if (mounted && isCurrentFocus(token)) {
       const selector = step.value === 'source'
-        ? '.import-body select:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled)'
+        ? '.import-body [data-form-select-trigger]:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled)'
         : step.value === 'browse'
           ? '[role="treeitem"][tabindex="0"],.import-body button:not(:disabled)'
           : step.value === 'review'
@@ -469,7 +531,7 @@ function focusDialog(): void {
   const token = { generation: ++focusGeneration, context: contextGeneration.value }
   void nextTick(() => {
     if (mounted && isCurrentFocus(token)) {
-      queryRoot<HTMLElement>('.import-head button:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
+      queryRoot<HTMLElement>('.import-head button:not(:disabled),.import-body [data-form-select-trigger]:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),[role="treeitem"]')?.focus()
     }
   })
 }
@@ -483,22 +545,42 @@ function restoreFocus(): void {
     if (isCurrentFocus(token) && target.isConnected) target.focus()
   })
 }
-function close(): void {
-  if (isMountedContextCurrent() && !submitting.value) { restoreFocus(); emit('close') }
+function cancel(): void {
+  if (!isMountedContextCurrent() || submitting.value) return
+  restoreFocus()
+  emit('cancel')
+  // Keep the former close event for hosts that still mount this wizard as a
+  // modal. Route-owned hosts listen to the explicit cancel event above.
+  emit('close')
+}
+function complete(): void {
+  if (!isMountedContextCurrent() || submitting.value || step.value !== 'results') return
+  restoreFocus()
+  // A results page containing only failures is not prerequisite success. The
+  // host can therefore return to the origin instead of advancing the journey.
+  // Modal consumers predate the route-owned completion event and close on the
+  // legacy `close` event. Keep that contract mode-specific so a modal Done
+  // action still dismisses it while route-owned Done reports its result to the
+  // host for navigation.
+  if (!props.routeOwned) {
+    emit('close')
+    return
+  }
+  emit('complete', registrationSucceeded.value)
 }
 function backdropPointerDown(event: PointerEvent): void {
-  if (!props.routeOwned && event.target === event.currentTarget) close()
+  if (!props.routeOwned && event.target === event.currentTarget) cancel()
 }
 function dialogTabStops(): HTMLElement[] {
   const element = root.value
   if (!element || typeof element.querySelectorAll !== 'function') return []
-  return [...element.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),[role="treeitem"][tabindex="0"]')]
+  return [...element.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),[data-form-select-trigger]:not(:disabled),[role="treeitem"][tabindex="0"]')]
     .filter(element => element.tabIndex === 0)
 }
 function keydown(event: KeyboardEvent): void {
   if (props.routeOwned) return
   if (!isMountedContextCurrent()) return
-  if (event.key === 'Escape') { event.preventDefault(); close(); return }
+  if (event.key === 'Escape') { event.preventDefault(); cancel(); return }
   if (event.key !== 'Tab' || !root.value) return
   const focusable = dialogTabStops()
   const first = focusable[0], last = focusable.at(-1); if (!first || !last) return
@@ -532,49 +614,115 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div :class="props.routeOwned ? 'k-create-page' : 'import-backdrop'" @pointerdown="backdropPointerDown">
-    <button v-if="props.routeOwned" class="k-btn k-btn--ghost k-back-action" type="button" :disabled="submitting" @click="close"><ArrowLeft :stroke-width="1.75" /> {{ kind === 'table' ? 'Tables' : 'Warehouses' }}</button>
+  <div :class="props.routeOwned ? 'k-create-page import-route' : 'import-backdrop'" @pointerdown="backdropPointerDown">
+    <button v-if="props.routeOwned" class="k-btn k-btn--ghost k-back-action" type="button" :disabled="submitting" @click="cancel"><ArrowLeft :stroke-width="1.75" /> {{ backLabel }}</button>
     <header v-if="props.routeOwned" class="k-create-header"><h2 id="registration-title" ref="routeHeading" class="k-create-title" tabindex="-1">Register {{ plural }}</h2><p id="registration-description" class="k-create-description">Browse Databricks metadata and register selected {{ plural }}.</p></header>
     <p v-if="props.routeOwned" class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ routeAnnouncement }}</p>
     <section ref="root" :class="['import-dialog', { 'import-dialog--route k-create-surface k-create-surface--wide': props.routeOwned }]" :role="props.routeOwned ? undefined : 'dialog'" :aria-modal="props.routeOwned ? undefined : 'true'" aria-labelledby="registration-title" aria-describedby="registration-description" :aria-busy="dialogBusy ? 'true' : 'false'" @keydown="keydown">
-      <header v-if="!props.routeOwned" class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-btn k-btn--ghost databricks-dialog-close" type="button" aria-label="Close" :disabled="submitting" @click="close"><X :stroke-width="1.75" /></button></header>
-      <ol class="import-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
-      <div class="import-body">
-        <div v-if="step === 'source'" class="import-stack">
-          <label class="field"><span class="field-label">Connection</span><select class="k-input" v-model="connectionRef" :disabled="initializationPending || submitting"><option v-for="item in connections" :key="item.name" :value="item.name">{{ item.name }}</option></select><span class="field-hint">Discovery uses this connection's Databricks credentials.</span></label>
-          <label v-if="kind === 'table'" class="field"><span class="field-label">Query warehouse</span><select class="k-input" v-model="warehouseRef" :disabled="initializationPending || submitting"><option value="" disabled>Select warehouse</option><option v-for="item in matchingWarehouses" :key="item.name" :value="item.name">{{ item.name }}</option></select><span class="field-hint">Imported tables remain bound to this same-connection warehouse.</span></label>
-          <div class="initialization-status" :aria-busy="initializationPending ? 'true' : 'false'">
-            <p v-if="initializationReady" :class="['initialization-summary', { 'initialization-summary--ready': browseReady }]" role="status" aria-live="polite">{{ browseReady ? 'Prerequisites ready.' : 'Prerequisite checks complete.' }}</p>
-            <template v-else v-for="resource in requiredInitialization" :key="resource">
-              <p v-if="initializationState[resource] === 'loading'" class="initialization-phase" role="status" aria-live="polite">Loading {{ phaseLabel(resource) }}…</p>
-              <p v-else-if="initializationState[resource] === 'error'" class="initialization-phase error" role="alert" aria-live="assertive">
-                <span>{{ phaseLabel(resource) }} could not be loaded: {{ initializationErrors[resource] }}</span>
-                <button class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="retryInitialization(resource)">Retry</button>
-              </p>
-            </template>
+      <header v-if="!props.routeOwned" class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-btn k-btn--ghost databricks-dialog-close" type="button" aria-label="Close" :disabled="submitting" @click="cancel"><X :stroke-width="1.75" /></button></header>
+      <div class="import-workbench">
+        <div class="import-primary">
+          <ol class="import-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
+          <div :class="['import-body', `import-body--${step}`]">
+            <div v-if="step === 'source'" class="import-stack">
+              <div class="field">
+                <label id="import-connection-label" class="field-label" for="import-connection">Connection</label>
+                <FormSelect
+                  id="import-connection"
+                  v-model="connectionRef"
+                  name="connectionRef"
+                  :options="connectionOptions"
+                  placeholder="Select connection"
+                  :disabled="initializationPending || submitting"
+                  required
+                  labelledby="import-connection-label"
+                  describedby="import-connection-hint"
+                />
+                <span id="import-connection-hint" class="field-hint">Discovery uses this connection's Databricks credentials.</span>
+              </div>
+              <div v-if="kind === 'table'" class="field">
+                <label id="import-warehouse-label" class="field-label" for="import-warehouse">Query warehouse</label>
+                <FormSelect
+                  id="import-warehouse"
+                  v-model="warehouseRef"
+                  name="warehouseRef"
+                  :options="warehouseOptions"
+                  placeholder="Select warehouse"
+                  :disabled="initializationPending || submitting"
+                  required
+                  labelledby="import-warehouse-label"
+                  describedby="import-warehouse-hint"
+                />
+                <span id="import-warehouse-hint" class="field-hint">Imported tables remain bound to this same-connection warehouse.</span>
+              </div>
+              <div class="initialization-status" :aria-busy="initializationPending ? 'true' : 'false'">
+                <p v-if="initializationReady" :class="['initialization-summary', { 'initialization-summary--ready': browseReady }]" role="status" aria-live="polite">{{ browseReady ? 'Prerequisites ready.' : 'Prerequisite checks complete.' }}</p>
+                <template v-else v-for="resource in requiredInitialization" :key="resource">
+                  <p v-if="initializationState[resource] === 'loading'" class="initialization-phase" role="status" aria-live="polite">Loading {{ phaseLabel(resource) }}…</p>
+                  <p v-else-if="initializationState[resource] === 'error'" class="initialization-phase error" role="alert" aria-live="assertive">
+                    <span>{{ phaseLabel(resource) }} could not be loaded: {{ initializationErrors[resource] }}</span>
+                    <button class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="retryInitialization(resource)">Retry</button>
+                  </p>
+                </template>
+              </div>
+              <div v-if="!connections.length && !initializationPending && initializationState.connections === 'success'" class="prerequisite" role="status">
+                <span class="prerequisite-copy">A connection is required.</span>
+                <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('connection')">
+                  Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+              </div>
+              <div v-else-if="sameConnectionWarehouseMissing" class="prerequisite" role="status">
+                <span class="prerequisite-copy">A registered warehouse on this connection is required.</span>
+                <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('warehouse')">
+                  Register warehouse <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+              </div>
+              <p v-if="!browseReady" :id="browseGuidanceID" class="sr-only">{{ browseGuidance }}</p>
+            </div>
+            <LazyCheckboxTree v-else-if="step === 'browse'" :tree="tree" :label="`Available ${plural}`" :root-loading="rootLoading" :root-error="rootError" :root-next-page-token="rootNextPageToken" :busy="branchChecking || submitting" @expand="expandNode" @toggle="toggleNode" @load-more="loadMore" />
+            <div v-else-if="step === 'review'" class="review-list" :aria-busy="submitting ? 'true' : 'false'">
+              <div v-for="(entry, index) in reviewEntries" :key="entry.key" class="review-row">
+                <span><strong>{{ entry.label }}</strong><small>{{ 'warehouseID' in entry.item ? entry.item.warehouseID : `${entry.item.catalog}.${entry.item.schema}.${entry.item.table}` }}</small></span>
+                <span class="field">
+                  <label class="field-label" :for="reviewInputID(index)">Faros resource name</label>
+                  <input
+                    :id="reviewInputID(index)"
+                    v-model="entry.name"
+                    class="k-input"
+                    autocomplete="off"
+                    :disabled="submitting || registrationFrozen"
+                    :aria-invalid="reviewEntryError(entry) ? 'true' : undefined"
+                    :aria-describedby="reviewEntryError(entry) ? reviewErrorID(index) : undefined"
+                  >
+                  <small v-if="reviewEntryError(entry)" :id="reviewErrorID(index)" class="error" role="alert">{{ reviewEntryError(entry) }}</small>
+                </span>
+              </div>
+              <p v-if="reviewValidationError" class="error" role="alert">{{ reviewValidationError }}</p>
+              <p class="muted">Nothing is created until you confirm. Existing resources are never overwritten.</p>
+            </div>
+            <div v-else-if="step === 'results'" class="result-list" aria-live="polite" :aria-busy="submitting ? 'true' : 'false'"><div class="result-summary"><Database :stroke-width="1.75" /><span><strong>Registration finished</strong><small>{{ summarizeRegistration(results) || 'No results returned.' }}</small></span></div><button v-if="retryableResults.length" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="retryFailed">{{ submitting ? 'Retrying…' : `Retry failed (${retryableResults.length})` }}</button><div v-for="result in results" :key="`${result.index}-${result.name}`" class="result-row"><code>{{ result.name || `Item ${result.index + 1}` }}</code><span :class="['result-state', result.state]">{{ result.state }}</span><small>{{ result.message || (result.state === 'created' ? 'Registration succeeded; validation pending.' : '') }}</small></div></div>
+            <p v-if="branchChecking" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Loading the complete branch before selecting it…</p>
+            <p v-if="submitting" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Registering selected {{ plural }}…</p>
+            <p v-if="error" class="error" role="alert" aria-live="assertive">{{ error }}</p>
           </div>
-          <div v-if="!connections.length && !initializationPending && initializationState.connections === 'success'" class="prerequisite" role="status">
-            <span class="prerequisite-copy">A connection is required.</span>
-            <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('connection')">
-              Create connection <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
-            </button>
-          </div>
-          <div v-else-if="sameConnectionWarehouseMissing" class="prerequisite" role="status">
-            <span class="prerequisite-copy">A registered warehouse on this connection is required.</span>
-            <button class="k-btn k-btn--ghost prerequisite-action" type="button" @click="resolvePrerequisite('warehouse')">
-              Register warehouse <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
-            </button>
-          </div>
-          <p v-if="!browseReady" :id="browseGuidanceID" class="sr-only">{{ browseGuidance }}</p>
+          <footer :class="props.routeOwned ? 'k-create-actions' : 'import-actions'"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="props.routeOwned && step !== 'results'" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="!browseReady || initializationPending || submitting" :aria-describedby="!browseReady ? browseGuidanceID : undefined" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="complete">Done</button></footer>
         </div>
-        <LazyCheckboxTree v-else-if="step === 'browse'" :tree="tree" :label="`Available ${plural}`" :root-loading="rootLoading" :root-error="rootError" :root-next-page-token="rootNextPageToken" :busy="branchChecking || submitting" @expand="expandNode" @toggle="toggleNode" @load-more="loadMore" />
-        <div v-else-if="step === 'review'" class="review-list" :aria-busy="submitting ? 'true' : 'false'"><label v-for="entry in reviewEntries" :key="entry.key" class="review-row"><span><strong>{{ entry.label }}</strong><small>{{ 'warehouseID' in entry.item ? entry.item.warehouseID : `${entry.item.catalog}.${entry.item.schema}.${entry.item.table}` }}</small></span><span class="field"><span class="field-label">Faros resource name</span><input class="k-input" v-model="entry.name" autocomplete="off" :disabled="submitting || registrationFrozen" /><small v-if="resourceNameError(entry.name, 'Resource name')" class="error">{{ resourceNameError(entry.name, 'Resource name') }}</small></span></label><p v-if="reviewValidationError" class="error" role="alert">{{ reviewValidationError }}</p><p class="muted">Nothing is created until you confirm. Existing resources are never overwritten.</p></div>
-        <div v-else-if="step === 'results'" class="result-list" aria-live="polite" :aria-busy="submitting ? 'true' : 'false'"><div class="result-summary"><Database :stroke-width="1.75" /><span><strong>Registration finished</strong><small>{{ summarizeRegistration(results) || 'No results returned.' }}</small></span></div><button v-if="retryableResults.length" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="retryFailed">{{ submitting ? 'Retrying…' : `Retry failed (${retryableResults.length})` }}</button><div v-for="result in results" :key="`${result.index}-${result.name}`" class="result-row"><code>{{ result.name || `Item ${result.index + 1}` }}</code><span :class="['result-state', result.state]">{{ result.state }}</span><small>{{ result.message || (result.state === 'created' ? 'Registration succeeded; validation pending.' : '') }}</small></div></div>
-        <p v-if="branchChecking" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Loading the complete branch before selecting it…</p>
-        <p v-if="submitting" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Registering selected {{ plural }}…</p>
-        <p v-if="error" class="error" role="alert" aria-live="assertive">{{ error }}</p>
+        <aside v-if="props.routeOwned" class="import-context-rail" aria-labelledby="import-context-title">
+          <h3 id="import-context-title">{{ contextRail.title }}</h3>
+          <p>{{ contextRail.description }}</p>
+          <dl class="import-context-values">
+            <dt>Step</dt><dd>{{ stepLabel }}</dd>
+            <dt>Connection</dt><dd><code>{{ connectionRef || 'Not selected' }}</code></dd>
+            <template v-if="kind === 'table'">
+              <dt>Warehouse</dt><dd><code>{{ warehouseRef || 'Not selected' }}</code></dd>
+            </template>
+            <dt>Selected</dt><dd>{{ tree.selectedLeafIds.length }} of {{ REGISTRATION_LIMIT }}</dd>
+          </dl>
+          <ul>
+            <li v-for="point in contextRail.points" :key="point">{{ point }}</li>
+          </ul>
+        </aside>
       </div>
-      <footer :class="props.routeOwned ? 'k-create-actions' : 'import-actions'"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="props.routeOwned && step !== 'results'" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="close">Cancel</button><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="!browseReady || initializationPending || submitting" :aria-describedby="!browseReady ? browseGuidanceID : undefined" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="close">Done</button></footer>
     </section>
   </div>
 </template>

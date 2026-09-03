@@ -431,6 +431,79 @@ html.light .k-menu {
   background: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
+/* ── Form select ──────────────────────────────────────────────────────────
+ * FormSelect composes the input and menu recipes above. The panel is
+ * teleported to body, so k-form-select__portal is an explicit generic scope
+ * for the panel and its descendants rather than relying on the root element. */
+.k-form-select {
+  min-width: 0;
+  position: relative;
+}
+.k-form-select__trigger {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  text-align: start;
+}
+.k-form-select__trigger:disabled {
+  cursor: not-allowed;
+}
+.k-form-select__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-form-select__value.is-placeholder {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+.k-form-select__chevron {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+.k-form-select.is-open .k-form-select__chevron {
+  transform: rotate(180deg);
+}
+.k-form-select__panel.k-form-select__portal {
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  min-width: 200px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  position: fixed;
+  z-index: 1000;
+}
+.k-form-select__portal .k-form-select__option {
+  justify-content: space-between;
+  min-width: 0;
+}
+.k-form-select__portal .k-form-select__option.is-active:not(:disabled):not(.is-selected) {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-form-select__portal .k-form-select__option-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.k-form-select__portal .k-form-select__check {
+  color: var(--color-accent, #8b6bff);
+  flex: none;
+}
+.k-form-select__portal .k-form-select__empty {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  margin: 6px 8px;
+}
+.k-form-select__value-input {
+  block-size: 0;
+  inline-size: 0;
+  position: absolute;
+}
+
 /* ── Layout selector ──────────────────────────────────────────────────────
  * Compact controlled grid/list menu. It uses the menu selection language but
  * never glows: layout is a presentation preference, not a primary action. */

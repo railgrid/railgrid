@@ -323,7 +323,7 @@ onUnmounted(() => {
           <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
         </p>
 
-        <div v-if="conn" class="databricks-resource-sections">
+        <div v-if="conn" class="databricks-resource-sections" :class="['databricks-resource-sections--connection', { 'databricks-resource-sections--editing': editing }]">
           <ResourceSectionCard id="connection-overview" eyebrow="Connection" title="Overview" description="Workspace endpoint, authentication, and reconciliation details.">
             <template #actions>
               <button v-if="!editing" class="k-btn k-btn--ghost icon-text" type="button" :disabled="operationLocked(conn.name)" @click="startEdit"><Settings2 :size="14" aria-hidden="true" /> Edit connection</button>

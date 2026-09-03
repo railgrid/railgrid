@@ -36,8 +36,13 @@ function mixed(id: string): boolean { return !isLeaf(props.tree.nodes[id]) && tr
 
 function activate(id: string): void {
   const node = props.tree.nodes[id]
-  if (!node || node.disabled || node.loading) return
+  if (!node || node.disabled || node.loading || props.busy) return
   emit('toggle', id, !checked(id))
+}
+
+function activateFromPointer(id: string): void {
+  focusKey(id)
+  activate(id)
 }
 
 function checkboxChanged(id: string, event: Event): void {
@@ -130,7 +135,9 @@ watch([() => props.rootLoading, () => ids.value.length, () => props.rootError], 
         <div :class="['lazy-tree-row', { disabled: tree.nodes[id].disabled }]" @dblclick="expand(id)">
           <button v-if="!isLeaf(tree.nodes[id])" class="lazy-tree-expander" type="button" tabindex="-1" :aria-label="tree.nodes[id].expanded ? `Collapse ${tree.nodes[id].label}` : `Expand ${tree.nodes[id].label}`" :disabled="tree.nodes[id].disabled || tree.nodes[id].loading" @click.stop="expand(id)"><LoaderCircle v-if="tree.nodes[id].loading" class="spin" :stroke-width="1.75" /><ChevronRight v-else :class="{ expanded: tree.nodes[id].expanded }" :stroke-width="1.75" /></button>
           <span v-else class="lazy-tree-expander-spacer" />
-          <input class="k-checkbox" type="checkbox" tabindex="-1" aria-hidden="true" :checked="checked(id)" :indeterminate="mixed(id)" :disabled="tree.nodes[id].disabled || tree.nodes[id].loading || busy" @mousedown.prevent @click.stop="focusKey(id)" @change="checkboxChanged(id, $event)" />
+          <span class="lazy-tree-checkbox-hit" @click.stop="activateFromPointer(id)">
+            <input class="k-checkbox" type="checkbox" tabindex="-1" aria-hidden="true" :checked="checked(id)" :indeterminate="mixed(id)" :disabled="tree.nodes[id].disabled || tree.nodes[id].loading || busy" @mousedown.prevent @click.stop="focusKey(id)" @change="checkboxChanged(id, $event)" />
+          </span>
           <span class="lazy-tree-copy"><strong>{{ tree.nodes[id].label }}</strong><small v-if="tree.nodes[id].disabledReason">{{ tree.nodes[id].disabledReason }}</small><small v-else-if="tree.nodes[id].detail">{{ tree.nodes[id].detail }}</small></span>
         </div>
         <LazyCheckboxTree v-if="!isLeaf(tree.nodes[id]) && tree.nodes[id].expanded" :tree="tree" :parent-id="id" :busy="busy" :active-id="effectiveActiveId" @active="isRoot ? localActiveId = $event : emit('active', $event)" @expand="emit('expand', $event)" @toggle="(nodeId, value) => emit('toggle', nodeId, value)" @load-more="emit('load-more', $event)" />
