@@ -140,6 +140,22 @@ test('vertical navigation exposes landmarks and complete route/group state', () 
   assert.match(appLayout, /:aria-controls="navGroupPanelId\('item:' \+ item\.to\)"/)
 })
 
+test('Faros brand links route home in every dock layout', () => {
+  const brandLinks = [...appLayout.matchAll(/<router-link\b[\s\S]*?<\/router-link>/g)]
+    .map(([body]) => body)
+    .filter((body) => body.includes('aria-label="Go to dashboard"'))
+
+  assert.equal(brandLinks.length, 4)
+  for (const link of brandLinks) {
+    assert.match(link, /:to="\{ name: 'dashboard' \}"/)
+    assert.match(link, /class="shell-brand-link /)
+    assert.match(link, /focus-visible:ring-2 focus-visible:ring-accent/)
+    assert.match(link, /<Hexagon\b/)
+  }
+  assert.equal(brandLinks.filter((link) => link.includes('shell-brand-name')).length, 3)
+  assert.match(appLayout, /@media \(pointer: coarse\) \{[\s\S]*?\.shell-brand-link,[\s\S]*?min-height: 44px;[\s\S]*?min-width: 44px;/)
+})
+
 test('vertical Providers catalog item uses the same readable primary treatment as Dashboard', () => {
   const providersStart = appLayout.indexOf('<!-- Providers catalog is the primary destination immediately below')
   const categoriesStart = appLayout.indexOf('<!-- Provider categories render as non-clickable section dividers:', providersStart)

@@ -428,10 +428,17 @@ const contextStatus = computed<ContextStatus>(() => {
           >
             <GripVertical class="h-3 w-3" :stroke-width="2" />
           </button>
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
-            <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
-          </div>
-          <span class="shell-brand-name type-display min-w-0 truncate text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
+          <router-link
+            :to="{ name: 'dashboard' }"
+            class="shell-brand-link group flex min-w-0 items-center gap-2 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label="Go to dashboard"
+            title="Dashboard"
+          >
+            <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
+              <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" aria-hidden="true" />
+            </div>
+            <span class="shell-brand-name type-display min-w-0 truncate text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+          </router-link>
           <button
             type="button"
             class="shell-sidebar-toggle k-btn k-btn--ghost ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-colors hover:bg-surface-overlay/50 hover:text-text-primary"
@@ -472,9 +479,14 @@ const contextStatus = computed<ContextStatus>(() => {
         >
           <GripVertical class="h-3 w-3" :stroke-width="2" />
         </button>
-        <div class="flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
-          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
-        </div>
+        <router-link
+          :to="{ name: 'dashboard' }"
+          class="shell-brand-link flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          aria-label="Go to dashboard"
+          title="Dashboard"
+        >
+          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" aria-hidden="true" />
+        </router-link>
         <button
           type="button"
           class="shell-sidebar-toggle k-btn k-btn--ghost flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-secondary transition-colors hover:bg-surface-overlay/50 hover:text-text-primary"
@@ -815,10 +827,17 @@ const contextStatus = computed<ContextStatus>(() => {
 
       <!-- Logo -->
       <div class="shell-brand flex shrink-0 items-center gap-1.5 px-1">
-        <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
-          <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
-        </div>
-        <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
+        <router-link
+          :to="{ name: 'dashboard' }"
+          class="shell-brand-link group flex items-center gap-1.5 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          aria-label="Go to dashboard"
+          title="Dashboard"
+        >
+          <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
+            <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" aria-hidden="true" />
+          </div>
+          <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+        </router-link>
         <div
           v-if="contextStatus.visible"
           class="shell-context-status flex items-center gap-0.5 rounded-sm border border-border-subtle bg-surface-overlay px-1.5 py-px"
@@ -1004,10 +1023,17 @@ const contextStatus = computed<ContextStatus>(() => {
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
         <div class="shell-brand flex shrink-0 items-center gap-1.5 px-1.5">
-          <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
-            <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
-          </div>
-          <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
+          <router-link
+            :to="{ name: 'dashboard' }"
+            class="shell-brand-link group flex items-center gap-1.5 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label="Go to dashboard"
+            title="Dashboard"
+          >
+            <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
+              <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" aria-hidden="true" />
+            </div>
+            <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+          </router-link>
           <div
             v-if="contextStatus.visible"
             class="shell-context-status flex shrink-0 items-center gap-0.5 rounded-sm border border-border-subtle bg-surface-overlay px-1.5 py-px"
@@ -1133,6 +1159,7 @@ const contextStatus = computed<ContextStatus>(() => {
 @media (pointer: coarse) {
   .shell-drag-handle,
   .shell-sidebar-toggle,
+  .shell-brand-link,
   .shell-nav-link,
   .shell-nav-group-toggle,
   .shell-status-action,
