@@ -63,7 +63,7 @@ test('Vue route-owned create flows use the shared skeleton', async () => {
   }
 })
 
-test('Agents route-owned create flows use the shared skeleton while dialogs remain contextual', async () => {
+test('Agents route-owned create flows use the shared skeleton without obsolete modal fallbacks', async () => {
   const cases = [
     ['agent', 'providers/agents/portal/src/views/agent-create.ts'],
     ['connection', 'providers/agents/portal/src/views/connections.ts'],
@@ -79,8 +79,8 @@ test('Agents route-owned create flows use the shared skeleton while dialogs rema
     source('providers/agents/portal/src/views/agent-create.ts'),
     source('providers/agents/portal/src/views/assisted-search.ts'),
   ])
-  assert.match(agent, /agents-dialog/)
-  assert.match(assistedSearch, /agents-dialog/)
+  assert.doesNotMatch(agent, /agents-dialog/)
+  assert.doesNotMatch(assistedSearch, /agents-dialog/)
 })
 
 test('App Studio removes collection tabs and nested settings chrome from model creation', async () => {

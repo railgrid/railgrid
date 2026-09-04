@@ -179,8 +179,9 @@ export class AgentConfig extends StoreElement {
                 (f, i) => html`<span class="agents-chip"
                   >${f}
                   <button
-                    class="k-btn k-btn--ghost agents-chip-x"
+                    class="k-icon-action agents-chip-x"
                     aria-label="Remove fallback ${f}"
+                    type="button"
                     @click=${() => (this.fallbacks = this.fallbacks.filter((_, j) => j !== i))}
                   >
                     ${icon('x')}

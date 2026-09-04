@@ -11,10 +11,7 @@ import { sliceView } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
 import type { Agent } from '../types'
-
-// Keep the element registration available to standalone consumers that import
-// only the list view; the shell also imports the route surface explicitly.
-import './agent-create'
+import { hashFor } from '../router'
 
 export class AgentsList extends StoreElement {
   private async del(name: string): Promise<void> {
@@ -67,46 +64,27 @@ export class AgentsList extends StoreElement {
     const chans = a.spec?.channels || []
     const primary = chans.find((ch) => ch.primary) || chans[0]
     const chan = primary ? primary.connectionRef + (chans.length > 1 ? ` +${chans.length - 1}` : '') : ''
-    const open = (): void => this.navigate({ kind: 'agent', name, tab: 'config' })
-    const isNestedControl = (event: KeyboardEvent): boolean => {
-      const currentTarget = event.currentTarget as Element | null
-      const target = event.target as Element | null
-      const control = target?.closest?.(
-        'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"]',
-      )
-      return Boolean(control && control !== currentTarget)
-    }
+    const agentRoute = hashFor({ kind: 'agent', name, tab: 'config' })
     return html`
-      <article
-        class="agents-card k-card"
-        tabindex="0"
-        role="link"
-        aria-label="Open agent ${a.spec?.displayName || name}"
-        @click=${open}
-        @keydown=${(e: KeyboardEvent) => {
-          if (isNestedControl(e)) return
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            open()
-          }
-        }}
-      >
-        <div class="agents-card-glyph">${icon('bot')}</div>
-        <div class="agents-card-body">
-          <h3>${a.spec?.displayName || name}</h3>
-          <p class="agents-card-model ${model ? '' : 'warn'}">${model || 'no model — pick one in Config'}</p>
-        </div>
-        <div class="agents-card-foot">
-          <span>${nsched} schedule${nsched === 1 ? '' : 's'}</span>
-          <span>${ntrig} trigger${ntrig === 1 ? '' : 's'}</span>
-          <span>${chan ? html`${icon('megaphone')} ${chan}` : 'no channel'}</span>
-        </div>
+      <article class="agents-card k-card">
+        <a class="agents-card-link" href=${agentRoute} aria-label="Open agent ${a.spec?.displayName || name}">
+          <div class="agents-card-glyph">${icon('bot')}</div>
+          <div class="agents-card-body">
+            <h3>${a.spec?.displayName || name}</h3>
+            <p class="agents-card-model ${model ? '' : 'warn'}">${model || 'no model — pick one in Config'}</p>
+          </div>
+          <div class="agents-card-foot">
+            <span>${nsched} schedule${nsched === 1 ? '' : 's'}</span>
+            <span>${ntrig} trigger${ntrig === 1 ? '' : 's'}</span>
+            <span>${chan ? html`${icon('megaphone')} ${chan}` : 'no channel'}</span>
+          </div>
+        </a>
         <div class="agents-card-actions">
           <button
             class="k-btn k-btn--ghost agents-card-chat"
             @click=${(e: Event) => {
               e.stopPropagation()
-              open()
+              this.navigate({ kind: 'agent', name, tab: 'config' })
             }}
           >
             ${icon('message')} Open
@@ -121,7 +99,7 @@ export class AgentsList extends StoreElement {
             ${icon('gauge')} Runs
           </button>
           <button
-            class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
+            class="k-icon-action agents-iconbtn-danger"
             aria-label="Delete agent ${name}"
             title="Delete agent"
             @click=${(e: Event) => {

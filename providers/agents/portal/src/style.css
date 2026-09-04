@@ -49,10 +49,10 @@ faros-provider-agents .agents-back:hover { background: var(--color-surface-hover
 faros-provider-agents :focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 
 /* --- agent card grid --- */
-faros-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+faros-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 18px; }
 faros-provider-agents .agents-card {
   display: flex; flex-direction: column; gap: 10px; min-height: 160px; padding: 18px;
-  cursor: pointer; text-align: left;
+  text-align: left;
   transition: border-color 0.12s, background 0.12s, transform 0.06s;
 }
 faros-provider-agents .agents-card:hover {
@@ -60,6 +60,10 @@ faros-provider-agents .agents-card:hover {
   background: var(--color-surface-overlay, #171927);
 }
 faros-provider-agents .agents-card:active { transform: translateY(1px); }
+faros-provider-agents .agents-card-link {
+  display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 10px;
+  color: inherit; text-decoration: none;
+}
 faros-provider-agents .agents-card-glyph {
   width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
   font-size: 22px; border-radius: 6px; background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
@@ -172,11 +176,9 @@ faros-provider-agents .agents-fieldset-legend { font-size: 12px; font-weight: 60
 faros-provider-agents .agents-addselect { align-self: flex-start; font-size: 12.5px; }
 faros-provider-agents .agents-chiprow { display: flex; flex-wrap: wrap; gap: 5px; }
 faros-provider-agents .agents-chip-x {
-  padding: 0; margin-left: 3px; width: 14px; height: 14px; border-radius: 50%; background: transparent;
-  color: inherit; display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; margin-inline-start: 3px;
 }
 faros-provider-agents .agents-chip-x:hover { background: var(--color-danger-subtle); color: var(--color-danger, #ff5d5d); }
-faros-provider-agents .agents-chip-x svg { width: 11px; height: 11px; }
 
 /* autonomy: radio cards, because the choice now has real consequences */
 faros-provider-agents .agents-radiocards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
@@ -246,25 +248,6 @@ faros-provider-agents .agents-spinner {
   faros-provider-agents .agents-spinner, faros-provider-agents .agents-offline svg { animation: none; }
 }
 
-/* --- modal-style overlay dialog (create wizard) --- */
-faros-provider-agents .agents-overlay {
-  position: fixed; inset: 0; z-index: 2147481000; display: grid; place-items: center; padding: 24px;
-  background: color-mix(in srgb, var(--color-surface, #0a0b12) 55%, transparent); backdrop-filter: blur(2px);
-}
-faros-provider-agents .agents-dialog {
-  width: min(520px, 100%); max-height: 88vh; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: 6px;
-  background: var(--color-surface-raised, #111320);
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  box-shadow: 0 1px 2px var(--color-surface), 0 24px 70px var(--color-surface);
-}
-faros-provider-agents .agents-dialog-head { display: flex; align-items: center; gap: 11px; }
-faros-provider-agents .agents-dialog-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
-faros-provider-agents .agents-dialog-ic {
-  width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 6px;
-  background: var(--color-accent-subtle); color: var(--color-accent, #8b6bff);
-}
-
 /* --- capability toggles (create wizard) --- */
 faros-provider-agents .agents-cap-fs { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; }
 faros-provider-agents .agents-cap-fs legend {
@@ -322,11 +305,8 @@ faros-provider-agents .agents-kv > span { font-size: 10.5px; text-transform: upp
 faros-provider-agents .agents-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 faros-provider-agents .agents-step {
   border-radius: 6px; overflow: hidden; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-left: 3px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); background: var(--color-surface-raised, #111320);
+  background: var(--color-surface-raised, #111320);
 }
-faros-provider-agents .agents-step.is-ok { border-left-color: var(--color-success, #2fd6a0); }
-faros-provider-agents .agents-step.is-err { border-left-color: var(--color-danger, #ff5d5d); }
-faros-provider-agents .agents-step.is-wait { border-left-color: var(--color-warning, #f0a63a); }
 faros-provider-agents .agents-step-head {
   width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 12px; text-align: left;
   background: transparent; color: inherit; font: inherit; font-weight: 500; border-radius: 0;
@@ -403,10 +383,7 @@ faros-provider-agents .agents-toolcards { display: flex; flex-direction: column;
 faros-provider-agents .agents-toolcard {
   border-radius: 6px; overflow: hidden; background: var(--color-surface, #0a0b12);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-left: 3px solid var(--color-accent, #8b6bff);
 }
-faros-provider-agents .agents-toolcard.is-ok { border-left-color: var(--color-success, #2fd6a0); }
-faros-provider-agents .agents-toolcard.is-err { border-left-color: var(--color-danger, #ff5d5d); }
 faros-provider-agents .agents-toolcard-head {
   width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 10px; text-align: left; border-radius: 0;
   background: transparent; color: var(--color-text-secondary, inherit); font: inherit; font-size: 12px; font-weight: 500;

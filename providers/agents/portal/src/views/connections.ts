@@ -191,7 +191,7 @@ export class Connections extends StoreElement {
           ${this.routeOwned
             ? this.editing
               ? this.editorArea()
-              : html`<agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${true}></agents-assisted-search>`
+              : html`<agents-assisted-search .store=${this.store} .api=${this.api}></agents-assisted-search>`
             : this.editorArea()}
         </div>
         <agents-toolsets .store=${this.store} .api=${this.api} .routeOwned=${this.routeOwned}></agents-toolsets>
@@ -211,7 +211,7 @@ export class Connections extends StoreElement {
     }
     if (this.createType === 'assisted-search') {
       return html`<div class="agents-menu agents-create-page">
-        <agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${true} .page=${true}></agents-assisted-search>
+        <agents-assisted-search .store=${this.store} .api=${this.api} .page=${true}></agents-assisted-search>
       </div>`
     }
     const def = CONN_DEFS.find((d) => d.id === this.createType)
@@ -352,7 +352,7 @@ export class Connections extends StoreElement {
           <h5 class="agents-conn-grouphead">${icon(m.icon)} ${m.label}s <span class="muted">— ${m.blurb}</span></h5>
           <div class="agents-conn-types">${defs.map(tile)}</div>
           ${cat === 'tool'
-            ? html`<agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${this.routeOwned}></agents-assisted-search>`
+            ? html`<agents-assisted-search .store=${this.store} .api=${this.api}></agents-assisted-search>`
             : nothing}
         </div>`
       })}

@@ -25,8 +25,20 @@ async function mountConnections(caps: Capabilities, agents = [agentFixture('scou
   // The assist card waits for connections before deciding whether to show, so
   // an unloaded slice means "not yet", not "none".
   store.connections.loaded = true
-  const el = await mount<Connections>('agents-connections', { store, api })
+  const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true })
   return { el, store, api }
+}
+
+async function mountAssistedPage(
+  caps: Capabilities,
+  agents = [agentFixture('scout')],
+  extra: Record<string, unknown> = {},
+) {
+  const result = await mountConnections(caps, agents, extra)
+  result.el.createRoute = true
+  result.el.createType = 'assisted-search'
+  await settle(result.el, 3)
+  return result
 }
 
 // localStorage carries the manual dismissal, and jsdom keeps it between tests.
@@ -178,22 +190,31 @@ describe('composed prompt', () => {
 })
 
 describe('assisted setup flow', () => {
+  it('renders setup as a route-owned page with no modal fallback', async () => {
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] })
+
+    expect(el.querySelector('.agents-create-page')).not.toBeNull()
+    expect(el.querySelector('.agents-conn-form')).not.toBeNull()
+    expect(el.querySelector('.agents-overlay')).toBeNull()
+    expect(el.querySelector('[role="dialog"]')).toBeNull()
+  })
+
   it('creates the connection naming the instance, hands off the prompt and navigates to the agent', async () => {
     const createConnection = vi.fn().mockResolvedValue({ metadata: { name: 'search' }, spec: { type: 'websearch' } })
-    const { el, store } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
-    const routes: Route[] = []
-    document.addEventListener('agents-navigate', (e) => routes.push((e as CustomEvent<Route>).detail))
+    const { el, store } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
+    let destination: Route | undefined
+    el.addEventListener('agents-create-success', (e) => {
+      destination = (e as CustomEvent<{ destination?: Route }>).detail.destination
+    })
 
-    el.querySelector<HTMLButtonElement>('.agents-assist button')!.click()
-    await settle(el, 4)
-    const dialog = el.querySelector<HTMLFormElement>('.agents-dialog')!
+    const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
     // A single agent means no picker at all.
-    expect(dialog.querySelector('select')).toBeNull()
-    expect(dialog.querySelector<HTMLInputElement>('input[name=connName]')!.value).toBe('search')
+    expect(form.querySelector('select')).toBeNull()
+    expect(form.querySelector<HTMLInputElement>('input[name=connName]')!.value).toBe('search')
     // The instance name defaults to the connection name.
-    expect(dialog.querySelector<HTMLInputElement>('input[name=instance]')!.value).toBe('search')
+    expect(form.querySelector<HTMLInputElement>('input[name=instance]')!.value).toBe('search')
 
-    dialog.dispatchEvent(new Event('submit', { cancelable: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 6)
 
     expect(createConnection).toHaveBeenCalledTimes(1)
@@ -204,7 +225,7 @@ describe('assisted setup flow', () => {
     expect(body.baseURL).toBeUndefined()
     expect(body.secret).toBeUndefined()
 
-    expect(routes).toEqual([{ kind: 'agent', name: 'scout', tab: 'config' }])
+    expect(destination).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
     const handed = store.takePendingPrompt('scout')
     expect(handed).toContain('name: `search`')
   })
@@ -216,11 +237,9 @@ describe('assisted setup flow', () => {
     const patchAgent = vi.fn().mockResolvedValue({ metadata: { name: 'scout' }, spec: {} })
     const agent = agentFixture('scout')
     agent.spec.tools = { interactive: { connections: ['gh'] } }
-    const { el } = await mountConnections({ providers: ['infrastructure'] }, [agent], { createConnection, patchAgent })
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] }, [agent], { createConnection, patchAgent })
 
-    el.querySelector<HTMLButtonElement>('.agents-assist button')!.click()
-    await settle(el, 4)
-    el.querySelector<HTMLFormElement>('.agents-dialog')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 6)
 
     expect(patchAgent).toHaveBeenCalledTimes(1)
@@ -238,14 +257,12 @@ describe('assisted setup flow', () => {
   it('still hands off when wiring the agent fails', async () => {
     const createConnection = vi.fn().mockResolvedValue({ metadata: { name: 'search' }, spec: { type: 'websearch' } })
     const patchAgent = vi.fn().mockRejectedValue(new Error('nope'))
-    const { el, store } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], {
+    const { el, store } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], {
       createConnection,
       patchAgent,
     })
 
-    el.querySelector<HTMLButtonElement>('.agents-assist button')!.click()
-    await settle(el, 4)
-    el.querySelector<HTMLFormElement>('.agents-dialog')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 6)
 
     expect(store.takePendingPrompt('scout')).toContain('searxng')
@@ -253,14 +270,12 @@ describe('assisted setup flow', () => {
 
   it('rejects names that are not DNS labels before touching the API', async () => {
     const createConnection = vi.fn()
-    const { el } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
-    el.querySelector<HTMLButtonElement>('.agents-assist button')!.click()
-    await settle(el, 4)
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
 
     const input = el.querySelector<HTMLInputElement>('input[name=connName]')!
     input.value = 'Search Me'
     input.dispatchEvent(new Event('input'))
-    el.querySelector<HTMLFormElement>('.agents-dialog')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 4)
 
     expect(createConnection).not.toHaveBeenCalled()

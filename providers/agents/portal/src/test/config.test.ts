@@ -26,6 +26,16 @@ function sectionButton(el: AgentConfig, label: string): HTMLButtonElement {
 }
 
 describe('agent config', () => {
+  it('uses the canonical square action for removing a model fallback', async () => {
+    const { el } = await mountConfig({ models: { chat: 'main' }, modelFallbacks: ['backup'] })
+    const remove = el.querySelector<HTMLButtonElement>('.agents-chip-x')!
+
+    expect(remove).not.toBeNull()
+    expect(remove.classList.contains('k-icon-action')).toBe(true)
+    expect(remove.type).toBe('button')
+    expect(remove.getAttribute('aria-label')).toBe('Remove fallback backup')
+  })
+
   it('saves an editable description with the persona section', async () => {
     const { el, patchAgent } = await mountConfig({ description: 'watches the deploy queue' })
     const inputs = [...el.querySelectorAll<HTMLInputElement>('input')]
@@ -216,18 +226,19 @@ describe('web + fan-out capability warnings', () => {
 // two toggles and the same words.
 describe('agent creation capabilities', () => {
   async function mountCreate() {
-    const api = stubApi({})
+    const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'scout' }, spec: {} })
+    const api = stubApi({ createAgent })
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }] as never
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
     await settle(el, 3)
-    return el
+    return { el, createAgent }
   }
 
   const caps = (el: AgentCreateWizard) => [...el.querySelectorAll<HTMLInputElement>('.agents-cap input[type=checkbox]')]
 
   it('offers capabilities, not agent templates', async () => {
-    const el = await mountCreate()
+    const { el } = await mountCreate()
     expect(text(el)).not.toContain('Research agent')
     expect(text(el)).not.toContain('Blank agent')
     expect(text(el)).toContain('Read the web')
@@ -239,12 +250,12 @@ describe('agent creation capabilities', () => {
   // job is the prompt field's own label. If that ever goes back to asking for
   // mechanics, the capability has stopped being self-sufficient.
   it('asks the prompt for persona, not mechanics', async () => {
-    const el = await mountCreate()
+    const { el } = await mountCreate()
     expect(text(el)).toContain('not mechanics')
   })
 
   it('puts capabilities last, after the fields you must fill in', async () => {
-    const el = await mountCreate()
+    const { el } = await mountCreate()
     const body = text(el)
     // Name and model are required; capabilities are optional extras and should
     // not lead the form.
@@ -253,9 +264,7 @@ describe('agent creation capabilities', () => {
   })
 
   it('sends only the families that were ticked', async () => {
-    const el = await mountCreate()
-    let sent: Record<string, unknown> | null = null
-    el.addEventListener('agents-create', (e) => (sent = (e as CustomEvent).detail))
+    const { el, createAgent } = await mountCreate()
 
     const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
     nameInput.value = 'scout'
@@ -274,16 +283,14 @@ describe('agent creation capabilities', () => {
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
     await settle(el, 3)
 
-    expect(sent).toBeTruthy()
-    expect(sent!.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
+    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
+    expect(sent.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
     // No prompt is invented on the user's behalf.
     expect(sent!.systemPrompt).toBeUndefined()
   })
 
   it('omits families entirely when nothing is ticked', async () => {
-    const el = await mountCreate()
-    let sent: Record<string, unknown> | null = null
-    el.addEventListener('agents-create', (e) => (sent = (e as CustomEvent).detail))
+    const { el, createAgent } = await mountCreate()
     const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
     nameInput.value = 'plain'
     nameInput.dispatchEvent(new Event('input'))
@@ -293,6 +300,7 @@ describe('agent creation capabilities', () => {
     await settle(el, 3)
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
     await settle(el, 3)
+    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
     expect(sent!.interactiveFamilies).toBeUndefined()
   })
 })

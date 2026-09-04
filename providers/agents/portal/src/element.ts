@@ -297,7 +297,7 @@ export class AgentsElement extends LightElement {
     const render = (view: TemplateResult): TemplateResult | DirectiveResult => keyed(this.createSession, view)
     switch (route.resource) {
       case 'agent':
-        return render(html`<agents-agent-create .createSession=${this.createSession} .store=${bind.store} .api=${bind.api} .routeOwned=${true}></agents-agent-create>`)
+        return render(html`<agents-agent-create .createSession=${this.createSession} .store=${bind.store} .api=${bind.api}></agents-agent-create>`)
       case 'connection':
         return render(html`<agents-connections
           .createSession=${this.createSession}

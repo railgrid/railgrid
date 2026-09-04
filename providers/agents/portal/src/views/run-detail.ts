@@ -17,6 +17,15 @@ import { phaseChip } from './activity'
 
 const LIVE_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 
+function isNestedControl(event: Event): boolean {
+  const currentTarget = event.currentTarget as Element | null
+  const target = event.target as Element | null
+  const control = target?.closest?.(
+    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"]',
+  )
+  return Boolean(control && control !== currentTarget)
+}
+
 export class RunDetailView extends StoreElement {
   @property({ type: String }) runID = ''
 
@@ -357,9 +366,12 @@ export class RunDetailView extends StoreElement {
             <tr><th>Agent</th><th>Kind</th><th>Input</th><th>Phase</th><th>Duration</th><th>Usage</th></tr>
           </thead>
           <tbody>
-            ${r.children.map((c: RunSummary) => html`<tr class="agents-run-row" tabindex="0" role="link" aria-label="Open run ${c.id}"
-              @click=${() => this.navigate({ kind: 'run', id: c.id })}
+            ${r.children.map((c: RunSummary) => html`<tr class="agents-run-row" tabindex="0" aria-label="Open run ${c.id}"
+              @click=${(e: Event) => {
+                if (!isNestedControl(e)) this.navigate({ kind: 'run', id: c.id })
+              }}
               @keydown=${(e: KeyboardEvent) => {
+                if (isNestedControl(e)) return
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   this.navigate({ kind: 'run', id: c.id })

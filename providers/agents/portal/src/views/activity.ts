@@ -308,13 +308,23 @@ export class Activity extends StoreElement {
 
   private row(r: RunSummary): TemplateResult {
     const open = (): void => this.navigate({ kind: 'run', id: r.id })
+    const isNestedControl = (event: Event): boolean => {
+      const currentTarget = event.currentTarget as Element | null
+      const target = event.target as Element | null
+      const control = target?.closest?.(
+        'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"]',
+      )
+      return Boolean(control && control !== currentTarget)
+    }
     return html`<tr
       class="agents-run-row"
       tabindex="0"
-      role="link"
       aria-label="Open run ${r.id}"
-      @click=${open}
+      @click=${(e: Event) => {
+        if (!isNestedControl(e)) open()
+      }}
       @keydown=${(e: KeyboardEvent) => {
+        if (isNestedControl(e)) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           open()

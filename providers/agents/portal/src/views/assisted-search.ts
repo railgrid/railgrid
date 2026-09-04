@@ -33,9 +33,7 @@ import { familiesForConns } from '../conn-defs'
 import type { ConnectionWrite } from '../types'
 
 export class AssistedSearch extends StoreElement {
-  @property({ type: Boolean }) routeOwned = false
   @property({ type: Boolean }) page = false
-  @state() private open = false
   @state() private agent = ''
   @state() private connName = 'search'
   @state() private instance = ''
@@ -47,23 +45,9 @@ export class AssistedSearch extends StoreElement {
   // they do it mirrors the connection name, which is the default the two share.
   private instanceTouched = false
 
-  private start(): void {
-    this.open = true
-    this.agent = this.store.agents.data[0]?.metadata.name || ''
-    this.connName = 'search'
-    this.instance = ''
-    this.instanceTouched = false
-    this.size = 'small'
-    this.errors = {}
-  }
-
   private cancel(): void {
     if (this.busy) return
-    if (this.routeOwned || this.page) {
-      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
-      return
-    }
-    this.open = false
+    this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
   }
 
   private selectedAgent(): string {
@@ -125,28 +109,21 @@ export class AssistedSearch extends StoreElement {
       if (!this.authorityIsCurrent(authority)) return
 
       authority.store.setPendingPrompt(agent, searxngSetupPrompt({ connection: conn, instance: inst, size }))
-      if (this.routeOwned || this.page) {
-        this.dispatchEvent(
-          new CustomEvent<CreateSuccessDetail>('agents-create-success', {
-            detail: {
-              resource: 'connection',
-              name: conn,
-              item: res,
-              // Assisted setup intentionally keeps its existing handoff: the
-              // agent's Config/chat surface is where the provisioning prompt is
-              // actionable and visible.
-              destination: { kind: 'agent', name: agent, tab: 'config' },
-            },
-            bubbles: true,
-            composed: true,
-          }),
-        )
-      } else {
-        this.open = false
-        // The chat playground lives in the agent's Config pane (right-hand split),
-        // so that is where "go to its chat" lands.
-        this.navigate({ kind: 'agent', name: agent, tab: 'config' })
-      }
+      this.dispatchEvent(
+        new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+          detail: {
+            resource: 'connection',
+            name: conn,
+            item: res,
+            // Assisted setup intentionally keeps its existing handoff: the
+            // agent's Config/chat surface is where the provisioning prompt is
+            // actionable and visible.
+            destination: { kind: 'agent', name: agent, tab: 'config' },
+          },
+          bubbles: true,
+          composed: true,
+        }),
+      )
     } finally {
       this.busy = false
     }
@@ -190,7 +167,7 @@ export class AssistedSearch extends StoreElement {
       if (selfHostedSearchConfigured(this.store.connections.data)) {
         return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Self-hosted search is already configured in this workspace.</p></div>`
       }
-      return this.dialog()
+      return this.createPage()
     }
     // Both gates matter: no infrastructure tools means the agent cannot
     // provision anything, no agents means there is nobody to ask.
@@ -201,7 +178,7 @@ export class AssistedSearch extends StoreElement {
     if (!this.store.connections.loaded) return html`${nothing}`
     if (selfHostedSearchConfigured(this.store.connections.data)) return html`${nothing}`
     if (this.dismissed) return html`${nothing}`
-    return html`${this.card()}${this.open ? this.dialog() : nothing}`
+    return html`${this.card()}`
   }
 
   // dismissed mirrors the stored flag. Held in @state so dismissing re-renders
@@ -225,7 +202,7 @@ export class AssistedSearch extends StoreElement {
       <button
         type="button"
         class="k-btn k-btn--ghost secondary"
-        @click=${() => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'connection', type: 'assisted-search' }) : this.start())}
+        @click=${() => this.navigate({ kind: 'create', resource: 'connection', type: 'assisted-search' })}
       >Set it up</button>
       <button
         type="button"
@@ -239,21 +216,15 @@ export class AssistedSearch extends StoreElement {
     </div>`
   }
 
-  private dialog(): TemplateResult {
+  private createPage(): TemplateResult {
     const agents = this.store.agents.data
     const selected = this.selectedAgent()
     const form = html`<form
-        class=${this.page ? 'agents-conn-form k-create-surface' : 'agents-dialog'}
-        role=${this.page ? nothing : 'dialog'}
-        aria-modal=${this.page ? nothing : 'true'}
+        class="agents-conn-form k-create-surface"
         aria-label="Assisted search setup"
         @submit=${(e: Event) => void this.submit(e)}
       >
-        ${this.page ? nothing : html`<header class="agents-dialog-head">
-          <span class="agents-dialog-ic">${icon('sparkles')}</span>
-          <h3>Self-hosted search, set up for you</h3>
-        </header>`}
-        <div class=${this.page ? 'k-create-body' : ''}>
+        <div class="k-create-body">
         <p class="muted">
           We create the web-search connection pointing at an instance name, then your agent provisions the <code>searxng</code>
           instance itself. Nothing to paste back: agents reach it over the platform's internal path, so it is never published and
@@ -331,22 +302,16 @@ export class AssistedSearch extends StoreElement {
         </label>
         </div>
 
-        <div class=${this.page ? 'k-create-actions' : 'agents-form-actions'}>
+        <div class="k-create-actions">
           <button type="button" ?disabled=${this.busy} class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
           <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.busy}>${icon('sparkles')} Create and hand off</button>
         </div>
       </form>`
-    return this.page
-      ? html`<div class="agents-create-page k-create-page">
-          <button type="button" ?disabled=${this.busy} class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancel()}>${icon('arrow-left')} Connections</button>
-          <header class="k-create-header"><h1 class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
-          ${form}
-        </div>`
-      : html`<div
-          class="agents-overlay"
-          @click=${(e: Event) => e.target === e.currentTarget && this.cancel()}
-          @keydown=${(e: KeyboardEvent) => e.key === 'Escape' && this.cancel()}
-        >${form}</div>`
+    return html`<div class="agents-create-page k-create-page">
+      <button type="button" ?disabled=${this.busy} class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancel()}>${icon('arrow-left')} Connections</button>
+      <header class="k-create-header"><h1 class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
+      ${form}
+    </div>`
   }
 }
 

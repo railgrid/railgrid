@@ -66,6 +66,26 @@ describe('activity list', () => {
     expect(text(row)).toContain('$0.0042')
   })
 
+  it('keeps run-row activation keyboard accessible without stealing nested controls', async () => {
+    const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
+    const api = stubApi({ listRuns })
+    const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
+    const row = el.querySelector<HTMLElement>('.agents-run-row')!
+    const navigations: unknown[] = []
+    el.addEventListener('agents-navigate', (event) => navigations.push((event as CustomEvent).detail))
+
+    expect(row.getAttribute('role')).toBeNull()
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(navigations).toEqual([{ kind: 'run', id: 'r1' }])
+
+    const nested = document.createElement('button')
+    nested.type = 'button'
+    row.querySelector('td')!.append(nested)
+    nested.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    nested.click()
+    expect(navigations).toEqual([{ kind: 'run', id: 'r1' }])
+  })
+
   it('reports a load failure instead of an empty state', async () => {
     const api = stubApi({ listRuns: () => Promise.reject(new Error('502 upstream error')) })
     const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
@@ -284,6 +304,27 @@ describe('run detail', () => {
     expect(text(el)).toContain('1 spawned worker')
     expect(text(el)).toContain('delegated')
     expect(text(el)).toContain('worker')
+  })
+
+  it('keeps child-row keyboard activation separate from nested controls', async () => {
+    const api = stubApi({
+      getRun: () => Promise.resolve(detail({ children: [run({ id: 'c1', agent: 'researcher' })] })),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    const row = el.querySelector<HTMLElement>('.agents-run-row')!
+    const navigations: unknown[] = []
+    el.addEventListener('agents-navigate', (event) => navigations.push((event as CustomEvent).detail))
+
+    expect(row.getAttribute('role')).toBeNull()
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }))
+    expect(navigations).toEqual([{ kind: 'run', id: 'c1' }])
+
+    const nested = document.createElement('button')
+    nested.type = 'button'
+    row.querySelector('td')!.append(nested)
+    nested.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }))
+    nested.click()
+    expect(navigations).toEqual([{ kind: 'run', id: 'c1' }])
   })
 
   it('shows the run answer and its sources', async () => {

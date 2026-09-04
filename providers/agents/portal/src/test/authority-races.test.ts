@@ -136,13 +136,19 @@ describe('assisted-search authority capture', () => {
     store.capabilities.data = { providers: ['infrastructure'] }
     store.capabilities.loaded = true
     store.connections.loaded = true
-    const el = await mount('agents-connections', { store, api })
-    const routes: unknown[] = []
-    document.addEventListener('agents-navigate', (e) => routes.push((e as CustomEvent).detail), { once: true })
+    const el = await mount('agents-connections', {
+      store,
+      api,
+      routeOwned: true,
+      createRoute: true,
+      createType: 'assisted-search',
+    })
+    let destination: unknown
+    el.addEventListener('agents-create-success', (e) => {
+      destination = (e as CustomEvent<{ destination?: unknown }>).detail.destination
+    })
 
-    el.querySelector<HTMLButtonElement>('.agents-assist button')!.click()
-    await settle(el)
-    const form = el.querySelector<HTMLFormElement>('.agents-dialog')!
+    const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
     const agent = form.querySelector<HTMLSelectElement>('select')!
     const conn = form.querySelector<HTMLInputElement>('input[name=connName]')!
     const instance = form.querySelector<HTMLInputElement>('input[name=instance]')!
@@ -182,7 +188,7 @@ describe('assisted-search authority capture', () => {
     expect(patchAgent).toHaveBeenCalledTimes(1)
     expect(patchAgent.mock.calls[0][0]).toBe('scout')
     expect(patchAgent.mock.calls[0][1].interactiveConnections).toEqual(['search-old'])
-    expect(routes).toEqual([{ kind: 'agent', name: 'scout', tab: 'config' }])
+    expect(destination).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
     expect(store.takePendingPrompt('scout')).toContain('name: `searxng-old`')
     expect(store.takePendingPrompt('scout')).toBeNull()
     expect(store.takePendingPrompt('rover')).toBeNull()

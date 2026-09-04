@@ -5,7 +5,7 @@
 // things everyone sets.
 
 import { html, nothing, type TemplateResult } from 'lit'
-import { property, state } from 'lit/decorators.js'
+import { state } from 'lit/decorators.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
 import { mutate } from '../mutate'
@@ -15,10 +15,6 @@ import type { AgentCreate } from '../types'
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 export class AgentCreateWizard extends StoreElement {
-  // Route-owned creation renders as a normal page surface. The default keeps
-  // the standalone element compatible with older embedders/tests that still
-  // open the compact dialog directly.
-  @property({ type: Boolean }) routeOwned = false
   @state() private name = ''
   @state() private modelCredential = ''
   @state() private systemPrompt = ''
@@ -56,11 +52,6 @@ export class AgentCreateWizard extends StoreElement {
     if (this.web) fams.push('web')
     if (this.fanOut) fams.push('spawn')
     if (fams.length > 1) body.interactiveFamilies = fams
-    if (!this.routeOwned) {
-      this.dispatchEvent(new CustomEvent<AgentCreate>('agents-create', { detail: body }))
-      return
-    }
-
     this.busy = true
     const res = await mutate(this.store, {
       run: () => this.api.createAgent(body),
@@ -80,29 +71,18 @@ export class AgentCreateWizard extends StoreElement {
   }
 
   private cancel(): void {
-    if (this.routeOwned) {
-      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
-      return
-    }
-    this.dispatchEvent(new CustomEvent('agents-cancel'))
+    this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
   }
 
   render(): TemplateResult {
     const creds = this.store.credentials.data
     const channels = this.store.channelConnections()
     const form = html`<form
-      class=${this.routeOwned ? 'agents-create-form k-create-surface' : 'agents-dialog'}
-      role=${this.routeOwned ? nothing : 'dialog'}
-      aria-modal=${this.routeOwned ? nothing : 'true'}
+      class="agents-create-form k-create-surface"
       aria-label="Create agent"
       @submit=${(e: Event) => void this.submit(e)}
     >
-        ${this.routeOwned ? nothing : html`<header class="agents-dialog-head">
-          <span class="agents-dialog-ic">${icon('bot')}</span>
-          <h3>New agent</h3>
-        </header>`}
-
-        <div class=${this.routeOwned ? 'k-create-body' : ''}>
+        <div class="k-create-body">
         <label>
           Name *
           <input class="k-input"
@@ -176,22 +156,16 @@ export class AgentCreateWizard extends StoreElement {
         </fieldset>
         </div>
 
-        <div class=${this.routeOwned ? 'k-create-actions' : 'agents-form-actions'}>
+        <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
           <button class="k-btn k-btn--primary" type="submit">${icon('check')} Create agent</button>
         </div>
       </form>`
-    return this.routeOwned
-      ? html`<div class="agents-create-page k-create-page">
-          <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancel()}>${icon('arrow-left')} Agents</button>
-          <header class="k-create-header"><h1 class="k-create-title">Create agent</h1><p class="k-create-description">Choose the model, instructions, and optional channel this agent starts with.</p></header>
-          ${form}
-        </div>`
-      : html`<div
-          class="agents-overlay"
-          @click=${(e: Event) => e.target === e.currentTarget && this.cancel()}
-          @keydown=${(e: KeyboardEvent) => e.key === 'Escape' && this.cancel()}
-        >${form}</div>`
+    return html`<div class="agents-create-page k-create-page">
+      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancel()}>${icon('arrow-left')} Agents</button>
+      <header class="k-create-header"><h1 class="k-create-title">Create agent</h1><p class="k-create-description">Choose the model, instructions, and optional channel this agent starts with.</p></header>
+      ${form}
+    </div>`
   }
 }
 

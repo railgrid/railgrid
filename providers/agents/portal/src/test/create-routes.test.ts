@@ -16,12 +16,13 @@ describe('route-owned creation surfaces', () => {
     const api = stubApi({ createAgent })
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
-    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, routeOwned: true })
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
     let result: unknown
     el.addEventListener('agents-create-success', (e) => (result = (e as CustomEvent).detail))
 
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('.agents-create-page')).not.toBeNull()
+    expect(el.querySelector('[role="dialog"]')).toBeNull()
     el.querySelector<HTMLInputElement>('input[name=name]')!.value = 'nova'
     el.querySelector<HTMLInputElement>('input[name=name]')!.dispatchEvent(new Event('input'))
     const model = el.querySelector('select') as HTMLSelectElement
