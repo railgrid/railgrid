@@ -51,9 +51,9 @@ async function copy() {
     {{ value.text }}
     <button
       type="button"
-      class="k-btn k-btn--ghost view-value-copy"
+      class="k-btn k-btn--ghost k-icon-action view-value-copy"
       :aria-label="copied ? 'Copied' : `Copy ${value.text}`"
-      :title="copied ? 'Copied' : 'Copy'"
+      :data-k-tip="copied ? 'Copied' : 'Copy value'"
       @click.stop="copy"
     >
       <Copy v-if="!copied" :size="12" :stroke-width="1.75" aria-hidden="true" />

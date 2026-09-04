@@ -31,7 +31,7 @@ const exposure = computed(() => {
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
       <span v-if="template.cloud" class="k-badge k-badge--muted">{{ template.cloud }}</span>
-      <span v-if="exposure" class="exposure-icon" :title="exposure.title" :aria-label="exposure.title" role="img">
+      <span v-if="exposure" class="exposure-icon" :data-k-tip="exposure.title" :aria-label="exposure.title" role="img">
         <!-- internal: closed padlock — never public -->
         <Lock v-if="exposure.kind === 'internal'" :size="14" :stroke-width="1.75" aria-hidden="true" />
         <!-- optional: dashed globe — may be published if the instance asks -->

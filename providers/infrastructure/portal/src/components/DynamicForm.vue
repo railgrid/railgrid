@@ -155,6 +155,7 @@ function descriptionID(name: string): string {
         <input
           v-else-if="f.type === 'boolean'"
           :id="fieldID(f.name)"
+          class="k-checkbox"
           :aria-describedby="f.description ? descriptionID(f.name) : undefined"
           type="checkbox"
           :checked="!!values[f.name]"

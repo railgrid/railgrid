@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Boxes, CalendarClock, Ellipsis, FileCode2, RefreshCw } from 'lucide-vue-next'
+import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel, { type ConditionInfo } from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -38,7 +39,6 @@ let active = true
 let mounted = false
 let navigatingAway = false
 let acceptedDeletingIdentity: { name: string; uid?: string } | null = null
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 
 const DELETING_MESSAGE = 'Deletion is in progress while provisioned resources are cleaned up.'
 
@@ -48,6 +48,13 @@ function instanceIsDeleting(instance: Instance): boolean {
 
 const deletionInProgress = computed(() => deleting.value || Boolean(inst.value && instanceIsDeleting(inst.value)))
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: deleting.value || deletionInProgress.value ? 'Deleting instance…' : 'Delete instance',
+  tone: 'danger',
+  disabled: !inst.value || foregroundLoading.value || deleting.value || deletionInProgress.value,
+  busy: deleting.value,
+}])
 const displayedPhase = computed(() => deletionInProgress.value ? 'Deleting' : inst.value?.phase ?? '')
 const displayedMessage = computed(() => {
   if (!inst.value) return undefined
@@ -234,9 +241,8 @@ async function executeDelete() {
   }
 }
 
-function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
-  void executeDelete()
+function selectAction(action: string) {
+  if (action === 'delete') void executeDelete()
 }
 
 function goBack() {
@@ -303,22 +309,12 @@ onUnmounted(() => {
             <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" />
             {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
           </button>
-          <details ref="actionsMenu" class="instance-detail__menu">
-            <summary class="k-btn k-btn--ghost" aria-label="More instance actions">
-              <Ellipsis :size="16" aria-hidden="true" />
-              <span class="instance-detail__sr-only">More actions</span>
-            </summary>
-            <div class="instance-detail__menu-popover">
-              <button
-                type="button"
-                class="instance-detail__menu-item"
-                :disabled="!inst || foregroundLoading || deleting || deletionInProgress"
-                @click="deleteFromMenu"
-              >
-                {{ deleting || deletionInProgress ? 'Deleting instance…' : 'Delete instance' }}
-              </button>
-            </div>
-          </details>
+          <ActionMenu
+            label="More instance actions"
+            :items="actionItems"
+            :disabled="!inst || foregroundLoading || deleting || deletionInProgress"
+            @select="selectAction"
+          />
         </div>
       </template>
       <template #summary>

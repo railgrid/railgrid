@@ -40,15 +40,19 @@ describe('Infrastructure instance detail conformance', () => {
     expect(source).toContain("{ key: 'phaseLabel', label: 'Phase' }")
   })
 
-  it('owns visually-hidden detail announcements in the standalone stylesheet', () => {
-    expect(source).toContain('instance-detail__sr-only')
-    expect(source).not.toContain('class="sr-only"')
+  it('uses the shared action menu for the overflow trigger', () => {
+    expect(source).toContain("import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'")
+    expect(source).toContain('const actionItems = computed<ActionMenuItem[]>(() =>')
+    expect(source).toContain('<ActionMenu')
+    expect(source).toContain('label="More instance actions"')
+    expect(source).toContain('@select="selectAction"')
+    expect(source).not.toContain('<details')
+    expect(source).not.toContain('instance-detail__menu')
   })
 
   it('keeps local deletion visible after the menu closes and uses the provider UI backlink', () => {
     expect(source).toContain('const deletionInProgress = computed(() => deleting.value || Boolean(inst.value && instanceIsDeleting(inst.value)))')
     expect(source).toContain('<p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance.')
-    expect(source).toContain("actionsMenu.value?.removeAttribute('open')")
     expect(source).toContain('href="/ui/providers/infrastructure/instances"')
     expect(source).toContain("import ResourceBackLink from '../portalkit/ResourceBackLink.vue'")
   })

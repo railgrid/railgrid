@@ -41,4 +41,19 @@ describe('DynamicForm field identity', () => {
       expect(html).toContain(`id="${id}-description"`)
     }
   })
+
+  it('uses the shared native checkbox recipe for boolean inputs', async () => {
+    const html = await renderToString(createSSRApp(DynamicForm, {
+      schema: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean', description: 'Enable this template' },
+        },
+      },
+      values: { enabled: true },
+    }))
+
+    expect(html).toMatch(/<input[^>]*class="k-checkbox"[^>]*type="checkbox"/)
+    expect(html).toContain('checked')
+  })
 })

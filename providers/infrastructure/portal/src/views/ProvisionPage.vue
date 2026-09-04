@@ -134,16 +134,18 @@ async function submit() {
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
       <form class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" @submit.prevent="submit">
         <div class="k-create-body">
-        <div class="dynform-row">
-          <label for="infrastructure-instance-name">
-            <span class="dynform-label">Instance name<span class="required">*</span></span>
-            <span class="dynform-desc">DNS-1123 subdomain. Lowercase alnum, '-', '.'.</span>
-          </label>
-          <input id="infrastructure-instance-name" v-model="instanceName" class="k-input" placeholder="my-instance" />
-        </div>
-        <DynamicForm :schema="template.inputsSchema" v-model:values="values" />
-        <div v-if="mutationError" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
-        <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
+          <div class="provision-identity">
+            <div class="dynform-row">
+              <label for="infrastructure-instance-name">
+                <span class="dynform-label">Instance name<span class="required">*</span></span>
+                <span class="dynform-desc">DNS-1123 subdomain. Lowercase alnum, '-', '.'.</span>
+              </label>
+              <input id="infrastructure-instance-name" v-model="instanceName" class="k-input" placeholder="my-instance" />
+            </div>
+          </div>
+          <DynamicForm :schema="template.inputsSchema" v-model:values="values" />
+          <div v-if="mutationError" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
+          <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
         </div>
         <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>
