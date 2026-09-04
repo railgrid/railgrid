@@ -7,6 +7,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "test": "node --test src/quickstartLayout.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

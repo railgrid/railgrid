@@ -13,21 +13,42 @@
 
 faros-provider-quickstart {
   display: block;
+  container-name: quickstart-provider;
+  container-type: inline-size;
 }
 
 faros-provider-quickstart .quickstart-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  margin-inline: auto;
+  max-width: 64rem;
+  min-width: 0;
+  width: 100%;
 }
 
-@media (min-width: 720px) {
-  faros-provider-quickstart .quickstart-grid {
-    grid-template-columns: 1fr 1fr;
+/* Two panels stay readable at roughly 23rem each, including their inset
+ * padding and the grid gap. Container queries keep this decision tied to the
+ * provider's available column rather than to the browser viewport. */
+@supports (container-type: inline-size) {
+  @container quickstart-provider (min-width: 46rem) {
+    faros-provider-quickstart .quickstart-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+}
+
+/* Keep the same narrow-first layout in browsers without container queries. */
+@supports not (container-type: inline-size) {
+  @media (min-width: 46rem) {
+    faros-provider-quickstart .quickstart-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
   }
 }
 
 faros-provider-quickstart .quickstart-panel {
+  min-width: 0;
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
@@ -50,10 +71,17 @@ faros-provider-quickstart .quickstart-panel-title {
 }
 
 faros-provider-quickstart .quickstart-dump {
+  min-width: 0;
   margin: 0;
   padding: 10px 12px;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  box-shadow: none;
+  color: var(--color-text-secondary, #8a8ca6);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace);
   font-size: 11px;
+  line-height: 1.5;
   overflow-x: auto;
 }
 

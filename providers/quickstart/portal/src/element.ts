@@ -70,7 +70,7 @@ export class QuickstartElement extends HTMLElement {
             </span>
           </div>
           <p class="quickstart-meta">Context delivered by the shell as a JS property — no postMessage shuttle.</p>
-          <pre class="k-card quickstart-dump ${ctx ? '' : 'quickstart-muted'}" id="ctx-dump">${escapeHTML(ctxDump)}</pre>
+          <pre class="quickstart-dump ${ctx ? '' : 'quickstart-muted'}" id="ctx-dump">${escapeHTML(ctxDump)}</pre>
         </section>
 
         <section class="k-card quickstart-panel">
@@ -79,7 +79,7 @@ export class QuickstartElement extends HTMLElement {
             <span class="k-badge k-badge--warning" id="api-status" role="status">${escapeHTML(apiStateLabel)}</span>
           </div>
           <p class="quickstart-meta">GET <code id="api-url">${escapeHTML(this._apiURL())}</code></p>
-          <pre class="k-card quickstart-dump ${this._apiState ? '' : 'quickstart-muted'}" id="api-dump">${escapeHTML(apiStateDump)}</pre>
+          <pre class="quickstart-dump ${this._apiState ? '' : 'quickstart-muted'}" id="api-dump">${escapeHTML(apiStateDump)}</pre>
         </section>
       </div>
     `
