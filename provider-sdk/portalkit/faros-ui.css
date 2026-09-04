@@ -19,13 +19,23 @@
  */
 
 /*
- * This marker is intentionally part of the canonical stylesheet.  The
- * standalone injector checks the computed root value before adding a local
- * fallback, so a provider bundle can never replace a host-loaded stylesheet
- * with an older vendored copy.
+ * These markers are intentionally part of the canonical stylesheet. The
+ * standalone injector checks both computed root values before adding a local
+ * fallback, so a provider bundle can recover from an older host stylesheet
+ * without replacing it or letting an older vendored copy win.
  */
 :root {
   --faros-ui-canonical: 1;
+  /* Bump this when a standalone primitive requires a newer stylesheet than
+   * the generic canonical marker can describe. Provider bundles use it to
+   * recover from a host stylesheet served from an older deployment. */
+  --faros-ui-version: 3;
+  /* Shared stacking contract: menus sit above page content, fullscreen
+   * surfaces above menus, and global modal/toast layers remain topmost. */
+  --k-layer-menu: 1000;
+  --k-layer-fullscreen: 2000;
+  --k-layer-modal: 2147483000;
+  --k-layer-toast: 2147483001;
 }
 
 /* ── Eyebrow / KPI ────────────────────────────────────────────────────────
@@ -382,6 +392,7 @@ html.light .k-create-surface {
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   padding: 4px;
   box-shadow: 0 12px 34px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent);
+  z-index: var(--k-layer-menu, 1000);
 }
 html.light .k-menu {
   box-shadow: 0 12px 34px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 14%, transparent);
@@ -431,6 +442,96 @@ html.light .k-menu {
   background: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
+/* ── Action menu / icon action ────────────────────────────────────────────
+ * Compact overflow controls use one square target on desktop and the shared
+ * 44px coarse-pointer target. The trigger is tooltip-compatible through the
+ * global [data-k-tip] recipe above; the menu keeps the ordinary k-menu item
+ * language so callers do not need a provider-local variant. */
+.k-icon-action {
+  align-items: center;
+  aspect-ratio: 1;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  width: 32px;
+}
+.k-icon-action:hover {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-icon-action:focus {
+  outline: none;
+  box-shadow: none;
+}
+.k-icon-action:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.k-icon-action > svg {
+  flex: 0 0 auto;
+  height: 16px;
+  width: 16px;
+}
+.k-action-menu {
+  display: inline-flex;
+  position: relative;
+}
+.k-action-menu > .k-action-menu__menu {
+  /* Keep the panel readable when a provider applies a broad max-width rule
+   * to every descendant (for example, a detail-page flex safety reset). */
+  max-height: min(28rem, calc(100vh - 16px));
+  max-width: calc(100vw - 16px);
+  min-width: 180px;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+}
+.k-action-menu__item {
+  min-width: 168px;
+}
+.k-menu-item--accent { color: var(--color-accent, #8b6bff); }
+.k-menu-item--warning { color: var(--color-warning, #f0a63a); }
+.k-menu-item--danger { color: var(--color-danger, #ff5d5d); }
+.k-menu-item--accent:hover { color: var(--color-accent-hover, #a18aff); }
+.k-menu-item--warning:hover { color: var(--color-warning, #f0a63a); }
+.k-menu-item--danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+.k-action-menu__item[aria-busy="true"] { cursor: wait; }
+.k-action-menu__busy {
+  animation: k-action-menu-spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes k-action-menu-spin { to { transform: rotate(360deg); } }
+.k-fullscreen {
+  inset: 0;
+  position: fixed;
+  z-index: var(--k-layer-fullscreen, 2000);
+}
+:fullscreen {
+  z-index: var(--k-layer-fullscreen, 2000);
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-icon-action {
+    flex-basis: 44px;
+    height: 44px;
+    width: 44px;
+  }
+}
+
 /* ── Form select ──────────────────────────────────────────────────────────
  * FormSelect composes the input and menu recipes above. The panel is
  * teleported to body, so k-form-select__portal is an explicit generic scope
@@ -475,7 +576,7 @@ html.light .k-menu {
   overflow-y: auto;
   overscroll-behavior: contain;
   position: fixed;
-  z-index: 1000;
+  z-index: var(--k-layer-menu, 1000);
 }
 .k-form-select__portal .k-form-select__option {
   justify-content: space-between;
@@ -545,7 +646,7 @@ html.light .k-menu {
 }
 .k-layout-selector__menu {
   position: absolute;
-  z-index: 80;
+  z-index: var(--k-layer-menu, 1000);
   top: calc(100% + 5px);
   right: 0;
   width: 154px;
@@ -635,6 +736,25 @@ html.light .k-menu {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
+}
+/* ActionMenu's trigger tooltip must keep its intrinsic measure even when an
+ * embedding provider constrains all descendants and pseudo-elements to their
+ * containing block. */
+.k-action-menu__trigger[data-k-tip]::after {
+  /* Action menus already pin their panel to the inline end of the trigger.
+   * Pinning the tooltip to that same edge keeps its intrinsic measure inside
+   * the viewport when the trigger is in a right-aligned action group. */
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+  transform: none;
+  max-width: min(260px, calc(100vw - 16px));
+  width: max-content;
+}
+.k-action-menu__trigger[aria-expanded="true"][data-k-tip]::after {
+  /* The open menu is the active disclosure; avoid a competing tooltip over it. */
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s;
 }
 html.light [data-k-tip]::after {
   box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 10%, transparent);
@@ -869,7 +989,7 @@ html.light [data-k-tip]::after {
 .k-modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2147483000;
+  z-index: var(--k-layer-modal, 2147483000);
   display: grid;
   place-items: center;
   padding: 24px;
@@ -981,7 +1101,7 @@ html.light [data-k-tip]::after {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 2147483001;
+  z-index: var(--k-layer-toast, 2147483001);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1144,6 +1264,7 @@ html.light [data-k-tip]::after {
 }
 .k-table__loading-control--search {
   flex: 1 1 220px;
+  max-width: 42rem;
   min-width: 180px;
 }
 .k-table__loading-control--filter { flex: 0 0 132px; }
@@ -1153,6 +1274,7 @@ html.light [data-k-tip]::after {
 }
 .k-table__search {
   flex: 1 1 220px;
+  max-width: 42rem;
   min-width: 180px;
   position: relative;
 }
@@ -1176,6 +1298,7 @@ html.light [data-k-tip]::after {
   height: 32px;
 }
 .k-table__search-input {
+  max-width: 42rem;
   padding: 0 30px;
   width: 100%;
 }
@@ -2202,6 +2325,7 @@ html.light [data-k-tip]::after {
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
   .k-resource-technical__chevron { transition: none; }
+  .k-action-menu__busy { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

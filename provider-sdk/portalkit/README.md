@@ -33,10 +33,11 @@ package boundaries.
 must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
 `ensureFarosUIStyles()`: a computed `:root` marker
-`--faros-ui-canonical: 1` or an existing `#k-faros-ui` means the host/style is
-already present and is left untouched; otherwise the exact vendored stylesheet
-is appended with `data-faros-ui-source="portalkit-fallback"`. Existing style
-elements are never replaced.
+`--faros-ui-canonical: 1` is accepted only when its `--faros-ui-version` is at
+least the bundle's required version. Otherwise the exact vendored stylesheet
+is appended under a versioned fallback ID with
+`data-faros-ui-source="portalkit-fallback"`. Existing style elements are never
+replaced, and a newer host stylesheet is never downgraded.
 
 ## Editing
 

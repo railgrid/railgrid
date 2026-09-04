@@ -334,12 +334,12 @@ canonical files, then run `make sync-portalkit`. Never edit the vendored copies
 under `*/src/portalkit/` — CI's `verify-portalkit` fails on drift.
 
 Standalone bundles call `ensureFarosUIStyles()` before rendering. It first
-accepts a host stylesheet whose computed `:root` marker
-`--faros-ui-canonical: 1` is present, or an existing `#k-faros-ui` style. If
-neither exists, it appends the exact vendored stylesheet as a
-`data-faros-ui-source="portalkit-fallback"` fallback. It never replaces or
-mutates an existing style element, so a provider's older fallback cannot
-overwrite the host's canonical CSS.
+accepts a host stylesheet whose computed `:root` markers include
+`--faros-ui-canonical: 1` and a compatible `--faros-ui-version`. A stale host
+or unversioned `#k-faros-ui` style remains untouched while the bundle appends
+its exact vendored stylesheet under a versioned fallback ID with
+`data-faros-ui-source="portalkit-fallback"`. Newer host versions are accepted,
+so a provider's older fallback cannot overwrite or downgrade canonical CSS.
 
 ## 10. Extended component specs
 

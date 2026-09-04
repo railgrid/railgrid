@@ -10,9 +10,11 @@ at `portal/src/assets/faros-ui.css` and the byte-synced `src/portalkit/` copies
 are checked separately by `make verify-portalkit`; its manifest canary rejects
 an unmanifested canonical file and its copy checks reject missing, stale, or
 unexpected assets. Standalone bundles use the shared `styles.ts` handoff: the
-computed `:root` marker `--faros-ui-canonical: 1` preserves a host stylesheet;
-only when no marker or existing `#k-faros-ui` style is present is the exact
-vendored CSS appended as a fallback. Existing style elements are not replaced.
+computed `:root` marker `--faros-ui-canonical: 1` preserves a host stylesheet
+only when its `--faros-ui-version` is compatible. A stale or unversioned host
+style remains untouched while the exact vendored CSS is appended under a
+versioned fallback ID. Existing style elements are not replaced, and newer host
+versions are not downgraded.
 
 It scans the canonical `provider-sdk/portalkit` and
 `provider-sdk/portalkit-vue` roots plus `providers/*/portal/src`. Generated

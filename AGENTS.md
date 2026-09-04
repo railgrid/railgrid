@@ -263,10 +263,11 @@ The shared visual authority is `provider-sdk/portalkit/faros-ui.css`. The host
 copy at `portal/src/assets/faros-ui.css` and each vendored
 `src/portalkit/faros-ui.css` are exact sync outputs; the verifier also rejects
 unmanifested canonical files and unexpected copies. Standalone bundles call
-`ensureFarosUIStyles()`, which accepts the host's computed
-`--faros-ui-canonical: 1` marker or an existing `#k-faros-ui` style and otherwise
-appends the exact vendored stylesheet as a fallback. It never overwrites an
-existing style element.
+`ensureFarosUIStyles()`, which accepts the host only when its computed
+`--faros-ui-canonical: 1` marker has a compatible `--faros-ui-version`. If the
+host is stale, the bundle appends its exact vendored stylesheet under a
+versioned fallback ID. It never overwrites an existing style element, and a
+newer host stylesheet always wins.
 
 - **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
   (vanilla-TS)** portals (`agents`, `kuery`, `quickstart`):

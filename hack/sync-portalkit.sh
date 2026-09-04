@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useDelayedLoading.ts)
+VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useDelayedLoading.ts)
 
 # Plain assets from the vanilla kit are shared by both portal styles.
 VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts page-state.ts styles.ts tabs.ts tenant.ts toast.ts)
@@ -43,7 +43,7 @@ HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
 TS_CANONICAL_ONLY=(README.md page-state.ts)
-VUE_CANONICAL_ONLY=()
+VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs)
 
 # These files were visual implementations before faros-ui.css became the sole
 # recipe. Remove only this known migration set; arbitrary unexpected files are
