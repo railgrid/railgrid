@@ -92,6 +92,18 @@ test('confirmation contract preserves the request and exposes editable name, tem
   assert.doesNotMatch(wizardSource, /Review your project|Plan ready|Planning in progress/)
 })
 
+test('wizard uses the shared route-owned creation skeleton without changing progress navigation', () => {
+  assert.match(wizardSource, /<section class="k-create-page flex w-full flex-col gap-6">/)
+  assert.match(wizardSource, /class="k-create-surface k-create-surface--wide flex w-full flex-col"/)
+  assert.match(wizardSource, /class="k-create-header m-0"/)
+  assert.match(wizardSource, /class="k-create-body flex w-full flex-col gap-5 p-5 sm:p-7"/)
+  assert.match(wizardSource, /class="k-create-body grid flex-1 gap-5 p-5 sm:p-7/)
+  assert.match(wizardSource, /class="k-create-actions flex flex-col-reverse/)
+  assert.match(wizardSource, /class="k-create-actions flex flex-col items-stretch/)
+  assert.match(wizardSource, /<nav\s+[\s\S]*aria-label="Project creation steps"/)
+  assert.match(wizardSource, /type Step = 'describe' \| 'prepare' \| 'confirm'/)
+})
+
 test('planning failures remain honest and retain retry/edit affordances for a submitted idea', async () => {
   const originalPlanProject = api.planProject
   api.planProject = () => {
@@ -128,7 +140,7 @@ test('confirmed details emit the exact durable create payload and honor the disa
 test('wizard keeps responsive controls and long blueprint content usable', () => {
   assert.match(wizardSource, /text-\[16px\][\s\S]*md:text-\[13px\]/)
   assert.match(wizardSource, /break-words[\s\S]*\[overflow-wrap:anywhere\]/)
-  assert.match(wizardSource, /footer v-if="step === 'confirm'" class="flex flex-col[\s\S]*sm:flex-row/)
+  assert.match(wizardSource, /footer v-if="step === 'confirm'" class="k-create-actions flex flex-col[\s\S]*sm:flex-row/)
   assert.match(wizardSource, /class="inline-flex h-9 w-full[\s\S]*sm:w-auto"[\s\S]*Create project/)
   assert.match(wizardSource, /<ol class="[^"\n]*m-0[^"\n]*list-none[^"\n]*p-0[^"\n]*">/)
   assert.match(wizardSource, /class="font-mono text-\[11px\][\s\S]*text-text-secondary">Your request/)
@@ -154,6 +166,9 @@ test('App replaces the landing composer with the wizard and wires cancel to rest
   assert.match(wizardBlock, /@cancel="onWizardCancel"/)
   assert.match(appSource, /<template v-else>\s*<div[\s\S]*?<form[\s\S]*<AssistantPreProjectComposer[\s\S]*v-if="!wizardOpen"/)
   assert.match(appSource, /:class="wizardOpen \|\| firstTimeSetupVisible \? 'items-start' : 'items-center'"/)
+  assert.match(appSource, /<section class="w-full max-w-\[1060px\]">/)
+  assert.match(appSource, /const isBuilderVisible = computed\(\(\) =>[\s\S]*selected\.value !== null\)/)
+  assert.match(appSource, /props\.requestFullBleed\?\.\(visible\)/)
 
   const cancelFunction = appSource.match(/async function onWizardCancel\(\) \{([\s\S]*?)\n\}/)?.[1]
   assert.ok(cancelFunction, 'cancel handler must remain explicit')
@@ -250,7 +265,7 @@ test('landing intake uses a compact Faros composer with concrete prompts and a r
   assert.match(preProjectComposerSource, /ASSISTANT_LARGE_PASTE_BYTES/)
   assert.match(preProjectComposerSource, /clipboardImageFile/)
   assert.match(appSource, /Updating repositories…[\s\S]*text-text-secondary/)
-  assert.match(appSource, /v-model="importSelectedRepository"[\s\S]*text-\[16px\][\s\S]*md:text-\[12px\]/)
+  assert.match(appSource, /v-model="importSelectedRepository"[\s\S]*class="k-input h-9 min-w-0 text-\[16px\] md:text-\[12px\]"/)
   assert.match(appSource, /api\.createProject\(props\.ctx, \{ existingRepositoryRef: repositoryRef \}\)/)
   assert.match(appSource, /function handleLandingImportEscape\(event: KeyboardEvent\)[\s\S]*event\.key !== 'Escape'[\s\S]*closeLandingImportPopover\(true\)/)
   assert.match(appSource, /function handleLandingImportOutside\(event: PointerEvent\)[\s\S]*root\.contains\(target\)[\s\S]*closeLandingImportPopover\(\)/)
@@ -267,7 +282,7 @@ test('landing intake uses a compact Faros composer with concrete prompts and a r
 
 test('pre-project attachments stay parent-owned across both intake surfaces and hand off receipts with the prompt', () => {
   const describeStart = wizardSource.indexOf('<div class="grid gap-2">')
-  const describeEnd = wizardSource.indexOf('\n      <p v-if="error"', describeStart)
+  const describeEnd = wizardSource.indexOf('\n        <p v-if="error"', describeStart)
   assert.ok(describeStart >= 0 && describeEnd > describeStart, 'project description controls should remain a bounded block')
   const describeBlock = wizardSource.slice(describeStart, describeEnd)
   assert.match(describeBlock, /<label for="new-project-prompt"[^>]*>Project description<\/label>\s*<AssistantPreProjectComposer/)

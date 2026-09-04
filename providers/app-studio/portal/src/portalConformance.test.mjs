@@ -168,3 +168,19 @@ test('renders one stable production loading shell and recursive full-path ids', 
   assert.match(productionForm, /productionFieldID\(props\.pathPrefix, path\)/)
   assert.match(productionForm, /:path-prefix="fullPath\(name\)"/)
 })
+
+test('keeps the project collection fluid while constraining only the create-route parent', () => {
+  const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
+  const createStart = app.indexOf('<div v-else-if="showNewProjectComposer">', landingStart)
+  assert.ok(landingStart >= 0 && createStart > landingStart)
+  const projectCollection = app.slice(landingStart, createStart)
+
+  assert.match(projectCollection, /<div class="flex min-h-full w-full flex-col gap-4">/)
+  assert.match(projectCollection, /grid grid-cols-\[repeat\(auto-fill,minmax\(260px,1fr\)\)\]/)
+  assert.doesNotMatch(projectCollection, /max-w-\[(?:1060|1600)px\]/)
+
+  assert.match(
+    app.slice(createStart),
+    /<section class="w-full max-w-\[1060px\]">[\s\S]*<template v-else-if="wizardOpen">\s*<NewProjectWizard/,
+  )
+})

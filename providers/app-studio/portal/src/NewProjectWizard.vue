@@ -249,7 +249,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex w-full flex-col gap-6">
+  <section class="k-create-page flex w-full flex-col gap-6">
     <nav
       aria-label="Project creation steps"
       class="rounded-lg border border-border-subtle bg-surface-raised px-4 py-3 shadow-sm sm:px-5"
@@ -295,32 +295,34 @@ onMounted(async () => {
          landing prompt. A submitted landing idea starts at preparation instead. -->
     <section
       v-if="step === 'describe'"
-      class="flex w-full flex-col gap-5 rounded-lg border border-border-subtle bg-surface-raised p-5 shadow-sm sm:p-7"
+      class="k-create-surface k-create-surface--wide flex w-full flex-col"
       aria-labelledby="new-project-intake-title"
     >
-      <div>
-        <h2 id="new-project-intake-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">Describe your project</h2>
-        <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Faros workspace. You can review the suggested starting point before anything is created.</p>
+      <div class="k-create-body flex w-full flex-col gap-5 p-5 sm:p-7">
+        <header class="k-create-header m-0">
+          <h2 id="new-project-intake-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">Describe your project</h2>
+          <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Faros workspace. You can review the suggested starting point before anything is created.</p>
+        </header>
+
+        <div class="grid gap-2">
+          <label for="new-project-prompt" class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project description</label>
+          <AssistantPreProjectComposer
+            v-model="prompt"
+            input-id="new-project-prompt"
+            :attachments="attachments"
+            :error="attachmentError"
+            placeholder="Describe the app, dashboard, workflow, or API you want to build…"
+            @add-attachment="emit('add-attachment', $event)"
+            @remove-attachment="emit('remove-attachment', $event)"
+            @retry-attachment="emit('retry-attachment', $event)"
+            @submit="runPlan"
+          />
+        </div>
+
+        <p v-if="error" role="alert" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">{{ error }}</p>
       </div>
 
-      <div class="grid gap-2">
-        <label for="new-project-prompt" class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project description</label>
-        <AssistantPreProjectComposer
-          v-model="prompt"
-          input-id="new-project-prompt"
-          :attachments="attachments"
-          :error="attachmentError"
-          placeholder="Describe the app, dashboard, workflow, or API you want to build…"
-          @add-attachment="emit('add-attachment', $event)"
-          @remove-attachment="emit('remove-attachment', $event)"
-          @retry-attachment="emit('retry-attachment', $event)"
-          @submit="runPlan"
-        />
-      </div>
-
-      <p v-if="error" role="alert" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">{{ error }}</p>
-
-      <div class="flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="k-create-actions flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <button
           type="button"
           class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[13px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40 sm:w-auto"
@@ -343,10 +345,10 @@ onMounted(async () => {
          does not recenter or visually restart when the plan request resolves. -->
     <section
       v-else
-      class="flex w-full flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm"
+      class="k-create-surface k-create-surface--wide flex w-full flex-col"
       aria-labelledby="new-project-details-title"
     >
-      <header class="border-b border-border-subtle px-5 py-5 sm:px-7">
+      <header class="k-create-header m-0 border-b border-border-subtle px-5 py-5 sm:px-7">
         <div class="mt-1 flex flex-wrap items-baseline justify-between gap-2">
           <div class="min-w-0">
             <h2 id="new-project-details-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">
@@ -368,7 +370,7 @@ onMounted(async () => {
         </div>
       </header>
 
-      <div class="grid flex-1 gap-5 p-5 sm:p-7 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+      <div class="k-create-body grid flex-1 gap-5 p-5 sm:p-7 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div class="min-w-0">
           <div class="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Your request</div>
           <p class="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-text-primary">{{ prompt }}</p>
@@ -492,7 +494,7 @@ onMounted(async () => {
         </div>
       </div>
 
-      <footer v-if="step === 'confirm'" class="flex flex-col items-stretch gap-3 border-t border-border-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+      <footer v-if="step === 'confirm'" class="k-create-actions flex flex-col items-stretch gap-3 border-t border-border-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
         <div class="min-w-0 flex-1">
           <div v-if="setupBlocked" class="grid gap-3" role="alert">
             <div>
@@ -549,5 +551,5 @@ onMounted(async () => {
         </button>
       </footer>
     </section>
-  </div>
+  </section>
 </template>

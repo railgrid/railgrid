@@ -338,9 +338,9 @@ test('rich composer presents a hoverable annotation preview with an in-pill clea
   assert.match(disclosure, /aria-label="Clear annotations"/)
   assert.match(disclosure, /@click\.stop="removeAll"/)
   assert.match(disclosure, /class="group relative inline-flex max-w-full"/)
-  assert.match(disclosure, /group-hover:w-6/)
-  assert.match(disclosure, /group-hover:opacity-100/)
-  assert.match(disclosure, /group-focus-within:opacity-100/)
+  assert.match(disclosure, /class="app-studio-touch-target inline-flex h-7 w-7[^"]*rounded-md[^"]*focus-visible:ring-2/)
+  assert.match(disclosure, /data-k-tip="Clear annotations"/)
+  assert.doesNotMatch(disclosure, /group-hover:w-6|group-hover:opacity-100|group-focus-within:opacity-100|rounded-full/)
   assert.doesNotMatch(disclosure, /Edit annotation/)
   assert.doesNotMatch(disclosure, /Remove annotation/)
   assert.doesNotMatch(disclosure, />Remove all</)
@@ -358,9 +358,20 @@ test('rich composer presents a hoverable annotation preview with an in-pill clea
   }))
   assert.match(html, /aria-describedby="composer-annotations-panel"/)
   assert.match(html, /role="tooltip"/)
+  assert.match(html, /<button type="button" class="app-studio-touch-target inline-flex h-7 w-7[^\"]*rounded-md[^\"]*focus-visible:ring-2/)
   assert.match(html, /aria-label="Clear annotations"/)
+  assert.match(html, /data-k-tip="Clear annotations"/)
   assert.match(html, /Stale preview/)
   assert.match(html, /Adjust this control/)
+
+  const nonClearableHTML = await renderToString(createSSRApp(AssistantMessageAnnotations, {
+    annotations: [{
+      id: 'annotation-message-1', comment: 'Keep this note', documentID: 'new-document', pagePath: '/',
+      viewport: { width: 1024, height: 768 }, target: { tag: 'button', text: 'Save' },
+    }],
+    disclosureID: 'message-annotations',
+  }))
+  assert.doesNotMatch(nonClearableHTML, /aria-label="Clear annotations"/)
 
 })
 

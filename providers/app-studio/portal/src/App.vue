@@ -8842,7 +8842,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <select
                           id="landing-import-repository"
                           v-model="importSelectedRepository"
-                          class="h-9 min-w-0 w-full rounded-md border border-border-default bg-surface px-2.5 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[12px]"
+                          class="k-input h-9 min-w-0 text-[16px] md:text-[12px]"
                           :disabled="importRepositoriesLoading || importBusy"
                         >
                           <option value="" disabled>Select a repository…</option>

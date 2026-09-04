@@ -105,7 +105,8 @@ watch(() => props.annotations.length, (count) => {
       <button
         v-if="clearable"
         type="button"
-        class="pointer-events-none flex h-6 w-0 shrink-0 scale-75 items-center justify-center overflow-hidden rounded-full border border-transparent bg-surface-hover text-text-muted opacity-0 transition-[width,margin,opacity,transform,border-color] group-hover:ml-0.5 group-hover:w-6 group-hover:scale-100 group-hover:border-border-default group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:ml-0.5 group-focus-within:w-6 group-focus-within:scale-100 group-focus-within:border-border-default group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-surface-overlay hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="app-studio-touch-target inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-default bg-surface-hover text-text-muted transition hover:bg-surface-overlay hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        data-k-tip="Clear annotations"
         aria-label="Clear annotations"
         @click.stop="removeAll"
       >
