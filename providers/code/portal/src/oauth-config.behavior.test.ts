@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createRenderer, nextTick, ref, ssrContextKey, type RendererOptions } from '@vue/runtime-core'
+import { createRenderer, defineComponent, h, KeepAlive, nextTick, ref, ssrContextKey, type Component, type RendererOptions } from '@vue/runtime-core'
 import * as VueRuntime from 'vue'
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import type { VNode } from 'vue'
@@ -41,9 +41,22 @@ vi.mock('./portalkit/StatusBadge.vue', async () => {
   const { h } = await import('vue')
   return { default: { setup: () => () => h('span', 'status') } }
 })
+vi.mock('./portalkit/FirstRunGuide.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      props: { title: String, primaryLabel: String },
+      setup: props => () => h('section', { class: 'k-first-run' }, [
+        h('h3', props.title),
+        h('button', props.primaryLabel),
+      ]),
+    }),
+  }
+})
 vi.mock('lucide-vue-next', async () => {
   const { h } = await import('vue')
-  return { ArrowLeft: { setup: () => () => h('span', { 'aria-hidden': 'true' }) } }
+  const icon = { setup: () => () => h('span', { 'aria-hidden': 'true' }) }
+  return { ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Link2: icon }
 })
 
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -207,7 +220,7 @@ async function settle(): Promise<void> {
   }
 }
 
-function mount(component: typeof ConnectionsView | typeof ConnectionCreateView | typeof RepositoryCreateView, props: Record<string, unknown>) {
+function mount(component: Component, props: Record<string, unknown>) {
   const root = createTreeElement('root')
   const app = renderer.createApp(component, props)
   app.provide(ssrContextKey, { modules: new Set<string>() })
@@ -266,7 +279,11 @@ describe('OAuth configuration error states', () => {
   it('shows a retry action on the connections collection when configuration fails', async () => {
     const configRequest = deferred<{ enabled: boolean }>()
     mocks.api.oauthConfig.mockReturnValue(configRequest.promise)
-    const { app, root } = mount(ConnectionsView, { deletions: createResourceDeletions() })
+    const deletions = createResourceDeletions()
+    const host = defineComponent({
+      setup: () => () => h(KeepAlive, null, { default: () => h(ConnectionsView, { deletions }) }),
+    })
+    const { app, root } = mount(host, {})
     await settle()
 
     configRequest.reject(new Error('oauth backend unavailable'))
@@ -274,6 +291,9 @@ describe('OAuth configuration error states', () => {
 
     expect(textContent(root)).toContain('GitHub sign-in configuration could not be loaded: oauth backend unavailable')
     expect(textContent(root)).toContain('Retry GitHub sign-in')
+    expect(textContent(root)).toContain('Connect a GitHub account')
+    expect(textContent(root)).toContain('Add token manually')
+    expect(findNode(root, node => String(node.props.class || '').split(' ').includes('k-first-run'))).toBeDefined()
     expect(findNode(root, node => node.props.role === 'alert')).toBeDefined()
     app.unmount()
   })

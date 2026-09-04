@@ -44,12 +44,26 @@ faros-provider-edges .header-actions button { flex: 0 0 auto; white-space: nowra
 @media (max-width: 720px) {
   faros-provider-edges .edges-header { align-items: stretch; flex-direction: column; }
   faros-provider-edges .header-actions { justify-content: flex-start; width: 100%; }
+  faros-provider-edges .types { grid-template-columns: minmax(0, 1fr); }
+  faros-provider-edges .wiz-actions { align-items: stretch; flex-direction: column-reverse; }
+  faros-provider-edges .service-create-grid--two,
+  faros-provider-edges .service-create-grid--three,
+  faros-provider-edges .workload-create-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ── Inputs & labels ── */
 faros-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted, #5d5f78); }
 /* Labelled form field: label stacked above its control with a small gap. */
 faros-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
+faros-provider-edges .field-error { color: var(--color-danger, #ff5d5d); font-size: 11px; }
+faros-provider-edges .service-create-grid,
+faros-provider-edges .workload-create-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+faros-provider-edges .service-create-grid--two,
+faros-provider-edges .workload-create-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+faros-provider-edges .service-create-grid--three { grid-template-columns: minmax(0, 1fr) minmax(6rem, 120px) minmax(6rem, 120px); }
+faros-provider-edges .service-create-target-modes { display: flex; flex-wrap: wrap; gap: 16px; }
+faros-provider-edges .service-create-target-modes label { align-items: center; cursor: pointer; display: inline-flex; gap: 6px; }
+faros-provider-edges .service-create-target-modes label.is-disabled { opacity: .5; }
 
 /* ── Cards ── */
 faros-provider-edges .wiz-card { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -60,7 +74,7 @@ faros-provider-edges .wiz-card h3 { margin: 0; font-size: 14px; font-weight: 600
 faros-provider-edges .wiz { margin: 0; }
 faros-provider-edges .wiz-hero h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary, #e9e9f2); }
 faros-provider-edges .wiz-hero p { margin: 4px 0 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
-faros-provider-edges .wiz-steps { display: flex; gap: 14px; margin: 16px 0; }
+faros-provider-edges .wiz-steps { display: flex; flex-wrap: wrap; gap: 14px; list-style: none; margin: 16px 0; padding: 0; }
 faros-provider-edges .wiz-step { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-muted, #5d5f78); }
 faros-provider-edges .wiz-step.active { color: var(--color-text-primary, #e9e9f2); }
 faros-provider-edges .wiz-step.done { color: var(--color-success, #2fd6a0); }

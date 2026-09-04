@@ -6,6 +6,7 @@ import { contextGenerationKey } from '../context'
 import type { Connection, ErrorResponse } from '../types'
 import type { ConnectionCreateMethod } from '../routes'
 import type { ResourceDeletions } from '../refresh'
+import CreateGuidance from '../portalkit/CreateGuidance.vue'
 
 const props = defineProps<{
   method: ConnectionCreateMethod
@@ -58,6 +59,45 @@ const pageTitle = computed(() => isGitHub.value ? 'Connect with GitHub' : 'Add a
 const pageMeta = computed(() => isGitHub.value
   ? 'Authorize GitHub, then choose the account or organization where repositories should be created.'
   : 'Store a GitHub personal access token in this workspace and validate the connection.')
+const guidanceTitle = computed(() => isGitHub.value ? 'Authorize and connect GitHub' : 'Name and connect GitHub')
+const guidanceDescription = computed(() => isGitHub.value
+  ? 'Authorize Faros in GitHub, then review the workspace-local connection before creating it.'
+  : 'Choose the Faros connection name and GitHub owner, then provide a personal access token.')
+const guidancePrerequisites = computed(() => isGitHub.value
+  ? [
+      'A GitHub session with access to the account or organization that will own repositories.',
+      'Permission to authorize the configured Faros GitHub OAuth app.',
+    ]
+  : [
+      'A GitHub account or organization name that will own repositories.',
+      'A personal access token with permission to create and manage repositories for that owner.',
+      'For GitHub Enterprise Server, the API base URL for the instance.',
+    ])
+const guidanceValues = computed(() => [
+  { label: 'Faros name', value: name.value.trim() || 'Not entered yet', technical: true },
+  { label: 'GitHub owner', value: owner.value.trim() || 'Not entered yet', technical: true },
+  { label: 'Authentication', value: isGitHub.value ? 'GitHub OAuth' : 'Personal access token' },
+  {
+    label: 'Git host',
+    value: isGitHub.value ? 'Configured by OAuth' : baseURL.value.trim() || 'github.com',
+    technical: !isGitHub.value,
+  },
+  {
+    label: 'Credential',
+    value: oauthAuthorized.value
+      ? 'Authorized (stored as a Secret)'
+      : token.value
+        ? 'Provided (stored as a Secret)'
+        : isGitHub.value && oauthBusy.value
+          ? 'Waiting for GitHub authorization'
+          : 'Not provided yet',
+  },
+])
+const guidanceNextSteps = [
+  'Faros stores the credential as a Secret in this workspace; it is not shown after submission.',
+  'The connection controller validates the credential and reports the GitHub login and readiness.',
+  'Use the connection when creating repositories; manage deploy keys and collaborators from each repository.',
+]
 
 function isDeleting(connection: Pick<Connection, 'name' | 'uid' | 'deletionTimestamp'>): boolean {
   return !!connection.deletionTimestamp || props.deletions.has('connection', connection.name, connection.uid)
@@ -323,16 +363,25 @@ onMounted(() => window.addEventListener('message', onMessage))
       <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
     </div>
 
-    <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface">
-      <div class="k-create-body">
-      <p class="muted">A separate GitHub window will open. After authorization, review the connection details before creating it.</p>
-      <span v-if="oauthLoaded && !oauthEnabled && !oauthConfigError" class="muted">GitHub OAuth is not configured. Use the token connection flow instead.</span>
-      <span v-else-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
-      <div v-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
-        <span>GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}</span>
-        <button class="k-btn k-btn--ghost" type="button" @click="loadOAuthConfig">Retry GitHub sign-in</button>
-      </div>
-      <p v-if="formError" class="error" role="alert">{{ formError }}</p>
+    <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface k-create-surface--guided">
+      <div class="k-create-body k-create-body--guided">
+        <div class="k-create-fields">
+          <p class="muted">A separate GitHub window will open. After authorization, review the connection details before creating it.</p>
+          <span v-if="oauthLoaded && !oauthEnabled && !oauthConfigError" class="muted">GitHub OAuth is not configured. Use the token connection flow instead.</span>
+          <span v-else-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
+          <div v-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
+            <span>GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}</span>
+            <button class="k-btn k-btn--ghost" type="button" @click="loadOAuthConfig">Retry GitHub sign-in</button>
+          </div>
+          <p v-if="formError" class="error" role="alert">{{ formError }}</p>
+        </div>
+        <CreateGuidance
+          :title="guidanceTitle"
+          :description="guidanceDescription"
+          :prerequisites="guidancePrerequisites"
+          :values="guidanceValues"
+          :next-steps="guidanceNextSteps"
+        />
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>
@@ -342,19 +391,28 @@ onMounted(() => window.addEventListener('message', onMessage))
       </div>
     </div>
 
-    <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface" :aria-busy="submitting" novalidate @submit.prevent="submit">
-      <div class="k-create-body">
-        <p v-if="oauthAuthorized" class="muted">
-          Authorized via GitHub<span v-if="owner"> as <code>{{ owner }}</code></span>. Pick the org/account to create repositories under, then confirm.
-        </p>
-        <label class="field" for="code-connection-name"><span class="field-label">Name</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
-        <label class="field" for="code-connection-owner"><span class="field-label">Owner (org or user)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
-        <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error' : undefined" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
-        <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
-        <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
-        <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
-        <span v-if="formError" class="error" role="alert">{{ formError }}</span>
-        <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating connection…</span>
+    <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
+      <div class="k-create-body k-create-body--guided">
+        <div class="k-create-fields">
+          <p v-if="oauthAuthorized" class="muted">
+            Authorized via GitHub<span v-if="owner"> as <code>{{ owner }}</code></span>. Pick the org/account to create repositories under, then confirm.
+          </p>
+          <label class="field" for="code-connection-name"><span class="field-label">Name</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
+          <label class="field" for="code-connection-owner"><span class="field-label">Owner (org or user)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
+          <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error' : undefined" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
+          <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
+          <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
+          <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
+          <span v-if="formError" class="error" role="alert">{{ formError }}</span>
+          <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating connection…</span>
+        </div>
+        <CreateGuidance
+          :title="guidanceTitle"
+          :description="guidanceDescription"
+          :prerequisites="guidancePrerequisites"
+          :values="guidanceValues"
+          :next-steps="guidanceNextSteps"
+        />
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>

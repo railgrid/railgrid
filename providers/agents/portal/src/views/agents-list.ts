@@ -3,15 +3,16 @@
 // wizard, which — unlike the old bare name field — collects the model
 // credential the agent needs to be usable on arrival.
 
-import { html, type TemplateResult } from 'lit'
+import { html, nothing, type TemplateResult } from 'lit'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
-import { sliceView } from '../ui/states'
+import { errorState, loadingState, sliceView, staleState } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
 import type { Agent } from '../types'
 import { hashFor } from '../router'
+import { firstRunGuide } from '../ui/create-flow'
 
 export class AgentsList extends StoreElement {
   private async del(name: string): Promise<void> {
@@ -33,16 +34,50 @@ export class AgentsList extends StoreElement {
   }
 
   render(): TemplateResult {
+    const agents = this.store.agents
+    const credentials = this.store.credentials
+    const showFirstRun = agents.loaded && agents.data.length === 0 && (!agents.error || agents.hasSnapshot)
+    const renderFirstRun = (): TemplateResult => {
+      const retryCredentials = () => void this.store.load('credentials')
+      if (credentials.error && !credentials.hasSnapshot) {
+        return errorState(`Could not load model credentials. ${credentials.error}`, retryCredentials)
+      }
+      if (!credentials.loaded) return loadingState('Loading model credentials…')
+
+      const needsModel = credentials.data.length === 0
+      const guide = firstRunGuide({
+        icon: 'bot',
+        title: needsModel ? 'Connect a model before creating your first agent' : 'Create your first agent',
+        description: needsModel
+          ? 'Agents need a model credential to reason. Add one first, then return here to choose instructions, tools, and a channel.'
+          : 'Give an agent a model and standing instructions, then start a conversation or automate its work.',
+        primaryLabel: needsModel ? 'Add model credential' : 'Create agent',
+        primary: () => this.navigate({ kind: 'create', resource: needsModel ? 'model' : 'agent' }),
+        steps: [
+          { label: 'Model', description: 'Credential and model endpoint' },
+          { label: 'Agent', description: 'Identity, instructions, and capabilities' },
+          { label: 'Conversation', description: 'Chat directly or add automation' },
+        ],
+        currentStep: needsModel ? 0 : 1,
+        journeyLabel: 'Agent setup path',
+      })
+      return credentials.error
+        ? html`${staleState(credentials.error, retryCredentials)}${guide}`
+        : guide
+    }
     return html`
       <div class="agents-menu">
         <div class="agents-panel-head">
           <h3>Agents</h3>
-          <button class="k-btn k-btn--primary" @click=${() => this.navigate({ kind: 'create', resource: 'agent' })}>${icon('plus')} New agent</button>
+          ${showFirstRun
+            ? nothing
+            : html`<button class="k-btn k-btn--primary" @click=${() => this.navigate({ kind: 'create', resource: 'agent' })}>${icon('plus')} New agent</button>`}
         </div>
         ${sliceView<Agent>({
-          slice: this.store.agents,
+          slice: agents,
           emptyIcon: 'bot',
           emptyText: 'No agents yet — create one to get started.',
+          empty: renderFirstRun,
           retry: () => void this.store.load('agents'),
           content: (rows) => html`<div class="agents-grid">
             ${repeat(

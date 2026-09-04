@@ -162,9 +162,9 @@ onBeforeUnmount(() => {
       <p class="k-create-description">Connect a Databricks workspace for warehouse and table imports.</p>
     </header>
 
-    <form class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--connection" @submit.prevent="submit">
-      <div class="k-create-body manual-create-body--guided">
-        <div class="manual-create-form-fields manual-create-form-fields--connection">
+    <form class="k-create-surface k-create-surface--guided manual-create-form manual-create-form--connection" @submit.prevent="submit">
+      <div class="k-create-body k-create-body--guided manual-create-body-guided">
+        <div class="k-create-fields manual-create-form-fields--connection">
           <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading existing connections…</p>
           <p v-if="loadError" class="error" role="alert" aria-live="assertive">
             <span>Could not load existing connections: {{ loadError }}</span>

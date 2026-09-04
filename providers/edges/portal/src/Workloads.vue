@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, onActivated } from 'vue'
-import { RefreshCw, Plus, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
+import { computed, ref, onMounted, onUnmounted, onActivated, watch } from 'vue'
+import { RefreshCw, Plus, ChevronRight, ChevronDown, Store, Rocket, Boxes, Server } from 'lucide-vue-next'
 import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { MARKETPLACE_CATEGORIES, type MarketplaceApp } from './marketplace'
 import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TablePageInfo } from './portalkit/table'
 import { createFullListReadCoordinator, createInFlightReadCoordinator, hasActiveTableFilters, sameTableRequest, tablePageInfo as makeTablePageInfo, type PaginationMode, type TableRequestState } from './pagination'
@@ -23,6 +24,7 @@ const emit = defineEmits<{
   create: []
   deploy: [app: MarketplaceApp]
   dismissResult: []
+  connectEdge: []
 }>()
 
 const workloads = ref<Workload[]>([])
@@ -51,6 +53,28 @@ const workloadRows = computed<Array<Record<string, unknown>>>(() => workloads.va
   ready: `${workload.readyReplicas ?? 0}/${workload.replicas ?? 1}`,
   actions: '',
 })))
+const kubernetesEdges = computed(() => edges.value.filter(edge => edge.type === 'kubernetes'))
+const hasKubernetesEdges = computed(() => kubernetesEdges.value.length > 0)
+const firstRunDismissed = ref(false)
+const showFirstRun = computed(() => !firstRunDismissed.value && loaded.value && !error.value && workloads.value.length === 0 && isCompleteFirstCursorPage({
+  page: tablePage.value,
+  cursor: tableCursor.value,
+  pageInfo: tablePageInfo.value,
+}) && !hasActiveTableFilters(tableQuery.value, filterValues.value))
+const workloadJourney = [
+  { label: 'Kubernetes edge', description: 'Connect the cluster that will run the workload.' },
+  { label: 'Workload and placement', description: 'Choose an image or chart and the edges it should target.' },
+  { label: 'Placements running', description: 'Agents apply the workload and report readiness per edge.' },
+]
+
+function handleFirstRunPrimary(): void {
+  if (hasKubernetesEdges.value) emit('create')
+  else emit('connectEdge')
+}
+
+watch(hasKubernetesEdges, (available) => {
+  if (!available) firstRunDismissed.value = false
+})
 
 const WORKLOAD_STRATEGY_OPTIONS = [
   { value: 'Spread', label: 'Spread' },
@@ -358,7 +382,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         <h1>Workloads</h1>
         <p>Deploy a workload across matching Kubernetes edges. Each edge's agent runs it locally.</p>
       </div>
-      <div class="header-actions">
+      <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
@@ -377,8 +401,25 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <button type="button" class="k-btn k-btn--ghost compact-control" @click="emit('dismissResult')">Dismiss</button>
     </div>
 
+    <FirstRunGuide
+      v-if="showFirstRun"
+      :title="hasKubernetesEdges ? 'Deploy your first workload' : 'Connect a Kubernetes edge first'"
+      :description="hasKubernetesEdges
+        ? 'Deploy a container manually or start from a pinned marketplace chart.'
+        : 'Workloads are scheduled only onto KubernetesCluster edges.'"
+      :primary-label="hasKubernetesEdges ? 'Create workload' : 'Connect edge'"
+      :secondary-label="hasKubernetesEdges ? 'Browse marketplace' : ''"
+      :steps="workloadJourney"
+      :current-step="hasKubernetesEdges ? 1 : 0"
+      journey-label="Workload deployment path"
+      @primary="handleFirstRunPrimary"
+      @secondary="firstRunDismissed = true"
+    >
+      <template #icon><component :is="hasKubernetesEdges ? Boxes : Server" aria-hidden="true" /></template>
+    </FirstRunGuide>
+
     <!-- Marketplace -->
-    <div class="market k-card">
+    <div v-else class="market k-card">
       <button
         type="button"
         class="market-head"
@@ -392,7 +433,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         <span class="muted">one-click self-hosted apps, deployed as Helm workloads onto an edge</span>
       </button>
       <div v-if="showMarket" id="edges-marketplace-body" class="market-body">
-        <div v-if="edges.length === 0" class="muted pad">
+        <div v-if="!hasKubernetesEdges" class="muted pad">
           Connect a KubernetesCluster edge first — marketplace apps deploy onto one.
         </div>
         <div v-for="grp in MARKETPLACE_CATEGORIES" :key="grp.category" class="market-cat">
@@ -405,7 +446,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
               </div>
               <p class="market-desc">{{ app.description }}</p>
               <div class="market-meta muted mono">{{ app.chart.chart }}@{{ app.chart.version }} · :{{ app.port }}</div>
-              <button class="k-btn k-btn--primary compact-control" :disabled="edges.length === 0" @click="emit('deploy', app)">
+              <button class="k-btn k-btn--primary compact-control" :disabled="!hasKubernetesEdges" @click="emit('deploy', app)">
                 <Rocket :size="13" /> Deploy
               </button>
             </div>
@@ -415,6 +456,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
     </div>
 
     <ResourceTable
+      v-if="!showFirstRun"
       :columns="workloadColumns"
       :rows="workloadRows"
       aria-label="Workloads"

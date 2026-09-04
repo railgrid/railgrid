@@ -23,9 +23,23 @@ vi.mock('./portalkit/ConfirmDialog.vue', () => ({
     },
   }),
 }))
-vi.mock('./views/ConnectionCreateView.vue', () => ({ default: { setup: () => () => null } }))
+vi.mock('./views/ConnectionCreateView.vue', () => ({
+  default: defineComponent({
+    emits: ['created'],
+    setup(_props, { emit }) {
+      return () => h('button', { id: 'complete-connection', onClick: () => emit('created', 'github-created') })
+    },
+  }),
+}))
 vi.mock('./views/ConnectionDetailView.vue', () => ({ default: { setup: () => () => null } }))
-vi.mock('./views/RepositoriesView.vue', () => ({ default: { setup: () => () => null } }))
+vi.mock('./views/RepositoriesView.vue', () => ({
+  default: defineComponent({
+    emits: ['create-connection'],
+    setup(_props, { emit }) {
+      return () => h('button', { id: 'start-repository-connection', onClick: () => emit('create-connection') })
+    },
+  }),
+}))
 vi.mock('./views/RepositoryCreateView.vue', () => ({ default: { setup: () => () => null } }))
 vi.mock('./views/RepoDetailView.vue', () => ({ default: { setup: () => () => null } }))
 vi.mock('./views/PackagesView.vue', () => ({ default: { setup: () => () => null } }))
@@ -73,10 +87,22 @@ interface TreeNode {
   parent: TreeNode | null
   props: Record<string, unknown>
   text?: string
+  dispatchEvent(event: Event): boolean
 }
 
+const navigationEvents: CustomEvent[] = []
+
 function node(type: string): TreeNode {
-  return { type, children: [], parent: null, props: {} }
+  return {
+    type,
+    children: [],
+    parent: null,
+    props: {},
+    dispatchEvent(event) {
+      if (event instanceof CustomEvent && event.type === 'faros-navigate') navigationEvents.push(event)
+      return true
+    },
+  }
 }
 
 const rendererOptions: RendererOptions<TreeNode, TreeNode> = {
@@ -117,6 +143,16 @@ const rendererOptions: RendererOptions<TreeNode, TreeNode> = {
 
 const renderer = createRenderer(rendererOptions)
 
+function allNodes(root: TreeNode): TreeNode[] {
+  return [root, ...root.children.flatMap(allNodes)]
+}
+
+function click(root: TreeNode, id: string): void {
+  const target = allNodes(root).find(item => item.props.id === id)
+  if (!target || typeof target.props.onClick !== 'function') throw new Error(`button ${id} was not rendered`)
+  target.props.onClick()
+}
+
 describe('Code App context authority generation', () => {
   it('increments synchronously for every shell authority field before child unmount', async () => {
     captured.generation = undefined
@@ -150,5 +186,107 @@ describe('Code App context authority generation', () => {
 
     await nextTick()
     app.unmount()
+  })
+
+  it('continues repository setup from in-memory intent when session storage is unavailable', async () => {
+    navigationEvents.length = 0
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    Reflect.deleteProperty(globalThis, 'window')
+    try {
+      const context = reactive<FarosContext>({
+        basePath: '/ui/providers/code',
+        token: 'token',
+        tenant: 'root:tenant-a',
+        user: { sub: 'user-a' },
+        subPath: 'repositories',
+      })
+      const root = node('root')
+      const app = renderer.createApp(App, { ctx: context })
+      app.provide(ssrContextKey, { modules: new Set<string>() })
+      app.mount(root)
+      click(root, 'start-repository-connection')
+      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'create/connection/token' })
+
+      context.subPath = 'create/connection/token'
+      await nextTick()
+      click(root, 'complete-connection')
+      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'create/repository', replace: true })
+      app.unmount()
+    } finally {
+      if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor)
+      else Reflect.deleteProperty(globalThis, 'window')
+    }
+  })
+
+  it('revokes an in-memory repository continuation when the caller changes', async () => {
+    navigationEvents.length = 0
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    Reflect.deleteProperty(globalThis, 'window')
+    try {
+      const context = reactive<FarosContext>({
+        basePath: '/ui/providers/code',
+        token: 'token-a',
+        tenant: 'root:tenant-a',
+        user: { sub: 'user-a' },
+        subPath: 'repositories',
+      })
+      const root = node('root')
+      const app = renderer.createApp(App, { ctx: context })
+      app.provide(ssrContextKey, { modules: new Set<string>() })
+      app.mount(root)
+      click(root, 'start-repository-connection')
+
+      context.subPath = 'create/connection/token'
+      await nextTick()
+      context.user = { sub: 'user-b' }
+      context.token = 'token-b'
+      await nextTick()
+      click(root, 'complete-connection')
+      expect(navigationEvents.at(-1)?.detail).toEqual({ path: 'connections/github-created', replace: true })
+      app.unmount()
+    } finally {
+      if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor)
+      else Reflect.deleteProperty(globalThis, 'window')
+    }
+  })
+
+  it('removes a persisted continuation when the caller changes before prerequisite navigation settles', async () => {
+    navigationEvents.length = 0
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const values = new Map<string, string>()
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        sessionStorage: {
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => { values.set(key, value) },
+          removeItem: (key: string) => { values.delete(key) },
+        },
+      },
+    })
+    try {
+      const context = reactive<FarosContext>({
+        basePath: '/ui/providers/code',
+        token: 'token-a',
+        tenant: 'root:tenant-a',
+        user: { sub: 'user-a' },
+        subPath: 'repositories',
+      })
+      const root = node('root')
+      const app = renderer.createApp(App, { ctx: context })
+      app.provide(ssrContextKey, { modules: new Set<string>() })
+      app.mount(root)
+      click(root, 'start-repository-connection')
+      expect(values.size).toBe(1)
+
+      context.user = { sub: 'user-b' }
+      context.token = 'token-b'
+      await nextTick()
+      expect(values.size).toBe(0)
+      app.unmount()
+    } finally {
+      if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor)
+      else Reflect.deleteProperty(globalThis, 'window')
+    }
   })
 })

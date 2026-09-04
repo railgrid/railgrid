@@ -21,12 +21,16 @@ import {
 } from './refresh'
 import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
 import {
+  edgeConnectPath,
+  edgeConnectionCancelPath,
+  edgeConnectionSuccessPath,
   edgeDetailPath,
   navigationDetail,
   parseSubPath,
   serviceCreatePath,
   serviceDetailPath,
   workloadDeployPath,
+  type EdgeConnectOptions,
   type EdgeRoute,
 } from './routes'
 
@@ -64,14 +68,31 @@ function onServiceNavigate(name: string | null, options?: { replace?: boolean })
   navigate(name === null ? 'services' : serviceDetailPath(name), options?.replace === true)
 }
 
-// The first empty read redirects to the same connect route users can open from
-// the collection. firstLoadDone prevents a cancel/back cycle from reopening it.
+// The collection owns its first-run surface once the first authoritative read
+// settles. Consequential connection work remains on the explicit connect route.
 const firstLoadDone = ref(false)
 const workloadResult = ref<string | null>(null)
 
 function onEdgeCreated(name: string, type: EdgeType): void {
-  navigate(edgeDetailPath(type, name), true)
+  navigate(edgeConnectionSuccessPath(route.value.connect?.successPath, type, name), true)
 }
+function connectEdgeFrom(successPath: string, options: EdgeConnectOptions = {}): void {
+  // Replace the route-owned form with its prerequisite. Returning from the
+  // wizard then restores one form entry instead of leaving a duplicate form in
+  // browser history that Back would reopen after the user exits the flow.
+  navigate(edgeConnectPath(successPath, options), true)
+}
+function cancelEdgeConnection(): void {
+  navigate(edgeConnectionCancelPath(route.value.connect?.cancelPath), true)
+}
+const edgeConnectionCancelLabel = computed(() => {
+  const cancelPath = route.value.connect?.cancelPath
+  if (cancelPath === 'services') return 'Back to services'
+  if (cancelPath === 'workloads') return 'Back to workloads'
+  if (cancelPath?.startsWith('create/service')) return 'Back to service setup'
+  if (cancelPath?.startsWith('deploy/workload')) return 'Back to workload setup'
+  return 'Back to edges'
+})
 function onServiceCreated(name: string): void {
   navigate(serviceDetailPath(name), true)
 }
@@ -119,13 +140,7 @@ const edgeRefresh = createLatestRefreshController(async (requestID, mode) => {
     if (!edgeRefresh.isCurrent(requestID)) return
     edges.value = nextEdges
     error.value = null
-    // Redirect to the route-owned wizard the first time we confirm the
-    // workspace has no edges. The flag remains set after cancellation.
-    if (!firstLoadDone.value) {
-      firstLoadDone.value = true
-      const collectionRoute = route.value.page === 'edges' && !route.value.edge && !route.value.connect
-      if (edges.value.length === 0 && collectionRoute) navigate('connect/edge', true)
-    }
+    firstLoadDone.value = true
   } catch (e) {
     if (!edgeRefresh.isCurrent(requestID)) return
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load edges'
@@ -211,6 +226,7 @@ onUnmounted(() => {
       :initial-edge-name="route.create.edgeName"
       @cancel="navigate('services', true)"
       @created="onServiceCreated"
+      @connect-edge="connectEdgeFrom(serviceCreatePath(route.create.edgeType, route.create.edgeName))"
     />
     <WorkloadCreate
       v-if="route.deploy?.resource === 'workload'"
@@ -219,11 +235,14 @@ onUnmounted(() => {
       :app-type="route.deploy.app"
       @cancel="navigate('workloads', true)"
       @completed="onWorkloadCompleted"
+      @connect-edge="connectEdgeFrom(workloadDeployPath(route.deploy.mode, route.deploy.app), { requiredType: 'kubernetes' })"
     />
     <Wizard
       v-if="route.connect?.resource === 'edge'"
       :cluster="props.ctx?.tenant ?? null"
-      @cancel="navigate('', true)"
+      :required-type="route.connect.requiredType"
+      :cancel-label="edgeConnectionCancelLabel"
+      @cancel="cancelEdgeConnection"
       @created="onEdgeCreated"
     />
     <Detail
@@ -253,6 +272,7 @@ onUnmounted(() => {
         :key="`services:${contextGeneration}`"
         @navigate="onServiceNavigate"
         @create="navigate('create/service')"
+        @connect-edge="connectEdgeFrom('create/service', { cancelPath: 'services' })"
       />
     </KeepAlive>
     <KeepAlive>
@@ -261,6 +281,7 @@ onUnmounted(() => {
         :key="`workloads:${contextGeneration}`"
         :result="workloadResult"
         @create="navigate('deploy/workload/manual')"
+        @connect-edge="connectEdgeFrom('deploy/workload/manual', { cancelPath: 'workloads', requiredType: 'kubernetes' })"
         @deploy="(app) => navigate(workloadDeployPath('marketplace', app.type))"
         @dismiss-result="onWorkloadDismissResult"
       />
@@ -279,7 +300,7 @@ onUnmounted(() => {
         @refresh="refresh"
         @open="openDetail"
         @delete="onDelete"
-        @connect="navigate('connect/edge')"
+        @connect="navigate(edgeConnectPath())"
       />
     </KeepAlive>
     <ConfirmDialog />

@@ -125,6 +125,8 @@ faros-provider-agents .agents-panel > p { margin: 0; }
 faros-provider-agents .agents-panel form, faros-provider-agents .agents-obj-form, faros-provider-agents .agents-toolset-form {
   display: flex; flex-direction: column; gap: 12px; padding: 16px;
 }
+/* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
+faros-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
 faros-provider-agents label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 faros-provider-agents .agents-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 faros-provider-agents .agents-check { flex-direction: row !important; align-items: center; gap: 8px !important; font-size: 13px; }

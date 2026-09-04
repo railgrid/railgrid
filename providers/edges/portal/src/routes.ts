@@ -16,7 +16,7 @@ export interface EdgeRoute {
   page: EdgeCollectionPage
   edge?: { type: EdgeType; name: string }
   service?: string
-  connect?: { resource: 'edge' }
+  connect?: { resource: 'edge'; successPath?: string; cancelPath?: string; requiredType?: EdgeType }
   create?: ServiceCreateRoute
   deploy?: WorkloadDeployRoute
 }
@@ -45,6 +45,27 @@ function normalizeSubPath(subPath: string | null | undefined): string {
   return normalized
 }
 
+function hasEncodedDotSegment(path: string): boolean {
+  let candidate = path
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (candidate.includes('\\')) return true
+    if (candidate.split('/').some(segment => segment === '.' || segment === '..')) return true
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(candidate)
+    } catch {
+      // A malformed escape makes the callback ambiguous to downstream URL
+      // parsers. Fail closed instead of letting it hide encoded dot segments.
+      return true
+    }
+    if (decoded === candidate) return false
+    candidate = decoded
+  }
+  // Excessive nested encoding is not produced by provider navigation helpers;
+  // reject it instead of passing an ambiguous callback to the shell router.
+  return true
+}
+
 /** Parse the provider-relative path after `/providers/edges/`. */
 export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
   const normalized = normalizeSubPath(subPath)
@@ -54,7 +75,53 @@ export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
   if (normalized === 'services') return { page: 'services' }
   if (normalized === 'workloads') return { page: 'workloads' }
 
-  if (parts[0] === 'connect' && parts[1] === 'edge' && parts.length === 2) {
+  if (parts[0] === 'connect' && parts[1] === 'edge') {
+    if (parts.length === 2) return { page: 'edges', connect: { resource: 'edge' } }
+    const hasRequiredType = parts[2] === 'kubernetes' || parts[2] === 'server'
+    const actionIndex = hasRequiredType ? 3 : 2
+    const requestedType = hasRequiredType ? parts[2] as EdgeType : undefined
+    let successPath: string | undefined
+    let cancelPath: string | undefined
+    // Keep legacy `return` links refresh-safe. New links persist separate
+    // success and cancel destinations so prerequisite onboarding can resume a
+    // form on success without sending Cancel back into that form.
+    if (parts[actionIndex] === 'return' && parts.length === actionIndex + 2 && parts[actionIndex + 1] !== '') {
+      successPath = decodeSegment(parts[actionIndex + 1])
+      cancelPath = successPath
+    } else if (
+      parts[actionIndex] === 'success' && parts[actionIndex + 1] !== '' &&
+      parts[actionIndex + 2] === 'cancel' && parts[actionIndex + 3] !== '' &&
+      parts.length === actionIndex + 4
+    ) {
+      successPath = decodeSegment(parts[actionIndex + 1])
+      cancelPath = decodeSegment(parts[actionIndex + 3])
+    }
+    if (successPath && cancelPath) {
+      if (hasEncodedDotSegment(successPath) || hasEncodedDotSegment(cancelPath)) {
+        return { page: 'edges', connect: { resource: 'edge' } }
+      }
+      const successRoute = parseSubPath(successPath)
+      const normalizedSuccessPath = normalizeSubPath(successPath)
+      const normalizedCancelPath = normalizeSubPath(cancelPath)
+      const validCancelPath = normalizedCancelPath === normalizedSuccessPath ||
+        (successRoute.create?.resource === 'service' && normalizedCancelPath === 'services') ||
+        (successRoute.deploy?.resource === 'workload' && normalizedCancelPath === 'workloads')
+      if (validCancelPath && (successRoute.create?.resource === 'service' || successRoute.deploy?.resource === 'workload')) {
+        if (successRoute.deploy?.resource === 'workload' && requestedType && requestedType !== 'kubernetes') {
+          return { page: 'edges', connect: { resource: 'edge' } }
+        }
+        const requiredType = successRoute.deploy?.resource === 'workload' ? 'kubernetes' : requestedType
+        return {
+          page: 'edges',
+          connect: {
+            resource: 'edge',
+            successPath: normalizedSuccessPath,
+            cancelPath: normalizedCancelPath,
+            ...(requiredType ? { requiredType } : {}),
+          },
+        }
+      }
+    }
     return { page: 'edges', connect: { resource: 'edge' } }
   }
 
@@ -117,6 +184,26 @@ export function navigationDetail(path: string, replace = false): EdgeNavigationD
 
 export function edgeDetailPath(type: EdgeType, name: string): string {
   return `edges/${type}/${encodeURIComponent(name)}`
+}
+
+export interface EdgeConnectOptions {
+  requiredType?: EdgeType
+  cancelPath?: string
+}
+
+export function edgeConnectPath(successPath?: string, options: EdgeConnectOptions = {}): string {
+  if (!successPath) return 'connect/edge'
+  const typeSegment = options.requiredType ? `/${options.requiredType}` : ''
+  const cancelPath = options.cancelPath ?? successPath
+  return `connect/edge${typeSegment}/success/${encodeURIComponent(successPath)}/cancel/${encodeURIComponent(cancelPath)}`
+}
+
+export function edgeConnectionCancelPath(cancelPath?: string): string {
+  return cancelPath ?? ''
+}
+
+export function edgeConnectionSuccessPath(successPath: string | undefined, type: EdgeType, name: string): string {
+  return successPath ?? edgeDetailPath(type, name)
 }
 
 export function serviceDetailPath(name: string): string {

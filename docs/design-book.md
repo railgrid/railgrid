@@ -570,6 +570,19 @@ Simple forms are constrained; dense provisioning forms may use the full content
 column. Wizards keep this page skeleton and place progress inside it rather than
 retaining dialog chrome.
 
+For an authoritative first-use empty collection, use PortalKit's
+`FirstRunGuide.vue` (or the matching `k-first-run*` semantic markup in a vanilla
+portal). It explains the value, offers the immediate primary action, and shows
+the shortest meaningful resource journey. Missing prerequisites change the
+current step and action; they do not leave users at an inert empty table.
+
+When a route-owned form benefits from domain help, use `CreateGuidance.vue`
+beside a `k-create-fields` region inside `k-create-surface--guided`. The rail
+contains only timely prerequisites, a live and non-secret summary of what Faros
+will create, and controller-owned next steps. Provider copy and value derivation
+remain local. The shared container query keeps fields before guidance on narrow
+surfaces and both regions fluid at desktop and 4K widths.
+
 After creation, navigate to the resource when it owns status or recovery;
 otherwise return to the collection with the result clearly visible.
 

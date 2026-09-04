@@ -230,6 +230,10 @@ describe('agent creation capabilities', () => {
     const api = stubApi({ createAgent })
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }] as never
+    store.credentials.loaded = true
+    store.credentials.hasSnapshot = true
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
     await settle(el, 3)
     return { el, createAgent }

@@ -20,7 +20,7 @@ function expectSkeleton(name, text, { wide = false } = {}) {
   ]) {
     assert.match(text, new RegExp(className), `${name} is missing ${className}`)
   }
-  if (wide) assert.match(text, /k-create-surface--wide/, `${name} should use the wide provisioning surface`)
+  if (wide) assert.match(text, /k-create-surface--(?:wide|guided)/, `${name} should use a wide provisioning surface`)
   assert.match(text, /Cancel[\s\S]*k-btn--primary/, `${name} must order Cancel before its primary action`)
 }
 
@@ -42,6 +42,57 @@ test('the canonical create-page vocabulary defines one shared hierarchy', async 
   assert.match(css, /\.k-create-surface\s*\{[\s\S]*overflow: clip/)
   assert.match(css, /\.k-create-actions\s*\{[\s\S]*justify-content: flex-end/)
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.k-create-actions\s*\{[\s\S]*position: sticky/)
+})
+
+test('PortalKit defines shared first-run and guided-create widgets', async () => {
+  const [css, firstRun, guidance, sync] = await Promise.all([
+    source('provider-sdk/portalkit/faros-ui.css'),
+    source('provider-sdk/portalkit-vue/FirstRunGuide.vue'),
+    source('provider-sdk/portalkit-vue/CreateGuidance.vue'),
+    source('hack/sync-portalkit.sh'),
+  ])
+
+  for (const selector of [
+    '.k-first-run',
+    '.k-first-run__journey',
+    '.k-create-surface--guided',
+    '.k-create-body--guided',
+    '.k-create-fields',
+    '.k-create-guidance',
+  ]) {
+    assert.match(css, new RegExp(selector.replace('.', '\\.')), `shared CSS is missing ${selector}`)
+  }
+  assert.match(css, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.k-create-guidance[\s\S]*grid-row: 2/)
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.k-first-run__journey/)
+
+  assert.match(firstRun, /<section class="k-first-run" :aria-labelledby="titleID">/)
+  assert.match(firstRun, /ensureFarosUIStyles\(\)/)
+  assert.match(firstRun, /<ol v-if="steps\.length" class="k-first-run__journey"/)
+  assert.match(firstRun, /:aria-current="index === boundedCurrentStep \? 'step' : undefined"/)
+  assert.match(firstRun, /class="k-first-run__step-status"/)
+  assert.match(firstRun, /index < boundedCurrentStep \? 'Completed step'/)
+  assert.match(css, /\.k-first-run__step-status\s*\{[\s\S]*clip-path: inset\(50%\)[\s\S]*position: absolute/)
+  assert.match(guidance, /<aside class="k-create-guidance" :aria-labelledby="titleID">/)
+  assert.match(guidance, /ensureFarosUIStyles\(\)/)
+  assert.match(guidance, /<dl class="k-create-guidance__values">/)
+  assert.match(guidance, /<ol>[\s\S]*v-for="step in nextSteps"/)
+  assert.match(sync, /CreateGuidance\.vue FirstRunGuide\.vue/)
+})
+
+test('provider create journeys adopt the shared first-run and guidance vocabulary', async () => {
+  const vueProviders = [
+    ['Databricks', 'providers/databricks/portal/src/components/DatabricksEmptyState.vue', 'providers/databricks/portal/src/components/ManualCreateGuidance.vue'],
+    ['Code', 'providers/code/portal/src/views/ConnectionsView.vue', 'providers/code/portal/src/views/ConnectionCreateView.vue'],
+    ['Edges', 'providers/edges/portal/src/EdgeCollection.vue', 'providers/edges/portal/src/ServiceCreate.vue'],
+  ]
+  for (const [name, emptyPath, createPath] of vueProviders) {
+    assert.match(await source(emptyPath), /FirstRunGuide/, `${name} must use the shared first-run component`)
+    assert.match(await source(createPath), /CreateGuidance/, `${name} must use the shared create-guidance component`)
+  }
+
+  const agents = await source('providers/agents/portal/src/ui/create-flow.ts')
+  assert.match(agents, /class="k-first-run(?:\s|\")/, 'Agents must render the shared first-run vocabulary')
+  assert.match(agents, /class="k-create-guidance"/, 'Agents must render the shared create-guidance vocabulary')
 })
 
 test('Vue route-owned create flows use the shared skeleton', async () => {

@@ -3,6 +3,7 @@ import {
   EMPTY_REPOSITORY_FILTERS,
   applyRepositoryPaginationChange,
   hasActiveRepositoryFilters,
+  repositoryCollectionIsAuthoritativelyEmpty,
   repositoryFilters,
   repositoryPageInfo,
   repositoryStatus,
@@ -28,6 +29,24 @@ describe('repository table pagination state', () => {
     expect(repositoryPageInfo()).toEqual({ hasNext: false, nextCursor: null })
     expect(repositoryPageInfo('opaque-next')).toEqual({ hasNext: true, nextCursor: 'opaque-next' })
     expect(repositoryPageInfo('')).toEqual({ hasNext: false, nextCursor: null })
+  })
+
+  it('shows first-run only for a complete empty collection, never an empty later cursor page', () => {
+    expect(repositoryCollectionIsAuthoritativelyEmpty({
+      mode: 'server', page: 1, cursor: null, pageInfo: repositoryPageInfo(), rowCount: 0,
+    })).toBe(true)
+    expect(repositoryCollectionIsAuthoritativelyEmpty({
+      mode: 'server', page: 2, cursor: 'opaque-page-2', pageInfo: repositoryPageInfo(), rowCount: 0,
+    })).toBe(false)
+    expect(repositoryCollectionIsAuthoritativelyEmpty({
+      mode: 'server', page: 1, cursor: null, pageInfo: repositoryPageInfo('opaque-next'), rowCount: 0,
+    })).toBe(false)
+    expect(repositoryCollectionIsAuthoritativelyEmpty({
+      mode: 'client', page: 4, cursor: null, pageInfo: null, rowCount: 0,
+    })).toBe(true)
+    expect(repositoryCollectionIsAuthoritativelyEmpty({
+      mode: 'client', page: 1, cursor: null, pageInfo: null, rowCount: 1,
+    })).toBe(false)
   })
 
   it('preserves server page navigation instead of treating it as a clear', () => {

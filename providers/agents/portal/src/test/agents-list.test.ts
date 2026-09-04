@@ -71,10 +71,40 @@ describe('agents list refresh resilience', () => {
     store.agents.loaded = true
     store.agents.hasSnapshot = true
     store.agents.error = 'temporarily unavailable'
+    store.credentials.loaded = true
+    store.credentials.hasSnapshot = true
 
     const el = await mount('agents-agents-list', { store, api })
 
-    expect(text(el.querySelector('.agents-state-empty'))).toContain('No agents yet')
+    expect(el.querySelector('.agents-state-empty.k-first-run')).not.toBeNull()
+    expect(text(el.querySelector('.agents-state-empty'))).toContain('Connect a model before creating your first agent')
     expect(text(el.querySelector('.agents-state-error'))).toContain('Showing the last loaded data')
+  })
+
+  it('waits for authoritative model credentials before offering an agent journey', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+
+    const el = await mount('agents-agents-list', { store, api })
+
+    expect(text(el.querySelector('.agents-state-loading'))).toContain('Loading model credentials')
+    expect(el.querySelector('.k-first-run')).toBeNull()
+  })
+
+  it('surfaces a retryable model-credential error instead of assuming a model exists', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    store.credentials.error = 'credential API unavailable'
+
+    const el = await mount('agents-agents-list', { store, api })
+
+    expect(text(el.querySelector('.agents-state-error'))).toContain('Could not load model credentials')
+    expect(text(el.querySelector('.agents-state-error'))).toContain('credential API unavailable')
+    expect(el.querySelector('.agents-state-error button')).not.toBeNull()
+    expect(el.querySelector('.k-first-run')).toBeNull()
   })
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Info } from 'lucide-vue-next'
-import { computed, useId } from 'vue'
+import { computed } from 'vue'
+import CreateGuidance, { type CreateGuidanceValue } from '../portalkit/CreateGuidance.vue'
 
 type ManualCreateKind = 'connection' | 'warehouse' | 'table'
 
@@ -14,12 +14,6 @@ interface ManualCreateValues {
   catalog?: string
   schema?: string
   table?: string
-}
-
-interface LiveValue {
-  label: string
-  value: string
-  technical?: boolean
 }
 
 interface GuidanceCopy {
@@ -84,12 +78,6 @@ const guidanceCopy: Record<ManualCreateKind, GuidanceCopy> = {
   },
 }
 
-const id = useId().replace(/[^a-zA-Z0-9_-]/g, '-')
-const titleID = `manual-create-guidance-${id}-title`
-const prerequisiteID = `manual-create-guidance-${id}-prerequisites`
-const nextStepsID = `manual-create-guidance-${id}-next-steps`
-const valuesID = `manual-create-guidance-${id}-values`
-
 const copy = computed<GuidanceCopy>(() => {
   if (props.kind !== 'table' || !props.editing) return guidanceCopy[props.kind]
   return {
@@ -109,7 +97,7 @@ function present(value: string | undefined, fallback = 'Not entered yet'): strin
   return normalized || fallback
 }
 
-const liveValues = computed<LiveValue[]>(() => {
+const liveValues = computed<CreateGuidanceValue[]>(() => {
   const values = props.values
   if (props.kind === 'connection') {
     return [
@@ -146,38 +134,12 @@ const outputHeading = computed(() => props.editing ? 'What Faros will save' : 'W
 </script>
 
 <template>
-  <aside class="manual-create-guidance" :aria-labelledby="titleID">
-    <div class="manual-create-guidance__heading">
-      <Info :size="16" :stroke-width="1.75" aria-hidden="true" />
-      <h3 :id="titleID">{{ copy.heading }}</h3>
-    </div>
-    <p class="manual-create-guidance__description">{{ copy.description }}</p>
-
-    <section class="manual-create-guidance__section" :aria-labelledby="prerequisiteID">
-      <h4 :id="prerequisiteID">Prerequisites</h4>
-      <ul>
-        <li v-for="prerequisite in copy.prerequisites" :key="prerequisite">{{ prerequisite }}</li>
-      </ul>
-    </section>
-
-    <section class="manual-create-guidance__section" :aria-labelledby="valuesID">
-      <h4 :id="valuesID">{{ outputHeading }}</h4>
-      <dl class="manual-create-guidance__values">
-        <template v-for="item in liveValues" :key="item.label">
-          <dt>{{ item.label }}</dt>
-          <dd :class="{ 'manual-create-guidance__value--technical': item.technical }">
-            <code v-if="item.technical">{{ item.value }}</code>
-            <span v-else>{{ item.value }}</span>
-          </dd>
-        </template>
-      </dl>
-    </section>
-
-    <section class="manual-create-guidance__section" :aria-labelledby="nextStepsID">
-      <h4 :id="nextStepsID">Next steps</h4>
-      <ol>
-        <li v-for="step in copy.nextSteps" :key="step">{{ step }}</li>
-      </ol>
-    </section>
-  </aside>
+  <CreateGuidance
+    :title="copy.heading"
+    :description="copy.description"
+    :prerequisites="copy.prerequisites"
+    :values="liveValues"
+    :values-heading="outputHeading"
+    :next-steps="copy.nextSteps"
+  />
 </template>

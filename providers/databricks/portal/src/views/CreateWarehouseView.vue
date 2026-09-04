@@ -181,9 +181,9 @@ onBeforeUnmount(() => {
       <p class="k-create-description">Register a Databricks SQL warehouse for table imports.</p>
     </header>
 
-    <form class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--warehouse" @submit.prevent="submit">
-      <div class="k-create-body manual-create-body--guided">
-        <div class="manual-create-form-fields manual-create-form-fields--warehouse">
+    <form class="k-create-surface k-create-surface--guided manual-create-form manual-create-form--warehouse" @submit.prevent="submit">
+      <div class="k-create-body k-create-body--guided manual-create-body-guided">
+        <div class="k-create-fields manual-create-form-fields--warehouse">
           <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading connections…</p>
           <p v-if="loadError" class="error" role="alert" aria-live="assertive">
             <span>Could not load warehouse prerequisites: {{ loadError }}</span>

@@ -74,7 +74,7 @@ const waitForHistory = async (): Promise<void> => {
 
 describe('AgentsElement hash-owned creation navigation', () => {
   it('pushes create, replaces on cancel, and leaves the page form in the route', async () => {
-    const el = await mountShell()
+    const el = await mountShell('#/agents', { agents: [{ metadata: { name: 'scout' }, spec: { displayName: 'Scout' } }] })
     const before = history.length
     const newAgent = [...el.querySelectorAll('button')].find((button) => button.textContent?.includes('New agent'))!
     newAgent.click()
@@ -93,7 +93,7 @@ describe('AgentsElement hash-owned creation navigation', () => {
   })
 
   it('replaces the create entry with the new agent detail and keeps the result visible', async () => {
-    const el = await mountShell()
+    const el = await mountShell('#/agents', { agents: [{ metadata: { name: 'scout' }, spec: { displayName: 'Scout' } }] })
     const api = (el as unknown as { api: ApiClient }).api
     ;(el as unknown as { store: { credentials: { data: unknown[] } } }).store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     const created = { metadata: { name: 'nova' }, spec: { displayName: 'Nova', models: { chat: 'main' } } }
@@ -124,7 +124,7 @@ describe('AgentsElement hash-owned creation navigation', () => {
     expect(location.hash).toBe('#/connections')
     expect(history.length).toBe(before + 1)
 
-    const create = [...el.querySelectorAll('button')].find((button) => button.textContent?.includes('New connection'))!
+    const create = [...el.querySelectorAll('button')].find((button) => button.textContent?.includes('Create connection'))!
     create.click()
     await settle(el)
     expect(location.hash).toBe('#/create/connection')
@@ -152,7 +152,7 @@ describe('AgentsElement hash-owned creation navigation', () => {
     try {
       pushState.mockClear()
       replaceState.mockClear()
-      ;[...el.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('New connection'))!.click()
+      ;[...el.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Create connection'))!.click()
       await settle(el)
       expect(location.hash).toBe('#/create/connection')
       expect(pushState).toHaveBeenCalledTimes(1)
@@ -196,7 +196,7 @@ describe('AgentsElement hash-owned creation navigation', () => {
     const api = (el as unknown as { api: ApiClient }).api
     const created = { name: 'main', provider: 'openai-compatible', model: 'gpt-5' }
     api.saveCredential = (() => Promise.resolve(created)) as ApiClient['saveCredential']
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('New model'))!.click()
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Add model credential'))!.click()
     await settle(el)
     expect(location.hash).toBe('#/create/model')
     const createEntryLength = history.length
@@ -291,6 +291,11 @@ describe('AgentsElement hash-owned creation navigation', () => {
       const oldStore = (el as unknown as { store: AppStore }).store
       const oldApi = (el as unknown as { api: ApiClient }).api
       oldStore.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+      oldStore.credentials.loaded = true
+      oldStore.credentials.hasSnapshot = true
+      oldStore.agents.loaded = true
+      oldStore.agents.hasSnapshot = true
+      oldStore.dispatchEvent(new Event('change'))
       await settle(el)
       oldApi.createAgent = (() => pending.promise) as ApiClient['createAgent']
 

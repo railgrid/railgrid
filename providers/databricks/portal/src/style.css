@@ -179,34 +179,6 @@ faros-provider-databricks .databricks-resource-table {
   min-width: 0;
 }
 
-/* Manual create routes use one fluid surface. The body grid keeps the form
- * controls dominant while reserving a quiet rail for prerequisites and the
- * live registration summary. */
-faros-provider-databricks .manual-create-form {
-  container-name: manual-create-form;
-  container-type: inline-size;
-  inline-size: 100%;
-  max-width: none;
-  min-width: 0;
-  width: 100%;
-}
-
-faros-provider-databricks .manual-create-body--guided {
-  align-items: start;
-  display: grid;
-  gap: 24px;
-  grid-template-columns: minmax(0, 2fr) minmax(17.5rem, 0.8fr);
-}
-
-faros-provider-databricks .manual-create-form-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  grid-column: 1;
-  grid-row: 1;
-  min-width: 0;
-}
-
 faros-provider-databricks .manual-create-fields-grid {
   display: grid;
   gap: 12px;
@@ -220,107 +192,6 @@ faros-provider-databricks .manual-create-security-note {
 faros-provider-databricks .manual-create-support-note {
   line-height: 1.5;
   margin: 0;
-}
-
-faros-provider-databricks .manual-create-guidance {
-  border-inline-start: 1px solid var(--color-border-subtle);
-  color: var(--color-text-secondary);
-  grid-column: 2;
-  grid-row: 1;
-  max-inline-size: 75ch;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  padding: 2px 0 4px;
-  padding-inline-start: 18px;
-}
-
-faros-provider-databricks .manual-create-guidance__heading {
-  align-items: center;
-  color: var(--color-text-primary);
-  display: flex;
-  gap: 8px;
-}
-
-faros-provider-databricks .manual-create-guidance__heading svg {
-  color: var(--color-text-muted);
-  flex: none;
-}
-
-faros-provider-databricks .manual-create-guidance__heading h3 {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-  margin: 0;
-}
-
-faros-provider-databricks .manual-create-guidance__description {
-  font-size: 12px;
-  line-height: 1.5;
-  margin: 7px 0 0;
-}
-
-faros-provider-databricks .manual-create-guidance__section {
-  border-top: 1px solid var(--color-border-subtle);
-  margin-top: 18px;
-  padding-top: 13px;
-}
-
-faros-provider-databricks .manual-create-guidance__section h4 {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  line-height: 1.4;
-  margin: 0;
-  text-transform: uppercase;
-}
-
-faros-provider-databricks .manual-create-guidance__section ul,
-faros-provider-databricks .manual-create-guidance__section ol {
-  display: grid;
-  gap: 8px;
-  margin: 10px 0 0;
-  padding-inline-start: 18px;
-}
-
-faros-provider-databricks .manual-create-guidance__section li {
-  font-size: 11px;
-  line-height: 1.5;
-  padding-inline-start: 2px;
-}
-
-faros-provider-databricks .manual-create-guidance__section li::marker {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 10px;
-}
-
-faros-provider-databricks .manual-create-guidance__values {
-  display: grid;
-  gap: 8px 12px;
-  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
-  margin: 10px 0 0;
-}
-
-faros-provider-databricks .manual-create-guidance__values dt {
-  color: var(--color-text-muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-faros-provider-databricks .manual-create-guidance__values dd {
-  color: var(--color-text-primary);
-  font-size: 11px;
-  line-height: 1.45;
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-faros-provider-databricks .manual-create-guidance__values code {
-  color: inherit;
-  font-size: inherit;
 }
 
 faros-provider-databricks .databricks-create-head {
@@ -583,132 +454,6 @@ faros-provider-databricks .empty {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   margin: 0;
-}
-
-/* First-use guidance stays within AppLayout's canonical content column. Keep
- * the surface compact and top-aligned so large monitors do not turn a short
- * onboarding message into a vertically centered billboard. */
-faros-provider-databricks .databricks-first-run {
-  background: var(--color-surface-raised, #111320);
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  min-height: 0;
-  overflow: hidden;
-  padding: 24px clamp(24px, 3vw, 40px);
-}
-
-faros-provider-databricks .databricks-first-run__lead {
-  align-items: start;
-  display: grid;
-  gap: 18px;
-  grid-template-columns: auto minmax(0, 1fr);
-}
-
-faros-provider-databricks .databricks-first-run__icon {
-  color: var(--color-accent, #8b6bff);
-  height: 24px;
-  margin-top: 2px;
-  width: 24px;
-}
-
-faros-provider-databricks .databricks-first-run__copy h3 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0 0 7px;
-}
-
-faros-provider-databricks .databricks-first-run__copy p {
-  color: var(--color-text-secondary, #8a8ca6);
-  font-size: 13px;
-  line-height: 1.55;
-  margin: 0;
-  max-width: 62ch;
-}
-
-faros-provider-databricks .databricks-first-run__actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  grid-column: 2;
-}
-
-faros-provider-databricks .databricks-first-run__actions svg {
-  height: 14px;
-  width: 14px;
-}
-
-faros-provider-databricks .databricks-journey {
-  display: grid;
-  gap: 0;
-  grid-template-columns: repeat(3, minmax(0, 20rem));
-  list-style: none;
-  margin: 28px 0 0;
-  max-inline-size: 60rem;
-  padding: 0;
-}
-
-faros-provider-databricks .databricks-journey__step {
-  align-items: flex-start;
-  border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  color: var(--color-text-secondary, #8a8ca6);
-  display: grid;
-  gap: 9px;
-  grid-template-columns: auto minmax(0, 1fr);
-  padding: 15px 16px 0 0;
-}
-
-faros-provider-databricks .databricks-journey__step--complete,
-faros-provider-databricks .databricks-journey__step--current {
-  border-top-color: color-mix(in srgb, var(--color-accent, #8b6bff) 72%, var(--color-border-default));
-}
-
-faros-provider-databricks .databricks-journey__marker {
-  align-items: center;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  border-radius: 3px;
-  display: inline-flex;
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
-  font-size: 10px;
-  height: 20px;
-  justify-content: center;
-  width: 20px;
-}
-
-faros-provider-databricks .databricks-journey__marker svg {
-  height: 12px;
-  width: 12px;
-}
-
-faros-provider-databricks .databricks-journey__step--complete .databricks-journey__marker {
-  color: var(--color-success, #2fd6a0);
-}
-
-faros-provider-databricks .databricks-journey__step--current .databricks-journey__marker {
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  border-color: var(--color-accent, #8b6bff);
-  color: var(--color-accent, #8b6bff);
-}
-
-faros-provider-databricks .databricks-journey__copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-faros-provider-databricks .databricks-journey__copy strong {
-  color: var(--color-text-primary, #e9e9f2);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-faros-provider-databricks .databricks-journey__copy small {
-  color: var(--color-text-secondary, #8a8ca6);
-  font-size: 11px;
-  line-height: 1.45;
 }
 
 faros-provider-databricks .import-backdrop {
@@ -1057,7 +802,7 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
 
 @keyframes provider-spin { to { transform: rotate(360deg); } }
 
-@container manual-create-form (min-width: 1400px) {
+@container k-create-surface (min-width: 1400px) {
   /* Short forms use the available left track without stretching each field
    * into a single long control. The security note occupies the fourth cell
    * beside the token guidance. */
@@ -1067,16 +812,16 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   }
 }
 
-@container manual-create-form (min-width: 1600px) {
+@container k-create-surface (min-width: 1600px) {
   /* Three locator fields remain readable on true ultrawide surfaces. */
   faros-provider-databricks .manual-create-form-fields--table .form-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@container manual-create-form (min-width: 1800px) {
+@container k-create-surface (min-width: 1800px) {
   /* The rail grows to a quiet, bounded column while the form owns the rest. */
-  faros-provider-databricks .manual-create-body--guided {
+  faros-provider-databricks .manual-create-body-guided {
     grid-template-columns: minmax(0, 2fr) minmax(17.5rem, min(32rem, 40%));
   }
 
@@ -1088,7 +833,7 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   }
 }
 
-@container manual-create-form (min-width: 3000px) {
+@container k-create-surface (min-width: 3000px) {
   /* At 4K, keep each control below a comfortable reading width. */
   faros-provider-databricks .manual-create-fields-grid--connection,
   faros-provider-databricks .manual-create-fields-grid--warehouse,
@@ -1097,27 +842,7 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   }
 }
 
-@container manual-create-form (max-width: 960px) {
-  /* Let users reach the controls before the full guidance rail when the form
-   * container stacks. The explicit rows also override wide-screen rules when
-   * a narrow create surface sits inside a wide viewport. */
-  faros-provider-databricks .manual-create-body--guided {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  faros-provider-databricks .manual-create-form-fields {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  faros-provider-databricks .manual-create-guidance {
-    border-block-end: 1px solid var(--color-border-subtle);
-    border-inline-start: 0;
-    grid-column: 1;
-    grid-row: 2;
-    padding: 0 0 18px;
-  }
-
+@container k-create-surface (max-width: 960px) {
   faros-provider-databricks .manual-create-fields-grid--connection,
   faros-provider-databricks .manual-create-fields-grid--warehouse,
   faros-provider-databricks .manual-create-form-fields--table .form-grid {
@@ -1131,10 +856,6 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   faros-provider-databricks .page-head { flex-wrap: wrap; }
   faros-provider-databricks .page-head > :first-child { flex: 1 1 100%; min-width: 0; }
   faros-provider-databricks .page-head > .actions { flex: 1 1 100%; justify-content: flex-start; }
-  faros-provider-databricks .databricks-first-run__lead { grid-template-columns: minmax(0, 1fr); }
-  faros-provider-databricks .databricks-first-run__actions { grid-column: 1; }
-  faros-provider-databricks .databricks-journey { gap: 12px; grid-template-columns: minmax(0, 1fr); }
-  faros-provider-databricks .databricks-journey__step { border-left: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-top: 0; padding: 0 0 0 14px; }
   faros-provider-databricks .import-backdrop {
     align-items: stretch;
     padding: 10px calc(10px + var(--app-inset-right, 0px)) calc(10px + var(--app-inset-bottom, 0px)) calc(10px + var(--app-inset-left, 0px));
@@ -1147,10 +868,10 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   faros-provider-databricks .result-row { grid-template-columns: minmax(0, 1fr); }
   faros-provider-databricks .manual-create-form input:not([type='hidden']),
   faros-provider-databricks .manual-create-form [data-form-select-trigger],
-  faros-provider-databricks .manual-create-form > .manual-create-body--guided + div :is(button, a) {
+  faros-provider-databricks .manual-create-form > .manual-create-body-guided + div :is(button, a) {
     min-height: 44px;
   }
-  faros-provider-databricks .manual-create-form > .manual-create-body--guided + div {
+  faros-provider-databricks .manual-create-form > .manual-create-body-guided + div {
     position: static;
     z-index: auto;
   }

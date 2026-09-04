@@ -220,7 +220,7 @@ export class AssistedSearch extends StoreElement {
     const agents = this.store.agents.data
     const selected = this.selectedAgent()
     const form = html`<form
-        class="agents-conn-form k-create-surface"
+        class="agents-conn-form agents-guided-form k-create-surface"
         aria-label="Assisted search setup"
         @submit=${(e: Event) => void this.submit(e)}
       >

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
-import { ExternalLink } from 'lucide-vue-next'
+import { ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
+import { CODE_JOURNEY_STEPS, codeFirstRunModel, type CodeJourneyAction } from '../journey'
 import type { Connection, ErrorResponse, Repository } from '../types'
+import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -27,6 +29,7 @@ import {
   applyRepositoryPaginationChange,
   REPOSITORY_PAGE_SIZE,
   repositoryFilters,
+  repositoryCollectionIsAuthoritativelyEmpty,
   repositoryPageInfo as toRepositoryPageInfo,
   repositoryStatus,
   type RepositoryFilterValues,
@@ -38,6 +41,7 @@ const props = defineProps<{ deletions: ResourceDeletions }>()
 const emit = defineEmits<{
   (e: 'open', name: string): void
   (e: 'create'): void
+  (e: 'create-connection'): void
 }>()
 const deletionScope = 'repository'
 
@@ -72,9 +76,30 @@ const rows = computed<Array<Record<string, unknown>>>(() => repos.value
     const deleting = isDeleting(repository)
     return { ...repository, deleting, url: repository.htmlURL || '', status: deleting ? 'Deleting' : repositoryStatus(repository), actions: '' }
   }))
+const availableConnections = computed(() => connections.value.filter(connection => (
+  !connection.deletionTimestamp && !props.deletions.has('connection', connection.name, connection.uid)
+)))
+const repositoryCollectionEmpty = computed(() => repositoryCollectionIsAuthoritativelyEmpty({
+  mode: repositoryMode.value,
+  page: repositoryPage.value,
+  cursor: repositoryCursor.value,
+  pageInfo: repositoryPageInfo.value,
+  rowCount: repos.value.length,
+}))
+const showFirstRun = computed(() => loaded.value
+  && connectionsLoaded.value
+  && !error.value
+  && !connectionsError.value
+  && repositoryCollectionEmpty.value)
+const firstRun = computed(() => codeFirstRunModel('repository', availableConnections.value.length > 0))
 
 function isDeleting(repository: Pick<Repository, 'name' | 'uid' | 'deletionTimestamp'>): boolean {
   return !!repository.deletionTimestamp || props.deletions.has(deletionScope, repository.name, repository.uid)
+}
+
+function handleFirstRun(action: CodeJourneyAction): void {
+  if (action === 'create-connection') emit('create-connection')
+  else emit('create')
 }
 const repositoryFilterDefinitions = computed(() => repositoryFilters(connections.value))
 
@@ -387,7 +412,7 @@ onUnmounted(() => {
         <h2 class="page-title">Repositories</h2>
         <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
-      <button class="k-btn k-btn--primary" :disabled="!loaded" @click="emit('create')">
+      <button v-if="!showFirstRun" class="k-btn k-btn--primary" :disabled="!loaded || !connectionsLoaded" @click="emit('create')">
         New repository
       </button>
     </header>
@@ -399,7 +424,24 @@ onUnmounted(() => {
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
     <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <FirstRunGuide
+      v-if="showFirstRun"
+      :title="firstRun.title"
+      :description="firstRun.description"
+      :primary-label="firstRun.primary.label"
+      :steps="CODE_JOURNEY_STEPS"
+      :current-step="firstRun.currentStep"
+      journey-label="Code setup path"
+      @primary="handleFirstRun(firstRun.primary.action)"
+    >
+      <template #icon>
+        <Link2 v-if="firstRun.currentStep === 0" :stroke-width="1.5" />
+        <GitBranch v-else :stroke-width="1.5" />
+      </template>
+    </FirstRunGuide>
+
     <ResourceTable
+      v-else
       :columns="columns"
       :rows="rows"
       aria-label="Repositories"

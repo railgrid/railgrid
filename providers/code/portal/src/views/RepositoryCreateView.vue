@@ -7,11 +7,13 @@ import type { Connection, ErrorResponse, Repository } from '../types'
 import type { ResourceDeletions } from '../refresh'
 import { createFullListReadCoordinator } from '../hybridPagination'
 import { createOperationLocks, operationKey } from '../refresh'
+import CreateGuidance from '../portalkit/CreateGuidance.vue'
 
 const props = defineProps<{ deletions: ResourceDeletions }>()
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'created', name: string): void
+  (e: 'create-connection'): void
 }>()
 
 const repositories = ref<Repository[]>([])
@@ -47,6 +49,25 @@ let mutationGeneration = 0
 const connectionChoices = computed(() => connections.value.filter(connection => (
   !connection.deletionTimestamp && !props.deletions.has('connection', connection.name, connection.uid)
 )))
+const guidanceValues = computed(() => {
+  const objectName = name.value.trim() ? normalizeResourceName(name.value) : ''
+  return [
+    { label: 'Faros object', value: objectName || 'Not entered yet', technical: true },
+    { label: 'GitHub repository', value: repo.value.trim() || objectName || 'Not entered yet', technical: true },
+    { label: 'Connection', value: connectionRef.value || 'Not selected yet', technical: true },
+    { label: 'Visibility', value: visibility.value, technical: true },
+    { label: 'Initial content', value: autoInit.value ? 'README' : 'Empty repository' },
+  ]
+})
+const guidancePrerequisites = [
+  'An active GitHub connection in this workspace that is not being deleted.',
+  'Permission for that connection to create repositories for its configured owner.',
+]
+const guidanceNextSteps = [
+  'Faros creates the repository through the selected connection and records its remote URL.',
+  'The repository controller reports readiness independently after GitHub accepts the request.',
+  'Add deploy keys and collaborators from the repository detail page after creation.',
+]
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
@@ -246,7 +267,7 @@ onUnmounted(() => {
     </button>
     <header class="k-create-header">
       <h2 class="k-create-title">Create repository</h2>
-      <p class="k-create-description">Create a repository through one of your ready GitHub connections. Deploy keys and collaborators stay managed on the repository detail page.</p>
+      <p class="k-create-description">Create a repository through one of your active GitHub connections. Deploy keys and collaborators stay managed on the repository detail page.</p>
     </header>
 
     <div v-if="(repositoryLoading && !repositoryLoaded) || (connectionsLoading && !connectionsLoaded)" class="panel k-card" role="status" aria-live="polite">
@@ -260,35 +281,47 @@ onUnmounted(() => {
       <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span>
       <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
     </div>
-    <p v-if="connectionsLoaded && !connectionChoices.length" class="empty">Add a ready connection first, then create repositories under it.</p>
+    <div v-if="connectionsLoaded && !connectionChoices.length" class="panel k-card">
+      <p class="empty">Add an active connection first, then create repositories under it.</p>
+      <button class="k-btn k-btn--ghost" type="button" @click="emit('create-connection')">Create connection</button>
+    </div>
 
-    <form class="k-create-surface" :aria-busy="submitting" novalidate @submit.prevent="submit">
-      <div class="k-create-body">
-        <label class="field" for="code-repository-connection">
-          <span class="field-label">Connection</span>
-          <select id="code-repository-connection" ref="connectionInput" v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded" required aria-required="true" :aria-invalid="fieldErrors.connection ? 'true' : undefined" :aria-describedby="fieldErrors.connection ? 'code-repository-connection-error' : undefined" @change="clearFieldError('connection')">
-            <option v-for="connection in connectionChoices" :key="connection.name" :value="connection.name">{{ connection.name }} ({{ connection.owner }})</option>
-          </select>
-          <span v-if="fieldErrors.connection" id="code-repository-connection-error" class="error" role="alert">{{ fieldErrors.connection }}</span>
-        </label>
-        <label class="field" for="code-repository-name"><span class="field-label">Object name</span><input id="code-repository-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-service" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-repository-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-repository-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
-        <label class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" class="k-input" placeholder="my-service" autocomplete="off" /></label>
-        <label class="field">
-          <span class="field-label">Visibility</span>
-          <select v-model="visibility" class="k-input">
-            <option value="private">private</option>
-            <option value="public">public</option>
-            <option value="internal">internal</option>
-          </select>
-        </label>
-        <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
-        <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
-        <span v-if="formError" class="error" role="alert">{{ formError }}</span>
-        <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
+    <form class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
+      <div class="k-create-body k-create-body--guided">
+        <div class="k-create-fields">
+          <label class="field" for="code-repository-connection">
+            <span class="field-label">Connection</span>
+            <select id="code-repository-connection" ref="connectionInput" v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded" required aria-required="true" :aria-invalid="fieldErrors.connection ? 'true' : undefined" :aria-describedby="fieldErrors.connection ? 'code-repository-connection-error' : undefined" @change="clearFieldError('connection')">
+              <option v-for="connection in connectionChoices" :key="connection.name" :value="connection.name">{{ connection.name }} ({{ connection.owner }})</option>
+            </select>
+            <span v-if="fieldErrors.connection" id="code-repository-connection-error" class="error" role="alert">{{ fieldErrors.connection }}</span>
+          </label>
+          <label class="field" for="code-repository-name"><span class="field-label">Object name</span><input id="code-repository-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-service" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-repository-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-repository-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
+          <label class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" class="k-input" placeholder="my-service" autocomplete="off" /></label>
+          <label class="field">
+            <span class="field-label">Visibility</span>
+            <select v-model="visibility" class="k-input">
+              <option value="private">private</option>
+              <option value="public">public</option>
+              <option value="internal">internal</option>
+            </select>
+          </label>
+          <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
+          <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
+          <span v-if="formError" class="error" role="alert">{{ formError }}</span>
+          <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
+        </div>
+        <CreateGuidance
+          title="Define the GitHub repository"
+          description="Choose the workspace identity and remote repository settings Faros will manage."
+          :prerequisites="guidancePrerequisites"
+          :values="guidanceValues"
+          :next-steps="guidanceNextSteps"
+        />
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>
-        <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create repository' }}</button>
+        <button class="k-btn k-btn--primary" type="submit" :disabled="submitting || !connectionChoices.length">{{ submitting ? 'Creating…' : 'Create repository' }}</button>
       </div>
     </form>
   </section>

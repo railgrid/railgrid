@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, watch } from 'vue'
-import { RefreshCw, Plus, Check } from 'lucide-vue-next'
+import { RefreshCw, Plus, Check, Plug, Server } from 'lucide-vue-next'
 import {
   listServices, listServicesPage, deleteEdgeService, listEdges,
   fetchServiceCatalog,
@@ -13,6 +13,7 @@ import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import ServiceEdit from './ServiceEdit.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TablePageInfo } from './portalkit/table'
 import { createFullListReadCoordinator, createInFlightReadCoordinator, hasActiveTableFilters, sameTableRequest, tablePageInfo as makeTablePageInfo, type PaginationMode, type TableRequestState } from './pagination'
 import {
@@ -27,6 +28,7 @@ const props = defineProps<{ selectedName?: string | null }>()
 const emit = defineEmits<{
   navigate: [name: string | null, options?: { replace?: boolean }]
   create: []
+  connectEdge: []
 }>()
 
 // Service type catalog — fetched from the backend (svccatalog.All()) so the form
@@ -75,6 +77,22 @@ const serviceRows = computed<Array<Record<string, unknown>>>(() => services.valu
   credentials: service.hasCredentials ? 'Configured' : 'Missing',
   actions: '',
 })))
+const showFirstRun = computed(() => loaded.value && !error.value && services.value.length === 0 && isCompleteFirstCursorPage({
+  page: tablePage.value,
+  cursor: tableCursor.value,
+  pageInfo: tablePageInfo.value,
+}) && !hasActiveTableFilters(tableQuery.value, filterValues.value))
+const hasEdges = computed(() => edges.value.length > 0)
+const serviceJourney = [
+  { label: 'Edge', description: 'Connect the cluster or server that can reach the service.' },
+  { label: 'Service endpoint', description: 'Choose its type, address, protocol, and port.' },
+  { label: 'Credentials and Ready', description: 'Add credentials when required and let the controller verify it.' },
+]
+
+function handleFirstRunPrimary(): void {
+  if (hasEdges.value) emit('create')
+  else emit('connectEdge')
+}
 
 const SERVICE_STATUS_OPTIONS = [
   { value: 'Pending', label: 'Pending' },
@@ -429,7 +447,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         <h1>Services</h1>
         <p>Services running next to your edges (e.g. Home Assistant). Attach a token to make one Ready, and give it AI guidance — its tools appear in the MCP endpoint.</p>
       </div>
-      <div class="header-actions">
+      <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
@@ -443,7 +461,23 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       </div>
     </header>
 
+    <FirstRunGuide
+      v-if="showFirstRun"
+      :title="hasEdges ? 'Expose your first service' : 'Connect an edge first'"
+      :description="hasEdges
+        ? 'Declare an app reachable from an edge, then add credentials when its service type requires them.'
+        : 'A Service must run beside an edge before Faros can expose its endpoint and tools.'"
+      :primary-label="hasEdges ? 'Create service' : 'Connect edge'"
+      :steps="serviceJourney"
+      :current-step="hasEdges ? 1 : 0"
+      journey-label="Service setup path"
+      @primary="handleFirstRunPrimary"
+    >
+      <template #icon><component :is="hasEdges ? Plug : Server" aria-hidden="true" /></template>
+    </FirstRunGuide>
+
     <ResourceTable
+      v-else
       :columns="serviceColumns"
       :rows="serviceRows"
       aria-label="Services"

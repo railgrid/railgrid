@@ -14,7 +14,8 @@ import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
-import { errorState } from '../ui/states'
+import { errorState, sliceView } from '../ui/states'
+import { createGuidance, firstRunGuide } from '../ui/create-flow'
 import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
@@ -42,6 +43,14 @@ export class Models extends StoreElement {
   @state() private discFilter = new Map<string, string>()
   @state() private editName: string | null = null
   @state() private creating = false
+  @state() private createBusy = false
+  @state() private createDraft = {
+    name: '',
+    preset: PROVIDER_PRESETS[0].id,
+    baseURL: PROVIDER_PRESETS[0].baseURL,
+    model: '',
+    apiKey: '',
+  }
 
   private started = false
 
@@ -115,10 +124,11 @@ export class Models extends StoreElement {
   render(): TemplateResult {
     if (this.createRoute) return this.createSurface()
     const creds = this.store.credentials
+    const showFirstRun = creds.loaded && creds.data.length === 0 && (!creds.error || creds.hasSnapshot)
     return html`<div class="agents-panel k-card agents-route-panel">
       <div class="agents-panel-head">
         <h3>Models</h3>
-        ${this.creating
+        ${this.creating || showFirstRun
           ? nothing
           : html`<button
               class="k-btn k-btn--primary"
@@ -131,17 +141,33 @@ export class Models extends StoreElement {
       </p>
       ${this.dashboard()}
       <h3 class="agents-section-h">Credentials</h3>
-      ${creds.error
-        ? errorState(creds.error, () => void this.store.load('credentials'))
-        : creds.data.length === 0
-          ? html`<p class="agents-hint">${icon('cpu')} No models yet${this.creating ? '.' : ' — add one below.'}</p>`
-          : html`<div class="agents-model-grid">
+      ${sliceView<Credential>({
+        slice: creds,
+        emptyIcon: 'cpu',
+        emptyText: 'No model credentials yet.',
+        empty: () => firstRunGuide({
+          icon: 'cpu',
+          title: 'Connect your first model',
+          description: 'Store one workspace credential and model endpoint so agents can reason immediately after creation.',
+          primaryLabel: 'Add model credential',
+          primary: () => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'model' }) : (this.creating = true)),
+          steps: [
+            { label: 'Credential', description: 'Provider endpoint, model, and secret' },
+            { label: 'Agent', description: 'Assign the model to an agent' },
+            { label: 'Run', description: 'Verify behavior in a conversation' },
+          ],
+          currentStep: 0,
+          journeyLabel: 'Model setup path',
+        }),
+        retry: () => void this.store.load('credentials'),
+        content: (rows) => html`<div class="agents-model-grid">
               ${repeat(
-                creds.data,
+                rows,
                 (c) => c.name,
                 (c) => this.card(c),
               )}
-            </div>`}
+            </div>`,
+      })}
       ${this.creating ? this.createForm() : nothing}
       <datalist id="agents-catalog-models">
         ${this.catalog.map((m) => html`<option value=${m.id}>${m.label || m.id}</option>`)}
@@ -151,7 +177,7 @@ export class Models extends StoreElement {
 
   private createSurface(): TemplateResult {
     return html`<div class="agents-menu agents-create-page k-create-page">
-      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Models</button>
+      <button type="button" class="k-btn k-btn--ghost k-back-action" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>${icon('arrow-left')} Models</button>
       <header class="k-create-header"><h1 class="k-create-title">Add model credential</h1><p class="k-create-description">Configure a workspace model endpoint and credential for your agents.</p></header>
       ${this.createForm()}
       <datalist id="agents-catalog-models">
@@ -415,75 +441,130 @@ export class Models extends StoreElement {
     </form>`
   }
 
+  private updateCreateDraft(key: keyof Models['createDraft'], value: string): void {
+    this.createDraft = { ...this.createDraft, [key]: value }
+  }
+
+  private async createCredential(e: Event): Promise<void> {
+    e.preventDefault()
+    if (this.createBusy) return
+    const f = e.currentTarget as HTMLFormElement
+    const g = (n: string): string => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
+    const body = {
+      name: g('name'),
+      provider: 'openai-compatible',
+      baseURL: g('baseURL'),
+      model: g('model'),
+      apiKey: g('apiKey'),
+    }
+    this.createBusy = true
+    try {
+      const res = await mutate(this.store, {
+        run: () => this.api.saveCredential(body),
+        success: 'Credential saved.',
+        failure: 'Save failed',
+        reload: ['credentials'],
+      })
+      if (!res) return
+      this.createDraft = {
+        name: '',
+        preset: PROVIDER_PRESETS[0].id,
+        baseURL: PROVIDER_PRESETS[0].baseURL,
+        model: '',
+        apiKey: '',
+      }
+      if (this.routeOwned) {
+        this.dispatchEvent(
+          new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+            detail: { resource: 'model', name: body.name, item: res },
+            bubbles: true,
+            composed: true,
+          }),
+        )
+        return
+      }
+      this.creating = false
+    } finally {
+      this.createBusy = false
+    }
+  }
+
   private createForm(): TemplateResult {
+    const draft = this.createDraft
     return html`<form
-      class=${this.createRoute ? 'agents-cred-form agents-model-create k-create-surface' : 'agents-cred-form agents-model-create'}
-      @submit=${(e: Event) => {
-        e.preventDefault()
-        const f = e.target as HTMLFormElement
-        const g = (n: string): string => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
-        const body = {
-          name: g('name'),
-          provider: 'openai-compatible',
-          baseURL: g('baseURL'),
-          model: g('model'),
-          apiKey: g('apiKey'),
-        }
-        void mutate(this.store, {
-          run: () => this.api.saveCredential(body),
-          success: 'Credential saved.',
-          failure: 'Save failed',
-          reload: ['credentials'],
-        }).then((res) => {
-          if (!res) return
-          if (this.routeOwned) {
-            this.dispatchEvent(
-              new CustomEvent<CreateSuccessDetail>('agents-create-success', {
-                detail: { resource: 'model', name: body.name, item: res },
-                bubbles: true,
-                composed: true,
-              }),
-            )
-            return
-          }
-          this.creating = false
-        })
-      }}
+      class=${this.createRoute ? 'agents-cred-form agents-model-create agents-guided-form k-create-surface k-create-surface--guided' : 'agents-cred-form agents-model-create'}
+      aria-busy=${this.createBusy ? 'true' : 'false'}
+      @submit=${(e: Event) => void this.createCredential(e)}
     >
-      <div class=${this.createRoute ? 'k-create-body' : ''}>
+      <div class=${this.createRoute ? 'k-create-body k-create-body--guided' : ''}>
+      <div class=${this.createRoute ? 'k-create-fields' : ''}>
       ${this.createRoute ? nothing : html`<h4>New model credential</h4>`}
       <div class="agents-grid2">
-        <label>Name<input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="my-openai" /></label>
+        <label>Name<input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="my-openai" .value=${draft.name} ?disabled=${this.createBusy} @input=${(e: Event) => this.updateCreateDraft('name', (e.target as HTMLInputElement).value)} /></label>
         <label>
           Provider
           <select class="k-input"
             name="preset"
+            ?disabled=${this.createBusy}
             @change=${(e: Event) => {
               const p = PROVIDER_PRESETS.find((x) => x.id === (e.target as HTMLSelectElement).value)
               if (!p) return
               const form = (e.target as HTMLElement).closest('form')!
               const baseURL = form.querySelector<HTMLInputElement>('input[name=baseURL]')!
               const model = form.querySelector<HTMLInputElement>('input[name=model]')!
-              if (p.id !== 'custom') baseURL.value = p.baseURL
+              if (p.id !== 'custom') {
+                baseURL.value = p.baseURL
+                this.updateCreateDraft('baseURL', p.baseURL)
+              }
               model.placeholder = p.modelHint
+              this.updateCreateDraft('preset', p.id)
             }}
           >
             ${PROVIDER_PRESETS.map((p) => html`<option value=${p.id}>${p.label}</option>`)}
           </select>
         </label>
-        <label>Base URL<input class="k-input mono" name="baseURL"  .value=${PROVIDER_PRESETS[0].baseURL} placeholder="https://api.openai.com/v1" /></label>
-        <label>Model<input class="k-input mono" name="model"  placeholder="gpt-4o" required list="agents-catalog-models" /></label>
+        <label>Base URL<input class="k-input mono" name="baseURL" .value=${draft.baseURL} placeholder="https://api.openai.com/v1" ?disabled=${this.createBusy} @input=${(e: Event) => this.updateCreateDraft('baseURL', (e.target as HTMLInputElement).value)} /></label>
+        <label>Model<input class="k-input mono" name="model" .value=${draft.model} placeholder="gpt-4o" required list="agents-catalog-models" ?disabled=${this.createBusy} @input=${(e: Event) => this.updateCreateDraft('model', (e.target as HTMLInputElement).value)} /></label>
       </div>
-      <label>API key<input class="k-input" name="apiKey" type="password" autocomplete="off" placeholder="sk-…" required /></label>
+      <label>API key<input class="k-input" name="apiKey" type="password" autocomplete="off" placeholder="sk-…" required ?disabled=${this.createBusy} @input=${(e: Event) => this.updateCreateDraft('apiKey', (e.target as HTMLInputElement).value)} /></label>
+      </div>
+      ${this.createRoute ? createGuidance({
+        icon: 'cpu',
+        title: 'Connect a model endpoint',
+        description: 'Name the credential Faros will store, then identify the exact model agents should request.',
+        prerequisites: [
+          'An OpenAI-compatible provider endpoint and model identifier.',
+          'An API key with permission to invoke that model.',
+        ],
+        values: [
+          { label: 'Credential', value: draft.name.trim() || 'Not entered yet', technical: true },
+          { label: 'Base URL', value: draft.baseURL.trim() || 'Provider default', technical: true },
+          { label: 'Model', value: draft.model.trim() || 'Not entered yet', technical: true },
+          { label: 'API key', value: draft.apiKey ? 'Provided (stored as a Secret)' : 'Not entered yet' },
+        ],
+        nextSteps: [
+          'Faros stores the API key as a workspace Secret and never shows it again.',
+          'Assign the credential when creating or configuring an agent.',
+          'Use Test on the Models page to verify endpoint access and served models.',
+        ],
+      }) : nothing}
       </div>
       <div class=${this.createRoute ? 'k-create-actions' : 'agents-form-actions'}>
-        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancelCreate()}>Cancel</button>
-        <button class="k-btn k-btn--primary" type="submit">Add credential</button>
+        <button type="button" class="k-btn k-btn--ghost secondary" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.createBusy}>${this.createBusy ? 'Adding…' : 'Add credential'}</button>
       </div>
     </form>`
   }
 
   private cancelCreate(): void {
+    if (this.createBusy) return
+    this.createDraft = {
+      name: '',
+      preset: PROVIDER_PRESETS[0].id,
+      baseURL: PROVIDER_PRESETS[0].baseURL,
+      model: '',
+      apiKey: '',
+    }
     if (this.createRoute) {
       this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
       return

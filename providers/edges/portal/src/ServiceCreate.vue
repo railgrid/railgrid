@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowLeft, Globe2, Loader2, Plus } from 'lucide-vue-next'
+import { ArrowLeft, Globe2, Loader2, Plus, Server } from 'lucide-vue-next'
 import { createKubeEdgeService, fetchServiceCatalog, listEdges } from './api'
 import type { CatalogEntry } from './api'
 import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
+import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -15,6 +17,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   cancel: []
   created: [name: string]
+  connectEdge: []
 }>()
 
 const catalog = ref<CatalogEntry[]>([])
@@ -135,6 +138,39 @@ function applyHostUrl(): void {
 }
 
 const normalizedHost = computed(() => normalizeHost(draft.value.host))
+const serviceTypeLabel = computed(() => selectedCatalogEntry.value?.displayName || draft.value.serviceType || 'Not selected')
+const endpointSummary = computed(() => {
+  if (targetMode.value === 'host') {
+    return `${draft.value.scheme || 'http'}://${normalizedHost.value || 'agent-loopback'}:${Number(draft.value.port) || 8123}`
+  }
+  const namespace = draft.value.targetNamespace.trim() || 'default'
+  return `${namespace}/${draft.value.targetName.trim() || 'not-selected'}:${Number(draft.value.port) || 8123}`
+})
+const credentialSummary = computed(() => {
+  const selected = selectedCatalogEntry.value
+  if (!selected || selected.auth === 'none' || !selected.credential.fields?.length) return 'Not required'
+  return selected.credential.optional ? 'Optional after creation' : 'Required after creation'
+})
+const serviceGuidanceValues = computed<CreateGuidanceValue[]>(() => [
+  { label: 'Service name', value: draft.value.name.trim() || 'Not entered yet', technical: true },
+  { label: 'Edge', value: selectedEdge.value?.name || 'Not selected', technical: true },
+  { label: 'Service type', value: serviceTypeLabel.value },
+  { label: 'Endpoint', value: endpointSummary.value, technical: true },
+  { label: 'Credentials', value: credentialSummary.value },
+  { label: 'MCP tools', value: selectedCatalogEntry.value?.tools?.length ? `${selectedCatalogEntry.value.tools.length} declared` : 'None declared' },
+])
+const servicePrerequisites = [
+  'An edge that can reach this service.',
+  'For a host target, a hostname or IP reachable from the agent; blank uses agent loopback when the type allows it.',
+  'For a Kubernetes target, the Service namespace and name on the selected cluster.',
+  'The protocol and port exposed by the target.',
+]
+const serviceNextSteps = [
+  'Faros creates a cluster-scoped Service bound to the selected edge.',
+  'The controller probes the endpoint and reports status separately.',
+  'If authentication is required, add the credential on the Service detail page; Faros stores it in a workspace Secret.',
+  'Provider-declared tools become available through the Edges MCP endpoint when the Service is ready.',
+]
 const canCreate = computed(() => {
   if (!draft.value.name.trim() || !selectedEdge.value) return false
   if (hostRequired.value) return targetMode.value === 'host' && !!normalizedHost.value
@@ -208,14 +244,31 @@ onMounted(async () => {
       <Loader2 :size="14" class="spin" /> Loading service types and edges…
     </div>
 
-    <form v-else class="k-create-surface k-create-surface--wide" @submit.prevent="onCreate">
-      <div class="k-create-body">
-      <div class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
+    <FirstRunGuide
+      v-else-if="!error && edges.length === 0"
+      title="Connect an edge first"
+      description="A Service must run beside an edge before Faros can expose its endpoint and tools."
+      primary-label="Connect edge"
+      :steps="[
+        { label: 'Edge', description: 'Connect the cluster or server that can reach the service.' },
+        { label: 'Service endpoint', description: 'Choose its type, address, protocol, and port.' },
+        { label: 'Credentials and Ready', description: 'Add credentials when required and let the controller verify it.' },
+      ]"
+      journey-label="Service setup path"
+      @primary="emit('connectEdge')"
+    >
+      <template #icon><Server aria-hidden="true" /></template>
+    </FirstRunGuide>
+
+    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" @submit.prevent="onCreate">
+      <div class="k-create-body k-create-body--guided">
+      <div class="k-create-fields">
+      <div class="service-create-grid service-create-grid--two">
+        <label class="fld">
           <span class="lbl">Name</span>
           <input v-model="draft.name" class="k-input" placeholder="home-assistant" />
         </label>
-        <label class="fld" style="flex: 1;">
+        <label class="fld">
           <span class="lbl">Edge</span>
           <select v-model="selectedEdgeKey" class="k-input" @change="onEdgeChange">
             <option value="" disabled>Select an edge</option>
@@ -226,8 +279,8 @@ onMounted(async () => {
         </label>
       </div>
 
-      <div class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
+      <div class="service-create-grid service-create-grid--three">
+        <label class="fld">
           <span class="lbl">Type</span>
           <select v-model="draft.serviceType" class="k-input" @change="onTypeChange">
             <optgroup v-for="group in catalogGroups" :key="group.category" :label="group.category">
@@ -235,14 +288,14 @@ onMounted(async () => {
             </optgroup>
           </select>
         </label>
-        <label class="fld" style="flex: 0 0 120px;">
+        <label class="fld">
           <span class="lbl">Scheme</span>
           <select v-model="draft.scheme" class="k-input" :disabled="schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''">
             <option value="http">http</option>
             <option value="https">https</option>
           </select>
         </label>
-        <label class="fld" style="flex: 0 0 120px;">
+        <label class="fld">
           <span class="lbl">Port</span>
           <input v-model="draft.port" type="number" min="1" max="65535" class="k-input" />
         </label>
@@ -250,29 +303,29 @@ onMounted(async () => {
 
       <label class="fld">
         <span class="lbl">Target</span>
-        <div class="row" style="gap: 16px;">
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+        <div class="service-create-target-modes">
+          <label>
             <input v-model="targetMode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" :style="{ opacity: selectedEdgeIsServer || hostRequired ? 0.5 : 1 }">
+          <label :class="{ 'is-disabled': selectedEdgeIsServer || hostRequired }">
             <input v-model="targetMode" type="radio" value="kube" :disabled="selectedEdgeIsServer || hostRequired" /> Kubernetes Service
           </label>
         </div>
       </label>
 
-      <div v-if="targetMode === 'host'" class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
+      <div v-if="targetMode === 'host'" class="service-create-grid">
+        <label class="fld">
           <span class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
           <input v-model="draft.host" class="k-input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com" />
           <span v-if="catalogFor(draft.serviceType)?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
         </label>
       </div>
-      <div v-else class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
+      <div v-else class="service-create-grid service-create-grid--two">
+        <label class="fld">
           <span class="lbl">Target namespace</span>
           <input v-model="draft.targetNamespace" class="k-input" placeholder="home" />
         </label>
-        <label class="fld" style="flex: 1;">
+        <label class="fld">
           <span class="lbl">Target service name</span>
           <input v-model="draft.targetName" class="k-input" placeholder="home-assistant" />
         </label>
@@ -283,6 +336,14 @@ onMounted(async () => {
         <textarea v-model="draft.instructions" class="k-input" rows="3" placeholder="Gates are cover.gate_main. Living room light is light.living_room." />
       </label>
 
+      </div>
+      <CreateGuidance
+        title="Describe the service endpoint"
+        description="Choose where the service runs and how Edges reaches it. Credentials are added after creation only when the selected type requires them."
+        :prerequisites="servicePrerequisites"
+        :values="serviceGuidanceValues"
+        :next-steps="serviceNextSteps"
+      />
       </div>
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>

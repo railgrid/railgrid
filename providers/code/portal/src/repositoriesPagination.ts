@@ -1,5 +1,5 @@
 import type { Connection, Repository } from './types'
-import type { ResourceTableChange, TableFilterDefinition, TableFilterOption, TablePageInfo } from './portalkit/table'
+import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TableFilterOption, type TablePageInfo } from './portalkit/table'
 
 /** The default page shown while the repository table has no active filters. */
 export const REPOSITORY_PAGE_SIZE = 10
@@ -141,6 +141,24 @@ export interface RepositoryPageInfo extends TablePageInfo {
 export function repositoryPageInfo(nextCursor?: string): RepositoryPageInfo {
   const cursor = nextCursor || null
   return { hasNext: cursor !== null, nextCursor: cursor }
+}
+
+export interface RepositoryEmptyAuthority {
+  mode: RepositoryPaginationMode
+  page: number
+  cursor: string | null
+  pageInfo: RepositoryPageInfo | null
+  rowCount: number
+}
+
+/**
+ * An empty client-mode source is a complete collection. In server mode, only
+ * an empty terminal first page proves the collection itself is empty; a later
+ * cursor page may be empty while earlier pages still contain repositories.
+ */
+export function repositoryCollectionIsAuthoritativelyEmpty(input: RepositoryEmptyAuthority): boolean {
+  if (input.rowCount !== 0) return false
+  return input.mode === 'client' || isCompleteFirstCursorPage(input)
 }
 
 /**

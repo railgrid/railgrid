@@ -4,6 +4,7 @@ import { expect, it } from 'vitest'
 const app = fs.readFileSync(new URL('./App.vue', import.meta.url), 'utf8')
 const connectionCollection = fs.readFileSync(new URL('./views/ConnectionsView.vue', import.meta.url), 'utf8')
 const connectionCreate = fs.readFileSync(new URL('./views/ConnectionCreateView.vue', import.meta.url), 'utf8')
+const repositoryCollection = fs.readFileSync(new URL('./views/RepositoriesView.vue', import.meta.url), 'utf8')
 const repositoryCreate = fs.readFileSync(new URL('./views/RepositoryCreateView.vue', import.meta.url), 'utf8')
 
 it('Code collections stay cached across routed create and detail surfaces', () => {
@@ -67,4 +68,44 @@ it('primary create forms expose native constraints, field errors, focus recovery
   }
   expect(connectionCreate).toContain('autocomplete="new-password"')
   expect(repositoryCreate).toContain('code-repository-connection-error')
+})
+
+it('authoritative empty collections use the shared first-run journey', () => {
+  for (const source of [connectionCollection, repositoryCollection]) {
+    expect(source).toMatch(/import FirstRunGuide from '\.\.\/portalkit\/FirstRunGuide\.vue'/)
+    expect(source).toMatch(/const showFirstRun = computed\(\(\) => loaded\.value/)
+    expect(source).toMatch(/<FirstRunGuide[\s\S]*v-if="showFirstRun"/)
+    expect(source).toMatch(/<ResourceTable[\s\S]*v-else/)
+    expect(source).toContain('CODE_JOURNEY_STEPS')
+    expect(source).toContain('journey-label="Code setup path"')
+  }
+  expect(connectionCollection).toMatch(/oauthLoaded\.value[\s\S]*!error\.value[\s\S]*connections\.value\.length === 0/)
+  expect(connectionCollection).not.toMatch(/showFirstRun = computed\([^\n]*oauthError/)
+  expect(repositoryCollection).toMatch(/repositoryCollectionIsAuthoritativelyEmpty/)
+  expect(repositoryCollection).toMatch(/&& repositoryCollectionEmpty\.value/)
+})
+
+it('repository first-run state exposes its connection prerequisite action', () => {
+  expect(repositoryCollection).toMatch(/function handleFirstRun\(action: CodeJourneyAction\)/)
+  expect(repositoryCollection).toMatch(/action === 'create-connection'\) emit\('create-connection'\)/)
+  expect(app).toMatch(/@create-connection="startRepositoryConnection"/)
+  expect(app).toMatch(/prerequisiteReturnPath\.value = 'create\/repository'[\s\S]*writeCodeReturnIntent/)
+  expect(app).toMatch(/prerequisiteExpectedPath\.value === activePath[\s\S]*prerequisiteTenantKey\.value === tenantKey/)
+  expect(app).toMatch(/writeCodeReturnIntent\(journeyStorage, tenantKey, 'create\/repository', expectedPath\)/)
+  expect(app).toMatch(/dispatchNavigation\(success \? returnPath : 'repositories', \{ replace: true \}\)/)
+  expect(repositoryCreate).toMatch(/Add an active connection first[\s\S]*Create connection/)
+  expect(repositoryCreate).toMatch(/:disabled="submitting \|\| !connectionChoices\.length"/)
+})
+
+it('connection and repository forms use the shared live guidance rail', () => {
+  for (const source of [connectionCreate, repositoryCreate]) {
+    expect(source).toMatch(/import CreateGuidance from '\.\.\/portalkit\/CreateGuidance\.vue'/)
+    expect(source).toContain('k-create-surface--guided')
+    expect(source).toContain('k-create-body--guided')
+    expect(source).toContain('k-create-fields')
+    expect(source).toMatch(/<CreateGuidance[\s\S]*:values="guidanceValues"[\s\S]*:next-steps="guidanceNextSteps"/)
+  }
+  expect(connectionCreate).toMatch(/label: 'Credential'[\s\S]*stored as a Secret/)
+  expect(repositoryCreate).toMatch(/label: 'GitHub repository'/)
+  expect(repositoryCreate).toMatch(/label: 'Initial content'/)
 })

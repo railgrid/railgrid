@@ -11,7 +11,8 @@ describe('Marketplace workload target regression', () => {
     expect(source).toMatch(/const selectedEdge = kubernetesEdges\.value\.find\(\(edge\) => edge\.name === deployEdge\.value\)/)
     expect(source).toMatch(/v-for="edge in kubernetesEdges"/)
     expect(source).not.toMatch(/v-for="edge in edges"/)
-    expect(source).toMatch(/Connect a KubernetesCluster edge before deploying a marketplace app\./)
+    expect(source).toMatch(/Connect a Kubernetes edge first/)
+    expect(source).toMatch(/@primary="emit\('connectEdge'\)"/)
   })
 
   it('fences route teardown and disables cancellation while deployment is in flight', () => {

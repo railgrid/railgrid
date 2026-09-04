@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { Link2 } from 'lucide-vue-next'
 import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
+import { CODE_JOURNEY_STEPS, codeFirstRunModel } from '../journey'
 import type { Connection, ErrorResponse } from '../types'
+import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -52,6 +55,8 @@ function isDeleting(connection: Pick<Connection, 'name' | 'uid' | 'deletionTimes
 const oauthEnabled = ref(false)
 const oauthLoaded = ref(false)
 const oauthError = ref<string | null>(null)
+const showFirstRun = computed(() => loaded.value && oauthLoaded.value && !error.value && connections.value.length === 0)
+const firstRun = computed(() => codeFirstRunModel('connection', false, oauthEnabled.value))
 let mounted = false
 let refresh!: LatestRefreshController
 const refreshMode = ref<ResourceRefreshMode>('foreground')
@@ -97,6 +102,10 @@ function load(mode: ResourceRefreshMode = 'foreground') {
 function openConnection(row: Record<string, unknown>) {
   const resourceName = String(row.name)
   if (!row.deleting && !operations.isLocked(operationKey('connection', resourceName))) emit('open', resourceName)
+}
+
+function startFirstRun(primary: boolean): void {
+  emit('create', oauthEnabled.value && primary ? 'github' : 'token')
 }
 
 async function remove(row: Record<string, unknown>) {
@@ -168,7 +177,7 @@ onUnmounted(() => {
         <h2 class="page-title">Connections</h2>
         <p class="page-meta">A connection binds your workspace to a git account. Repositories are created under it.</p>
       </div>
-      <div class="code-form-actions">
+      <div v-if="!showFirstRun" class="code-form-actions">
         <button v-if="oauthEnabled" class="k-btn k-btn--primary" :disabled="!loaded" @click="emit('create', 'github')">
           Connect with GitHub
         </button>
@@ -187,7 +196,23 @@ onUnmounted(() => {
     </p>
 
     <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+    <FirstRunGuide
+      v-if="showFirstRun"
+      :title="firstRun.title"
+      :description="firstRun.description"
+      :primary-label="firstRun.primary.label"
+      :secondary-label="firstRun.secondary?.label"
+      :steps="CODE_JOURNEY_STEPS"
+      :current-step="firstRun.currentStep"
+      journey-label="Code setup path"
+      @primary="startFirstRun(true)"
+      @secondary="startFirstRun(false)"
+    >
+      <template #icon><Link2 :stroke-width="1.5" /></template>
+    </FirstRunGuide>
+
     <ResourceTable
+      v-else
       :columns="columns"
       :rows="rows"
       aria-label="Git connections"

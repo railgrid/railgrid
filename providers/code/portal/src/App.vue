@@ -15,6 +15,14 @@ import { resolveConfirm } from './portalkit/confirm'
 import { createResourceDeletions } from './refresh'
 import Tabs from './portalkit/Tabs.vue'
 import { contextGenerationKey } from './context'
+import {
+  clearCodeReturnIntent,
+  codeJourneyStorage,
+  codeJourneyTenantKey,
+  readCodeReturnIntent,
+  writeCodeReturnIntent,
+  type CodeReturnPath,
+} from './journey'
 import { codeNavigationDetail, parseCodeSubPath, type CodeRoute } from './routes'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
@@ -33,7 +41,22 @@ const contextGeneration = ref(0)
 provide(contextGenerationKey, contextGeneration)
 const contextInitialized = computed(() => props.ctx !== null)
 const deletions = createResourceDeletions()
+const journeyStorage = codeJourneyStorage()
+const prerequisiteReturnPath = ref<CodeReturnPath | null>(null)
+const prerequisiteExpectedPath = ref<string | null>(null)
+const prerequisiteTenantKey = ref<string | null>(null)
+let observedJourneyAuthorityKey: string | null = null
 let deletionAuthority = ''
+
+function journeyTenantKey(): string | null {
+  if (!props.ctx?.tenant) return null
+  const caller = props.ctx.user?.sub ?? props.ctx.user?.email ?? null
+  return codeJourneyTenantKey(props.ctx.tenant, caller)
+}
+
+function activeJourneyPath(): string {
+  return (props.ctx?.subPath ?? '').replace(/^\/+|\/+$/g, '')
+}
 
 // Feed identity into the API client and remount the active route whenever its
 // authority changes. This clears actionable old-workspace state immediately and
@@ -56,6 +79,40 @@ watch(
   },
   { immediate: true, flush: 'sync' },
 )
+watch(
+  () => [props.ctx?.tenant, props.ctx?.subPath, props.ctx?.user?.sub, props.ctx?.user?.email] as const,
+  () => {
+    const tenantKey = journeyTenantKey()
+    const activePath = activeJourneyPath()
+    if (observedJourneyAuthorityKey && observedJourneyAuthorityKey !== tenantKey) {
+      clearCodeReturnIntent(journeyStorage, observedJourneyAuthorityKey)
+    }
+    observedJourneyAuthorityKey = tenantKey
+    const storedReturnPath = tenantKey
+      ? readCodeReturnIntent(journeyStorage, tenantKey, activePath)
+      : null
+    if (storedReturnPath) {
+      prerequisiteReturnPath.value = storedReturnPath
+      prerequisiteExpectedPath.value = null
+      prerequisiteTenantKey.value = tenantKey
+      return
+    }
+
+    // Storage is reload continuity, not live-transition authority. Preserve an
+    // intent seeded by the prerequisite CTA when storage is blocked or full,
+    // but only for the exact tenant and route that CTA selected.
+    if (prerequisiteReturnPath.value
+      && prerequisiteExpectedPath.value === activePath
+      && prerequisiteTenantKey.value === tenantKey) {
+      prerequisiteExpectedPath.value = null
+      return
+    }
+    prerequisiteReturnPath.value = null
+    prerequisiteExpectedPath.value = null
+    prerequisiteTenantKey.value = null
+  },
+  { immediate: true },
+)
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
 
@@ -70,10 +127,48 @@ const tabs = [
 // and pushes the shell's vue-router. detail.path is the trailing segment the
 // shell appends to /providers/code/.
 const rootRef = ref<HTMLElement | null>(null)
-function navigate(path: string, options: { replace?: boolean } = {}) {
+function dispatchNavigation(path: string, options: { replace?: boolean } = {}) {
   const el = rootRef.value
   if (!el) return
   el.dispatchEvent(new CustomEvent('faros-navigate', { detail: codeNavigationDetail(path, options), bubbles: true }))
+}
+
+function clearCurrentJourneyIntent(): void {
+  const tenantKey = journeyTenantKey()
+  if (tenantKey) clearCodeReturnIntent(journeyStorage, tenantKey)
+}
+
+function navigate(path: string, options: { replace?: boolean } = {}) {
+  prerequisiteReturnPath.value = null
+  prerequisiteExpectedPath.value = null
+  prerequisiteTenantKey.value = null
+  clearCurrentJourneyIntent()
+  dispatchNavigation(path, options)
+}
+
+function startRepositoryConnection(): void {
+  const expectedPath = 'create/connection/token'
+  const tenantKey = journeyTenantKey()
+  prerequisiteReturnPath.value = 'create/repository'
+  prerequisiteExpectedPath.value = expectedPath
+  prerequisiteTenantKey.value = tenantKey
+  if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, 'create/repository', expectedPath)
+  dispatchNavigation(expectedPath)
+}
+
+function completeConnectionPrerequisite(success: boolean, connectionName?: string): void {
+  const returnPath = prerequisiteReturnPath.value
+  prerequisiteReturnPath.value = null
+  prerequisiteExpectedPath.value = null
+  prerequisiteTenantKey.value = null
+  clearCurrentJourneyIntent()
+  if (returnPath) {
+    dispatchNavigation(success ? returnPath : 'repositories', { replace: true })
+    return
+  }
+  dispatchNavigation(success && connectionName
+    ? `connections/${encodeURIComponent(connectionName)}`
+    : 'connections', { replace: true })
 }
 </script>
 
@@ -108,8 +203,8 @@ function navigate(path: string, options: { replace?: boolean } = {}) {
           :key="`${contextGeneration}:create-connection:${route.create.method}`"
           :method="route.create.method"
           :deletions="deletions"
-          @cancel="navigate('connections', { replace: true })"
-          @created="(n: string) => navigate('connections/' + encodeURIComponent(n), { replace: true })"
+          @cancel="completeConnectionPrerequisite(false)"
+          @created="(n: string) => completeConnectionPrerequisite(true, n)"
         />
         <RepositoryCreateView
           v-if="route.create?.resource === 'repository'"
@@ -117,6 +212,7 @@ function navigate(path: string, options: { replace?: boolean } = {}) {
           :deletions="deletions"
           @cancel="navigate('repositories', { replace: true })"
           @created="(n: string) => navigate('repositories/' + encodeURIComponent(n), { replace: true })"
+          @create-connection="startRepositoryConnection"
         />
         <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${contextGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
         <RepoDetailView v-if="route.repo" :key="`${contextGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
@@ -141,6 +237,7 @@ function navigate(path: string, options: { replace?: boolean } = {}) {
             :deletions="deletions"
             @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))"
             @create="navigate('create/repository')"
+            @create-connection="startRepositoryConnection"
           />
         </KeepAlive>
       </template>

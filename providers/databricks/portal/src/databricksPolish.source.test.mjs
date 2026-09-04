@@ -36,12 +36,12 @@ test('prerequisite recovery actions share the compact callout pattern', async ()
   assert.match(styles, /@media \(max-width: 620px\) \{[\s\S]*?\.prerequisite \{[\s\S]*?flex-wrap:\s*wrap;/)
 })
 
-test('all three collections use one first-run journey without changing page width', async () => {
-  const [connections, warehouses, tables, styles] = await Promise.all([
+test('all three collections use the shared first-run journey without changing page width', async () => {
+  const [connections, warehouses, tables, sharedStyles] = await Promise.all([
     read('./views/ConnectionsView.vue'),
     read('./views/WarehousesView.vue'),
     read('./views/TablesView.vue'),
-    read('./style.css'),
+    read('./portalkit/faros-ui.css'),
   ])
   for (const source of [connections, warehouses, tables]) {
     assert.match(source, /<DatabricksEmptyState/)
@@ -51,12 +51,11 @@ test('all three collections use one first-run journey without changing page widt
     assert.match(source, /page--first-run/)
     assert.match(source, /loaded && !showFirstRun/)
   }
-  const firstRun = styles.match(/faros-provider-databricks \.databricks-first-run\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const firstRun = sharedStyles.match(/\.k-first-run\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.match(firstRun, /justify-content:\s*flex-start/)
   assert.match(firstRun, /min-height:\s*0/)
   assert.doesNotMatch(firstRun, /max-width|width:\s*min/)
-  assert.doesNotMatch(styles, /min-height:\s*calc\(100vh\s*-\s*150px\)|margin-block:\s*auto/)
-  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.page-head \{ flex-wrap: wrap; \}/)
+  assert.doesNotMatch(sharedStyles, /min-height:\s*calc\(100vh\s*-\s*150px\)|margin-block:\s*auto/)
 })
 
 test('table actions and onboarding remain prerequisite-aware at wide widths', async () => {
@@ -66,8 +65,9 @@ test('table actions and onboarding remain prerequisite-aware at wide widths', as
   ])
 
   assert.match(tables, /<button v-if="loaded && !showFirstRun" class="k-btn k-btn--ghost icon-text"/)
-  assert.match(styles, /\.databricks-journey \{[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 20rem\)\)[\s\S]*max-inline-size: 60rem/)
-  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.databricks-journey \{ gap: 12px; grid-template-columns: minmax\(0, 1fr\); \}/)
+  const sharedStyles = await read('./portalkit/faros-ui.css')
+  assert.match(sharedStyles, /\.k-first-run__journey \{[\s\S]*repeat\(auto-fit/)
+  assert.match(sharedStyles, /@media \(max-width: 620px\)[\s\S]*\.k-first-run__journey \{ gap: 12px; grid-template-columns: minmax\(0, 1fr\); \}/)
 })
 
 test('collection first-run surfaces stay latched during refresh', async () => {
@@ -135,7 +135,7 @@ test('import dialog close and disclosure focus use canonical action treatments',
   assert.match(coarseIconAction, /\.k-icon-action\s*\{[\s\S]*flex-basis:\s*44px[\s\S]*height:\s*44px[\s\S]*width:\s*44px/)
   assert.match(styles, /\.field-disclosure summary:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--color-accent/)
   assert.doesNotMatch(styles.match(/\.field-disclosure summary:focus-visible\s*\{([\s\S]*?)\n\}/)?.[1] ?? '', /accent-glow|box-shadow/)
-  const firstRun = styles.match(/faros-provider-databricks \.databricks-first-run\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const firstRun = sharedStyles.match(/\.k-first-run\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.match(firstRun, /background:\s*var\(--color-surface-raised/)
   assert.doesNotMatch(firstRun, /linear-gradient|color-mix/)
 })
@@ -172,23 +172,26 @@ test('credential help is concise with progressive disclosure', async () => {
   assert.match(connection, /Faros stores the token as a Secret in this workspace/)
 })
 
-test('manual create routes share an honest responsive guidance rail', async () => {
-  const [guidance, connection, warehouse, table, styles] = await Promise.all([
+test('manual create routes share an honest responsive PortalKit guidance rail', async () => {
+  const [guidance, sharedGuidance, connection, warehouse, table, styles, sharedStyles] = await Promise.all([
     read('./components/ManualCreateGuidance.vue'),
+    read('./portalkit/CreateGuidance.vue'),
     read('./views/CreateConnectionView.vue'),
     read('./views/CreateWarehouseView.vue'),
     read('./views/CreateTableView.vue'),
     read('./style.css'),
+    read('./portalkit/faros-ui.css'),
   ])
 
-  assert.match(guidance, /<aside class="manual-create-guidance" :aria-labelledby="titleID">/)
-  assert.match(guidance, /<section class="manual-create-guidance__section" :aria-labelledby="prerequisiteID">/)
-  assert.match(guidance, /<section class="manual-create-guidance__section" :aria-labelledby="nextStepsID">/)
+  assert.match(guidance, /<CreateGuidance/)
+  assert.match(sharedGuidance, /<aside class="k-create-guidance" :aria-labelledby="titleID">/)
+  assert.match(sharedGuidance, /<section v-if="prerequisites\.length" class="k-create-guidance__section"/)
+  assert.match(sharedGuidance, /<section v-if="nextSteps\.length" class="k-create-guidance__section"/)
   assert.match(guidance, /What Faros will register/)
   assert.match(guidance, /HTTPS Databricks workspace root URL/)
   assert.match(guidance, /personal access token/)
   assert.match(guidance, /stored as a Secret/)
-  assert.match(guidance, /Next steps/)
+  assert.match(sharedGuidance, /Next steps/)
   assert.match(guidance, /16-character hexadecimal warehouse ID/)
   assert.match(guidance, /not the numeric \?o= workspace ID/)
   assert.match(guidance, /Can use permission/)
@@ -208,22 +211,22 @@ test('manual create routes share an honest responsive guidance rail', async () =
   for (const [source, kind] of [[connection, 'connection'], [warehouse, 'warehouse'], [table, 'table']]) {
     assert.match(source, /import ManualCreateGuidance from '\.\.\/components\/ManualCreateGuidance\.vue'/)
     assert.match(source, new RegExp(`<ManualCreateGuidance[\\s\\S]*kind="${kind}"`))
-    assert.match(source, new RegExp(`class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--${kind}"`))
-    assert.match(source, /class="k-create-body manual-create-body--guided"/)
-    assert.match(source, new RegExp(`manual-create-form-fields manual-create-form-fields--${kind}`))
-    assert.ok(source.indexOf('manual-create-form-fields') < source.indexOf('<ManualCreateGuidance'), `${kind} fields precede guidance in the DOM`)
+    assert.match(source, new RegExp(`class="k-create-surface k-create-surface--guided manual-create-form manual-create-form--${kind}"`))
+    assert.match(source, /class="k-create-body k-create-body--guided manual-create-body-guided"/)
+    assert.match(source, new RegExp(`k-create-fields manual-create-form-fields--${kind}`))
+    assert.ok(source.indexOf('k-create-fields') < source.indexOf('<ManualCreateGuidance'), `${kind} fields precede guidance in the DOM`)
   }
   assert.match(table, /:editing="editing"/)
 
-  assert.match(styles, /\.manual-create-form\s*\{[\s\S]*max-width: none[\s\S]*width: 100%/)
-  assert.match(styles, /\.manual-create-body--guided\s*\{[\s\S]*display: grid[\s\S]*grid-template-columns: minmax\(0, 2fr\) minmax\(17\.5rem, 0\.8fr\)/)
-  assert.match(styles, /\.manual-create-form-fields\s*\{[\s\S]*grid-column: 1[\s\S]*grid-row: 1/)
-  assert.match(styles, /\.manual-create-guidance\s*\{[\s\S]*border-inline-start: 1px solid var\(--color-border-subtle/)
-  assert.match(styles, /@container manual-create-form \(min-width: 1400px\)[\s\S]*\.manual-create-fields-grid--connection,[\s\S]*\.manual-create-fields-grid--warehouse[\s\S]*repeat\(2, minmax\(0, 1fr\)/)
-  assert.match(styles, /@container manual-create-form \(min-width: 1600px\)[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*repeat\(3, minmax\(0, 1fr\)/)
-  assert.match(styles, /@container manual-create-form \(max-width: 960px\)[\s\S]*\.manual-create-body--guided\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
-  assert.match(styles, /@container manual-create-form \(max-width: 960px\)[\s\S]*\.manual-create-form-fields[\s\S]*grid-row: 1[\s\S]*\.manual-create-guidance[\s\S]*grid-row: 2/)
-  assert.match(styles, /@container manual-create-form \(max-width: 960px\)[\s\S]*\.manual-create-fields-grid--connection,[\s\S]*\.manual-create-fields-grid--warehouse,[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(sharedStyles, /\.k-create-surface--guided\s*\{[\s\S]*container-name: k-create-surface/)
+  assert.match(sharedStyles, /\.k-create-body--guided\s*\{[\s\S]*display: grid[\s\S]*grid-template-columns: minmax\(0, 2fr\) minmax\(17\.5rem, 0\.8fr\)/)
+  assert.match(sharedStyles, /\.k-create-fields\s*\{[\s\S]*grid-column: 1[\s\S]*grid-row: 1/)
+  assert.match(sharedStyles, /\.k-create-guidance\s*\{[\s\S]*border-inline-start: 1px solid var\(--color-border-subtle/)
+  assert.match(styles, /@container k-create-surface \(min-width: 1400px\)[\s\S]*\.manual-create-fields-grid--connection,[\s\S]*\.manual-create-fields-grid--warehouse[\s\S]*repeat\(2, minmax\(0, 1fr\)/)
+  assert.match(styles, /@container k-create-surface \(min-width: 1600px\)[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*repeat\(3, minmax\(0, 1fr\)/)
+  assert.match(sharedStyles, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.k-create-body--guided[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(sharedStyles, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.k-create-fields[\s\S]*grid-row: 1[\s\S]*\.k-create-guidance[\s\S]*grid-row: 2/)
+  assert.match(styles, /@container k-create-surface \(max-width: 960px\)[\s\S]*\.manual-create-fields-grid--connection,[\s\S]*\.manual-create-fields-grid--warehouse,[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/)
 })
 
 test('wide provider surfaces stay readable at 4K and in detail/import views', async () => {
@@ -239,13 +242,14 @@ test('wide provider surfaces stay readable at 4K and in detail/import views', as
     read('./views/TablesView.vue'),
   ])
 
-  assert.match(styles, /\.manual-create-form\s*\{[\s\S]*container-name: manual-create-form[\s\S]*container-type: inline-size/)
-  assert.match(styles, /\.manual-create-guidance\s*\{[\s\S]*max-inline-size: 75ch/)
-  assert.match(styles, /@container manual-create-form \(min-width: 1800px\)[\s\S]*\.manual-create-body--guided[\s\S]*minmax\(17\.5rem, min\(32rem, 40%\)\)/)
-  assert.match(styles, /@container manual-create-form \(min-width: 1800px\)[\s\S]*\.manual-create-fields-grid--connection[\s\S]*repeat\(3, minmax\(0, 1fr\)/)
-  assert.match(styles, /@container manual-create-form \(min-width: 3000px\)[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*repeat\(4, minmax\(0, 1fr\)/)
+  const sharedStyles = await read('./portalkit/faros-ui.css')
+  assert.match(sharedStyles, /\.k-create-surface--guided\s*\{[\s\S]*container-name: k-create-surface[\s\S]*container-type: inline-size/)
+  assert.match(sharedStyles, /\.k-create-guidance\s*\{[\s\S]*max-inline-size: 75ch/)
+  assert.match(styles, /@container k-create-surface \(min-width: 1800px\)[\s\S]*\.manual-create-body-guided[\s\S]*minmax\(17\.5rem, min\(32rem, 40%\)\)/)
+  assert.match(styles, /@container k-create-surface \(min-width: 1800px\)[\s\S]*\.manual-create-fields-grid--connection[\s\S]*repeat\(3, minmax\(0, 1fr\)/)
+  assert.match(styles, /@container k-create-surface \(min-width: 3000px\)[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*repeat\(4, minmax\(0, 1fr\)/)
   assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.manual-create-form input:not\(\[type='hidden'\]\)[\s\S]*min-height: 44px/)
-  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.manual-create-form > \.manual-create-body--guided \+ div\s*\{[\s\S]*position: static[\s\S]*z-index: auto/)
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.manual-create-form > \.manual-create-body-guided \+ div\s*\{[\s\S]*position: static[\s\S]*z-index: auto/)
   assert.match(warehouseCreate, /manual-create-support-note/)
   assert.match(warehouseCreate, /Can use and startable access before it reports Ready/)
   assert.match(wizard, /:class="\['import-body', `import-body--\$\{step\}`\]"/)

@@ -261,9 +261,9 @@ watch(() => form.connectionRef, connectionRef => {
       <p class="k-create-description">{{ editing ? 'Update the metadata-only Databricks table handle used by App Studio and MCP.' : 'Register a metadata-only Databricks table handle for App Studio and MCP.' }}</p>
     </header>
 
-    <form class="k-create-surface k-create-surface--wide manual-create-form manual-create-form--table" @submit.prevent="submit">
-      <div class="k-create-body manual-create-body--guided">
-        <div class="manual-create-form-fields manual-create-form-fields--table">
+    <form class="k-create-surface k-create-surface--guided manual-create-form manual-create-form--table" @submit.prevent="submit">
+      <div class="k-create-body k-create-body--guided manual-create-body-guided">
+        <div class="k-create-fields manual-create-form-fields--table">
           <div class="databricks-resource-panel-head">
             <span class="databricks-resource-panel-title">{{ editing ? 'Table configuration' : 'Table details' }}</span>
             <button v-if="!editing" class="k-btn k-btn--ghost databricks-inline-action" type="button" :disabled="loading || submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>

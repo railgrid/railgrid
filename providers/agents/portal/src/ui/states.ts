@@ -11,6 +11,9 @@ export interface SliceViewOptions<T> {
   // emptyIcon/emptyText render when the load succeeded and returned nothing.
   emptyIcon: IconName
   emptyText: string
+  // A guided empty state can replace the compact fallback after an
+  // authoritative empty snapshot. It is never rendered before the load settles.
+  empty?: () => TemplateResult
   // retry re-runs the loader from the error state.
   retry: () => void
   // content renders the non-empty case.
@@ -19,11 +22,12 @@ export interface SliceViewOptions<T> {
 
 export function sliceView<T>(o: SliceViewOptions<T>): TemplateResult {
   const s = o.slice
+  const empty = (): TemplateResult => o.empty?.() ?? emptyState(o.emptyIcon, o.emptyText)
   // Once a slice has produced an authoritative snapshot, a later background
   // failure must not replace it with a full-page error. Keep populated *and*
   // empty snapshots stable and add a compact stale-data notice instead.
   if (s.error && s.hasSnapshot) {
-    const content = s.data.length ? o.content(s.data) : emptyState(o.emptyIcon, o.emptyText)
+    const content = s.data.length ? o.content(s.data) : empty()
     return html`${staleState(s.error, o.retry)}${content}`
   }
   if (s.error) return errorState(s.error, o.retry)
@@ -31,7 +35,7 @@ export function sliceView<T>(o: SliceViewOptions<T>): TemplateResult {
   // store normally marks loading synchronously, but treating all pre-load
   // states as pending also protects the first render and context rotations.
   if (!s.loaded) return loadingState()
-  if (!s.data.length) return emptyState(o.emptyIcon, o.emptyText)
+  if (!s.data.length) return empty()
   return o.content(s.data)
 }
 

@@ -11,6 +11,7 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
 import { sliceView } from '../ui/states'
+import { createGuidance, firstRunGuide } from '../ui/create-flow'
 import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
@@ -79,18 +80,35 @@ export class Connections extends StoreElement {
   @state() private connType: string | null = null
   @state() private connMode = ''
   @state() private editing: string | null = null
+  @state() private createBusy = false
+  @state() private createValues: Record<string, string> = {}
+
+  protected willUpdate(changed?: Map<PropertyKey, unknown>): void {
+    super.willUpdate()
+    if (changed?.has('createType') && changed.get('createType') !== undefined) {
+      this.createValues = {}
+      this.connMode = ''
+    }
+  }
 
   private async create(def: ConnTypeDef, form: HTMLFormElement): Promise<void> {
+    if (this.createBusy) return
     const v: Record<string, string> = {}
     form.querySelectorAll<HTMLInputElement>('input[name]').forEach((el) => (v[el.name] = el.value.trim()))
     const mode = this.connMode || def.modes?.[0].id || ''
     const body = def.build(v, mode)
-    const res = await mutate(this.store, {
-      run: () => this.api.createConnection(body),
-      success: 'Connection created.',
-      failure: 'Create failed',
-      reload: ['connections'],
-    })
+    this.createBusy = true
+    let res: Connection | undefined
+    try {
+      res = await mutate(this.store, {
+        run: () => this.api.createConnection(body),
+        success: 'Connection created.',
+        failure: 'Create failed',
+        reload: ['connections'],
+      })
+    } finally {
+      this.createBusy = false
+    }
     if (res && this.routeOwned) {
       this.dispatchEvent(
         new CustomEvent<CreateSuccessDetail>('agents-create-success', {
@@ -167,12 +185,14 @@ export class Connections extends StoreElement {
 
   render(): TemplateResult {
     if (this.createRoute) return this.createRouteSurface()
+    const connections = this.store.connections
+    const showFirstRun = connections.loaded && connections.data.length === 0 && (!connections.error || connections.hasSnapshot)
     return html`
       <div class="agents-menu">
         <div class="agents-panel k-card agents-route-panel">
           <div class="agents-panel-head">
             <h3>Connections</h3>
-            ${this.routeOwned
+            ${this.routeOwned && !showFirstRun
               ? html`<button class="k-btn k-btn--primary" @click=${() => this.navigate({ kind: 'create', resource: 'connection' })}>${icon('plus')} New connection</button>`
               : nothing}
           </div>
@@ -182,9 +202,23 @@ export class Connections extends StoreElement {
             <strong>Connection</strong>. Stored as Secrets in your workspace.
           </p>
           ${sliceView<Connection>({
-            slice: this.store.connections,
+            slice: connections,
             emptyIcon: 'plug',
             emptyText: 'No connections yet — add one below.',
+            empty: () => firstRunGuide({
+              icon: 'plug',
+              title: 'Connect tools and channels',
+              description: 'Add reusable access to an external system once, then grant it to agents directly or through a toolset.',
+              primaryLabel: 'Create connection',
+              primary: () => this.navigate({ kind: 'create', resource: 'connection' }),
+              steps: [
+                { label: 'Connection', description: 'Tool, channel, or external credential' },
+                { label: 'Toolset', description: 'Optional reusable capability bundle' },
+                { label: 'Agent', description: 'Grant access from agent Config' },
+              ],
+              currentStep: 0,
+              journeyLabel: 'Connection setup path',
+            }),
             retry: () => void this.store.load('connections'),
             content: (rows) => this.table(rows),
           })}
@@ -202,7 +236,7 @@ export class Connections extends StoreElement {
   private createRouteSurface(): TemplateResult {
     if (!this.createType) {
       return html`<div class="agents-menu agents-create-page k-create-page">
-        <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+        <button type="button" class="k-btn k-btn--ghost k-back-action" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
         <header class="k-create-header"><h1 class="k-create-title">Create connection</h1><p class="k-create-description">Choose the tool, channel, or external service you want agents to use.</p></header>
         <div class="k-create-surface k-create-surface--wide">
           <div class="k-create-body">${this.picker(false)}</div>
@@ -217,12 +251,12 @@ export class Connections extends StoreElement {
     const def = CONN_DEFS.find((d) => d.id === this.createType)
     if (!def) {
       return html`<div class="agents-create-page k-create-page">
-        <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+        <button type="button" class="k-btn k-btn--ghost k-back-action" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
         <header class="k-create-header"><h1 class="k-create-title">Connection type unavailable</h1><p class="k-create-description">That connection type is not available in this version of the Agents provider.</p></header>
       </div>`
     }
     return html`<div class="agents-menu agents-create-page k-create-page">
-      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+      <button type="button" class="k-btn k-btn--ghost k-back-action" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
       <header class="k-create-header"><h1 class="k-create-title">Connect ${def.label}</h1><p class="k-create-description">${def.desc}</p></header>
       ${this.createForm(def)}
     </div>`
@@ -368,6 +402,9 @@ export class Connections extends StoreElement {
         placeholder=${f.placeholder || ''}
         ?required=${f.required}
         autocomplete="off"
+        .value=${this.createValues[f.key] || ''}
+        ?disabled=${this.createBusy}
+        @input=${(e: Event) => (this.createValues = { ...this.createValues, [f.key]: (e.target as HTMLInputElement).value })}
       />
       ${f.hint ? html`<span class="agents-hint">${f.hint}</span>` : nothing}
     </label>`
@@ -387,17 +424,20 @@ export class Connections extends StoreElement {
     const platformApp = isOAuthMode && this.store.oauthApps.has(def.id)
     if (platformApp) fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
     return html`<form
-      class=${this.routeOwned ? 'agents-conn-form k-create-surface' : 'agents-conn-form k-card'}
+      class=${this.routeOwned ? 'agents-conn-form agents-guided-form k-create-surface k-create-surface--guided' : 'agents-conn-form k-card'}
+      aria-busy=${this.createBusy ? 'true' : 'false'}
       @submit=${(e: Event) => {
         e.preventDefault()
         void this.create(def, e.target as HTMLFormElement)
       }}
     >
-      <div class=${this.routeOwned ? 'k-create-body' : ''}>
+      <div class=${this.routeOwned ? 'k-create-body k-create-body--guided' : ''}>
+      <div class=${this.routeOwned ? 'k-create-fields' : ''}>
       <div class="agents-conn-formhead">
         <button
           type="button"
           class="k-btn k-btn--ghost agents-back"
+          ?disabled=${this.createBusy}
           @click=${() => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'connection' }) : (this.connType = null))}
         >${icon('arrow-left')} connection types</button>
         ${this.routeOwned ? nothing : html`<h4>${icon(def.glyph)} ${def.label}</h4>`}
@@ -413,13 +453,17 @@ export class Connections extends StoreElement {
         : nothing}
       <label>
         Name *
-        <input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder=${`my-${def.id}`} autocomplete="off" />
+        <input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder=${`my-${def.id}`} autocomplete="off"
+          .value=${this.createValues.name || ''}
+          ?disabled=${this.createBusy}
+          @input=${(e: Event) => (this.createValues = { ...this.createValues, name: (e.target as HTMLInputElement).value })}
+        />
         <span class="agents-hint">A short id you'll reference from agents.</span>
       </label>
       ${def.modes
         ? html`<div class="agents-modeseg" role="group" aria-label="Authentication mode">
             ${def.modes.map(
-              (m) => html`<button type="button" class="k-btn k-btn--ghost agents-modebtn ${m.id === mode ? 'sel' : ''}" @click=${() => (this.connMode = m.id)}>
+              (m) => html`<button type="button" class="k-btn k-btn--ghost agents-modebtn ${m.id === mode ? 'sel' : ''}" ?disabled=${this.createBusy} aria-pressed=${m.id === mode ? 'true' : 'false'} @click=${() => (this.connMode = m.id)}>
                 ${m.label}
               </button>`,
             )}
@@ -436,14 +480,37 @@ export class Connections extends StoreElement {
         ? html`<details class="agents-adv"><summary>Advanced</summary>${advanced.map((f) => this.field(f))}</details>`
         : nothing}
       </div>
+      ${this.routeOwned ? createGuidance({
+        icon: def.glyph,
+        title: `Connect ${def.label}`,
+        description: 'Prepare the external identity once; agents receive access only when you grant this connection later.',
+        prerequisites: [
+          def.setup?.length ? 'Review the provider setup steps shown in the form.' : `Have the ${def.label} endpoint or credential ready.`,
+          `Required fields: ${['Name', ...fields.filter((field) => field.required).map((field) => field.label)].join(', ')}.`,
+        ],
+        values: [
+          { label: 'Connection', value: this.createValues.name?.trim() || 'Not entered yet', technical: true },
+          { label: 'Type', value: def.label },
+          { label: 'Mode', value: activeMode?.label || 'Default' },
+          { label: 'Required details', value: `${fields.filter((field) => field.required && this.createValues[field.key]?.trim()).length} of ${fields.filter((field) => field.required).length} entered` },
+        ],
+        nextSteps: [
+          'Faros stores secret values in this workspace and does not show them after creation.',
+          'Test or authorize the connection from the Connections page when the type supports it.',
+          'Grant the connection to an agent directly or add it to a shared toolset.',
+        ],
+      }) : nothing}
+      </div>
       <div class=${this.routeOwned ? 'k-create-actions' : ''}>
-        ${this.routeOwned ? html`<button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancelCreate()}>Cancel</button>` : nothing}
-        <button class="k-btn k-btn--primary" type="submit">Create connection</button>
+        ${this.routeOwned ? html`<button type="button" class="k-btn k-btn--ghost secondary" ?disabled=${this.createBusy} @click=${() => this.cancelCreate()}>Cancel</button>` : nothing}
+        <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.createBusy}>${this.createBusy ? 'Creating…' : 'Create connection'}</button>
       </div>
     </form>`
   }
 
   private cancelCreate(): void {
+    if (this.createBusy) return
+    this.createValues = {}
     if (this.routeOwned) {
       this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
       return

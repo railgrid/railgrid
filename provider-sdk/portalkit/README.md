@@ -20,6 +20,11 @@ too, alongside the SFC kit in `provider-sdk/portalkit-vue`.
   uses the shared stylesheet rather than injecting a second visual language.
 - `styles.ts` — the standalone handoff for the exact canonical
   `provider-sdk/portalkit/faros-ui.css` bytes.
+- `FirstRunGuide.vue` — Vue first-use value, action, and ordered journey
+  surface. Vanilla portals emit the same `k-first-run*` classes.
+- `CreateGuidance.vue` — Vue prerequisites, live output summary, and next-step
+  rail for route-owned forms. Vanilla portals emit the same
+  `k-create-guidance*` classes.
 
 ## Why vendored, not imported
 

@@ -3958,8 +3958,10 @@ async function loadNavigationApp() {
     ['ConfirmDialog', '/src/portalkit/ConfirmDialog.vue'],
     ['CreateConnectionView', '/src/views/CreateConnectionView.vue'],
     ['ManualCreateGuidance', '/src/components/ManualCreateGuidance.vue'],
+    ['CreateGuidance', '/src/portalkit/CreateGuidance.vue'],
     ['TablesView', '/src/views/TablesView.vue'],
     ['DatabricksEmptyState', '/src/components/DatabricksEmptyState.vue'],
+    ['FirstRunGuide', '/src/portalkit/FirstRunGuide.vue'],
   ]) {
     try {
       components[name] = await loadMountedSFC(path)
@@ -3970,6 +3972,8 @@ async function loadNavigationApp() {
   }
   App.components = { ...(App.components ?? {}), ...components }
   components.ResourceImportWizard.components = { ...(components.ResourceImportWizard.components ?? {}), FormSelect: components.FormSelect }
+  components.ManualCreateGuidance.components = { ...(components.ManualCreateGuidance.components ?? {}), CreateGuidance: components.CreateGuidance }
+  components.DatabricksEmptyState.components = { ...(components.DatabricksEmptyState.components ?? {}), FirstRunGuide: components.FirstRunGuide }
   components.TablesView.components = { ...(components.TablesView.components ?? {}), DatabricksEmptyState: components.DatabricksEmptyState }
   return App
 }

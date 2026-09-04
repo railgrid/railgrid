@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
 import { ArrowLeft, Boxes, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
+import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import type { EdgeType, ErrorResponse } from './types'
 
-const props = defineProps<{ cluster: string | null }>()
+const props = withDefaults(defineProps<{
+  cluster: string | null
+  requiredType?: EdgeType
+  cancelLabel?: string
+}>(), {
+  cancelLabel: 'Back to edges',
+})
 const emit = defineEmits<{
   cancel: []
   created: [name: string, type: EdgeType]
@@ -13,7 +20,7 @@ const emit = defineEmits<{
 type Step = 1 | 2 | 3
 const step = ref<Step>(1)
 const name = ref('')
-const edgeType = ref<EdgeType>('kubernetes')
+const edgeType = ref<EdgeType>(props.requiredType ?? 'kubernetes')
 const labels = ref('')
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -22,6 +29,8 @@ const joinToken = ref<string | null>(null)
 const tokenError = ref<string | null>(null)
 const copied = ref<string | null>(null)
 const copyFeedback = ref('')
+const failedCopyField = ref<string | null>(null)
+const revealedCommand = ref<string | null>(null)
 const agentVersion = ref<string | null>(null)
 const elapsed = ref(0)
 
@@ -35,7 +44,35 @@ onUnmounted(() => {
 })
 
 const trimmed = computed(() => name.value.trim())
-const canContinue = computed(() => trimmed.value.length > 0 && !saving.value)
+const edgeTypeLocked = computed(() => props.requiredType !== undefined)
+const canContinue = computed(() => trimmed.value.length > 0 && !saving.value && (!props.requiredType || edgeType.value === props.requiredType))
+const stepLabels = ['Configure', 'Install agent', 'Connected'] as const
+async function focusCurrentStepHeading(): Promise<void> {
+  await nextTick()
+  document.getElementById('edge-wizard-step-heading')?.focus()
+}
+watch(step, (current) => {
+  if (current === 1) return
+  void focusCurrentStepHeading()
+})
+watch(() => props.requiredType, (requiredType) => {
+  if (requiredType) edgeType.value = requiredType
+}, { immediate: true })
+const edgeGuidanceValues = computed<CreateGuidanceValue[]>(() => [
+  { label: 'Edge name', value: trimmed.value || 'Not entered yet', technical: true },
+  { label: 'Resource type', value: edgeType.value === 'kubernetes' ? 'KubernetesCluster' : 'LinuxServer', technical: true },
+  { label: 'Scheduling labels', value: labels.value.trim() || 'None', technical: true },
+])
+const edgePrerequisites = [
+  'Access to the target cluster with Helm, or to the Linux host with the Faros CLI.',
+  'A unique Kubernetes-compatible name in this workspace.',
+  'Optional key=value labels if Workloads will target this edge.',
+]
+const edgeNextSteps = [
+  'Faros creates a KubernetesCluster or LinuxServer resource and mints a one-time join token.',
+  'Run the generated command on the target; the token is masked here and copied only when requested.',
+  'The agent exchanges the token for an edge-scoped credential and opens its outbound tunnel.',
+]
 
 const hubURL = computed(() => {
   const origin = window.location.origin
@@ -66,19 +103,39 @@ function copyControlLabel(field: string, label: string): string {
 
 async function copy(build: (t: string) => string, field: string, label: string) {
   if (!joinToken.value) return
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+  copied.value = null
+  failedCopyField.value = null
+  revealedCommand.value = null
   try {
     await navigator.clipboard.writeText(build(joinToken.value))
     copied.value = field
+    failedCopyField.value = null
+    revealedCommand.value = null
     copyFeedback.value = `${label} copied to clipboard.`
-    if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
       copied.value = null
       copyFeedback.value = ''
       copyTimer = null
     }, 2000)
   } catch {
-    copyFeedback.value = `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
+    failedCopyField.value = field
+    copyFeedback.value = `Could not copy the ${label.toLowerCase()}. Reveal it to copy manually.`
   }
+}
+
+function revealForManualCopy(field: string): void {
+  if (!joinToken.value || failedCopyField.value !== field) return
+  revealedCommand.value = field
+  copyFeedback.value = 'Command revealed. The join token is sensitive; hide it after copying.'
+}
+
+function hideRevealedCommand(): void {
+  revealedCommand.value = null
+  copyFeedback.value = 'Command hidden.'
 }
 
 function parseLabels(): Record<string, string> {
@@ -94,6 +151,11 @@ function parseLabels(): Record<string, string> {
 
 async function handleCreate() {
   if (!trimmed.value) { error.value = 'Name is required'; return }
+  if (props.requiredType && edgeType.value !== props.requiredType) {
+    error.value = `This flow requires a ${props.requiredType === 'kubernetes' ? 'KubernetesCluster' : 'LinuxServer'} edge.`
+    edgeType.value = props.requiredType
+    return
+  }
   saving.value = true
   error.value = null
   try {
@@ -140,54 +202,68 @@ function fmt(s: number) {
 <template>
   <div class="wiz">
     <div class="wiz-hero">
-      <h1>Connect your first edge</h1>
+      <h1>Connect an edge</h1>
       <p>A Kubernetes cluster or Linux/SSH server you want to manage from this workspace.</p>
     </div>
 
-    <div class="wiz-steps">
-      <span v-for="(l, i) in ['Configure', 'Install agent', 'Connected']" :key="l"
-            class="wiz-step" :class="{ done: step > i + 1, active: step === i + 1 }">
+    <ol class="wiz-steps" aria-label="Edge connection progress">
+      <li v-for="(l, i) in stepLabels" :key="l"
+          class="wiz-step" :class="{ done: step > i + 1, active: step === i + 1 }"
+          :aria-current="step === i + 1 ? 'step' : undefined">
         <CircleDot :size="12" /> {{ l }}
-      </span>
-    </div>
+      </li>
+    </ol>
+    <span class="wiz-sr-only" role="status" aria-live="polite">Step {{ step }} of 3: {{ stepLabels[step - 1] }}</span>
 
     <div v-if="error" class="banner error">{{ error }}</div>
 
     <!-- Step 1 -->
-    <div v-if="step === 1" class="wiz-card k-card">
-      <label for="edge-name" class="lbl">Edge name</label>
-      <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
+    <div v-if="step === 1" class="wiz-card k-card k-create-surface--guided">
+      <div class="k-create-body--guided">
+        <div class="k-create-fields">
+          <label for="edge-name" class="lbl">Edge name</label>
+          <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
 
-      <fieldset class="types">
-        <legend class="lbl">Type</legend>
-        <label class="type" :class="{ sel: edgeType === 'kubernetes' }" for="edge-type-kubernetes">
-          <input id="edge-type-kubernetes" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="kubernetes" />
-          <Boxes :size="15" aria-hidden="true" /> <span><b>Kubernetes</b><small>Existing K8s cluster</small></span>
-        </label>
-        <label class="type" :class="{ sel: edgeType === 'server' }" for="edge-type-server">
-          <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" />
-          <Server :size="15" aria-hidden="true" /> <span><b>Server</b><small>Bare-metal or VM (SSH)</small></span>
-        </label>
-      </fieldset>
+          <fieldset class="types">
+            <legend class="lbl">Type</legend>
+            <label class="type" :class="{ sel: edgeType === 'kubernetes' }" for="edge-type-kubernetes">
+              <input id="edge-type-kubernetes" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="kubernetes" :disabled="edgeTypeLocked && props.requiredType !== 'kubernetes'" />
+              <Boxes :size="15" aria-hidden="true" /> <span><b>Kubernetes</b><small>Existing K8s cluster</small></span>
+            </label>
+            <label class="type" :class="{ sel: edgeType === 'server' }" for="edge-type-server">
+              <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" :disabled="edgeTypeLocked && props.requiredType !== 'server'" />
+              <Server :size="15" aria-hidden="true" /> <span><b>Server</b><small>Bare-metal or VM (SSH)</small></span>
+            </label>
+          </fieldset>
+          <p v-if="edgeTypeLocked" class="muted">This edge type is required to continue the originating {{ props.requiredType === 'kubernetes' ? 'workload' : 'resource' }} flow.</p>
 
-      <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
-      <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
+          <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
+          <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
 
-      <div class="wiz-actions">
-        <button type="button" class="k-btn k-btn--ghost" @click="emit('cancel')">
-          <ArrowLeft :size="14" aria-hidden="true" /> Back to edges
-        </button>
-        <button type="button" class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
-          <Loader2 v-if="saving" :size="14" class="spin" />
-          {{ saving ? 'Creating…' : 'Create & continue' }}
-          <ArrowRight v-if="!saving" :size="14" />
-        </button>
+          <div class="wiz-actions">
+            <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="emit('cancel')">
+              <ArrowLeft :size="14" aria-hidden="true" /> {{ props.cancelLabel }}
+            </button>
+            <button type="button" class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
+              <Loader2 v-if="saving" :size="14" class="spin" />
+              {{ saving ? 'Creating…' : 'Create & continue' }}
+              <ArrowRight v-if="!saving" :size="14" />
+            </button>
+          </div>
+        </div>
+        <CreateGuidance
+          title="Configure the edge"
+          description="Choose how Faros will identify and manage this target. After creation, install the agent from the generated command."
+          :prerequisites="edgePrerequisites"
+          :values="edgeGuidanceValues"
+          :next-steps="edgeNextSteps"
+        />
       </div>
     </div>
 
     <!-- Step 2 -->
     <div v-else-if="step === 2" class="wiz-card k-card">
-      <h3>Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : 'server' }}</h3>
+      <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : 'server' }}</h3>
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
 
@@ -208,7 +284,7 @@ function fmt(s: number) {
               <component :is="copied === 'helm' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </div>
-          <pre>{{ helmText }}</pre>
+          <pre>{{ revealedCommand === 'helm' && joinToken ? helmSnippet(joinToken) : helmText }}</pre>
         </div>
         <div class="snippet">
           <div class="snippet-head"><span>CLI — faros agent join</span>
@@ -223,26 +299,42 @@ function fmt(s: number) {
               <component :is="copied === 'cli' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </div>
-          <pre>{{ cliText }}</pre>
+          <pre>{{ revealedCommand === 'cli' && joinToken ? cliSnippet(joinToken) : cliText }}</pre>
         </div>
       </template>
+
+      <div v-if="failedCopyField" class="banner warn" role="alert">
+        Clipboard access is unavailable. Revealing the command will display its sensitive one-time join token.
+        <button
+          v-if="revealedCommand !== failedCopyField"
+          type="button"
+          class="k-btn k-btn--ghost compact-control"
+          @click="revealForManualCopy(failedCopyField)"
+        >Reveal command for manual copy</button>
+        <button
+          v-else
+          type="button"
+          class="k-btn k-btn--ghost compact-control"
+          @click="hideRevealedCommand"
+        >Hide join token</button>
+      </div>
 
       <span class="wiz-sr-only" role="status" aria-live="polite">{{ copyFeedback }}</span>
 
       <div class="waiting"><Loader2 :size="14" class="spin" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       <div class="wiz-actions">
-        <button type="button" class="k-btn k-btn--ghost" @click="emit('cancel')">Back to edges</button>
-        <button type="button" class="k-btn k-btn--ghost" @click="emit('created', trimmed, edgeType)">Skip — view edge details</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('cancel')">{{ props.cancelLabel }}</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('created', trimmed, edgeType)">Skip waiting — continue</button>
       </div>
     </div>
 
     <!-- Step 3 -->
     <div v-else class="wiz-card k-card center">
       <PartyPopper :size="30" />
-      <h3><b>{{ trimmed }}</b> is online</h3>
+      <h3 id="edge-wizard-step-heading" tabindex="-1"><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
       <div class="wiz-actions">
-        <button type="button" class="k-btn k-btn--primary" @click="emit('created', trimmed, edgeType)">View edge details <ArrowRight :size="14" /></button>
+        <button type="button" class="k-btn k-btn--primary" @click="emit('created', trimmed, edgeType)">Continue <ArrowRight :size="14" /></button>
       </div>
     </div>
   </div>

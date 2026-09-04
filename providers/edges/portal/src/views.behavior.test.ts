@@ -22,6 +22,8 @@ const api = vi.hoisted(() => ({
   getEdge: vi.fn(),
   deleteEdge: vi.fn(),
   listEdgeServices: vi.fn(),
+  setToken: vi.fn(),
+  setTenant: vi.fn(),
 }))
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
@@ -31,6 +33,8 @@ vi.mock('./api', () => api)
 vi.mock('./portalkit/confirm', () => confirm)
 
 import Services from './Services.vue'
+import App from './App.vue'
+import EdgeCollection from './EdgeCollection.vue'
 import ServiceEdit from './ServiceEdit.vue'
 import ServiceCreate from './ServiceCreate.vue'
 import Workloads from './Workloads.vue'
@@ -38,6 +42,7 @@ import WorkloadCreate from './WorkloadCreate.vue'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
+import { edgeConnectPath } from './routes'
 
 type HostNode = {
   type: string
@@ -116,7 +121,7 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
   const { renderer, root } = createHostRenderer()
   const app = renderer.createApp(component, props)
   app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
-  const proxy = app.mount(root) as unknown as { $: { setupState: Record<string, any> } }
+  const proxy = app.mount(root) as unknown as { $: { setupState: Record<string, any>; props: Record<string, any> } }
   await nextTick()
   return {
     instance: proxy.$,
@@ -534,6 +539,98 @@ describe('edge list views', () => {
     }
   })
 
+  it('routes an empty Services first-run action through the missing-edge prerequisite', async () => {
+    api.listServicesPage.mockResolvedValueOnce({ items: [], continue: undefined })
+    api.listEdges.mockResolvedValueOnce([])
+    const connectEdge = vi.fn()
+    const mounted = await mount(Services, { onConnectEdge: connectEdge })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.showFirstRun).toBe(true)
+      expect(state.hasEdges).toBe(false)
+      state.handleFirstRunPrimary()
+      expect(connectEdge).toHaveBeenCalledOnce()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it.each([
+    ['Services', Services, api.listServicesPage],
+    ['Workloads', Workloads, api.listWorkloadsPage],
+  ] as const)('keeps the %s table and cursor controls for an empty nonterminal first page', async (_label, component, pageMock) => {
+    pageMock.mockResolvedValueOnce({ items: [], continue: 'next-page' })
+    api.listEdges.mockResolvedValueOnce([])
+    const mounted = await mount(component)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.loaded).toBe(true)
+      expect(state.tablePageInfo).toEqual({ hasNext: true, nextCursor: 'next-page' })
+      expect(state.showFirstRun).toBe(false)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('retains a controlled edge-table query when the authoritative fleet becomes empty', async () => {
+    const mounted = await mount(EdgeCollection, {
+      edges: [edge], loaded: true, loading: false, refreshMode: 'foreground', error: null, foregroundLoading: false,
+    })
+    try {
+      const state = mounted.instance.setupState
+      state.tableQuery = 'missing-edge'
+      mounted.instance.props.edges = []
+      await nextTick()
+      expect(state.hasActiveTableFilters).toBe(true)
+      expect(state.showFirstRun).toBe(false)
+
+      state.tableQuery = ''
+      await nextTick()
+      expect(state.showFirstRun).toBe(true)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('routes an empty Workloads first-run action through the Kubernetes-edge prerequisite', async () => {
+    api.listWorkloadsPage.mockResolvedValueOnce({ items: [], continue: undefined })
+    api.listEdges.mockResolvedValueOnce([{ ...edge, type: 'server' }])
+    const connectEdge = vi.fn()
+    const mounted = await mount(Workloads, { onConnectEdge: connectEdge })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.showFirstRun).toBe(true)
+      expect(state.hasKubernetesEdges).toBe(false)
+      state.handleFirstRunPrimary()
+      expect(connectEdge).toHaveBeenCalledOnce()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('restores Kubernetes prerequisite guidance when the last eligible edge disappears', async () => {
+    api.listWorkloadsPage.mockResolvedValueOnce({ items: [], continue: undefined })
+    const mounted = await mount(Workloads)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.hasKubernetesEdges).toBe(true)
+      state.firstRunDismissed = true
+      expect(state.showFirstRun).toBe(false)
+
+      state.edges = [{ ...edge, type: 'server' }]
+      await nextTick()
+      expect(state.hasKubernetesEdges).toBe(false)
+      expect(state.firstRunDismissed).toBe(false)
+      expect(state.showFirstRun).toBe(true)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('derives service filter options from the complete catalog and edge fleet', async () => {
     api.fetchServiceCatalog.mockResolvedValue([
       { type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none', credential: {} },
@@ -601,6 +698,73 @@ describe('edge list views', () => {
       expect(state.deployEdge).toBe('')
       expect(state.error).toBe('The selected KubernetesCluster edge is no longer available. Choose another edge.')
       expect(state.busy).toBe(false)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('pauses workload creation and offers retry when edge prerequisites cannot be read', async () => {
+    api.listEdges.mockRejectedValueOnce({ message: 'Edges are unavailable' })
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'nginx-demo'
+      expect(state.edgeLoadError).toBe('Edges are unavailable')
+      expect(state.loading).toBe(false)
+      expect(state.canSubmit).toBe(false)
+      await state.submit()
+      expect(api.createWorkload).not.toHaveBeenCalled()
+
+      api.listEdges.mockResolvedValueOnce([edge])
+      await state.loadEdges()
+      expect(state.edgeLoadError).toBeNull()
+      expect(state.kubernetesEdges).toEqual([edge])
+      expect(state.canSubmit).toBe(true)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it.each([
+    ['empty value', 'env=', 'Selector keys and values cannot be empty.'],
+    ['missing separator', 'env', 'Use key=value pairs separated by commas.'],
+    ['duplicate key', 'env=dev,env=prod', 'Selector key "env" is listed more than once.'],
+    ['mixed valid and invalid entries', 'env=dev,region', 'Use key=value pairs separated by commas.'],
+  ])('rejects a manual workload selector with an %s', async (_label, selector, expectedError) => {
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'nginx-demo'
+      state.draft.selector = selector
+      await nextTick()
+      expect(state.selectorError).toBe(expectedError)
+      expect(state.canSubmit).toBe(false)
+      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Placements')?.value)
+        .toBe('Fix the selector to preview placements')
+      await state.submit()
+      expect(api.createWorkload).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('submits a fully validated manual workload selector unchanged', async () => {
+    api.listEdges.mockResolvedValueOnce([{ ...edge, labels: { env: 'dev', region: 'us' } }])
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'nginx-demo'
+      state.draft.selector = 'env=dev, region=us'
+      await nextTick()
+      expect(state.selectorError).toBeNull()
+      expect(state.canSubmit).toBe(true)
+      await state.submit()
+      expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
+        selector: { env: 'dev', region: 'us' },
+      }))
     } finally {
       mounted.unmount()
     }
@@ -953,6 +1117,32 @@ describe('edge detail actions', () => {
 })
 
 describe('edge onboarding controls', () => {
+  it.each([
+    ['service', 'create/service', 'services'],
+    ['workload', 'deploy/workload/manual', 'workloads'],
+  ] as const)('returns a collection-launched %s prerequisite to the collection on cancel and resumes creation on success', async (_label, successPath, cancelPath) => {
+    const subPath = edgeConnectPath(successPath, {
+      cancelPath,
+      ...(successPath.startsWith('deploy/') ? { requiredType: 'kubernetes' as const } : {}),
+    })
+    const mounted = await mount(App, {
+      ctx: { tenant: 'root:faros:tenant', token: 'token', user: { sub: 'user' }, subPath },
+    })
+    try {
+      await flush()
+      const dispatchEvent = vi.fn()
+      mounted.instance.setupState.rootRef = { dispatchEvent }
+
+      mounted.instance.setupState.cancelEdgeConnection()
+      expect((dispatchEvent.mock.calls[0][0] as CustomEvent).detail).toEqual({ path: cancelPath, replace: true })
+
+      mounted.instance.setupState.onEdgeCreated('new-edge', 'kubernetes')
+      expect((dispatchEvent.mock.calls[1][0] as CustomEvent).detail).toEqual({ path: successPath, replace: true })
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('mounts labelled native radio cards and keeps checked state in sync', async () => {
     const markup = await renderToString(createSSRApp(Wizard, { cluster: null }))
     expect(markup).toContain('for="edge-name"')
@@ -972,6 +1162,37 @@ describe('edge onboarding controls', () => {
     } finally {
       mounted.unmount()
     }
+  })
+
+  it('locks and validates the edge type required by an originating workload flow', async () => {
+    const markup = await renderToString(createSSRApp(Wizard, { cluster: null, requiredType: 'kubernetes' }))
+    expect(markup).toContain('id="edge-type-server"')
+    expect(markup).toMatch(/id="edge-type-server"[^>]*disabled/)
+
+    const mounted = await mount(Wizard, { cluster: null, requiredType: 'kubernetes' })
+    try {
+      const state = mounted.instance.setupState
+      expect(state.edgeType).toBe('kubernetes')
+      expect(state.edgeTypeLocked).toBe(true)
+      state.name = 'workload-edge'
+      state.edgeType = 'server'
+      await state.handleCreate()
+      expect(api.createEdge).not.toHaveBeenCalled()
+      expect(state.edgeType).toBe('kubernetes')
+      expect(state.error).toBe('This flow requires a KubernetesCluster edge.')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('labels wizard cancellation for the route it will actually restore', async () => {
+    const markup = await renderToString(createSSRApp(Wizard, {
+      cluster: null,
+      requiredType: 'kubernetes',
+      cancelLabel: 'Back to workloads',
+    }))
+    expect(markup.match(/Back to workloads/g)).toHaveLength(1)
+    expect(markup).not.toContain('Back to edges')
   })
 
   it('announces copy success and retains the copied control state', async () => {
@@ -995,6 +1216,76 @@ describe('edge onboarding controls', () => {
         configurable: true,
         value: previousNavigator,
       })
+    }
+  })
+
+  it('offers an explicit masked-to-revealed fallback when clipboard access fails', async () => {
+    const previousNavigator = globalThis.navigator
+    const previousWindow = globalThis.window
+    const writeText = vi.fn().mockRejectedValue(new Error('clipboard denied'))
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText } },
+    })
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://faros.test' } },
+    })
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'edge-a'
+      state.joinToken = 'join-secret'
+      await state.copy(state.cliSnippet, 'cli', 'CLI command')
+      expect(state.failedCopyField).toBe('cli')
+      expect(state.revealedCommand).toBeNull()
+      expect(state.cliText).toContain('••••••••••••••••')
+      expect(state.cliText).not.toContain('join-secret')
+
+      state.revealForManualCopy('cli')
+      expect(state.revealedCommand).toBe('cli')
+      expect(state.cliSnippet(state.joinToken)).toContain('--token join-secret')
+      expect(state.copyFeedback).toContain('join token is sensitive')
+
+      await state.copy(state.helmSnippet, 'helm', 'Helm command')
+      expect(state.failedCopyField).toBe('helm')
+      expect(state.revealedCommand).toBeNull()
+      expect(state.cliText).not.toContain('join-secret')
+
+      state.revealForManualCopy('helm')
+      expect(state.revealedCommand).toBe('helm')
+      state.hideRevealedCommand()
+      expect(state.revealedCommand).toBeNull()
+    } finally {
+      mounted.unmount()
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: previousNavigator,
+      })
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: previousWindow,
+      })
+    }
+  })
+
+  it('moves focus to the heading after both wizard step transitions', async () => {
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      const focus = vi.fn()
+      globalThis.document.getElementById = () => ({ focus }) as unknown as HTMLElement
+      state.name = 'edge-focus'
+      await state.handleCreate()
+      await flush()
+      expect(state.step).toBe(2)
+      expect(focus).toHaveBeenCalledOnce()
+
+      state.step = 3
+      await flush()
+      expect(focus).toHaveBeenCalledTimes(2)
+    } finally {
+      mounted.unmount()
     }
   })
 

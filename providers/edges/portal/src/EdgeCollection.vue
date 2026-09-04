@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onActivated } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { Boxes, Plus, RefreshCw, Server } from 'lucide-vue-next'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -42,6 +43,15 @@ const edgeRows = computed(() => props.edges.map(edge => ({
   lastHeartbeat: relativeTime(edge.lastHeartbeatTime),
   actions: '',
 })))
+const tableQuery = ref('')
+const tableFilters = ref<Record<string, string>>({ typeLabel: '', status: '' })
+const hasActiveTableFilters = computed(() => !!tableQuery.value.trim() || Object.values(tableFilters.value).some(Boolean))
+const showFirstRun = computed(() => props.loaded && !props.error && props.edges.length === 0 && !hasActiveTableFilters.value)
+const edgeJourney = [
+  { label: 'Configure edge', description: 'Choose its workspace name, type, and scheduling labels.' },
+  { label: 'Install agent', description: 'Run the generated Helm or CLI command with a one-time join token.' },
+  { label: 'Connected', description: 'The agent opens its outbound tunnel and reports its version.' },
+]
 
 function edgeRowAriaLabel(row: Record<string, unknown>): string {
   return `Open ${row.type === 'server' ? 'server' : 'Kubernetes'} edge ${String(row.name)}`
@@ -71,7 +81,7 @@ onActivated(() => emit('activated'))
         <h1>Edges</h1>
         <p>Kubernetes clusters and Linux/SSH servers connected to this workspace.</p>
       </div>
-      <div class="header-actions">
+      <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="props.foregroundLoading" @click="emit('refresh')">
           <RefreshCw :size="14" :class="{ spin: props.foregroundLoading }" /> {{ props.foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
@@ -81,7 +91,20 @@ onActivated(() => emit('activated'))
       </div>
     </header>
 
+    <FirstRunGuide
+      v-if="showFirstRun"
+      title="Connect your first edge"
+      description="Connect a Kubernetes cluster or Linux server. The Faros agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
+      primary-label="Connect edge"
+      :steps="edgeJourney"
+      journey-label="Edge connection path"
+      @primary="emit('connect')"
+    >
+      <template #icon><Server aria-hidden="true" /></template>
+    </FirstRunGuide>
+
     <ResourceTable
+      v-else
       :columns="edgeColumns"
       :rows="edgeRows"
       aria-label="Edges"
@@ -93,6 +116,8 @@ onActivated(() => emit('activated'))
       :error="props.error"
       retryable
       searchable
+      v-model:query="tableQuery"
+      v-model:filter-values="tableFilters"
       search-placeholder="Search edges…"
       :filters="[{ key: 'typeLabel', label: 'Type' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]"
       paginated
