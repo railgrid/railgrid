@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Activity, Ellipsis, RefreshCw, Table2, Warehouse } from 'lucide-vue-next'
+import { Activity, RefreshCw, Table2, Warehouse } from 'lucide-vue-next'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
@@ -35,7 +36,6 @@ const error = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const deleting = ref(false)
 const schemaCache = ref<{ uid?: string; generation?: number; refreshedAt?: string; columns: TableColumn[] } | null>(null)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 const operations = createOperationLocks()
@@ -174,6 +174,27 @@ function operationPhase(name: string) {
   return operations.phase(operationKey('table', name))
 }
 
+const tableActionBusy = computed(() =>
+  !table.value ||
+  loading.value ||
+  deleting.value ||
+  operationLocked(table.value?.name || props.name),
+)
+const tableDeletePending = computed(() =>
+  deleting.value || operationPhase(table.value?.name || props.name) === 'deleting',
+)
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: tableDeletePending.value ? 'Deleting table…' : 'Delete table',
+  tone: 'danger',
+  disabled: tableActionBusy.value,
+  busy: tableDeletePending.value,
+}])
+
+function selectAction(action: string): void {
+  if (action === 'delete') void remove()
+}
+
 function goBack() {
   if (deleting.value || (table.value && operationLocked(table.value.name))) return
   emit('back')
@@ -206,11 +227,6 @@ async function remove() {
     deleting.value = false
     operations.release(lock)
   }
-}
-
-function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
-  void remove()
 }
 
 refresh = createLatestRefreshController(async (requestID, mode) => {
@@ -285,17 +301,12 @@ onUnmounted(() => {
             <RefreshCw :size="14" :class="{ spin: loading }" aria-hidden="true" />
             {{ loading ? 'Refreshing…' : 'Refresh' }}
           </button>
-          <details ref="actionsMenu" class="databricks-resource-menu">
-            <summary class="k-btn k-btn--ghost" aria-label="More table actions">
-              <Ellipsis :size="16" aria-hidden="true" />
-              <span class="sr-only">More actions</span>
-            </summary>
-            <div class="databricks-resource-menu-popover">
-              <button type="button" class="databricks-resource-menu-item" :disabled="!table || loading || deleting || operationLocked(table?.name || name)" @click="deleteFromMenu">
-                {{ operationPhase(table?.name || name) === 'deleting' ? 'Deleting table…' : 'Delete table' }}
-              </button>
-            </div>
-          </details>
+          <ActionMenu
+            label="More table actions"
+            :items="actionItems"
+            :disabled="tableActionBusy"
+            @select="selectAction"
+          />
         </div>
       </template>
       <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Table summary" /></template>

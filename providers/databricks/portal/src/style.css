@@ -82,49 +82,6 @@ faros-provider-databricks .databricks-resource-actions {
   gap: 8px;
 }
 
-faros-provider-databricks .databricks-resource-menu { position: relative; }
-faros-provider-databricks .databricks-resource-menu summary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  list-style: none;
-  padding: 7px 8px;
-}
-faros-provider-databricks .databricks-resource-menu summary::-webkit-details-marker,
-faros-provider-databricks .databricks-resource-menu summary::marker { display: none; }
-faros-provider-databricks .databricks-resource-menu-popover {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 170px;
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  border-radius: 6px;
-  background: var(--color-surface-overlay, #171927);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
-  padding: 4px;
-}
-faros-provider-databricks .databricks-resource-menu-item {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--color-danger, #ff5d5d);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 8px 10px;
-  text-align: left;
-}
-faros-provider-databricks .databricks-resource-menu-item:hover:not(:disabled) {
-  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
-}
-faros-provider-databricks .databricks-resource-menu-item:disabled {
-  cursor: default;
-  opacity: .5;
-}
 faros-provider-databricks .databricks-resource-sections {
   display: flex;
   min-width: 0;
@@ -432,9 +389,6 @@ faros-provider-databricks .databricks-inline-action:hover {
 
 faros-provider-databricks .databricks-dialog-close {
   flex: none;
-  min-height: 30px;
-  min-width: 30px;
-  padding: 0;
 }
 
 faros-provider-databricks .icon-text {
@@ -554,7 +508,8 @@ faros-provider-databricks .field-disclosure summary {
 
 faros-provider-databricks .field-disclosure summary:focus-visible {
   border-radius: 3px;
-  box-shadow: 0 0 0 2px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: -2px;
 }
 
 faros-provider-databricks .field-disclosure p {
@@ -634,9 +589,7 @@ faros-provider-databricks .empty {
  * the surface compact and top-aligned so large monitors do not turn a short
  * onboarding message into a vertically centered billboard. */
 faros-provider-databricks .databricks-first-run {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--color-accent, #8b6bff) 7%, transparent), transparent 44%),
-    var(--color-surface-raised, #111320);
+  background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   border-radius: 6px;
   display: flex;

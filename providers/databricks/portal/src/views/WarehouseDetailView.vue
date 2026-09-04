@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Activity, Database, Ellipsis, Link2, RefreshCw, Settings2 } from 'lucide-vue-next'
+import { Activity, Database, Link2, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { api } from '../api'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -39,7 +40,6 @@ const saveError = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const editIDInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 const operations = createOperationLocks()
@@ -146,6 +146,27 @@ function operationPhase(name: string) {
   return operations.phase(operationKey('warehouse', name))
 }
 
+const warehouseActionBusy = computed(() =>
+  !warehouse.value ||
+  loading.value ||
+  deleting.value ||
+  operationLocked(warehouse.value?.name || props.name),
+)
+const warehouseDeletePending = computed(() =>
+  deleting.value || operationPhase(warehouse.value?.name || props.name) === 'deleting',
+)
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: warehouseDeletePending.value ? 'Deleting warehouse…' : 'Delete warehouse',
+  tone: 'danger',
+  disabled: warehouseActionBusy.value,
+  busy: warehouseDeletePending.value,
+}])
+
+function selectAction(action: string): void {
+  if (action === 'delete') void remove()
+}
+
 function goBack() {
   if (deleting.value || (warehouse.value && operationLocked(warehouse.value.name))) return
   emit('back')
@@ -226,11 +247,6 @@ async function remove() {
   }
 }
 
-function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
-  void remove()
-}
-
 refresh = createLatestRefreshController(async (requestID, mode) => {
   refreshMode.value = mode
   if (mode === 'foreground') loading.value = true
@@ -303,17 +319,12 @@ onUnmounted(() => {
             <RefreshCw :size="14" :class="{ spin: loading }" aria-hidden="true" />
             {{ loading ? 'Refreshing…' : 'Refresh' }}
           </button>
-          <details ref="actionsMenu" class="databricks-resource-menu">
-            <summary class="k-btn k-btn--ghost" aria-label="More warehouse actions">
-              <Ellipsis :size="16" aria-hidden="true" />
-              <span class="sr-only">More actions</span>
-            </summary>
-            <div class="databricks-resource-menu-popover">
-              <button type="button" class="databricks-resource-menu-item" :disabled="!warehouse || loading || deleting || operationLocked(warehouse?.name || name)" @click="deleteFromMenu">
-                {{ operationPhase(warehouse?.name || name) === 'deleting' ? 'Deleting warehouse…' : 'Delete warehouse' }}
-              </button>
-            </div>
-          </details>
+          <ActionMenu
+            label="More warehouse actions"
+            :items="actionItems"
+            :disabled="warehouseActionBusy"
+            @select="selectAction"
+          />
         </div>
       </template>
       <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Warehouse summary" /></template>

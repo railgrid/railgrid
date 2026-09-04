@@ -64,7 +64,7 @@ test('wizard focus trap follows the natural tab sequence', async () => {
   const source = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
   assert.match(source, /function dialogTabStops\(\)/)
   assert.match(source, /\.filter\(element => element\.tabIndex === 0\)/)
-  assert.match(source, /<header[\s\S]*class="k-btn k-btn--ghost databricks-dialog-close"[\s\S]*aria-label="Close"/)
+  assert.match(source, /<header[\s\S]*class="k-icon-action databricks-dialog-close"[\s\S]*data-k-tip="Close import dialog"[\s\S]*aria-label="Close import dialog"/)
   assert.doesNotMatch(source, /class="icon-button"/)
 })
 

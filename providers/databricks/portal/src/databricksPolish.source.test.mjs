@@ -85,6 +85,50 @@ test('collection first-run surfaces stay latched during refresh', async () => {
   assert.match(tableLoad, /if \(pendingDeletions\.size > 0\) firstPageSettled\.value = false/)
 })
 
+test('resource details use the shared action menu and retain lifecycle locks', async () => {
+  const views = await Promise.all([
+    read('./views/ConnectionDetailView.vue'),
+    read('./views/WarehouseDetailView.vue'),
+    read('./views/TableDetailView.vue'),
+  ])
+  const kinds = ['connection', 'warehouse', 'table']
+  for (const [source, kind] of views.map((source, index) => [source, kinds[index]])) {
+    assert.match(source, /import ActionMenu, \{ type ActionMenuItem \} from '\.\.\/portalkit\/ActionMenu\.vue'/)
+    assert.match(source, /const actionItems = computed<ActionMenuItem\[\]>\(\(\) => \[\{/)
+    assert.match(source, new RegExp(`<ActionMenu[\\s\\S]*label="More ${kind} actions"[\\s\\S]*:items="actionItems"[\\s\\S]*@select="selectAction"`))
+    assert.match(source, /disabled: [a-z]+ActionBusy\.value/)
+    assert.match(source, /busy: [a-z]+DeletePending\.value/)
+    assert.match(source, /operationLocked\([^\n]+\)/)
+    assert.match(source, new RegExp(`Deleting this ${kind}\\.`))
+    assert.doesNotMatch(source, /<details|databricks-resource-menu|deleteFromMenu|actionsMenu/)
+  }
+})
+
+test('import dialog close and disclosure focus use canonical action treatments', async () => {
+  const [wizard, styles, sharedStyles] = await Promise.all([
+    read('./ResourceImportWizard.vue'),
+    read('./style.css'),
+    read('../../../../provider-sdk/portalkit/faros-ui.css'),
+  ])
+  assert.match(wizard, /class="k-icon-action databricks-dialog-close"[\s\S]*data-k-tip="Close import dialog"[\s\S]*aria-label="Close import dialog"/)
+  assert.doesNotMatch(wizard, /class="k-btn k-btn--ghost databricks-dialog-close"/)
+  const closeRule = styles.match(/faros-provider-databricks \.databricks-dialog-close\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.doesNotMatch(closeRule, /min-(?:height|width):\s*30px/)
+  const iconAction = sharedStyles.match(/\.k-icon-action\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(iconAction, /flex:\s*0 0 32px/)
+  assert.match(iconAction, /height:\s*32px/)
+  assert.match(iconAction, /width:\s*32px/)
+  const coarseIconAction = [...sharedStyles.matchAll(/@media \(pointer: coarse\), \(any-pointer: coarse\)\s*\{([\s\S]*?)\n\}/g)]
+    .map(match => match[1])
+    .find(block => block.includes('.k-icon-action')) ?? ''
+  assert.match(coarseIconAction, /\.k-icon-action\s*\{[\s\S]*flex-basis:\s*44px[\s\S]*height:\s*44px[\s\S]*width:\s*44px/)
+  assert.match(styles, /\.field-disclosure summary:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--color-accent/)
+  assert.doesNotMatch(styles.match(/\.field-disclosure summary:focus-visible\s*\{([\s\S]*?)\n\}/)?.[1] ?? '', /accent-glow|box-shadow/)
+  const firstRun = styles.match(/faros-provider-databricks \.databricks-first-run\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(firstRun, /background:\s*var\(--color-surface-raised/)
+  assert.doesNotMatch(firstRun, /linear-gradient|color-mix/)
+})
+
 test('collection deletion reconciliation is identity-aware', async () => {
   const views = await Promise.all([
     read('./views/ConnectionsView.vue'),

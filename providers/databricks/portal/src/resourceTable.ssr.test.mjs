@@ -88,7 +88,23 @@ function createHostRenderer() {
       node.parent = null
     },
     createElement(type) {
-      const node = { type, props: {}, children: [], parent: null, addEventListener() {}, removeEventListener() {} }
+      const node = {
+        type,
+        props: {},
+        children: [],
+        parent: null,
+        addEventListener() {},
+        removeEventListener() {},
+        querySelectorAll(selector) {
+          const matches = []
+          const visit = current => {
+            if (selector === '[role="menuitem"]' && current.props?.role === 'menuitem') matches.push(current)
+            for (const child of current.children ?? []) visit(child)
+          }
+          visit(node)
+          return matches
+        },
+      }
       Object.defineProperties(node, {
         value: { get: () => node.props.value ?? '', set: value => { node.props.value = value } },
         options: { get: () => node.children.filter(child => child.type === 'option') },
@@ -306,6 +322,8 @@ function mountDetailView(Component, props, components, provides = {}) {
     getElementById: () => null,
     createElement: () => styleNode,
     head: { appendChild() {} },
+    addEventListener() {},
+    removeEventListener() {},
   }
   globalThis.window = {
     addEventListener() {},
@@ -2320,7 +2338,10 @@ test('resource detail views use the shared shell without dropping resource behav
     assert.doesNotMatch(source, /databricks-resource-back/, `${kind} does not use a provider-local backlink class`)
     assert.match(source, /<ResourcePage[\s\S]*:loaded="readState"[\s\S]*:loading="loading"[\s\S]*:error="error"[\s\S]*:stale="loaded && !!error"[\s\S]*retryable[\s\S]*@retry="load"/, `${kind} keeps the read contract`)
     assert.match(source, /<template #summary><ResourceStatCards :cards="statCards" density="compact"/, `${kind} has compact stat cards`)
-    assert.match(source, /<template #actions>[\s\S]*Refresh[\s\S]*<details ref="actionsMenu" class="databricks-resource-menu">[\s\S]*Delete /, `${kind} orders Refresh before overflow Delete`)
+    assert.match(source, /<template #actions>[\s\S]*Refresh[\s\S]*<ActionMenu[\s\S]*label="More [^"]+ actions"[\s\S]*:items="actionItems"[\s\S]*@select="selectAction"/, `${kind} orders Refresh before shared overflow actions`)
+    assert.match(source, /import ActionMenu, \{ type ActionMenuItem \} from '\.\.\/portalkit\/ActionMenu\.vue'/, `${kind} uses shared ActionMenu`)
+    assert.match(source, /const actionItems = computed<ActionMenuItem\[\]>\(\(\) => \[\{/)
+    assert.doesNotMatch(source, /<details|databricks-resource-menu/)
     assert.match(source, /<div v-if="[^\n]+" class="[^\"]*\bdatabricks-resource-sections\b[^\"]*"[^>]*>/, `${kind} keeps resource section modifiers`)
     assert.match(source, /<ResourceSectionCard id="[^\"]+-conditions"[\s\S]*<ConditionsPanel/, `${kind} keeps Conditions in a section card`)
     assert.match(source, /createLatestRefreshController/, `${kind} keeps serialized refresh`)
@@ -2369,7 +2390,7 @@ test('resource detail views use the shared shell without dropping resource behav
 
   assert.match(style, /\.databricks-resource-actions\s*\{[\s\S]*gap: 8px/)
   assert.doesNotMatch(style, /databricks-resource-back/)
-  assert.match(style, /\.databricks-resource-menu-popover\s*\{[\s\S]*position: absolute/)
+  assert.doesNotMatch(style, /databricks-resource-menu-(?:popover|item)/)
   assert.match(style, /\.databricks-resource-sections\s*\{[\s\S]*flex-direction: column[\s\S]*gap: 14px/)
 })
 
@@ -3354,7 +3375,7 @@ test('resource detail deletes expose pending state, truthful status, and real br
     assert.match(source, /<p v-if="deleting"[^>]*role="status"[^>]*aria-live="polite">[\s\S]*Deleting this/, `${kind} announces deletion outside the closed menu`)
     assert.match(source, new RegExp(`<ResourceBackLink[\\s\\S]*href="/ui/providers/databricks/${collection}"[\\s\\S]*:disabled="deleting`), `${kind} has the real browser fallback backlink`)
     assert.match(source, /:disabled="loading \|\| deleting \|\|/, `${kind} disables refresh while deleting`)
-    assert.match(source, /:disabled="![^"]+ \|\| loading \|\| deleting \|\| operationLocked/, `${kind} disables delete while deleting`)
+    assert.match(source, /<ActionMenu[\s\S]*:items="actionItems"[\s\S]*:disabled="[a-z]+ActionBusy"/, `${kind} disables overflow actions while deleting`)
     assert.match(source, /if \(deleting\.value \|\| \(/, `${kind} guards back navigation while deleting`)
   }
 })
@@ -3565,6 +3586,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       loadMountedSFC('/src/views/ConnectionDetailView.vue'),
       loadMountedSFC('/src/views/WarehouseDetailView.vue'),
       loadMountedSFC('/src/views/TableDetailView.vue'),
+      loadMountedSFC('/src/portalkit/ActionMenu.vue'),
       loadMountedSFC('/src/portalkit/ConditionsPanel.vue'),
       loadMountedSFC('/src/portalkit/ResourcePage.vue'),
       loadMountedSFC('/src/portalkit/ResourceBackLink.vue'),
@@ -3576,8 +3598,8 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       vite.ssrLoadModule('/src/portalkit/confirm.ts'),
       vite.ssrLoadModule('/src/refresh.ts'),
   ])
-  const [ConnectionDetailView, WarehouseDetailView, TableDetailView, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, confirmModule, refreshModule] = loadedModules
-  const components = { ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
+  const [ConnectionDetailView, WarehouseDetailView, TableDetailView, ActionMenu, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, confirmModule, refreshModule] = loadedModules
+  const components = { ActionMenu, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
 
   const cases = [
     {
@@ -3589,6 +3611,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
         name: 'orders', uid: 'connection-uid', host: 'https://dbc.example.com', authType: 'pat',
         secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
       },
+      snapshotText: 'https://dbc.example.com',
       deleteError: { reason: 'HTTPError', message: 'connection delete failed' },
     },
     {
@@ -3599,6 +3622,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       resource: {
         name: 'orders-sql', uid: 'warehouse-uid', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
       },
+      snapshotText: 'warehouse-123',
       deleteError: { reason: 'HTTPError', message: 'warehouse delete failed' },
     },
     {
@@ -3611,6 +3635,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
         catalog: 'main', schema: 'sales', table: 'orders', fullName: 'main.sales.orders',
         status: 'Ready', columns: [], conditions: [],
       },
+      snapshotText: 'main.sales.orders',
       deleteError: { reason: 'HTTPError', message: 'table delete failed' },
     },
   ]
@@ -3632,7 +3657,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
 
     try {
       await flushVue()
-      assert.equal(typeof mounted.instance.setupState.deleteFromMenu, 'function', `${testCase.kind} exposes the overflow delete action`)
+      assert.equal(typeof mounted.instance.setupState.selectAction, 'function', `${testCase.kind} exposes the shared overflow action handler`)
       if (testCase.kind === 'connection') {
         assert.equal(mounted.find(node => node.props?.id === 'connection-status'), null, 'connection omits redundant validation card when Ready')
       }
@@ -3642,12 +3667,16 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       if (testCase.kind === 'table') {
         assert.equal(mounted.find(node => node.props?.id === 'table-status'), null, 'table omits redundant validation card')
       }
-      const menu = mounted.find(node => node.type === 'details' && className(node).includes('databricks-resource-menu'))
-      assert.ok(menu, `${testCase.kind} renders an overflow menu`)
-      menu.props.open = true
-
-      mounted.instance.setupState.deleteFromMenu()
-      assert.equal('open' in menu.props, false, `${testCase.kind} closes the overflow menu before deletion work`)
+      const menuTrigger = mounted.find(node => node.type === 'button' && node.props?.['aria-label'] === `More ${testCase.kind} actions`)
+      assert.ok(menuTrigger, `${testCase.kind} renders the shared overflow menu trigger`)
+      menuTrigger.props.onClick({})
+      await flushVue()
+      const menu = mounted.find(node => node.props?.role === 'menu')
+      assert.ok(menu, `${testCase.kind} opens the shared overflow menu`)
+      const deleteButton = mounted.find(node => node.type === 'button' && hostText(node).trim() === `Delete ${testCase.kind}`)
+      assert.ok(deleteButton, `${testCase.kind} renders its destructive overflow action`)
+      deleteButton.props.onClick({})
+      await flushVue()
       confirmModule.resolveConfirm(true)
       await flushVue()
 
@@ -3659,14 +3688,18 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       assert.match(className(status), /k-badge--warning/)
       assert.equal(mounted.find(node => node.props?.id === `${testCase.kind}-status`), null, `${testCase.kind} keeps validation detail in the summary instead of a duplicate card`)
       assert.ok(mounted.find(node => node.props?.role === 'status' && node.props?.['aria-live'] === 'polite' && hostText(node).includes(`Deleting this ${testCase.kind}`)), `${testCase.kind} exposes visible polite deletion progress outside the menu`)
+      assert.ok(hostText(mounted.root).includes(testCase.snapshotText), `${testCase.kind} keeps the last successful resource snapshot visible while deleting`)
 
       const back = mounted.find(node => node.type === 'a' && className(node).includes('k-back-action'))
       assert.equal(mounted.find(node => node.type === 'a' && className(node).includes('databricks-resource-back')), null, `${testCase.kind} does not render the provider-local backlink class`)
       const refresh = mounted.find(node => node.type === 'button' && className(node).includes('icon-text') && hostText(node).includes('Refresh'))
-      const deleteButton = mounted.find(node => node.type === 'button' && className(node).includes('databricks-resource-menu-item'))
+      if (testCase.kind !== 'table') {
+        const edit = mounted.find(node => node.type === 'button' && hostText(node).includes(`Edit ${testCase.kind}`))
+        assert.equal(edit?.props.disabled, true, `${testCase.kind} edit is locked while deletion is pending`)
+      }
       assert.equal(back?.props?.['aria-disabled'], 'true', `${testCase.kind} guards back navigation while deleting`)
       assert.equal(refresh?.props?.disabled, true, `${testCase.kind} guards refresh while deleting`)
-      assert.equal(deleteButton?.props?.disabled, true, `${testCase.kind} guards duplicate delete while deleting`)
+      assert.equal(menuTrigger.props.disabled, true, `${testCase.kind} guards duplicate delete while deleting`)
 
       rejectDelete(testCase.deleteError)
       await flushVue()
@@ -3676,18 +3709,127 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       assert.ok(recoveredStatus, `${testCase.kind} retains a status badge after delete rejection`)
       assert.match(hostText(recoveredStatus), /Ready/)
       assert.doesNotMatch(hostText(recoveredStatus), /Deleting/)
+      assert.ok(hostText(mounted.root).includes(testCase.snapshotText), `${testCase.kind} restores the resource snapshot after delete rejection`)
       assert.equal(mounted.find(node => node.props?.role === 'status' && node.props?.['aria-live'] === 'polite' && hostText(node).includes(`Deleting this ${testCase.kind}`)), null, `${testCase.kind} clears pending progress after rejection`)
       const mutationError = mounted.find(node => node.props?.role === 'alert' && className(node).includes('mutation-error'))
       assert.ok(mutationError, `${testCase.kind} renders the delete error`)
       assert.ok(hostText(mutationError).includes(testCase.deleteError.message), `${testCase.kind} includes the delete error message`)
       assert.notEqual(back?.props?.['aria-disabled'], 'true', `${testCase.kind} restores back navigation after rejection`)
       assert.equal(refresh?.props?.disabled, false, `${testCase.kind} restores refresh after rejection`)
-      assert.equal(deleteButton?.props?.disabled, false, `${testCase.kind} restores delete after rejection`)
+      assert.equal(menuTrigger.props.disabled, false, `${testCase.kind} restores delete after rejection`)
     } finally {
       mounted.unmount()
       confirmModule.resolveConfirm(false)
       apiModule.api[testCase.getMethod] = originalGet
       apiModule.api[testCase.deleteMethod] = originalDelete
+      refreshModule.setOperationContext('default')
+    }
+  }
+})
+
+test('mounted connection and warehouse edits lock their delete menus and recover after save failure', async () => {
+  const loadedModules = await Promise.all([
+    loadMountedSFC('/src/views/ConnectionDetailView.vue'),
+    loadMountedSFC('/src/views/WarehouseDetailView.vue'),
+    loadMountedSFC('/src/portalkit/ActionMenu.vue'),
+    loadMountedSFC('/src/portalkit/ConditionsPanel.vue'),
+    loadMountedSFC('/src/portalkit/ResourcePage.vue'),
+    loadMountedSFC('/src/portalkit/ResourceBackLink.vue'),
+    loadMountedSFC('/src/portalkit/ResourceSectionCard.vue'),
+    loadMountedSFC('/src/portalkit/ResourceStatCards.vue'),
+    loadMountedSFC('/src/portalkit/StatusBadge.vue'),
+    loadMountedSFC('/src/portalkit/ResourceTable.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/refresh.ts'),
+  ])
+  const [ConnectionDetailView, WarehouseDetailView, ActionMenu, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, refreshModule] = loadedModules
+  const components = { ActionMenu, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
+  const cases = [
+    {
+      kind: 'connection',
+      Component: ConnectionDetailView,
+      getMethod: 'getConnection',
+      saveMethod: 'saveConnection',
+      resource: {
+        name: 'orders', uid: 'connection-uid', host: 'https://dbc.example.com', authType: 'pat',
+        secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+      },
+      saveError: { reason: 'HTTPError', message: 'connection save failed' },
+      saveButton: 'Save changes',
+    },
+    {
+      kind: 'warehouse',
+      Component: WarehouseDetailView,
+      getMethod: 'getWarehouse',
+      saveMethod: 'saveWarehouse',
+      resource: {
+        name: 'orders-sql', uid: 'warehouse-uid', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+      },
+      saveError: { reason: 'HTTPError', message: 'warehouse save failed' },
+      saveButton: 'Save',
+    },
+  ]
+
+  for (const testCase of cases) {
+    const originalGet = apiModule.api[testCase.getMethod]
+    const originalSave = apiModule.api[testCase.saveMethod]
+    let resolveSave
+    const savePending = new Promise(resolve => { resolveSave = resolve })
+    let saveCalls = 0
+    let failSave = false
+    apiModule.api[testCase.getMethod] = async () => testCase.resource
+    apiModule.api[testCase.saveMethod] = async () => {
+      saveCalls += 1
+      if (failSave) throw testCase.saveError
+      return savePending
+    }
+    refreshModule.setOperationContext(`mounted-detail-edit-${testCase.kind}`)
+    const mounted = mountDetailView(testCase.Component, { name: testCase.resource.name }, components)
+
+    try {
+      await flushVue()
+      const edit = mounted.find(node => node.type === 'button' && hostText(node).includes(`Edit ${testCase.kind}`))
+      assert.ok(edit, `${testCase.kind} renders its edit action`)
+      assert.equal(edit.props.disabled, false, `${testCase.kind} edit is initially unlocked`)
+      edit.props.onClick({})
+      await flushVue()
+
+      assert.equal(mounted.instance.setupState.editing, true, `${testCase.kind} opens its edit form`)
+      const save = mounted.find(node => node.type === 'button' && hostText(node).trim() === testCase.saveButton)
+      assert.ok(save, `${testCase.kind} renders its save action`)
+      const savePromise = mounted.instance.setupState.saveEdit()
+      await flushVue()
+      assert.equal(saveCalls, 1, `${testCase.kind} starts one save request`)
+      assert.equal(mounted.instance.setupState.saving, true, `${testCase.kind} marks its save pending`)
+
+      const menuTrigger = mounted.find(node => node.type === 'button' && node.props?.['aria-label'] === `More ${testCase.kind} actions`)
+      assert.equal(menuTrigger?.props.disabled, true, `${testCase.kind} disables the delete menu while saving`)
+      menuTrigger?.props.onClick({})
+      await flushVue()
+      assert.equal(mounted.find(node => node.props?.role === 'menu'), null, `${testCase.kind} cannot open the delete menu while saving`)
+
+      resolveSave()
+      await savePromise
+      await flushVue()
+      assert.equal(mounted.instance.setupState.saving, false, `${testCase.kind} releases its save lock after success`)
+      assert.equal(mounted.instance.setupState.editing, false, `${testCase.kind} closes its edit form after success`)
+      assert.equal(menuTrigger?.props.disabled, false, `${testCase.kind} re-enables the delete menu after save success`)
+
+      failSave = true
+      edit.props.onClick({})
+      await flushVue()
+      const failedSave = mounted.instance.setupState.saveEdit()
+      await failedSave
+      await flushVue()
+      assert.equal(mounted.instance.setupState.saving, false, `${testCase.kind} releases its save lock after failure`)
+      assert.equal(mounted.instance.setupState.editing, true, `${testCase.kind} keeps its edit form after failure`)
+      assert.match(String(mounted.instance.setupState.saveError), /save failed/)
+      assert.equal(menuTrigger?.props.disabled, false, `${testCase.kind} re-enables the delete menu after save failure`)
+      assert.ok(mounted.find(node => node.props?.role === 'alert' && hostText(node).includes('save failed')), `${testCase.kind} renders the save failure`)
+    } finally {
+      mounted.unmount()
+      apiModule.api[testCase.getMethod] = originalGet
+      apiModule.api[testCase.saveMethod] = originalSave
       refreshModule.setOperationContext('default')
     }
   }
@@ -4061,7 +4203,10 @@ test('mounted modal wizard keeps legacy close for Cancel and Done while Back rem
   try {
     await flushVue()
     const close = mounted.find(node => node.type === 'button' && className(node).includes('databricks-dialog-close'))
-    assert.ok(close, 'modal wizard renders its legacy close control')
+    assert.ok(close, 'modal wizard renders its shared icon close control')
+    assert.match(className(close), /\bk-icon-action\b/)
+    assert.equal(close.props['data-k-tip'], 'Close import dialog')
+    assert.equal(close.props['aria-label'], 'Close import dialog')
     close.props.onClick({})
     assert.equal(cancelEvents, 1, 'modal Cancel emits the explicit cancel event')
     assert.equal(closeEvents, 1, 'modal Cancel also preserves the legacy close event')
