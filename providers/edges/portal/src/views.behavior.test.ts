@@ -17,6 +17,11 @@ const api = vi.hoisted(() => ({
   createWorkload: vi.fn(),
   deleteWorkload: vi.fn(),
   deployMarketplaceApp: vi.fn(),
+  createEdge: vi.fn(),
+  probeEdge: vi.fn(),
+  getEdge: vi.fn(),
+  deleteEdge: vi.fn(),
+  listEdgeServices: vi.fn(),
 }))
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
@@ -30,6 +35,9 @@ import ServiceEdit from './ServiceEdit.vue'
 import ServiceCreate from './ServiceCreate.vue'
 import Workloads from './Workloads.vue'
 import WorkloadCreate from './WorkloadCreate.vue'
+import Wizard from './Wizard.vue'
+import Detail from './Detail.vue'
+import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 
 type HostNode = {
   type: string
@@ -102,6 +110,8 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
     getElementById: () => null,
     createElement: () => ({ id: '', textContent: '', setAttribute() {} }),
     head: { appendChild() {} },
+    addEventListener() {},
+    removeEventListener() {},
   } as unknown as Document
   const { renderer, root } = createHostRenderer()
   const app = renderer.createApp(component, props)
@@ -157,6 +167,14 @@ function deferred<T>() {
 
 const edge = { name: 'edge-a', type: 'kubernetes', connected: true }
 const service = { name: 'svc-a', edgeName: 'edge-a', serviceType: 'generic', phase: 'Ready' }
+const edgeDetail = {
+  ...edge,
+  apiVersion: 'edges.faros.sh/v1alpha1',
+  kind: 'KubernetesCluster',
+  conditions: [],
+  rawObject: { metadata: { name: 'edge-a' } },
+  spec: { labels: {} },
+}
 const workload = {
   name: 'workload-a', image: 'nginx', replicas: 1, strategy: 'Spread', phase: 'Running',
   edges: [{ edgeName: 'edge-a', phase: 'Running', readyReplicas: 1, message: 'ready' }],
@@ -169,6 +187,11 @@ beforeEach(() => {
   api.listEdges.mockResolvedValue([edge])
   api.listServices.mockResolvedValue([service])
   api.getService.mockResolvedValue(service)
+  api.createEdge.mockResolvedValue(undefined)
+  api.probeEdge.mockResolvedValue(null)
+  api.getEdge.mockResolvedValue(null)
+  api.deleteEdge.mockResolvedValue(undefined)
+  api.listEdgeServices.mockResolvedValue([])
   api.listWorkloads.mockResolvedValue([workload])
   api.listServicesPage.mockResolvedValue({ items: [service], continue: undefined })
   api.listWorkloadsPage.mockResolvedValue({ items: [workload], continue: undefined })
@@ -874,6 +897,132 @@ describe('edge list views', () => {
       expect(state.deleting).toBe(false)
       expect(state.busy).toBe(false)
       expect(state.mutationError).toBe('delete failed')
+    } finally {
+      mounted.unmount()
+    }
+  })
+})
+
+describe('edge detail actions', () => {
+  it('routes delete through confirmation, locks the menu while busy, and retains the snapshot on failure', async () => {
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([])
+    const mounted = await mount(Detail, {
+      name: edgeDetail.name,
+      type: edgeDetail.type,
+      cluster: null,
+      token: null,
+    })
+    try {
+      await flush()
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.edge).toEqual(edgeDetail)
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete cluster', tone: 'danger', disabled: false, busy: false }])
+
+      confirm.confirmDialog.mockResolvedValueOnce(false)
+      await state.onDelete()
+      expect(confirm.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Delete cluster "edge-a"?',
+        danger: true,
+        confirmLabel: 'Delete',
+      }))
+      expect(api.deleteEdge).not.toHaveBeenCalled()
+      expect(state.edge).toEqual(edgeDetail)
+
+      const pendingDelete = deferred<void>()
+      api.deleteEdge.mockImplementationOnce(() => pendingDelete.promise)
+      confirm.confirmDialog.mockResolvedValueOnce(true)
+      state.selectAction('delete')
+      await flush()
+      expect(api.deleteEdge).toHaveBeenCalledWith(edgeDetail)
+      expect(state.deleting).toBe(true)
+      expect(state.edgeStatus).toBe('Deleting')
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Deleting cluster…', tone: 'danger', disabled: true, busy: true }])
+
+      pendingDelete.reject({ reason: 'HTTPError', message: 'delete failed' })
+      await flush()
+      expect(state.deleting).toBe(false)
+      expect(state.edge).toEqual(edgeDetail)
+      expect(state.mutationError).toBe('delete failed')
+      expect(state.actionItems[0].disabled).toBe(false)
+    } finally {
+      mounted.unmount()
+    }
+  })
+})
+
+describe('edge onboarding controls', () => {
+  it('mounts labelled native radio cards and keeps checked state in sync', async () => {
+    const markup = await renderToString(createSSRApp(Wizard, { cluster: null }))
+    expect(markup).toContain('for="edge-name"')
+    expect(markup).toContain('id="edge-name"')
+    expect(markup).toContain('for="edge-labels"')
+    expect(markup).toContain('id="edge-type-kubernetes"')
+    expect(markup).toContain('id="edge-type-server"')
+    expect(markup.match(/name="edge-type"/g)).toHaveLength(2)
+
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      expect(state.edgeType).toBe('kubernetes')
+      state.edgeType = 'server'
+      await nextTick()
+      expect(state.edgeType).toBe('server')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('announces copy success and retains the copied control state', async () => {
+    const previousNavigator = globalThis.navigator
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText } },
+    })
+    const mounted = await mount(Wizard, { cluster: null })
+    try {
+      const state = mounted.instance.setupState
+      state.joinToken = 'join-secret'
+      await state.copy((token: string) => `faros agent join --token ${token}`, 'cli', 'CLI command')
+      expect(writeText).toHaveBeenCalledWith('faros agent join --token join-secret')
+      expect(state.copied).toBe('cli')
+      expect(state.copyFeedback).toBe('CLI command copied to clipboard.')
+    } finally {
+      mounted.unmount()
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: previousNavigator,
+      })
+    }
+  })
+
+  it('opens the shared action menu from the keyboard, skips locked items, and emits the selected action', async () => {
+    const selected = vi.fn()
+    const items: ActionMenuItem[] = [
+      { id: 'edit', label: 'Edit' },
+      { id: 'delete', label: 'Delete', disabled: true },
+      { id: 'refresh', label: 'Refresh' },
+    ]
+    const mounted = await mount(ActionMenu, { label: 'More edge actions', items, onSelect: selected })
+    try {
+      const state = mounted.instance.setupState
+      expect(state.open).toBe(false)
+      const preventDefault = vi.fn()
+      state.handleTriggerKeydown({ key: 'ArrowDown', preventDefault })
+      expect(preventDefault).toHaveBeenCalledOnce()
+      expect(state.open).toBe(true)
+      expect(state.activeIndex).toBe(0)
+
+      state.handleMenuKeydown({ key: 'ArrowDown', preventDefault })
+      await flush()
+      expect(state.activeIndex).toBe(2)
+
+      state.selectActive()
+      await flush()
+      expect(selected).toHaveBeenCalledWith('refresh')
+      expect(state.open).toBe(false)
     } finally {
       mounted.unmount()
     }

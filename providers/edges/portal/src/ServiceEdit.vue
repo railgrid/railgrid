@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Ellipsis, Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
+import { Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
 import { confirmDialog } from './portalkit/confirm'
 import { connectEdgeService, deleteEdgeService, getService, updateEdgeService } from './api'
 import type { CatalogCredentialField, CatalogEntry, EdgeServiceEdit } from './api'
 import type { Edge, EdgeService, ErrorResponse } from './types'
+import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
@@ -33,12 +34,22 @@ const busy = ref(false)
 // this state after the actions menu closes so the resource status and the
 // announcement remain truthful until the parent navigates away on success.
 const deleting = ref(false)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 let selectionGeneration = 0
 let selectedName = ''
 
 const currentName = computed(() => service.value?.name || props.serviceName || props.service?.name || '')
 const title = computed(() => currentName.value || 'Service')
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: deleting.value ? 'Deleting service…' : 'Delete service',
+  tone: 'danger',
+  disabled: !service.value || busy.value || readLoading.value || deleting.value,
+  busy: deleting.value,
+}])
+
+function selectAction(action: string): void {
+  if (action === 'delete') void onDelete()
+}
 
 // Editable configuration, kept local so navigating between instance routes
 // never serializes unfinished form values or credential text into the URL.
@@ -320,7 +331,6 @@ async function onSaveCreds(): Promise<void> {
 async function onDelete(): Promise<void> {
   const name = currentName.value
   if (!name || !service.value || busy.value || deleting.value) return
-  actionsMenu.value?.removeAttribute('open')
   if (!(await confirmDialog({
     title: `Delete service "${name}"?`,
     message: 'Its MCP tools stop being exposed.',
@@ -374,15 +384,12 @@ async function onDelete(): Promise<void> {
               <RefreshCw :size="14" :class="{ spin: readLoading }" aria-hidden="true" />
               {{ readLoading ? 'Refreshing…' : 'Refresh' }}
             </button>
-            <details ref="actionsMenu" class="service-detail__menu">
-              <summary class="k-btn k-btn--ghost" aria-label="More service actions">
-                <Ellipsis :size="16" aria-hidden="true" />
-                <span class="service-detail__sr-only">More actions</span>
-              </summary>
-              <div class="service-detail__menu-popover">
-                <button class="service-detail__menu-item" type="button" :disabled="!service || busy || readLoading" @click="onDelete">Delete service</button>
-              </div>
-            </details>
+            <ActionMenu
+              label="More service actions"
+              :items="actionItems"
+              :disabled="!service || busy || readLoading || deleting"
+              @select="selectAction"
+            />
           </div>
         </template>
 

@@ -84,8 +84,28 @@ describe('resource detail cards', () => {
     expect(headerOrder.every(index => index >= 0)).toBe(true)
     expect(headerOrder).toEqual([...headerOrder].sort((a, b) => a - b))
     expect(detail).toMatch(/<template #actions>[\s\S]*Open terminal[\s\S]*Refresh[\s\S]*More edge actions[\s\S]*Delete/)
+    expect(detail).toMatch(/import ActionMenu, \{ type ActionMenuItem \} from '\.\/portalkit\/ActionMenu\.vue'/)
+    expect(detail).toMatch(/<ActionMenu[\s\S]*label="More edge actions"[\s\S]*:items="actionItems"[\s\S]*@select="selectAction"/)
+    expect(detail).not.toMatch(/<details ref="actionsMenu"/)
     expect(detail).not.toMatch(/:breadcrumbs=/)
     expect(detail).not.toMatch(/edge-overview|edge-detail-section|edge-section-summary|Resource details/)
+  })
+
+  it('uses native radio cards and tooltip-backed copy actions', () => {
+    const wizard = readSource('Wizard.vue')
+    expect(wizard).toMatch(/<label for="edge-name" class="lbl">Edge name<\/label>/)
+    expect(wizard).toMatch(/<input id="edge-name"[^>]*>/)
+    expect(wizard).toMatch(/<label for="edge-labels" class="lbl">Labels/)
+    expect(wizard).toMatch(/<fieldset class="types">[\s\S]*<legend class="lbl">Type<\/legend>/)
+    expect(wizard).toMatch(/<input id="edge-type-kubernetes"[^>]*name="edge-type"[^>]*type="radio"/)
+    expect(wizard).toMatch(/<input id="edge-type-server"[^>]*name="edge-type"[^>]*type="radio"/)
+    expect(wizard).toMatch(/class="k-icon-action snippet-copy"[\s\S]*:data-k-tip="copyControlLabel/)
+    expect(wizard).toMatch(/role="status" aria-live="polite">\{\{ copyFeedback \}\}/)
+    expect(detail).toMatch(/class="k-icon-action snippet-copy"[\s\S]*:data-k-tip="copyControlLabel/)
+    expect(detail).toMatch(/role="status" aria-live="polite">\{\{ copyFeedback \}\}/)
+    expect(detail).not.toMatch(/class="snippet k-card"/)
+    expect(wizard).not.toMatch(/class="snippet k-card"/)
+    expect(style).toMatch(/\.snippet\s*\{[\s\S]*box-shadow:\s*none;/)
   })
 
   it('uses six shared provider-owned icon stat cards for both edge kinds', () => {

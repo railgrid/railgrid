@@ -21,14 +21,17 @@ const error = ref<string | null>(null)
 const joinToken = ref<string | null>(null)
 const tokenError = ref<string | null>(null)
 const copied = ref<string | null>(null)
+const copyFeedback = ref('')
 const agentVersion = ref<string | null>(null)
 const elapsed = ref(0)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
+let copyTimer: ReturnType<typeof setTimeout> | null = null
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (elapsedTimer) clearInterval(elapsedTimer)
+  if (copyTimer) clearTimeout(copyTimer)
 })
 
 const trimmed = computed(() => name.value.trim())
@@ -57,13 +60,25 @@ function cliSnippet(token: string) {
 const helmText = computed(() => helmSnippet(masked))
 const cliText = computed(() => cliSnippet(masked))
 
-async function copy(build: (t: string) => string, field: string) {
+function copyControlLabel(field: string, label: string): string {
+  return copied.value === field ? 'Copied' : `Copy ${label}`
+}
+
+async function copy(build: (t: string) => string, field: string, label: string) {
   if (!joinToken.value) return
   try {
     await navigator.clipboard.writeText(build(joinToken.value))
     copied.value = field
-    setTimeout(() => (copied.value = null), 2000)
-  } catch { /* clipboard denied */ }
+    copyFeedback.value = `${label} copied to clipboard.`
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copied.value = null
+      copyFeedback.value = ''
+      copyTimer = null
+    }, 2000)
+  } catch {
+    copyFeedback.value = `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
+  }
 }
 
 function parseLabels(): Record<string, string> {
@@ -140,27 +155,29 @@ function fmt(s: number) {
 
     <!-- Step 1 -->
     <div v-if="step === 1" class="wiz-card k-card">
-      <label class="lbl">Edge name</label>
-      <input v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
+      <label for="edge-name" class="lbl">Edge name</label>
+      <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
 
-      <label class="lbl">Type</label>
-      <div class="types">
-        <button class="type" :class="{ sel: edgeType === 'kubernetes' }" @click="edgeType = 'kubernetes'">
-          <Boxes :size="15" /> <div><b>Kubernetes</b><small>Existing K8s cluster</small></div>
-        </button>
-        <button class="type" :class="{ sel: edgeType === 'server' }" @click="edgeType = 'server'">
-          <Server :size="15" /> <div><b>Server</b><small>Bare-metal or VM (SSH)</small></div>
-        </button>
-      </div>
+      <fieldset class="types">
+        <legend class="lbl">Type</legend>
+        <label class="type" :class="{ sel: edgeType === 'kubernetes' }" for="edge-type-kubernetes">
+          <input id="edge-type-kubernetes" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="kubernetes" />
+          <Boxes :size="15" aria-hidden="true" /> <span><b>Kubernetes</b><small>Existing K8s cluster</small></span>
+        </label>
+        <label class="type" :class="{ sel: edgeType === 'server' }" for="edge-type-server">
+          <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" />
+          <Server :size="15" aria-hidden="true" /> <span><b>Server</b><small>Bare-metal or VM (SSH)</small></span>
+        </label>
+      </fieldset>
 
-      <label class="lbl">Labels <span class="muted">(optional)</span></label>
-      <input v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
+      <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
+      <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
 
       <div class="wiz-actions">
-        <button class="k-btn k-btn--ghost" @click="emit('cancel')">
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('cancel')">
           <ArrowLeft :size="14" aria-hidden="true" /> Back to edges
         </button>
-        <button class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
+        <button type="button" class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
           <Loader2 v-if="saving" :size="14" class="spin" />
           {{ saving ? 'Creating…' : 'Create & continue' }}
           <ArrowRight v-if="!saving" :size="14" />
@@ -178,28 +195,44 @@ function fmt(s: number) {
       <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="spin" /> Generating join token…</div>
 
       <template v-if="joinToken || tokenError">
-        <div v-if="edgeType === 'kubernetes'" class="snippet k-card">
+        <div v-if="edgeType === 'kubernetes'" class="snippet">
           <div class="snippet-head"><span>Helm (recommended)</span>
-            <button class="copy" :disabled="!joinToken" @click="copy(helmSnippet, 'helm')">
-              <component :is="copied === 'helm' ? Check : Copy" :size="12" /> {{ copied === 'helm' ? 'Copied' : 'Copy' }}
+            <button
+              type="button"
+              class="k-icon-action snippet-copy"
+              :disabled="!joinToken"
+              :aria-label="copyControlLabel('helm', 'Helm command')"
+              :data-k-tip="copyControlLabel('helm', 'Helm command')"
+              @click="copy(helmSnippet, 'helm', 'Helm command')"
+            >
+              <component :is="copied === 'helm' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </div>
           <pre>{{ helmText }}</pre>
         </div>
-        <div class="snippet k-card">
+        <div class="snippet">
           <div class="snippet-head"><span>CLI — faros agent join</span>
-            <button class="copy" :disabled="!joinToken" @click="copy(cliSnippet, 'cli')">
-              <component :is="copied === 'cli' ? Check : Copy" :size="12" /> {{ copied === 'cli' ? 'Copied' : 'Copy' }}
+            <button
+              type="button"
+              class="k-icon-action snippet-copy"
+              :disabled="!joinToken"
+              :aria-label="copyControlLabel('cli', 'CLI command')"
+              :data-k-tip="copyControlLabel('cli', 'CLI command')"
+              @click="copy(cliSnippet, 'cli', 'CLI command')"
+            >
+              <component :is="copied === 'cli' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </div>
           <pre>{{ cliText }}</pre>
         </div>
       </template>
 
+      <span class="wiz-sr-only" role="status" aria-live="polite">{{ copyFeedback }}</span>
+
       <div class="waiting"><Loader2 :size="14" class="spin" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       <div class="wiz-actions">
-        <button class="k-btn k-btn--ghost" @click="emit('cancel')">Back to edges</button>
-        <button class="k-btn k-btn--ghost" @click="emit('created', trimmed, edgeType)">Skip — view edge details</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('cancel')">Back to edges</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('created', trimmed, edgeType)">Skip — view edge details</button>
       </div>
     </div>
 
@@ -209,7 +242,7 @@ function fmt(s: number) {
       <h3><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
       <div class="wiz-actions">
-        <button class="k-btn k-btn--primary" @click="emit('created', trimmed, edgeType)">View edge details <ArrowRight :size="14" /></button>
+        <button type="button" class="k-btn k-btn--primary" @click="emit('created', trimmed, edgeType)">View edge details <ArrowRight :size="14" /></button>
       </div>
     </div>
   </div>

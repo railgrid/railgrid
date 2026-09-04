@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Ellipsis, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
+import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
+import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
@@ -45,7 +46,8 @@ const refreshMode = ref<ResourceRefreshMode>('foreground')
 const detailRefreshing = computed(() => loading.value && refreshMode.value === 'foreground')
 const mutationError = ref<string | null>(null)
 const copied = ref<string | null>(null)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
+const copyFeedback = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | null = null
 const servicesExpanded = ref(false)
 const technicalExpanded = ref(false)
 
@@ -95,7 +97,6 @@ async function refreshDetail() {
 
 async function onDelete() {
   if (!edge.value || deleting.value) return
-  actionsMenu.value?.removeAttribute('open')
   if (!(await confirmDialog({ title: `Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   deleting.value = true
   mutationError.value = null
@@ -108,12 +109,24 @@ async function onDelete() {
   }
 }
 
-async function copy(text: string, field: string) {
+function copyControlLabel(field: string, label: string): string {
+  return copied.value === field ? 'Copied' : `Copy ${label}`
+}
+
+async function copy(text: string, field: string, label: string) {
   try {
     await navigator.clipboard.writeText(text)
     copied.value = field
-    setTimeout(() => (copied.value = null), 2000)
-  } catch { /* clipboard denied */ }
+    copyFeedback.value = `${label} copied to clipboard.`
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copied.value = null
+      copyFeedback.value = ''
+      copyTimer = null
+    }, 2000)
+  } catch {
+    copyFeedback.value = `Could not copy the ${label.toLowerCase()}. Select the command and copy it manually.`
+  }
 }
 
 const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : 'Kubernetes cluster')
@@ -243,6 +256,17 @@ const svcError = ref<string | null>(null)
 const connectFor = ref<string | null>(null) // Service name being connected
 const tokenInput = ref('')
 const connecting = ref(false)
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: deleting.value ? `Deleting ${props.type === 'server' ? 'server' : 'cluster'}…` : `Delete ${props.type === 'server' ? 'server' : 'cluster'}`,
+  tone: 'danger',
+  disabled: !edge.value || detailRefreshing.value || deleting.value || connecting.value,
+  busy: deleting.value,
+}])
+
+function selectAction(action: string): void {
+  if (action === 'delete') void onDelete()
+}
 
 const servicesCardValue = computed(() => servicesLoaded.value ? String(services.value.length) : '—')
 const servicesCardDetail = computed(() => {
@@ -382,6 +406,7 @@ watch(() => [props.name, props.type], () => {
 onUnmounted(() => {
   detailRefresh.stop()
   poller.stop()
+  if (copyTimer) clearTimeout(copyTimer)
 })
 
 </script>
@@ -441,22 +466,12 @@ onUnmounted(() => {
               <RefreshCw :size="14" :class="{ spin: detailRefreshing }" aria-hidden="true" />
               {{ detailRefreshing ? 'Refreshing…' : 'Refresh' }}
             </button>
-            <details ref="actionsMenu" class="edge-detail__menu">
-              <summary class="k-btn k-btn--ghost" aria-label="More edge actions">
-                <Ellipsis :size="16" aria-hidden="true" />
-                <span class="sr-only">More actions</span>
-              </summary>
-              <div class="edge-detail__menu-popover">
-                <button
-                  type="button"
-                  class="edge-detail__menu-item"
-                  :disabled="!edge || deleting || detailRefreshing || connecting"
-                  @click="onDelete"
-                >
-                  Delete {{ type === 'server' ? 'server' : 'cluster' }}
-                </button>
-              </div>
-            </details>
+            <ActionMenu
+              label="More edge actions"
+              :items="actionItems"
+              :disabled="!edge || deleting || detailRefreshing || connecting"
+              @select="selectAction"
+            />
           </div>
         </template>
 
@@ -466,6 +481,7 @@ onUnmounted(() => {
 
         <template #body>
           <div v-if="mutationError" class="banner error" role="alert">{{ mutationError }}</div>
+          <p class="edge-detail__sr-only" role="status" aria-live="polite">{{ copyFeedback }}</p>
           <div v-if="deleting" class="waiting" role="status">Deleting this edge. The last successful snapshot remains visible until the hub confirms removal.</div>
 
           <div class="edge-detail__sections">
@@ -496,28 +512,46 @@ onUnmounted(() => {
 
                   <div v-if="showUpgrade" id="edges-upgrade-commands" class="edge-upgrade__commands">
                     <template v-if="type === 'kubernetes'">
-                      <div class="snippet k-card">
+                      <div class="snippet">
                         <div class="snippet-head"><span>Option A — CLI</span>
-                          <button class="copy" @click="copy(upgradeCliCommand, 'up-cli')">
-                            <component :is="copied === 'up-cli' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-cli' ? 'Copied' : 'Copy' }}
+                          <button
+                            type="button"
+                            class="k-icon-action snippet-copy"
+                            :aria-label="copyControlLabel('up-cli', 'CLI upgrade command')"
+                            :data-k-tip="copyControlLabel('up-cli', 'CLI upgrade command')"
+                            @click="copy(upgradeCliCommand, 'up-cli', 'CLI upgrade command')"
+                          >
+                            <component :is="copied === 'up-cli' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                           </button>
                         </div>
                         <pre>{{ upgradeCliCommand }}</pre>
                       </div>
-                      <div class="snippet k-card">
+                      <div class="snippet">
                         <div class="snippet-head"><span>Option B — Helm</span>
-                          <button class="copy" @click="copy(upgradeHelmSnippet, 'up-helm')">
-                            <component :is="copied === 'up-helm' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-helm' ? 'Copied' : 'Copy' }}
+                          <button
+                            type="button"
+                            class="k-icon-action snippet-copy"
+                            :aria-label="copyControlLabel('up-helm', 'Helm upgrade command')"
+                            :data-k-tip="copyControlLabel('up-helm', 'Helm upgrade command')"
+                            @click="copy(upgradeHelmSnippet, 'up-helm', 'Helm upgrade command')"
+                          >
+                            <component :is="copied === 'up-helm' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                           </button>
                         </div>
                         <pre>{{ upgradeHelmSnippet }}</pre>
                       </div>
                     </template>
 
-                    <div v-else class="snippet k-card">
+                    <div v-else class="snippet">
                       <div class="snippet-head"><span>Replace binary and restart</span>
-                        <button class="copy" @click="copy(upgradeServerSnippet, 'up-srv')">
-                          <component :is="copied === 'up-srv' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-srv' ? 'Copied' : 'Copy' }}
+                        <button
+                          type="button"
+                          class="k-icon-action snippet-copy"
+                          :aria-label="copyControlLabel('up-srv', 'server upgrade command')"
+                          :data-k-tip="copyControlLabel('up-srv', 'server upgrade command')"
+                          @click="copy(upgradeServerSnippet, 'up-srv', 'server upgrade command')"
+                        >
+                          <component :is="copied === 'up-srv' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
                       <pre>{{ upgradeServerSnippet }}</pre>
@@ -535,10 +569,16 @@ onUnmounted(() => {
                   </summary>
                   <div class="edge-disclosure__body">
                     <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
-                    <div class="snippet k-card">
+                    <div class="snippet">
                       <div class="snippet-head"><span>faros agent join</span>
-                        <button class="copy" @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
-                          <component :is="copied === 'join' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
+                        <button
+                          type="button"
+                          class="k-icon-action snippet-copy"
+                          :aria-label="copyControlLabel('join', 'agent join command')"
+                          :data-k-tip="copyControlLabel('join', 'agent join command')"
+                          @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join', 'agent join command')"
+                        >
+                          <component :is="copied === 'join' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
                       <pre>faros agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
@@ -554,10 +594,16 @@ onUnmounted(() => {
                   </summary>
                   <div class="edge-disclosure__body">
                     <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
-                    <div class="snippet k-card">
+                    <div class="snippet">
                       <div class="snippet-head"><span>kubectl</span>
-                        <button class="copy" @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
-                          <component :is="copied === 'kube' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
+                        <button
+                          type="button"
+                          class="k-icon-action snippet-copy"
+                          :aria-label="copyControlLabel('kube', 'kubectl command')"
+                          :data-k-tip="copyControlLabel('kube', 'kubectl command')"
+                          @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
+                        >
+                          <component :is="copied === 'kube' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
                       <pre>faros kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
@@ -574,10 +620,16 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                   </summary>
                   <div class="edge-disclosure__body">
                     <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
-                    <div class="snippet k-card">
+                    <div class="snippet">
                       <div class="snippet-head"><span>faros ssh</span>
-                        <button class="copy" @click="copy(`faros ssh ${name}`, 'ssh')">
-                          <component :is="copied === 'ssh' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
+                        <button
+                          type="button"
+                          class="k-icon-action snippet-copy"
+                          :aria-label="copyControlLabel('ssh', 'SSH command')"
+                          :data-k-tip="copyControlLabel('ssh', 'SSH command')"
+                          @click="copy(`faros ssh ${name}`, 'ssh', 'SSH command')"
+                        >
+                          <component :is="copied === 'ssh' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
                       <pre>faros ssh {{ name }}</pre>
@@ -654,10 +706,10 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                         @keyup.enter="submitConnect"
                       />
                       <div class="wiz-actions" style="justify-content: flex-start;">
-                        <button class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
+                        <button type="button" class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
                           <Plug :size="14" aria-hidden="true" /> {{ connecting ? 'Connecting…' : 'Save token' }}
                         </button>
-                        <button class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
+                        <button type="button" class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
                       </div>
                       <p v-if="es.serviceType === 'home-assistant'" class="muted small">
                         Create one in Home Assistant → your profile → Security → Long-lived access tokens.
