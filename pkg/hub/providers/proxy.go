@@ -292,7 +292,7 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// a provider is an address inside that cluster, and dialling it from here
 	// would either fail or — worse, if it happened to resolve — reach something
 	// else entirely.
-	if prov.EdgeRoute != nil {
+	if prov.OrgUUID != "" {
 		p.serveOverEdge(w, r, prov, rest)
 		return
 	}

@@ -90,6 +90,9 @@ export interface Repository {
   cloneURL?: string
   sshURL?: string
   ready: boolean
+  // True only when the controller observed the current generation and set
+  // Ready=False. An Unknown condition remains pending even if it has a message.
+  failed?: boolean
   message?: string
 }
 

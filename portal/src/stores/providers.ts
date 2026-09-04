@@ -23,6 +23,10 @@ export interface ProviderDTO {
   description?: string
   version?: string
   ready: boolean
+  // Present only when ready is false. The hub owns and sanitizes these
+  // explanations so provider transport details never reach the browser.
+  readinessReason?: string
+  readinessMessage?: string
   hasUI: boolean
   hasBackend: boolean
   iconURL?: string

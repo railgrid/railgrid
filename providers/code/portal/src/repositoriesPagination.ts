@@ -149,13 +149,13 @@ export function repositoryPageInfo(nextCursor?: string): RepositoryPageInfo {
  * current generation; a controller that has not observed the object yet is
  * still pending even though the API exposes a waiting message.
  */
-export function repositoryStatus(repository: Pick<Repository, 'deletionTimestamp' | 'generation' | 'observedGeneration' | 'ready' | 'message'>): string {
+export function repositoryStatus(repository: Pick<Repository, 'deletionTimestamp' | 'generation' | 'observedGeneration' | 'ready' | 'failed'>): string {
   if (repository.deletionTimestamp) return 'Deleting'
   if (repository.generation !== undefined &&
     (repository.observedGeneration === undefined || repository.observedGeneration < repository.generation)) {
     return 'pending'
   }
   if (repository.ready) return 'ready'
-  if (repository.message) return 'failed'
+  if (repository.failed) return 'failed'
   return 'pending'
 }

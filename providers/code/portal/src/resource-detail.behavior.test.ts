@@ -326,6 +326,23 @@ afterEach(() => {
 })
 
 describe('mounted resource deletion state', () => {
+  it('shows a current-generation repository controller failure as failed', async () => {
+    mocks.api.getRepository.mockResolvedValue({ ...repository, ready: false, failed: true, message: 'GitHub rejected the request.' })
+    mocks.api.listConnections.mockResolvedValue([])
+    mocks.api.listDeployKeys.mockResolvedValue([])
+    mocks.api.listCollaborators.mockResolvedValue([])
+    mocks.api.listPackagesPage.mockResolvedValue({ items: [], continue: '', resourceVersion: '' })
+
+    const { app, root } = mount(RepoDetailView, {
+      name: repository.name,
+      deletions: createResourceDeletions(),
+    })
+    await settle()
+
+    expect(findNode(root, node => node.type === 'span' && node.props.class === 'status-badge-stub' && textContent(node) === 'failed')).toBeDefined()
+    app.unmount()
+  })
+
   it('keeps the repository snapshot visible and announces Deleting while a delete is pending, then recovers after failure', async () => {
     const connections = deferred<Connection[]>()
     const keys = deferred<DeployKey[]>()

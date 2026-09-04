@@ -18,6 +18,12 @@ package providers
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -29,8 +35,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	"github.com/faroshq/faros/pkg/kcppaths"
 	"github.com/faroshq/faros/utils/testfakes"
 )
+
+type httpDoerFunc func(*http.Request) (*http.Response, error)
+
+func (f httpDoerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
+
+type edgeRouteResolverFunc func(context.Context, string, string, string) (*EdgeRoute, error)
+
+func (f edgeRouteResolverFunc) ResolveProviderEdgeRoute(ctx context.Context, orgUUID, providerName, backendURL string) (*EdgeRoute, error) {
+	return f(ctx, orgUUID, providerName, backendURL)
+}
+
+func healthyHTTPDoer() httpDoer {
+	return httpDoerFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     make(http.Header),
+		}, nil
+	})
+}
 
 func newProviderTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -224,7 +251,7 @@ func TestCatalogReconcilerDoesNotRewriteUnchangedStatus(t *testing.T) {
 		WithObjects(entry).
 		Build()
 
-	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true, healthClient: healthyHTTPDoer()}
 	req := testfakes.NewRequest("cluster", "", "cost")
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("first reconcile: %v", err)
@@ -271,7 +298,7 @@ func TestCatalogReconcilerAdoptsStatusHeartbeat(t *testing.T) {
 		WithObjects(entry).
 		Build()
 
-	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true, healthClient: healthyHTTPDoer()}
 	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "cost")); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -286,4 +313,215 @@ func TestCatalogReconcilerAdoptsStatusHeartbeat(t *testing.T) {
 	if !got.Ready() {
 		t.Fatal("provider with a fresh heartbeat should be Ready on every replica")
 	}
+}
+
+func TestCatalogReconcilerBackendHealthGatesReadyAndRecovers(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "code", Generation: 2},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			Backend: &providersv1alpha1.ProviderBackend{URL: "http://code.invalid", HealthPath: "/readyz"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		healthClient: httpDoerFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Body:       io.NopCloser(strings.NewReader("sensitive upstream detail")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	req := testfakes.NewRequest("cluster", "", "code")
+	result, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile unhealthy: %v", err)
+	}
+	if result.RequeueAfter != SweepInterval {
+		t.Fatalf("requeueAfter = %v, want %v", result.RequeueAfter, SweepInterval)
+	}
+	got, ok := reg.Get("code")
+	if !ok || got.Ready() || !got.BackendHealthRequired || got.BackendHealthy {
+		t.Fatalf("unhealthy registry provider = %+v, found=%v", got, ok)
+	}
+
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "code"}, &updated); err != nil {
+		t.Fatalf("get unhealthy entry: %v", err)
+	}
+	backendCondition := conditionByType(updated.Status.Conditions, "BackendHealthy")
+	readyCondition := conditionByType(updated.Status.Conditions, "Ready")
+	if backendCondition == nil || backendCondition.Status != metav1.ConditionFalse ||
+		readyCondition == nil || readyCondition.Status != metav1.ConditionFalse || readyCondition.Reason != "BackendUnhealthy" {
+		t.Fatalf("unhealthy conditions = %#v", updated.Status.Conditions)
+	}
+	for _, condition := range updated.Status.Conditions {
+		if strings.Contains(condition.Message, "sensitive upstream detail") || strings.Contains(condition.Message, "code.invalid") {
+			t.Fatalf("condition leaked probe detail: %#v", condition)
+		}
+	}
+
+	r.healthClient = healthyHTTPDoer()
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile healthy: %v", err)
+	}
+	if got, _ := reg.Get("code"); !got.Ready() || !got.BackendHealthy {
+		t.Fatalf("healthy registry provider = %+v", got)
+	}
+}
+
+func TestCatalogReconcilerDoesNotDirectlyProbeOrgOwnedBackend(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "database"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			Backend: &providersv1alpha1.ProviderBackend{URL: "http://tenant-controlled.invalid", HealthPath: "/readyz"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+	probes := 0
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, prov: &Provisioner{},
+		clusterPaths: map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		edgeRoutes: edgeRouteResolverFunc(func(context.Context, string, string, string) (*EdgeRoute, error) {
+			return &EdgeRoute{Cluster: "tenant-cluster", ServiceName: "provider-database"}, nil
+		}),
+		healthClient: httpDoerFunc(func(*http.Request) (*http.Response, error) {
+			probes++
+			return nil, fmt.Errorf("org-owned backend must not be dialled")
+		}),
+	}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "database")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if probes != 0 {
+		t.Fatalf("org-owned backend received %d direct probes", probes)
+	}
+	got, ok := reg.GetForOrg("org-1", "database")
+	if !ok || got.BackendHealthRequired || !got.Ready() {
+		t.Fatalf("org-owned registry provider = %+v, found=%v", got, ok)
+	}
+}
+
+func TestCatalogReconcilerRetriesOrgOwnedEdgeRouteAndRecovers(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "database"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			Backend: &providersv1alpha1.ProviderBackend{URL: "http://database.tenant.svc", HealthPath: "/readyz"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+	routeReady := false
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, prov: &Provisioner{},
+		clusterPaths: map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		edgeRoutes: edgeRouteResolverFunc(func(context.Context, string, string, string) (*EdgeRoute, error) {
+			if !routeReady {
+				return nil, fmt.Errorf("temporary route lookup failure")
+			}
+			return &EdgeRoute{Cluster: "tenant-cluster", ServiceName: "provider-database"}, nil
+		}),
+	}
+	req := testfakes.NewRequest("cluster", "", "database")
+	result, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile unroutable: %v", err)
+	}
+	if result.RequeueAfter != SweepInterval {
+		t.Fatalf("unroutable requeueAfter = %v, want %v", result.RequeueAfter, SweepInterval)
+	}
+	if got, ok := reg.GetForOrg("org-1", "database"); !ok || got.Ready() {
+		t.Fatalf("unroutable registry provider = %+v, found=%v", got, ok)
+	}
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "database"}, &updated); err != nil {
+		t.Fatalf("get unroutable entry: %v", err)
+	}
+	readyCondition := conditionByType(updated.Status.Conditions, "Ready")
+	if readyCondition == nil || readyCondition.Status != metav1.ConditionFalse || readyCondition.Reason != "BackendUnroutable" {
+		t.Fatalf("unroutable conditions = %#v", updated.Status.Conditions)
+	}
+
+	routeReady = true
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile recovered route: %v", err)
+	}
+	if got, ok := reg.GetForOrg("org-1", "database"); !ok || !got.Ready() || !got.EdgeRoute.Usable() {
+		t.Fatalf("recovered registry provider = %+v, found=%v", got, ok)
+	}
+}
+
+func TestProbeBackendHealthUsesSameAuthorityAndBoundedPath(t *testing.T) {
+	var requested string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = r.URL.RequestURI()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	backend, err := url.Parse(server.URL + "/services/provider")
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+	if err := probeBackendHealth(context.Background(), server.Client(), backend, "/readyz?full=1"); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if requested != "/services/provider/readyz?full=1" {
+		t.Fatalf("request URI = %q", requested)
+	}
+	for _, healthPath := range []string{"https://attacker.invalid/healthz", "//attacker.invalid/healthz", "/../admin", "/%2e%2e/admin"} {
+		if err := probeBackendHealth(context.Background(), server.Client(), backend, healthPath); err == nil {
+			t.Fatalf("healthPath %q was accepted", healthPath)
+		}
+	}
+}
+
+func TestDefaultBackendHealthClientDoesNotFollowRedirects(t *testing.T) {
+	redirectTargetHit := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectTargetHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(redirectTarget.Close)
+	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", redirectTarget.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(backendServer.Close)
+	backend, err := url.Parse(backendServer.URL)
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+	if err := probeBackendHealth(context.Background(), defaultBackendHealthClient(), backend, "/readyz"); err == nil {
+		t.Fatal("redirecting backend was considered healthy")
+	}
+	if redirectTargetHit {
+		t.Fatal("backend health probe followed a redirect to another authority")
+	}
+}
+
+func conditionByType(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }

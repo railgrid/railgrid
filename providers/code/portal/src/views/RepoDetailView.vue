@@ -199,11 +199,11 @@ const ownerWillChange = computed(() =>
 const repositoryStatus = computed(() => {
   if (repositoryDeleting.value) return 'Deleting'
   if (!repo.value) return repoLoading.value ? 'Loading' : 'Unavailable'
-  return repo.value.ready ? 'ready' : 'pending'
+  return repo.value.failed ? 'failed' : repo.value.ready ? 'ready' : 'pending'
 })
 const repositoryStatusTone = computed(() => {
   if (repositoryDeleting.value || repositoryStatus.value === 'Loading') return 'warning'
-  if (repositoryStatus.value === 'Unavailable') return 'danger'
+  if (repositoryStatus.value === 'Unavailable' || repositoryStatus.value === 'failed') return 'danger'
   return null
 })
 function providerLabel(provider: string | undefined): string {

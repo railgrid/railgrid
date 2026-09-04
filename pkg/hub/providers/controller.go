@@ -19,8 +19,11 @@ package providers
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +73,9 @@ type CatalogReconciler struct {
 	// edgeRoutes resolves an org-owned provider's edge transport. Nil in
 	// registry-only mode and on hubs that predate edge transport.
 	edgeRoutes EdgeRouteResolver
+	// healthClient performs bounded, same-authority readiness probes for
+	// platform-provider backends. Org-owned backends are never sent here.
+	healthClient httpDoer
 
 	// clusterPaths caches logical-cluster-ID → canonical workspace path. The
 	// path is what tells a platform provider apart from an org-owned one and
@@ -82,6 +88,21 @@ type CatalogReconciler struct {
 	// by the number of provider workspaces the hub has observed.
 	clusterPathsMu sync.RWMutex
 	clusterPaths   map[string]string
+}
+
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+const backendHealthTimeout = 3 * time.Second
+
+func defaultBackendHealthClient() *http.Client {
+	return &http.Client{
+		Timeout: backendHealthTimeout,
+		// A provider-controlled redirect cannot move the hub's health probe to
+		// another authority. The 3xx response itself is unhealthy.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // CatalogReconcilerOptions threads optional extras into the reconciler
@@ -112,6 +133,7 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		hubExternalURL: opts.HubExternalURL,
 		hubInternalURL: opts.HubInternalURL,
 		edgeRoutes:     opts.EdgeRoutes,
+		healthClient:   defaultBackendHealthClient(),
 		clusterPaths:   map[string]string{},
 	}
 	if kcpConfig != nil {
@@ -304,11 +326,17 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// through kcp) is unaffected. It just has no reachable backend, which the
 	// proxy reports as 503 rather than dialling an address inside someone
 	// else's cluster.
-	if orgUUID != "" && r.edgeRoutes != nil && entry.Spec.Backend != nil {
-		route, err := r.edgeRoutes.ResolveProviderEdgeRoute(ctx, orgUUID, entry.Name, entry.Spec.Backend.URL)
-		if err != nil {
+	var edgeRouteErr error
+	if orgUUID != "" && entry.Spec.Backend != nil {
+		if r.edgeRoutes == nil {
+			edgeRouteErr = fmt.Errorf("edge route resolver is unavailable")
+		} else if route, err := r.edgeRoutes.ResolveProviderEdgeRoute(ctx, orgUUID, entry.Name, entry.Spec.Backend.URL); err != nil {
+			edgeRouteErr = err
 			logger.Info("Could not resolve edge route for org-owned provider; its backend stays unroutable",
 				"provider", entry.Name, "error", err.Error())
+		} else if !route.Usable() {
+			edgeRouteErr = fmt.Errorf("edge route is not yet usable")
+			logger.Info("Edge route for org-owned provider is not yet usable", "provider", entry.Name)
 		} else {
 			prov.EdgeRoute = route
 		}
@@ -342,6 +370,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if entry.Status.LastHeartbeat != nil {
 		prov.LastHeartbeat = entry.Status.LastHeartbeat.Time
 		prov.HeartbeatRequired = true
+		prov.HeartbeatStale = time.Since(prov.LastHeartbeat) > HeartbeatTTL
 		prov.ReportedVersion = entry.Status.ReportedVersion
 	}
 	if entry.Spec.APIExport != nil {
@@ -444,6 +473,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	})
 
 	var parseErrs []string
+	var backendHealthErr error
 	if entry.Spec.UI != nil && entry.Spec.UI.URL != "" {
 		u, err := ParseURL(entry.Spec.UI.URL)
 		if err != nil {
@@ -458,6 +488,22 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			parseErrs = append(parseErrs, "backend.url: "+err.Error())
 		} else {
 			prov.BackendURL = u
+			// Platform providers are hub-operated and their declared service URL
+			// is an admitted in-cluster route. Org-owned provider URLs name an
+			// address inside a tenant cluster; direct probing would bypass the
+			// hub-owned edge route and turn tenant input into an SSRF primitive.
+			if orgUUID == "" {
+				prov.BackendHealthRequired = true
+				healthClient := r.healthClient
+				if healthClient == nil {
+					healthClient = defaultBackendHealthClient()
+				}
+				if err := probeBackendHealth(ctx, healthClient, u, entry.Spec.Backend.HealthPath); err != nil {
+					backendHealthErr = err
+				} else {
+					prov.BackendHealthy = true
+				}
+			}
 		}
 	}
 	if entry.Spec.VirtualWorkspace != nil {
@@ -534,6 +580,26 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if prov.BackendURL != nil {
 		entry.Status.Endpoints.Backend = prov.BackendURL.String()
 	}
+	if !prov.BackendHealthRequired {
+		removeCondition(&entry.Status.Conditions, "BackendHealthy")
+	} else {
+		backendCondition := metav1.Condition{
+			Type:               "BackendHealthy",
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		}
+		if prov.BackendHealthy {
+			backendCondition.Status = metav1.ConditionTrue
+			backendCondition.Reason = "HealthCheckSucceeded"
+			backendCondition.Message = "Provider backend health check succeeded."
+		} else {
+			backendCondition.Status = metav1.ConditionFalse
+			backendCondition.Reason = "HealthCheckFailed"
+			backendCondition.Message = "Provider backend health check failed."
+			logger.Info("Provider backend health check failed", "error", backendHealthErr)
+		}
+		setCondition(&entry.Status.Conditions, backendCondition)
+	}
 
 	cond := metav1.Condition{
 		Type:               "Ready",
@@ -545,10 +611,22 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "InvalidEndpoint"
 		cond.Message = fmt.Sprintf("Endpoint parse errors: %v", parseErrs)
+	case edgeRouteErr != nil:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "BackendUnroutable"
+		cond.Message = "Provider backend route is unavailable."
+	case prov.BackendHealthRequired && !prov.BackendHealthy:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "BackendUnhealthy"
+		cond.Message = "Provider backend is unavailable."
+	case prov.HeartbeatRequired && prov.HeartbeatStale:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "HeartbeatStale"
+		cond.Message = "Provider heartbeat is stale."
 	case prov.EndpointsValid:
 		cond.Status = metav1.ConditionTrue
-		cond.Reason = "EndpointsResolved"
-		cond.Message = "Provider endpoints registered with the hub routing table."
+		cond.Reason = "Ready"
+		cond.Message = "Provider endpoints and health checks are ready."
 	default:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "NoEndpoint"
@@ -561,7 +639,69 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	} else if requeue {
 		return ctrl.Result{Requeue: true}, nil
 	}
+	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil {
+		return ctrl.Result{RequeueAfter: SweepInterval}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// probeBackendHealth builds a same-authority endpoint from backend and the
+// provider's relative healthPath, then requires HTTP 200 within a bounded
+// interval. Absolute URLs and traversal are rejected before any request.
+func probeBackendHealth(ctx context.Context, client httpDoer, backend *url.URL, healthPath string) error {
+	if backend == nil {
+		return fmt.Errorf("backend URL is missing")
+	}
+	if backend.Scheme != "http" && backend.Scheme != "https" {
+		return fmt.Errorf("backend URL must use http or https")
+	}
+	if healthPath == "" {
+		healthPath = "/healthz"
+	}
+	rel, err := url.Parse(healthPath)
+	if err != nil {
+		return fmt.Errorf("invalid healthPath: %w", err)
+	}
+	if rel.IsAbs() || rel.Host != "" || rel.User != nil || rel.Opaque != "" || rel.Fragment != "" {
+		return fmt.Errorf("healthPath must be a local HTTP path")
+	}
+	decodedPath, err := url.PathUnescape(rel.EscapedPath())
+	if err != nil {
+		return fmt.Errorf("invalid healthPath escaping: %w", err)
+	}
+	for _, segment := range strings.Split(decodedPath, "/") {
+		if segment == "." || segment == ".." {
+			return fmt.Errorf("healthPath must not contain traversal segments")
+		}
+	}
+	if decodedPath == "" {
+		return fmt.Errorf("healthPath must not be empty")
+	}
+	if !strings.HasPrefix(decodedPath, "/") {
+		decodedPath = "/" + decodedPath
+	}
+	target := *backend
+	target.Path = singleJoiningSlash(backend.Path, decodedPath)
+	target.RawPath = ""
+	target.RawQuery = rel.RawQuery
+	target.Fragment = ""
+
+	probeCtx, cancel := context.WithTimeout(ctx, backendHealthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return fmt.Errorf("build health request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // updateStatusIfChanged writes entry's status only when it differs from what
@@ -599,12 +739,24 @@ func urlString(u *url.URL) string {
 func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
 	for i, existing := range *conds {
 		if existing.Type == c.Type {
-			if existing.Status == c.Status && existing.Reason == c.Reason && existing.Message == c.Message {
-				return // no-op
+			if existing.Status == c.Status {
+				c.LastTransitionTime = existing.LastTransitionTime
+			}
+			if equality.Semantic.DeepEqual(existing, c) {
+				return
 			}
 			(*conds)[i] = c
 			return
 		}
 	}
 	*conds = append(*conds, c)
+}
+
+func removeCondition(conds *[]metav1.Condition, conditionType string) {
+	for i, condition := range *conds {
+		if condition.Type == conditionType {
+			*conds = append((*conds)[:i], (*conds)[i+1:]...)
+			return
+		}
+	}
 }

@@ -7,6 +7,7 @@ import { confirmDialog } from '@/portalkit/confirm'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
+import { providerBindingAction } from '@/lib/providerBindingAction'
 import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
@@ -52,6 +53,14 @@ function edgeLabel(t: { workspace: string; workspaceDisplayName?: string; name: 
 // button is disabled rather than left to 409.
 const canSelfHost = computed(() => orgProviders.installTargetsEligible && !!selectedEdge.value)
 
+function bindingAction(p: ProviderDTO) {
+  return providerBindingAction({
+    hasAPIExport: !!p.apiExportName,
+    ready: p.ready,
+    enabled: providers.isEnabled(p.name),
+    disabling: providers.isDisabling(p.name),
+  })
+}
 async function selfHost(p: ProviderDTO) {
   const edge = selectedEdge.value
   if (!edge) {
@@ -684,7 +693,7 @@ function dependencyNotice(p: ProviderDTO): string {
                   class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
                   :class="
                     !p.ready
-                      ? 'border border-border-default bg-surface-overlay text-text-muted'
+                      ? 'border border-warning/30 bg-warning-subtle text-warning'
                       : p.builtinRoute
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
                         : providers.isDisabling(p.name)
@@ -698,7 +707,7 @@ function dependencyNotice(p: ProviderDTO): string {
                                 : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.hasStaleClaims(p.name) ? 'Degraded' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ !p.ready ? 'Not ready' : p.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.hasStaleClaims(p.name) ? 'Degraded' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -812,8 +821,9 @@ function dependencyNotice(p: ProviderDTO): string {
               <ExternalLink class="h-3 w-3" :stroke-width="2" />
             </router-link>
 
-            <!-- Enable / Disable: only when provider declares an APIExport -->
-            <template v-if="p.apiExportName && p.ready">
+            <!-- Readiness gates new bindings, but never removal of an existing
+                 binding: an outage is exactly when Disable may be needed. -->
+            <template v-if="p.apiExportName">
               <!-- Mid-deletion: neither Enable (name still taken) nor Disable
                    (already deleting) is actionable, so say what's happening. -->
               <span
@@ -824,7 +834,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 Disabling&hellip;
               </span>
               <button
-                v-else-if="!providers.isEnabled(p.name)"
+                v-else-if="bindingAction(p) === 'enable'"
                 type="button"
                 class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
@@ -836,7 +846,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 Enable
               </button>
               <button
-                v-else
+                v-else-if="bindingAction(p) === 'disable'"
                 type="button"
                 class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!!busy[p.name]"
@@ -849,7 +859,7 @@ function dependencyNotice(p: ProviderDTO): string {
             </template>
 
             <span v-if="!p.ready" class="text-[11px] text-text-muted/70">
-              Provider is starting&hellip;
+              {{ p.readinessMessage || 'Provider is unavailable.' }}
             </span>
           </div>
           </li>

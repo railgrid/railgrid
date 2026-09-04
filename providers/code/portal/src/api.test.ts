@@ -184,6 +184,32 @@ describe('getRepository health snapshot', () => {
     expect(call?.query).not.toContain('autoInit')
   })
 
+  it.each([
+    { generation: 4, observedGeneration: 4, status: 'False', message: undefined, failed: true },
+    { generation: 4, observedGeneration: 3, status: 'False', message: 'old failure', failed: false },
+    { generation: 4, observedGeneration: 4, status: 'Unknown', message: 'still checking', failed: false },
+  ])('classifies only a current-generation Ready=False condition as failed: %#', async scenario => {
+    setAPIContext({ tenant: `repository-failure-${scenario.status}-${scenario.observedGeneration}`, token: 'repository-failure-token' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      data: {
+        code_faros_sh: {
+          v1alpha1: {
+            Repository: {
+              metadata: { name: 'orders', uid: 'orders-uid', generation: scenario.generation },
+              spec: { connectionRef: 'github', name: 'orders' },
+              status: {
+                observedGeneration: scenario.observedGeneration,
+                conditions: [{ type: 'Ready', status: scenario.status, message: scenario.message }],
+              },
+            },
+          },
+        },
+      },
+    })))
+
+    await expect(api.getRepository('orders')).resolves.toMatchObject({ failed: scenario.failed })
+  })
+
   it.each(['cloneURL', 'sshURL'] as const)('rejects a malformed repository %s status field', async field => {
     setAPIContext({ tenant: `repository-malformed-${field}`, token: `repository-malformed-${field}-token` })
     vi.stubGlobal('fetch', vi.fn(async () => response({

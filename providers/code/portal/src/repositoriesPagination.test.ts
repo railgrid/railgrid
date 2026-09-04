@@ -125,8 +125,9 @@ describe('repository table pagination state', () => {
 
   it('distinguishes deleting, not-yet-observed, ready, and failed resources', () => {
     expect(repositoryStatus({ deletionTimestamp: 'now', generation: 1, observedGeneration: 1, ready: true })).toBe('Deleting')
-    expect(repositoryStatus({ generation: 2, observedGeneration: 1, ready: false, message: 'waiting' })).toBe('pending')
+    expect(repositoryStatus({ generation: 2, observedGeneration: 1, ready: false, failed: true })).toBe('pending')
     expect(repositoryStatus({ generation: 1, observedGeneration: 1, ready: true })).toBe('ready')
-    expect(repositoryStatus({ generation: 1, observedGeneration: 1, ready: false, message: 'host rejected request' })).toBe('failed')
+    expect(repositoryStatus({ generation: 1, observedGeneration: 1, ready: false, failed: true })).toBe('failed')
+    expect(repositoryStatus({ generation: 1, observedGeneration: 1, ready: false, failed: false })).toBe('pending')
   })
 })

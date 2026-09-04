@@ -352,6 +352,9 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
 function condTrue(cr: RawCR, type: string): boolean {
   return (cr.status?.conditions ?? []).some(c => c.type === type && c.status === 'True')
 }
+function condFalse(cr: RawCR, type: string): boolean {
+  return (cr.status?.conditions ?? []).some(c => c.type === type && c.status === 'False')
+}
 function condMsg(cr: RawCR, type: string): string | undefined {
   return (cr.status?.conditions ?? []).find(c => c.type === type)?.message ?? undefined
 }
@@ -439,6 +442,7 @@ function repoFromCR(cr: RawCR): Repository {
     cloneURL: status.cloneURL ? String(status.cloneURL) : undefined,
     sshURL: status.sshURL ? String(status.sshURL) : undefined,
     ready: reconciliation.reconciled && condTrue(cr, 'Ready'),
+    failed: reconciliation.reconciled && condFalse(cr, 'Ready'),
     message: reconciliation.waitingMessage ?? condMsg(cr, 'Ready'),
   }
 }

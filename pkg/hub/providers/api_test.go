@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
@@ -192,6 +193,56 @@ func TestListHandlerProjectsDescription(t *testing.T) {
 	}
 	if _, ok := byName["silent"]["description"]; ok {
 		t.Errorf("silent emitted a description key: %#v", byName["silent"])
+	}
+}
+
+func TestListHandlerProjectsOnlySanitizedFailureReadiness(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name:                  "code",
+		DisplayName:           "Code",
+		EndpointsValid:        true,
+		BackendURL:            mustProviderURL(t, "https://secret.internal.invalid"),
+		BackendHealthRequired: true,
+		BackendHealthy:        false,
+	})
+	reg.Upsert(Provider{
+		Name:           "healthy",
+		DisplayName:    "Healthy",
+		EndpointsValid: true,
+		BackendURL:     mustProviderURL(t, "https://healthy.internal.invalid"),
+		BackendHealthy: true,
+	})
+
+	r := httptest.NewRequest(http.MethodGet, PathListProviders, nil)
+	w := httptest.NewRecorder()
+	NewListHandler(reg).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byName := map[string]map[string]any{}
+	for _, item := range raw.Items {
+		byName[item["name"].(string)] = item
+	}
+	if got := byName["code"]["readinessReason"]; got != "BackendUnhealthy" {
+		t.Fatalf("code readinessReason = %#v", got)
+	}
+	if got := byName["code"]["readinessMessage"]; got != "Provider backend is unavailable." {
+		t.Fatalf("code readinessMessage = %#v", got)
+	}
+	if strings.Contains(w.Body.String(), "secret.internal") {
+		t.Fatalf("provider response leaked backend authority: %s", w.Body.String())
+	}
+	for _, field := range []string{"readinessReason", "readinessMessage"} {
+		if _, ok := byName["healthy"][field]; ok {
+			t.Fatalf("healthy provider emitted %s: %#v", field, byName["healthy"])
+		}
 	}
 }
 

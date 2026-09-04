@@ -71,6 +71,12 @@ type Provider struct {
 	Dependencies []Dependency
 	UIURL        *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
 	BackendURL   *url.URL // proxy target for /services/providers/{name}/*; nil → 404
+	// BackendHealthRequired is set only for platform-operated providers that
+	// declare a backend. BackendHealthy is the latest bounded healthPath probe
+	// result. Org-owned provider backends travel through an edge tunnel and are
+	// deliberately never dialled directly by the hub.
+	BackendHealthRequired bool
+	BackendHealthy        bool
 	// VirtualWorkspaceURL is the provider-declared action transport target.
 	// Provider Actions append /actions/{name}/{version} to this URL; they never
 	// use BackendURL or a provider MCP endpoint.
@@ -193,17 +199,34 @@ func (s *SelfHosting) Installable() bool {
 	return s != nil && s.Supported && s.ChartRepo != "" && s.ChartName != ""
 }
 
-// Ready returns true when the proxy should forward to the provider. The
-// catalog controller's URL parse must have succeeded AND, if the provider
-// has heartbeated at least once, its most recent heartbeat must be fresh.
-func (p Provider) Ready() bool {
+// Readiness returns the aggregate provider verdict and a stable, sanitized
+// explanation suitable for the portal API. Backend response bodies, URLs, and
+// transport errors never cross this boundary.
+func (p Provider) Readiness() (ready bool, reason, message string) {
 	if !p.EndpointsValid {
-		return false
+		return false, "InvalidEndpoint", "Provider endpoint configuration is invalid."
+	}
+	// Org-owned backend URLs name services inside tenant clusters. The proxy
+	// deliberately refuses to dial them directly, so a usable hub-owned edge
+	// route is part of aggregate readiness even though routed health probing is
+	// deferred. This checks route admission only; it never contacts the URL.
+	if p.OrgUUID != "" && p.BackendURL != nil && !p.EdgeRoute.Usable() {
+		return false, "BackendUnroutable", "Provider backend route is unavailable."
+	}
+	if p.BackendHealthRequired && !p.BackendHealthy {
+		return false, "BackendUnhealthy", "Provider backend is unavailable."
 	}
 	if p.HeartbeatRequired && p.HeartbeatStale {
-		return false
+		return false, "HeartbeatStale", "Provider heartbeat is stale."
 	}
-	return true
+	return true, "", ""
+}
+
+// Ready returns true when the provider's declared endpoints and runtime
+// health signals are all ready.
+func (p Provider) Ready() bool {
+	ready, _, _ := p.Readiness()
+	return ready
 }
 
 // PermissionClaim mirrors CatalogEntry.spec.apiExport.permissionClaims so the
@@ -540,8 +563,7 @@ func (r *Registry) ListForOrg(orgUUID string) []Provider {
 // CatalogEntry status says (the cross-replica signal); the record may already
 // hold a newer beat this replica served directly, or one whose status write was
 // throttled. Taking the later of the two keeps the merge monotone, so neither
-// source can move a provider backwards in time and flip it stale. HeartbeatStale
-// stays a purely local verdict, recomputed by the sweeper from these timestamps.
+// source can move a provider backwards in time and flip it stale.
 func (r *Registry) Upsert(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -554,10 +576,14 @@ func (r *Registry) Upsert(p Provider) {
 			if existing.ReportedVersion != "" {
 				p.ReportedVersion = existing.ReportedVersion
 			}
+			p.HeartbeatStale = existing.HeartbeatStale
+		} else if existing.LastHeartbeat.Equal(p.LastHeartbeat) {
+			// Either the sweeper or this reconcile may have observed expiry for
+			// the same beat. Once stale, that timestamp cannot become fresh again.
+			p.HeartbeatStale = p.HeartbeatStale || existing.HeartbeatStale
 		}
 		// A provider that has ever heartbeated is expected to keep doing so.
 		p.HeartbeatRequired = p.HeartbeatRequired || existing.HeartbeatRequired
-		p.HeartbeatStale = existing.HeartbeatStale
 		if p.WorkspaceCluster == "" {
 			// Provisioning sets this after the Upsert in the same reconcile;
 			// don't lose it on the next reconcile's fresh Provider value.

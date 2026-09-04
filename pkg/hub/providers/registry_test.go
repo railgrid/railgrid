@@ -10,6 +10,7 @@ package providers
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,50 @@ import (
 
 	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
 )
+
+func TestProviderReadinessAggregatesBackendAndHeartbeat(t *testing.T) {
+	p := Provider{
+		EndpointsValid:        true,
+		BackendHealthRequired: true,
+		BackendHealthy:        false,
+		HeartbeatRequired:     true,
+		HeartbeatStale:        false,
+	}
+	ready, reason, message := p.Readiness()
+	if ready || reason != "BackendUnhealthy" || message != "Provider backend is unavailable." {
+		t.Fatalf("backend readiness = (%v, %q, %q)", ready, reason, message)
+	}
+
+	p.BackendHealthy = true
+	p.HeartbeatStale = true
+	ready, reason, message = p.Readiness()
+	if ready || reason != "HeartbeatStale" || message != "Provider heartbeat is stale." {
+		t.Fatalf("heartbeat readiness = (%v, %q, %q)", ready, reason, message)
+	}
+
+	p.HeartbeatStale = false
+	ready, reason, message = p.Readiness()
+	if !ready || reason != "" || message != "" {
+		t.Fatalf("healthy readiness = (%v, %q, %q)", ready, reason, message)
+	}
+}
+
+func TestProviderReadinessRequiresOrgOwnedBackendRoute(t *testing.T) {
+	p := Provider{
+		Name:           "database",
+		OrgUUID:        "org-1",
+		BackendURL:     &url.URL{Scheme: "http", Host: "database.tenant.svc"},
+		EndpointsValid: true,
+	}
+	ready, reason, message := p.Readiness()
+	if ready || reason != "BackendUnroutable" || message != "Provider backend route is unavailable." {
+		t.Fatalf("unroutable readiness = (%v, %q, %q)", ready, reason, message)
+	}
+	p.EdgeRoute = &EdgeRoute{Cluster: "tenant-cluster", ServiceName: "provider-database"}
+	if ready, reason, message = p.Readiness(); !ready || reason != "" || message != "" {
+		t.Fatalf("routable readiness = (%v, %q, %q)", ready, reason, message)
+	}
+}
 
 func TestParseProviderActionsCanonicalCatalogShape(t *testing.T) {
 	parsed, err := ParseProviderActions([]providersv1alpha1.ProviderActionSpec{{

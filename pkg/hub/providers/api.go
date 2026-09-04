@@ -61,9 +61,13 @@ type providerDTO struct {
 	Description string `json:"description,omitempty"`
 	Version     string `json:"version,omitempty"`
 	Ready       bool   `json:"ready"`
-	HasUI       bool   `json:"hasUI"`
-	HasBackend  bool   `json:"hasBackend"`
-	IconURL     string `json:"iconURL,omitempty"`
+	// ReadinessReason and ReadinessMessage are present only when Ready is
+	// false. Values come from Provider.Readiness and are safe for end users.
+	ReadinessReason  string `json:"readinessReason,omitempty"`
+	ReadinessMessage string `json:"readinessMessage,omitempty"`
+	HasUI            bool   `json:"hasUI"`
+	HasBackend       bool   `json:"hasBackend"`
+	IconURL          string `json:"iconURL,omitempty"`
 	// BuiltinRoute, when set, tells the portal to render the named Vue
 	// route inside its own SPA instead of loading /main.js as a custom
 	// element. Set on first-party providers shipped with the portal (mcp,
@@ -342,6 +346,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 			if p.OrgUUID != "" {
 				scope = ScopeOrg
 			}
+			ready, readinessReason, readinessMessage := p.Readiness()
 			items = append(items, providerDTO{
 				Name:             p.Name,
 				Scope:            scope,
@@ -349,7 +354,9 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				DisplayName:      displayName,
 				Description:      p.Description,
 				Version:          p.Version,
-				Ready:            p.Ready(),
+				Ready:            ready,
+				ReadinessReason:  readinessReason,
+				ReadinessMessage: readinessMessage,
 				HasUI:            p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil,
 				HasBackend:       p.BackendURL != nil,
 				IconURL:          iconURL,

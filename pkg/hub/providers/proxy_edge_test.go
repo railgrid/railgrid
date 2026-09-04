@@ -167,6 +167,34 @@ func TestBackendProxyUnusableEdgeRouteIs503(t *testing.T) {
 	}
 }
 
+func TestBackendProxyOrgProviderWithoutEdgeRouteNeverDialsBackendURL(t *testing.T) {
+	hit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hit = true
+	}))
+	t.Cleanup(upstream.Close)
+	backendURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name: "infrastructure", OrgUUID: testOrg, EndpointsValid: true,
+		BackendURL: backendURL,
+	})
+	proxy := NewBackendProxy(reg, logr.Discard())
+	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
+		return "alice", "root:faros:tenants:" + testOrg, nil
+	}))
+
+	if w := serveProxy(proxy, "/services/providers/infrastructure/x"); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+	if hit {
+		t.Fatal("hub directly dialled an org-owned provider's BackendURL")
+	}
+}
+
 // With no platform edges provider there is no transport. Failing closed matters
 // because the alternative — falling through to the org provider's declared
 // BackendURL — is a hub-initiated request at an address the tenant chose.
