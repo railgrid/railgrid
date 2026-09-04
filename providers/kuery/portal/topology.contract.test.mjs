@@ -135,12 +135,48 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
   }
 })
 
+test('graph additions enforce a hard node limit while retaining parallel relation edges', async () => {
+  const previousWindow = globalThis.window
+  const stored = new Map([['root', { data: { id: 'root' } }]])
+  const cy = {
+    on: () => {},
+    destroy: () => {},
+    nodes: () => ({ length: [...stored.values()].filter(element => !element.data.source).length }),
+    getElementById: id => ({ nonempty: () => stored.has(id), empty: () => !stored.has(id) }),
+    add: elements => {
+      for (const element of elements) {
+        assert.ok(!stored.has(element.data.id), `duplicate ${element.data.id} must be removed before Cytoscape add`)
+        stored.set(element.data.id, element)
+      }
+    },
+  }
+
+  try {
+    globalThis.window = { cytoscape: () => cy }
+    const handle = await graphModule.mountGraph({ addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {}, '/cytoscape.min.js')
+    const added = handle.add([
+      { data: { id: 'child', label: 'child' } },
+      { data: { id: 'root>child:owners', source: 'root', target: 'child', rel: 'owners' } },
+      { data: { id: 'child', label: 'duplicate child' } },
+      { data: { id: 'root>child:references', source: 'root', target: 'child', rel: 'references' } },
+      { data: { id: 'over-limit', label: 'over limit' } },
+      { data: { id: 'root>over-limit', source: 'root', target: 'over-limit', rel: 'owners' } },
+    ], 2)
+
+    assert.deepEqual(added.map(element => element.data.id), ['child', 'root>child:owners', 'root>child:references'])
+    assert.equal(stored.has('over-limit'), false)
+    handle.destroy()
+  } finally {
+    globalThis.window = previousWindow
+  }
+})
+
 test('topology switch and resource activation are native, labeled controls', () => {
   const source = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
   assert.match(source, /role="group" aria-label="Topology representation"/u)
   assert.match(source, /:aria-pressed="representation === value"/u)
   assert.match(source, /@click="emit\('inspect', row\.object\)"/u)
-  assert.match(source, /role="region" aria-label="Fleet topology graph"[^>]*tabindex="0"/u)
+  assert.match(source, /role="region" aria-label="Fleet topology visualization"[^>]*tabindex="0"/u)
   assert.match(source, /FormSelect v-model="layout"/u)
   assert.match(source, /Reset graph/u)
 })
@@ -172,12 +208,24 @@ test('graph keyboard routing is focus-scoped and fullscreen uses the shared laye
 
 test('relation metadata is the shared source for labels, direction, and graph colors', () => {
   const metadata = graphModule.RELATION_METADATA
+  const luminance = (color) => {
+    const channels = [1, 3, 5].map(index => Number.parseInt(color.slice(index, index + 2), 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+  }
+  const contrast = (foreground, background) => {
+    const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
   assert.ok(metadata.length > 0)
   assert.deepEqual(graphModule.IMPACT_RELATIONS, metadata.map(({ name }) => name))
   for (const relation of metadata) {
     assert.equal(graphModule.RELATION_COLORS[relation.name], relation.color)
     assert.equal(graphModule.RELATION_LABELS[relation.name], relation.label)
     assert.equal(graphModule.RELATION_DIR[relation.name], relation.direction)
+    assert.match(relation.lightColor, /^#[0-9a-f]{6}$/iu)
+    assert.ok(contrast(relation.lightColor, '#f1f1f6') >= 3, `${relation.name} needs 3:1 contrast on the light graph surface`)
+    assert.ok(['solid', 'dashed', 'dotted'].includes(relation.lineStyle))
     assert.ok(relation.description.length > 0)
   }
 })
@@ -201,6 +249,7 @@ test('impact graph keeps distinct declared relations between the same objects', 
 
   assert.equal(relationEdges.length, 2)
   assert.deepEqual(relationEdges.map(element => element.data.rel), ['owners', 'references'])
+  assert.ok(relationEdges.every(element => element.data.edgeLabel))
   assert.equal(new Set(relationEdges.map(element => element.data.id)).size, relationEdges.length, 'each legend relation needs its own graph edge')
 })
 
@@ -236,6 +285,27 @@ test('impact view exposes a semantic relation legend from shared metadata', () =
   assert.match(source, /<aside[^>]+aria-labelledby="impact-legend-title"/u)
   assert.match(source, /<dl class="legend">/u)
   assert.match(source, /v-for="relation in legendRelations"/u)
-  assert.match(source, /class="legend-swatch"[^>]+backgroundColor: relation\.color/u)
+  assert.match(source, /class="legend-swatch"[^>]+borderTopColor: relation\.displayColor[^>]+borderTopStyle: relation\.lineStyle/u)
   assert.doesNotMatch(source, /kuery-impact-legend kuery-panel k-card/u)
+})
+
+test('graph rendering provides theme contrast, relation labels, resize handling, and bounded expansion control', () => {
+  const graphSource = readFileSync(new URL('./src/graph.ts', import.meta.url), 'utf8')
+  const topologySource = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+
+  assert.match(graphSource, /label: 'data\(edgeLabel\)'/u)
+  assert.match(graphSource, /'line-style': relation\.lineStyle/u)
+  assert.match(graphSource, /new ResizeObserver/u)
+  assert.match(graphSource, /resizeObserver\?\.disconnect\(\)/u)
+  assert.doesNotMatch(graphSource, /wheelSensitivity/u)
+  assert.match(topologySource, /Cancel expansion/u)
+  assert.match(topologySource, /handle\.add\(built\.elements, 4000\)/u)
+  assert.match(topologySource, /handle\.hasNode\(id\)[\s\S]*handle\.isExpanded\(id\)/u)
+  assert.match(topologySource, /if \(handle\.nodeCount\(\) >= 4000\) break/u)
+  assert.match(topologySource, /if \(handle\.hasNode\(key\)\) graphObjects\.set\(key, row\)/u)
+  assert.match(graphSource, /expandedFrom: anchorId/u)
+  assert.match(graphSource, /edge\.data\('expandedFrom'\) === parentID/u)
+  assert.match(topologySource, /await new Promise<void>\(resolve => requestAnimationFrame/u)
+  assert.match(topologySource, /\(rounds \+ 1\) % 3 === 0/u)
+  assert.match(topologySource, /aria-live="polite" aria-atomic="true"/u)
 })

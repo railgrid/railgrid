@@ -20,6 +20,12 @@ faros-provider-infrastructure .page {
   gap: 16px;
 }
 
+/* Separate provider navigation from the routed page using the same major
+ * rhythm as the page's own content groups. */
+faros-provider-infrastructure .infra-tabs {
+  margin-bottom: 16px;
+}
+
 faros-provider-infrastructure .page-head {
   display: flex;
   align-items: flex-start;

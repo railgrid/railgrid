@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { FarosContext } from '../element'
 import type { ObjectResult, QuerySpec } from '../api'
 import {
-  buildElements, IMPACT_RELATIONS, mountGraph, RELATION_DIR, RELATION_LABELS, RELATION_METADATA,
+  buildElements, IMPACT_RELATIONS, mountGraph, relationColor, RELATION_DIR, RELATION_LABELS, RELATION_METADATA,
   themeStyle, type GraphHandle,
 } from '../graph'
 import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
@@ -36,9 +36,13 @@ const title = computed(() => {
 })
 const subtitle = computed(() => `Declared impact on ${props.anchor.cluster?.split('/').pop() || 'this edge'}`)
 const relations = computed(() => Object.entries(result.value?.relations ?? {}).filter(([, rows]) => (rows ?? []).length > 0))
-const legendRelations = computed(() => RELATION_METADATA.filter(relation => (result.value?.relations?.[relation.name]?.length ?? 0) > 0))
+const lightTheme = computed(() => props.context?.theme === 'light' || (
+  props.context?.theme === 'system' && typeof document !== 'undefined' && document.documentElement.classList.contains('light')
+))
+const legendRelations = computed(() => RELATION_METADATA
+  .filter(relation => (result.value?.relations?.[relation.name]?.length ?? 0) > 0)
+  .map(relation => ({ ...relation, displayColor: relationColor(relation, lightTheme.value) })))
 const namespaceRelationBounded = computed(() => (result.value?.relations?.namespaced?.length ?? 0) >= 200)
-
 function spec(): QuerySpec {
   const metadata = props.anchor.object?.metadata ?? {}; const version = props.anchor.object?.apiVersion || ''; const group = version.includes('/') ? version.split('/')[0] : ''
   const filter = { name: metadata.name, ...(props.anchor.object?.kind ? { groupKind: { apiGroup: group, kind: props.anchor.object.kind } } : {}), ...(metadata.namespace ? { namespace: metadata.namespace } : {}) }
@@ -109,7 +113,7 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
           <h2 id="impact-legend-title" class="kuery-workbench-title">Relation legend</h2>
           <dl class="legend">
             <div v-for="relation in legendRelations" :key="relation.name" class="legend-item">
-              <dt><span class="legend-swatch" aria-hidden="true" :style="{ backgroundColor: relation.color }" />{{ relation.legendLabel }}</dt>
+              <dt><span class="legend-swatch" aria-hidden="true" :style="{ borderTopColor: relation.displayColor, borderTopStyle: relation.lineStyle }" />{{ relation.legendLabel }}</dt>
               <dd>{{ relation.description }}</dd>
             </div>
           </dl>
@@ -120,7 +124,7 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
         <p v-if="namespaceRelationBounded" class="kuery-warning" role="status">Namespace membership reached its 200-object relation bound. Additional members may be omitted.</p>
         <div v-if="representation === 'graph'">
           <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" @click="mount">Retry graph</button></div>
-          <div ref="graphHost" class="kuery-graph" role="region" :aria-label="`Impact graph for ${title}`" :aria-describedby="legendRelations.length ? 'impact-bounds impact-legend-title' : 'impact-bounds'" tabindex="0" />
+          <div ref="graphHost" class="kuery-graph" role="img" :aria-label="`Impact visualization for ${title}`" :aria-describedby="legendRelations.length ? 'impact-bounds impact-legend-title' : 'impact-bounds'" />
         </div>
         <div v-else-if="relations.length" class="kuery-impact-list">
           <section v-for="[relation, related] in relations" :key="relation"><h2>{{ RELATION_LABELS[relation] || relation }} <span class="k-badge">{{ RELATION_DIR[relation] === 'up' ? 'impacts this object' : RELATION_DIR[relation] === 'down' ? 'impacted by this object' : 'related' }}</span></h2><ul><li v-for="row in related" :key="row.id || resourceLabel(row)"><button type="button" class="kuery-related" @click="emit('inspect', row)">{{ resourceLabel(row) }}</button></li></ul></section>

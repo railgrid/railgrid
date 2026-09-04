@@ -100,7 +100,7 @@ onBeforeUnmount(() => { edgesRequestID += 1; edgesController?.abort(); edgesCont
     <div v-show="!impact" class="kuery-collection-surfaces">
       <div class="kuery-topbar">
         <Tabs :tabs="tabs" :active="active" aria-label="Kuery views" @select="selectTab" />
-        <span class="k-badge" :class="edges.length ? 'k-badge--success' : 'k-badge--warning'">
+        <span class="k-badge" :class="edges.length ? 'k-badge--success' : 'k-badge--warning'" role="status" aria-live="polite" aria-atomic="true">
           {{ edgesLoading && !edgesLoaded ? 'Discovering edges' : `${edges.length} edge${edges.length === 1 ? '' : 's'} engaged` }}
         </span>
       </div>

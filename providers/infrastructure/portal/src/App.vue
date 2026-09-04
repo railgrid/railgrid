@@ -152,6 +152,7 @@ function provisioned(name: string) {
   <div ref="rootRef" class="app">
     <Tabs
       v-if="contextInitialized && tenantPath"
+      class="infra-tabs"
       :tabs="sectionTabs"
       :active="activeSection"
       aria-label="Infrastructure sections"

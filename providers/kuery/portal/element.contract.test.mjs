@@ -11,6 +11,7 @@ const inventory = readFileSync(new URL('./src/components/InventoryView.vue', imp
 const playground = readFileSync(new URL('./src/components/PlaygroundView.vue', import.meta.url), 'utf8')
 const impact = readFileSync(new URL('./src/components/ImpactView.vue', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('./src/style.css', import.meta.url), 'utf8')
+const editor = readFileSync(new URL('./src/playground.ts', import.meta.url), 'utf8')
 
 test('the provider contract is a thin reactive light-DOM Vue mount', () => {
   assert.match(element, /createApp\(App, \{ state: this\.state \}\)/u)
@@ -39,6 +40,9 @@ test('playground exposes labeled editor and live result status', () => {
   assert.match(playground, /aria-labelledby="query-editor-label"/u)
   assert.match(playground, /role="status" aria-live="polite"/u)
   assert.match(playground, /Correct the QuerySpec and run it again/u)
+  assert.match(editor, /screenReaderLabel: 'Kuery QuerySpec editor'/u)
+  assert.match(editor, /hintOptions: \{ hint, completeSingle: false, container: host \}/u)
+  assert.match(styles, /\.pg-editor \.CodeMirror\s*\{[^}]*background: var\(--color-surface\);[^}]*color: var\(--color-text-primary\);/u)
 })
 
 test('impact drill-down preserves mounted tab state and falls back to the host route', () => {
@@ -80,6 +84,14 @@ test('playground editor and results fill the same split-row height', () => {
   assert.match(styles, /\.pg-editor\s*\{[^}]*flex:\s*1 1 360px;/u)
   assert.match(styles, /\.pg-result\s*\{[^}]*flex:\s*1 1 360px;/u)
   assert.doesNotMatch(styles, /\.pg-result\s*\{[^}]*max-height:/u)
+  assert.match(styles, /height: clamp\(360px, calc\(100vh - 380px\), 1440px\);/u)
+})
+
+test('4K geometry stays useful while mobile inventory filters reflow', () => {
+  assert.match(styles, /\.kuery-graph\s*\{[^}]*height: clamp\(440px, calc\(100vh - 380px\), 1440px\);/u)
+  assert.match(styles, /\.kuery-inventory-table\s*\{[^}]*max-width: 96rem;/u)
+  assert.match(styles, /\.kuery-inventory-filters\s*>\s*label\s*\{[^}]*flex: 1 1 200px;[^}]*min-width: 0;/u)
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.kuery-inventory-filters\s*>\s*label\s*\{[^}]*flex-basis: 100%;[^}]*width: 100%;/u)
 })
 
 test('Kuery requests share one context-derived transport contract', () => {
@@ -104,4 +116,6 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._edges = \[\]/u)
   assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._loading = false/u)
   assert.match(tile, /this\._contextGeneration \+= 1[\s\S]*this\._poller\?\.stop\(\)/u)
+  assert.match(tile, /class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true"/u)
+  assert.match(tile, /if \(html === this\._lastHTML\) return false/u)
 })

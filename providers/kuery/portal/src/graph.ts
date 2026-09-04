@@ -46,45 +46,47 @@ export interface RelationMetadata {
   label: string
   legendLabel: string
   color: string
+  lightColor: string
+  lineStyle: 'solid' | 'dashed' | 'dotted'
   direction: RelDir
   description: string
 }
 
 export const RELATION_METADATA: readonly RelationMetadata[] = [
   {
-    name: 'owners', label: 'owners', legendLabel: 'Owners', color: '#e0b34f', direction: 'up',
+    name: 'owners', label: 'owners', legendLabel: 'Owners', color: '#e0b34f', lightColor: '#715100', lineStyle: 'solid', direction: 'up',
     description: 'Upstream - deleting the related object impacts this object.',
   },
   {
-    name: 'descendants+', label: 'descendants', legendLabel: 'Descendants', color: '#4f9be0', direction: 'down',
+    name: 'descendants+', label: 'descendants', legendLabel: 'Descendants', color: '#4f9be0', lightColor: '#075b9e', lineStyle: 'dashed', direction: 'down',
     description: 'Downstream - deleting this object impacts the related object.',
   },
   {
-    name: 'references', label: 'references', legendLabel: 'References', color: '#9b6de0', direction: 'up',
+    name: 'references', label: 'references', legendLabel: 'References', color: '#9b6de0', lightColor: '#5f3bb8', lineStyle: 'dotted', direction: 'up',
     description: 'Upstream - deleting the related object impacts this object.',
   },
   {
-    name: 'selects', label: 'selects', legendLabel: 'Selects', color: '#4fe0a8', direction: 'up',
+    name: 'selects', label: 'selects', legendLabel: 'Selects', color: '#4fe0a8', lightColor: '#006b4d', lineStyle: 'dashed', direction: 'up',
     description: 'Upstream - deleting the related object impacts this object.',
   },
   {
-    name: 'selected-by', label: 'selected-by', legendLabel: 'Selected by', color: '#e07a4f', direction: 'down',
+    name: 'selected-by', label: 'selected-by', legendLabel: 'Selected by', color: '#e07a4f', lightColor: '#923b13', lineStyle: 'dotted', direction: 'down',
     description: 'Downstream - deleting this object impacts the related object.',
   },
   {
-    name: 'linked+', label: 'linked', legendLabel: 'Linked', color: '#e0519b', direction: 'lateral',
+    name: 'linked+', label: 'linked', legendLabel: 'Linked', color: '#e0519b', lightColor: '#96205d', lineStyle: 'dashed', direction: 'lateral',
     description: 'Lateral - no deletion direction is implied.',
   },
   {
-    name: 'grouped', label: 'grouped', legendLabel: 'Grouped', color: '#8a93a8', direction: 'lateral',
+    name: 'grouped', label: 'grouped', legendLabel: 'Grouped', color: '#8a93a8', lightColor: '#4d5568', lineStyle: 'dotted', direction: 'lateral',
     description: 'Lateral - no deletion direction is implied.',
   },
   {
-    name: 'namespace', label: 'namespace', legendLabel: 'Namespace', color: '#5fae7a', direction: 'up',
+    name: 'namespace', label: 'namespace', legendLabel: 'Namespace', color: '#5fae7a', lightColor: '#24683f', lineStyle: 'solid', direction: 'up',
     description: 'Upstream - deleting the related object impacts this object.',
   },
   {
-    name: 'namespaced', label: 'contains', legendLabel: 'Contains', color: '#5fae7a', direction: 'down',
+    name: 'namespaced', label: 'contains', legendLabel: 'Contains', color: '#5fae7a', lightColor: '#24683f', lineStyle: 'dashed', direction: 'down',
     description: 'Downstream - deleting this object impacts the related object.',
   },
 ]
@@ -98,6 +100,14 @@ export const RELATION_COLORS: Record<string, string> = Object.fromEntries(
 export const RELATION_LABELS: Record<string, string> = Object.fromEntries(
   RELATION_METADATA.map(({ name, label }) => [name, label]),
 )
+
+export function relationColor(relation: RelationMetadata, light: boolean): string {
+  return light ? relation.lightColor : relation.color
+}
+
+function relationLabel(rel: string): string {
+  return RELATION_LABELS[rel] ?? rel
+}
 export const RELATION_DIR: Record<string, RelDir> = {
   ...Object.fromEntries(RELATION_METADATA.map(({ name, direction }) => [name, direction])),
   // The non-transitive spellings are accepted by the engine and remain useful
@@ -150,7 +160,7 @@ export function buildElements(anchor: ObjectResult): BuildResult {
       const edgeId = relationEdgeId(source, target, rel)
       if (relationEdges.has(edgeId)) return
       relationEdges.add(edgeId)
-      elements.push({ data: { id: edgeId, source, target, rel } })
+      elements.push({ data: { id: edgeId, source, target, rel, edgeLabel: relationLabel(rel) } })
     })
   }
   return { elements, nodeIndex }
@@ -363,6 +373,7 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
   const text = v('--color-text-primary', '#e9e9f2')
   const muted = v('--color-text-muted', '#5d5f78')
   const accent = v('--color-accent', '#8b6bff')
+  const light = typeof document !== 'undefined' && document.documentElement.classList.contains('light')
 
   const style: cytoscape.StylesheetStyle[] = [
     {
@@ -424,11 +435,26 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
         'arrow-scale': 0.8,
         'line-color': muted,
         'target-arrow-color': muted,
+        label: 'data(edgeLabel)',
+        color: text,
+        'font-size': 8,
+        'text-rotation': 'autorotate',
+        'text-background-color': surface,
+        'text-background-opacity': 0.92,
+        'text-background-padding': '2px',
       },
     },
   ]
-  for (const { name, color } of RELATION_METADATA) {
-    style.push({ selector: `edge[rel = "${name}"]`, style: { 'line-color': color, 'target-arrow-color': color } })
+  for (const relation of RELATION_METADATA) {
+    const color = relationColor(relation, light)
+    style.push({
+      selector: `edge[rel = "${relation.name}"]`,
+      style: {
+        'line-color': color,
+        'target-arrow-color': color,
+        'line-style': relation.lineStyle,
+      },
+    })
   }
   return style
 }
@@ -438,7 +464,7 @@ export interface GraphHandle {
   // add merges new nodes/edges into the live graph, skipping ids already
   // present (so an object reached from two parents becomes one node with two
   // edges — the real dependency net). Returns the elements actually added.
-  add(elements: cytoscape.ElementDefinition[]): cytoscape.ElementDefinition[]
+  add(elements: cytoscape.ElementDefinition[], nodeLimit?: number): cytoscape.ElementDefinition[]
   hasNode(id: string): boolean
   // markExpanded flags a node as already drilled so the UI can style it and
   // skip re-querying. collapseFrom removes the subtree reachable only through
@@ -506,7 +532,7 @@ export function relationElements(anchorId: string, anchor: ObjectResult): BuildR
       const edgeId = relationEdgeId(source, target, rel)
       if (relationEdges.has(edgeId)) return
       relationEdges.add(edgeId)
-      elements.push({ data: { id: edgeId, source, target, rel } })
+      elements.push({ data: { id: edgeId, source, target, rel, edgeLabel: relationLabel(rel), expandedFrom: anchorId } })
     })
   }
   return { elements, nodeIndex }
@@ -560,7 +586,6 @@ export async function mountGraph(
       minNodeSpacing: 34,
       padding: 16,
     }) as unknown as cytoscape.LayoutOptions,
-    wheelSensitivity: 0.2,
     // Allow zooming far out so a fully-expanded net still fits on screen.
     minZoom: 0.02,
     maxZoom: 3,
@@ -572,9 +597,19 @@ export async function mountGraph(
   // opt into the same graph shortcuts without making the shortcuts global.
   const focusGraph = () => container.focus()
   container.addEventListener('pointerdown', focusGraph)
+  let resizeFrame = 0
+  const resizeObserver = typeof ResizeObserver === 'undefined'
+    ? null
+    : new ResizeObserver(() => {
+        cancelAnimationFrame(resizeFrame)
+        resizeFrame = requestAnimationFrame(() => cy.resize())
+      })
+  resizeObserver?.observe(container)
 
   return {
     destroy: () => {
+      resizeObserver?.disconnect()
+      if (resizeObserver) cancelAnimationFrame(resizeFrame)
       container.removeEventListener('pointerdown', focusGraph)
       cy.destroy()
     },
@@ -584,10 +619,23 @@ export async function mountGraph(
       const n = cy.getElementById(id)
       if (n.nonempty()) n.data('expanded', expanded ? 'true' : 'false')
     },
-    add: (els) => {
+    add: (els, nodeLimit = Number.POSITIVE_INFINITY) => {
+      const acceptedNodes = new Set<string>()
+      let nodeCount = cy.nodes().length
       const fresh = els.filter((e) => {
         const id = e.data?.id as string | undefined
-        return !!id && cy.getElementById(id).empty()
+        if (!id || cy.getElementById(id).nonempty()) return false
+        const source = e.data?.source as string | undefined
+        const target = e.data?.target as string | undefined
+        if (source && target) {
+          const hasEndpoint = (nodeID: string) => cy.getElementById(nodeID).nonempty() || acceptedNodes.has(nodeID)
+          return hasEndpoint(source) && hasEndpoint(target)
+        }
+        if (acceptedNodes.has(id)) return false
+        if (nodeCount >= nodeLimit) return false
+        acceptedNodes.add(id)
+        nodeCount += 1
+        return true
       })
       if (fresh.length) cy.add(fresh)
       return fresh
@@ -595,21 +643,32 @@ export async function mountGraph(
     collapseFrom: (id) => {
       const root = cy.getElementById(id)
       if (root.empty()) return
-      // Cut this node's outgoing edges, then cascade-remove any node left with
-      // no incoming edge (its exclusive subtree). Shared nodes keep an edge
-      // from elsewhere and survive; cluster roots are never removed.
-      cy.remove(root.connectedEdges().filter((e: cytoscape.EdgeSingular) => e.source().id() === id))
-      let changed = true
-      while (changed) {
-        changed = false
-        cy.nodes().forEach((n: cytoscape.NodeSingular) => {
-          if (n.id() === id || n.data('tier') === 'cluster') return
-          if (n.incomers('edge').empty()) {
-            cy.remove(n)
-            changed = true
-          }
+      // Impact arrows encode deletion direction, not expansion ownership. Use
+      // expandedFrom to remove this node's exclusive drill-down branch while
+      // retaining nodes that are also connected by an initial or shared edge.
+      const removeExclusiveChildren = (parentID: string): void => {
+        const ownedEdges = cy.edges().filter((edge: cytoscape.EdgeSingular) => edge.data('expandedFrom') === parentID)
+        const childIDs = new Set<string>()
+        ownedEdges.forEach((edge: cytoscape.EdgeSingular) => {
+          const source = edge.source().id()
+          const target = edge.target().id()
+          childIDs.add(source === parentID ? target : source)
+        })
+        cy.remove(ownedEdges)
+        childIDs.forEach(childID => {
+          if (childID === parentID) return
+          const child = cy.getElementById(childID)
+          if (child.empty() || child.data('tier') === 'cluster') return
+          const shared = child.connectedEdges().some(edge => {
+            const owner = edge.data('expandedFrom') as string | undefined
+            return !owner || owner !== childID
+          })
+          if (shared) return
+          removeExclusiveChildren(childID)
+          cy.remove(child)
         })
       }
+      removeExclusiveChildren(id)
       root.data('expanded', 'false')
     },
     relayout: (layout) => {

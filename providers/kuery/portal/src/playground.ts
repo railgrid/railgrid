@@ -98,17 +98,6 @@ export interface EditorHandle {
 // createEditor builds a JSON CodeMirror instance with prefix autocomplete over
 // the schema vocabulary. Hint fires as you type a word and on Ctrl/Cmd-Space.
 export function createEditor(CM: CMFactory, host: HTMLElement, doc: string, words: string[]): EditorHandle {
-  const cm = CM(host, {
-    value: doc,
-    mode: { name: 'javascript', json: true },
-    lineNumbers: true,
-    autoCloseBrackets: true,
-    matchBrackets: true,
-    tabSize: 2,
-    lineWrapping: true,
-    extraKeys: { 'Ctrl-Space': 'autocomplete', 'Cmd-Space': 'autocomplete' },
-  })
-
   const hint = (editor: CMInstance) => {
     const cur = editor.getCursor()
     const line = editor.getLine(cur.line)
@@ -118,10 +107,23 @@ export function createEditor(CM: CMFactory, host: HTMLElement, doc: string, word
     const list = token ? words.filter((w) => w.toLowerCase().includes(token)) : words
     return { list, from: CM.Pos(cur.line, start), to: CM.Pos(cur.line, cur.ch) }
   }
+  const cm = CM(host, {
+    value: doc,
+    mode: { name: 'javascript', json: true },
+    lineNumbers: true,
+    autoCloseBrackets: true,
+    matchBrackets: true,
+    tabSize: 2,
+    lineWrapping: true,
+    screenReaderLabel: 'Kuery QuerySpec editor',
+    hintOptions: { hint, completeSingle: false, container: host },
+    extraKeys: { 'Ctrl-Space': 'autocomplete', 'Cmd-Space': 'autocomplete' },
+  })
+
   cm.on('inputRead', (...args: unknown[]) => {
     const change = args[1] as { text?: string[] }
     const first = change.text?.[0] ?? ''
-    if (/[A-Za-z]/.test(first)) cm.showHint({ hint, completeSingle: false })
+    if (/[A-Za-z]/.test(first)) cm.showHint({ hint, completeSingle: false, container: host })
   })
 
   return {

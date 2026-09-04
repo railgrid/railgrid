@@ -31,6 +31,7 @@ export class KueryDashboardTile extends HTMLElement {
   private _error: string | null = null
   private _contextGeneration = 0
   private _connected = false
+  private _lastHTML = ''
 
   set farosContext(v: TileContext | null) {
     const changed = createKueryRequestContext(v).identity !== createKueryRequestContext(this._ctx).identity
@@ -50,6 +51,7 @@ export class KueryDashboardTile extends HTMLElement {
 
   connectedCallback(): void {
     this._connected = true
+    this._render()
     if (!this._poller) {
       this._poller = createTilePoller(() => this._load())
       this._poller.start()
@@ -104,11 +106,11 @@ export class KueryDashboardTile extends HTMLElement {
 
   private _render(): void {
     if (this._loading) {
-      this.innerHTML = '<div class="kuery-tile-msg">Loading edges…</div>'
+      this._commit('<div class="kuery-tile-msg" role="status" aria-live="polite" aria-atomic="true">Loading edges…</div>')
       return
     }
     if (this._error) {
-      this.innerHTML = `<div class="kuery-tile-err">Failed to load: ${escapeHTML(this._error)}</div>`
+      this._commit(`<div class="kuery-tile-err" role="alert">Failed to load: ${escapeHTML(this._error)}</div>`)
       return
     }
 
@@ -134,13 +136,22 @@ export class KueryDashboardTile extends HTMLElement {
          </div>`
       : `<p class="kuery-tile-empty">No edges to query yet — enroll one in Edges first.</p>`
 
-    this.innerHTML = `<div class="kuery-tile"><div class="kuery-tile-stats">${stats}</div>${body}</div>`
+    const liveText = `${this._edges.length} ${this._edges.length === 1 ? 'edge is' : 'edges are'} queryable.`
+    const html = `<span class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true">${liveText}</span><div class="kuery-tile"><div class="kuery-tile-stats">${stats}</div>${body}</div>`
+    if (!this._commit(html)) return
 
     for (const el of Array.from(this.querySelectorAll<HTMLButtonElement>('button[data-edge]'))) {
       // The playground is the only destination this provider has; opening it
       // for the clicked edge is the useful action.
       el.addEventListener('click', () => this._navigate(''))
     }
+  }
+
+  private _commit(html: string): boolean {
+    if (html === this._lastHTML) return false
+    this._lastHTML = html
+    this.innerHTML = html
+    return true
   }
 }
 

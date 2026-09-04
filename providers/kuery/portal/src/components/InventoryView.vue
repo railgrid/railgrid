@@ -100,7 +100,7 @@ onBeforeUnmount(() => controller?.abort())
 <template>
   <section class="kuery-panel k-card" aria-labelledby="inventory-title">
     <div class="kuery-panel-head"><div><h2 id="inventory-title" class="kuery-panel-title">Fleet inventory</h2><p class="meta">Server-paginated inventory across connected edges. Name, Kind, and Namespace searches are exact and apply to the full fleet query.</p></div></div>
-    <form class="kuery-toolbar" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
+    <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
       <label>
         <span class="kuery-sr-only">Exact Kind</span>
         <input id="inventory-kind-filter" v-model="kindInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Kind (exact, e.g. Deployment)">
@@ -112,6 +112,7 @@ onBeforeUnmount(() => controller?.abort())
       <button class="k-btn k-btn--primary" type="submit">Apply filters</button>
     </form>
     <ResourceTable
+      class="kuery-inventory-table"
       :columns="columns" :rows="rows" row-key="_key" aria-label="Fleet inventory" :loaded="loaded" :loading="loading"
       refresh-mode="background" :error="error" :stale="loaded && !!error" retryable searchable search-placeholder="Exact resource name…"
       :filters="filters" pagination-mode="server" :page="pager.page" :page-size="pager.pageSize" :page-size-options="[25, 50, 100]"
