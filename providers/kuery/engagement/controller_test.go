@@ -10,12 +10,19 @@ package engagement
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 
+	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	kcpcore "github.com/kcp-dev/sdk/apis/core"
+
 	kuerystore "github.com/faroshq/kuery/pkg/store"
+	kuerysync "github.com/faroshq/kuery/pkg/sync"
 )
 
 // TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the faros
@@ -49,6 +56,130 @@ func TestTenantLabelIsBareIdentifier(t *testing.T) {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
 			t.Fatalf("TenantLabel %q contains %q — must stay a bare identifier", TenantLabel, string(c))
 		}
+	}
+}
+
+func TestTenantPathFromBindingUsesAuthoritativeWorkspaceMetadata(t *testing.T) {
+	const cluster = "btykuuy2789iyolq"
+	for _, path := range []string{
+		"root:faros:tenants:org-1",
+		"root:faros:tenants:org-1:workspace-1",
+	} {
+		t.Run(path, func(t *testing.T) {
+			binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+				"kcp.io/cluster":                        cluster,
+				kcpcore.LogicalClusterPathAnnotationKey: path,
+			}}}
+
+			got, err := tenantPathFromBinding(binding, cluster)
+			if err != nil {
+				t.Fatalf("tenantPathFromBinding: %v", err)
+			}
+			if got != path {
+				t.Fatalf("tenantPathFromBinding = %q, want %q", got, path)
+			}
+		})
+	}
+}
+
+func TestTenantPathFromBindingFailsClosed(t *testing.T) {
+	const cluster = "btykuuy2789iyolq"
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantError   string
+	}{
+		{name: "nil binding", wantError: "APIBinding is required"},
+		{name: "missing cluster", annotations: map[string]string{kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "no kcp.io/cluster"},
+		{name: "cluster mismatch", annotations: map[string]string{"kcp.io/cluster": "other", kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "does not match"},
+		{name: "missing path", annotations: map[string]string{"kcp.io/cluster": cluster}, wantError: "no kcp.io/path"},
+		{name: "platform provider path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:providers:kuery"}, wantError: "not a tenant workspace"},
+		{name: "org provider path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:providers"}, wantError: "not a tenant workspace"},
+		{name: "org provider child path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:providers:kuery"}, wantError: "not a tenant workspace"},
+		{name: "nested internal path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:workspace-1:edge-1"}, wantError: "not a tenant workspace"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var binding *apiskcpv1alpha2.APIBinding
+			if tt.annotations != nil {
+				binding = &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: tt.annotations}}
+			}
+			_, err := tenantPathFromBinding(binding, cluster)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("tenantPathFromBinding error = %v, want containing %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestResolveTenantPathDropsEngagementOnInvalidBinding(t *testing.T) {
+	ctx := context.Background()
+	const (
+		cluster   = "btykuuy2789iyolq"
+		tenant    = "root:faros:tenants:org-1:workspace-1"
+		edgeName  = "edge-1"
+		storeName = tenant + "/" + edgeName
+	)
+
+	store := testStore(t)
+	now := time.Now()
+	if err := store.UpsertCluster(ctx, &kuerystore.ClusterModel{
+		Name:     storeName,
+		Status:   "active",
+		LastSeen: now,
+		TTL:      clusterTTLSeconds,
+		Labels:   tenantLabelsJSON(tenant),
+	}); err != nil {
+		t.Fatalf("seed active cluster: %v", err)
+	}
+
+	clientset := kubefake.NewClientset()
+	claims := testClaims("replica-a", clientset, time.Now)
+	held, err := claims.tryAcquire(ctx, storeName)
+	if err != nil || !held {
+		t.Fatalf("acquire edge claim = %v/%v, want held", held, err)
+	}
+
+	cancelled := false
+	c := &Controller{
+		cfg: Config{
+			Store: store,
+			Sync:  kuerysync.NewSyncController(kuerysync.Config{Store: store}),
+		},
+		claims: claims,
+		engaged: map[string]engagedEdge{
+			cluster + "/" + edgeName: {
+				cancel:   func() { cancelled = true },
+				tenant:   tenant,
+				edgeName: edgeName,
+			},
+		},
+	}
+
+	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+		"kcp.io/cluster": cluster,
+	}}}
+	_, err = c.resolveTenantPath(ctx, binding, cluster)
+	if err == nil || !strings.Contains(err.Error(), "no kcp.io/path") {
+		t.Fatalf("resolveTenantPath error = %v, want missing-path error", err)
+	}
+	if !cancelled {
+		t.Fatal("invalid binding did not cancel the existing engagement")
+	}
+	if len(c.engaged) != 0 {
+		t.Fatalf("engaged entries = %d, want 0", len(c.engaged))
+	}
+
+	row, err := store.GetCluster(ctx, storeName)
+	if err != nil {
+		t.Fatalf("get disengaged cluster: %v", err)
+	}
+	if row.Status != "stale" {
+		t.Fatalf("cluster status = %q, want stale", row.Status)
+	}
+	if _, err := claims.leases.Get(ctx, claimName(storeName), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("claim lookup error = %v, want not found after cleanup", err)
 	}
 }
 
