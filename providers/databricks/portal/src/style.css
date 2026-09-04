@@ -644,9 +644,10 @@ faros-provider-databricks .databricks-first-run__actions svg {
 faros-provider-databricks .databricks-journey {
   display: grid;
   gap: 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 20rem));
   list-style: none;
   margin: 28px 0 0;
+  max-inline-size: 60rem;
   padding: 0;
 }
 

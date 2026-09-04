@@ -50,5 +50,6 @@ describe('Infrastructure template catalog layouts', () => {
     expect(source.match(/Clear filters/g)).toHaveLength(2)
     expect(source).toContain("'No infrastructure templates are available in this workspace.'")
     expect(source).toContain("'No templates match the current filters.'")
-  })
 })
+    expect(styles).toMatch(/\.grid \{[\s\S]*grid-template-columns: repeat\(auto-fill, minmax\(min\(100%, 280px\), 480px\)\)[\s\S]*justify-content: start/)
+  })

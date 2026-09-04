@@ -1263,9 +1263,10 @@ html.light [data-k-tip]::after {
   height: 32px;
 }
 .k-table__loading-control--search {
-  flex: 1 1 220px;
-  max-width: 42rem;
+  flex: 0 1 32rem;
+  max-width: 32rem;
   min-width: 180px;
+  width: 100%;
 }
 .k-table__loading-control--filter { flex: 0 0 132px; }
 .k-table__loading-control--clear {
@@ -1273,10 +1274,11 @@ html.light [data-k-tip]::after {
   height: 30px;
 }
 .k-table__search {
-  flex: 1 1 220px;
-  max-width: 42rem;
+  flex: 0 1 32rem;
+  max-width: 32rem;
   min-width: 180px;
   position: relative;
+  width: 100%;
 }
 .k-table__search-icon {
   color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
@@ -1298,7 +1300,6 @@ html.light [data-k-tip]::after {
   height: 32px;
 }
 .k-table__search-input {
-  max-width: 42rem;
   padding: 0 30px;
   width: 100%;
 }
@@ -1793,7 +1794,10 @@ html.light [data-k-tip]::after {
 
 @media (max-width: 600px) {
   .k-table__search,
-  .k-table__loading-control--search { flex-basis: 100%; }
+  .k-table__loading-control--search {
+    flex-basis: 100%;
+    max-width: none;
+  }
   .k-table__filter,
   .k-table__loading-control--filter { flex: 1 1 100%; min-width: 0; width: 100%; }
   .k-table__filter { grid-template-columns: 84px minmax(0, 1fr); }

@@ -79,6 +79,7 @@ test('presents multiple workspace models with explicit default and readiness sta
 
   assert.match(html, /aria-label="Model GPT High"/)
   assert.match(html, /aria-label="Model Gemini Fast"/)
+  assert.match(html, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,280px\),360px\)\)\] justify-start/)
   assert.match(html, /gpt-5\.4/)
   assert.match(html, /Default/)
   assert.match(html, /Credential saved/)

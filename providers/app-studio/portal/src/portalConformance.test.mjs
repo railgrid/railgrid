@@ -176,7 +176,10 @@ test('keeps the project collection fluid while constraining only the create-rout
   const projectCollection = app.slice(landingStart, createStart)
 
   assert.match(projectCollection, /<div class="flex min-h-full w-full flex-col gap-4">/)
-  assert.match(projectCollection, /grid grid-cols-\[repeat\(auto-fill,minmax\(260px,1fr\)\)\]/)
+  assert.match(
+    projectCollection,
+    /grid grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,280px\),360px\)\)\] justify-start/,
+  )
   assert.doesNotMatch(projectCollection, /max-w-\[(?:1060|1600)px\]/)
 
   assert.match(

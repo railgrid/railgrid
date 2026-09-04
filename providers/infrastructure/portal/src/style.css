@@ -42,19 +42,8 @@ faros-provider-infrastructure .page-meta {
 faros-provider-infrastructure .grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: 1fr;
-}
-
-@media (min-width: 720px) {
-  faros-provider-infrastructure .grid {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (min-width: 1080px) {
-  faros-provider-infrastructure .grid {
-    grid-template-columns: 1fr 1fr 1fr;
-  }
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 480px));
+  justify-content: start;
 }
 
 /* Keep catalog cards readable across the fluid provider canvas. Without

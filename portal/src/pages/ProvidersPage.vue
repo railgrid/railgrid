@@ -610,7 +610,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 : 'No provider in this catalog publishes a self-hosting recipe yet.'
             }}
           </div>
-          <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+          <ul v-else class="grid grid-cols-[repeat(auto-fill,minmax(240px,320px))] justify-start gap-3">
             <li
               v-for="p in availableToSelfHost"
               :key="p.name"
@@ -664,8 +664,8 @@ function dependencyNotice(p: ProviderDTO): string {
         <!-- Search + category filter. The grid stays flat (one card per
              provider); categories are a filter here and a chip on each card
              rather than a per-category section header. -->
-        <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div class="relative w-full sm:max-w-xs">
+        <div class="mb-4 flex flex-wrap items-center gap-3">
+          <div class="relative w-full sm:w-80 sm:max-w-full">
             <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
             <input
               v-model="search"
@@ -712,7 +712,7 @@ function dependencyNotice(p: ProviderDTO): string {
           No providers match your search.
         </div>
 
-        <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+        <ul v-else class="grid grid-cols-[repeat(auto-fill,minmax(240px,320px))] justify-start gap-3">
           <template v-for="(p, i) in orderedCards" :key="p.name">
           <!-- Full-width section divider inside the same grid, so the cards
                below it keep their column alignment. -->

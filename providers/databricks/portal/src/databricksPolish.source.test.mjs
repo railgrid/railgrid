@@ -59,6 +59,17 @@ test('all three collections use one first-run journey without changing page widt
   assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.page-head \{ flex-wrap: wrap; \}/)
 })
 
+test('table actions and onboarding remain prerequisite-aware at wide widths', async () => {
+  const [tables, styles] = await Promise.all([
+    read('./views/TablesView.vue'),
+    read('./style.css'),
+  ])
+
+  assert.match(tables, /<button v-if="loaded && !showFirstRun" class="k-btn k-btn--ghost icon-text"/)
+  assert.match(styles, /\.databricks-journey \{[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 20rem\)\)[\s\S]*max-inline-size: 60rem/)
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.databricks-journey \{ gap: 12px; grid-template-columns: minmax\(0, 1fr\); \}/)
+})
+
 test('collection first-run surfaces stay latched during refresh', async () => {
   const views = await Promise.all([
     read('./views/ConnectionsView.vue'),

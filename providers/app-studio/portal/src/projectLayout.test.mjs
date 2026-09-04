@@ -19,6 +19,7 @@ test('keeps the existing gallery as the grid branch after route resolution and u
   assert.ok(branchStart >= 0 && listStart > branchStart)
 
   const grid = app.slice(branchStart, listStart)
+  assert.match(grid, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,280px\),360px\)\)\] justify-start/)
   assert.doesNotMatch(grid, /projectInitialPending|showProjectInitialLoading|shimmer/)
   assert.match(grid, /v-for="project in filteredProjects"/)
   assert.match(grid, /v-if="projectThumbnailURLs\[project\.name\]"/)

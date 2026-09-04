@@ -8558,7 +8558,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
 
         <template v-if="projectLayout === 'grid'">
-          <div v-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8">
+          <div v-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),360px))] justify-start gap-5 pb-8">
             <article
               v-for="project in filteredProjects"
               :key="`${project.name}:${project.uid ?? ''}`"

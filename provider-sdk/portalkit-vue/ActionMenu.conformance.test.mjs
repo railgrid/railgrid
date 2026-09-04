@@ -190,8 +190,12 @@ test('canonical icon action, layer, and bounded search recipes remain intact', (
   const layers = Object.fromEntries([...stylesheet.matchAll(/--k-layer-(menu|fullscreen|modal|toast):\s*(\d+)/g)].map(match => [match[1], Number(match[2])]))
   assert.deepEqual(Object.keys(layers).sort(), ['fullscreen', 'menu', 'modal', 'toast'])
   assert.ok(layers.menu < layers.fullscreen && layers.fullscreen < layers.modal && layers.modal < layers.toast)
-  assert.match(stylesheet, /\.k-table__search\s*\{[\s\S]*?max-width: 42rem;/)
-  assert.match(stylesheet, /\.k-table__search-input\s*\{[\s\S]*?max-width: 42rem;/)
+  const searchShell = stylesheet.match(/\.k-table__search\s*\{[^}]*\}/)?.[0]
+  const searchInput = stylesheet.match(/\.k-table__search-input\s*\{[^}]*\}/)?.[0]
+  assert.ok(searchShell)
+  assert.ok(searchInput)
+  assert.match(searchShell, /max-width: 32rem;/)
+  assert.doesNotMatch(searchInput, /max-width:/)
   assert.match(resourceTable, /class="k-table__scroll"/)
 
   const tableShell = stylesheet.match(/\.k-table\.k-table--resource\s*\{[\s\S]*?\n\}/)?.[0]

@@ -416,7 +416,7 @@ onUnmounted(() => {
         <p class="page-meta">Imported table handles that App Studio can use by tableRef.</p>
       </div>
       <div class="actions">
-        <button class="k-btn k-btn--ghost icon-text" type="button" :disabled="loading" :aria-busy="loading || undefined" @click="load">
+        <button v-if="loaded && !showFirstRun" class="k-btn k-btn--ghost icon-text" type="button" :disabled="loading" :aria-busy="loading || undefined" @click="load">
           <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" />
           {{ loading ? 'Refreshing…' : 'Refresh' }}
         </button>

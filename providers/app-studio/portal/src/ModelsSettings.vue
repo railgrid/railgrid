@@ -114,7 +114,7 @@ const emit = defineEmits<{
       <div v-if="testError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ testError }}</div>
       <div v-else-if="testStatus" class="flex items-center gap-2 rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success" role="status" aria-live="polite"><Check class="h-3.5 w-3.5" :stroke-width="2" />{{ testStatus }}</div>
 
-      <div v-if="settings?.models.length && !creationRoute && !editorOpen" class="grid gap-3 sm:grid-cols-2">
+      <div v-if="settings?.models.length && !creationRoute && !editorOpen" class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),360px))] justify-start gap-3">
         <article
           v-for="saved in settings.models"
           :key="saved.id"
