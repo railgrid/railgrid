@@ -9,6 +9,7 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -123,7 +124,9 @@ async function remove(row: Record<string, unknown>) {
   mutationError.value = null
   try {
     await api.deleteConnection(connection.name)
+    if (!mounted) return
     props.deletions.acknowledge(deletionScope, connection.name, connection.uid)
+    toast('info', `Connection deletion requested for ${connection.name}.`)
     load()
   } catch (e) {
     mutationError.value = errMessage(e)

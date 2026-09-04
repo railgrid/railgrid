@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProvisionPage from './views/ProvisionPage.vue'
 import { api } from './api'
 
+const toastMock = vi.hoisted(() => vi.fn())
+
 vi.mock('./api', () => ({
   api: {
     getTemplate: vi.fn(),
@@ -12,6 +14,7 @@ vi.mock('./api', () => ({
   },
   isContextChangedError: vi.fn(() => false),
 }))
+vi.mock('./portalkit/toast', () => ({ toast: toastMock }))
 
 async function flush(): Promise<void> {
   await Promise.resolve()
@@ -95,5 +98,23 @@ describe('mounted Infrastructure provisioning workflow', () => {
       values: { enabled: true, database: { size: 'large' } },
     })
     expect(provisioned).toHaveBeenCalledWith('demo-instance')
+    expect(toastMock).toHaveBeenCalledTimes(1)
+    expect(toastMock).toHaveBeenCalledWith('info', 'Provisioning started for demo-instance.')
+  })
+
+  it('keeps a failed provision contextual and does not toast', async () => {
+    vi.mocked(api.createInstance).mockRejectedValueOnce({ message: 'quota exceeded' })
+    app = createApp(ProvisionPage, { templateName: 'demo-template' })
+    app.mount(host)
+    await flush()
+
+    const name = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    name.value = 'demo-instance'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('quota exceeded')
+    expect(toastMock).not.toHaveBeenCalled()
   })
 })

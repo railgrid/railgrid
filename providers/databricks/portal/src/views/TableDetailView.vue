@@ -11,6 +11,7 @@ import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { formatDatabricksError, isTenantMissingError } from '../errors'
 import type { Table, TableColumn } from '../types'
 import {
@@ -38,6 +39,7 @@ const deleting = ref(false)
 const schemaCache = ref<{ uid?: string; generation?: number; refreshedAt?: string; columns: TableColumn[] } | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
+let mounted = false
 const operations = createOperationLocks()
 
 const ready = computed(() => table.value?.conditions.find(c => c.type === 'Ready'))
@@ -219,7 +221,9 @@ async function remove() {
   mutationError.value = null
   try {
     await api.deleteTable(current.name)
+    if (!mounted || props.name !== current.name) return
     operations.tombstone(lock, current.uid)
+    toast('info', `Table deletion requested for ${current.name}.`)
     emit('back')
   } catch (e) {
     mutationError.value = formatDatabricksError(e)
@@ -262,9 +266,11 @@ watch(() => props.name, () => {
 })
 
 onMounted(() => {
+  mounted = true
   load()
 })
 onUnmounted(() => {
+  mounted = false
   poll.stop()
   refresh.stop()
 })

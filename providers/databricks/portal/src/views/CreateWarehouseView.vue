@@ -13,6 +13,7 @@ import type { DatabricksPrerequisiteKind } from '../journey'
 import type { Connection } from '../types'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ManualCreateGuidance from '../components/ManualCreateGuidance.vue'
+import { toast } from '../portalkit/toast'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
@@ -144,6 +145,7 @@ async function submit(): Promise<void> {
     }
     const created = await api.saveWarehouse(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
+    toast('ok', `Warehouse ${created.name} registered.`)
     emit('created', created.name)
   } catch (error) {
     await focusFormError(formatDatabricksError(error), generation, expectedContext)

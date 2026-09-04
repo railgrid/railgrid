@@ -12,6 +12,7 @@ import WorkloadCreate from './WorkloadCreate.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog } from './portalkit/confirm'
+import { toast } from './portalkit/toast'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -168,8 +169,11 @@ function onEdgeCollectionActivated(): void {
 
 async function onDelete(edge: Edge) {
   if (!(await confirmDialog({ title: `Delete ${edge.type === 'server' ? 'server' : 'cluster'} "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  const expectedContextGeneration = contextGeneration.value
   try {
     await deleteEdge(edge)
+    if (contextGeneration.value !== expectedContextGeneration) return
+    toast('info', `${edge.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${edge.name}.`)
     await refresh()
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'

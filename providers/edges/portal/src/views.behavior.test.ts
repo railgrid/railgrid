@@ -28,9 +28,11 @@ const api = vi.hoisted(() => ({
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
 }))
+const toastMock = vi.hoisted(() => vi.fn())
 
 vi.mock('./api', () => api)
 vi.mock('./portalkit/confirm', () => confirm)
+vi.mock('./portalkit/toast', () => ({ toast: toastMock }))
 
 import Services from './Services.vue'
 import App from './App.vue'
@@ -857,6 +859,7 @@ describe('edge list views', () => {
       expect(state.canCreate).toBe(false)
       await state.onCreate()
       expect(api.createKubeEdgeService).not.toHaveBeenCalled()
+      expect(toastMock).not.toHaveBeenCalled()
 
       state.draft.host = '  https://192.168.1.1:443/  '
       expect(state.canCreate).toBe(true)
@@ -866,6 +869,8 @@ describe('edge list views', () => {
         targetName: '',
         edgeKind: 'KubernetesCluster',
       }))
+      expect(toastMock).toHaveBeenCalledTimes(1)
+      expect(toastMock).toHaveBeenCalledWith('info', 'Service creation requested for unifi.')
     } finally {
       mounted.unmount()
     }
@@ -1061,6 +1066,7 @@ describe('edge list views', () => {
       expect(state.deleting).toBe(false)
       expect(state.busy).toBe(false)
       expect(state.mutationError).toBe('delete failed')
+      expect(toastMock).not.toHaveBeenCalled()
     } finally {
       mounted.unmount()
     }
@@ -1092,6 +1098,7 @@ describe('edge detail actions', () => {
         confirmLabel: 'Delete',
       }))
       expect(api.deleteEdge).not.toHaveBeenCalled()
+      expect(toastMock).not.toHaveBeenCalled()
       expect(state.edge).toEqual(edgeDetail)
 
       const pendingDelete = deferred<void>()
@@ -1110,6 +1117,32 @@ describe('edge detail actions', () => {
       expect(state.edge).toEqual(edgeDetail)
       expect(state.mutationError).toBe('delete failed')
       expect(state.actionItems[0].disabled).toBe(false)
+      expect(toastMock).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('emits one informational toast before leaving a successfully deleted edge', async () => {
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([])
+    confirm.confirmDialog.mockResolvedValue(true)
+    const deleted = vi.fn()
+    const mounted = await mount(Detail, {
+      name: edgeDetail.name,
+      type: edgeDetail.type,
+      cluster: null,
+      token: null,
+      onDeleted: deleted,
+    })
+    try {
+      await flush()
+      await flush()
+      await mounted.instance.setupState.onDelete()
+
+      expect(toastMock).toHaveBeenCalledTimes(1)
+      expect(toastMock).toHaveBeenCalledWith('info', 'Cluster deletion requested for edge-a.')
+      expect(deleted).toHaveBeenCalledTimes(1)
     } finally {
       mounted.unmount()
     }

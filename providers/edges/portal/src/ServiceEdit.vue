@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, onUnmounted, watch } from 'vue'
 import { Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
 import { confirmDialog } from './portalkit/confirm'
 import { connectEdgeService, deleteEdgeService, getService, updateEdgeService } from './api'
@@ -12,6 +12,7 @@ import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
+import { toast } from './portalkit/toast'
 
 // The route owns the resource identity. A list-row snapshot is optional and is
 // used only as a seed; every instance page performs an exact getService read so
@@ -36,6 +37,7 @@ const busy = ref(false)
 const deleting = ref(false)
 let selectionGeneration = 0
 let selectedName = ''
+let active = true
 
 const currentName = computed(() => service.value?.name || props.serviceName || props.service?.name || '')
 const title = computed(() => currentName.value || 'Service')
@@ -264,6 +266,7 @@ async function refreshDetail(): Promise<void> {
 async function onSaveConfig(): Promise<void> {
   const name = currentName.value
   if (!name || !service.value) return
+  const generation = selectionGeneration
   busy.value = true
   mutationError.value = null
   try {
@@ -278,6 +281,8 @@ async function onSaveConfig(): Promise<void> {
       instructions: instructions.value,
       targetMode: targetMode.value,
     })
+    if (!active || generation !== selectionGeneration || currentName.value !== name) return
+    toast('ok', `Service configuration saved for ${name}.`)
     await load()
     emit('saved')
   } catch (error) {
@@ -314,11 +319,14 @@ async function onSaveCreds(): Promise<void> {
   const name = currentName.value
   const token = packedCredential()
   if (!credentialsSupported.value || !name || !service.value || !token) return
+  const generation = selectionGeneration
   busy.value = true
   mutationError.value = null
   try {
     await connectEdgeService(name, token)
+    if (!active || generation !== selectionGeneration || currentName.value !== name) return
     credInputs.value = {}
+    toast('ok', `Service credentials saved for ${name}.`)
     await load()
     emit('saved')
   } catch (error) {
@@ -340,8 +348,11 @@ async function onDelete(): Promise<void> {
   deleting.value = true
   busy.value = true
   mutationError.value = null
+  const generation = selectionGeneration
   try {
     await deleteEdgeService(name)
+    if (!active || generation !== selectionGeneration || currentName.value !== name) return
+    toast('info', `Service deletion requested for ${name}.`)
     emit('deleted')
   } catch (error) {
     mutationError.value = errorMessage(error, 'Delete failed')
@@ -350,6 +361,11 @@ async function onDelete(): Promise<void> {
     busy.value = false
   }
 }
+
+onUnmounted(() => {
+  active = false
+  selectionGeneration += 1
+})
 </script>
 
 <template>

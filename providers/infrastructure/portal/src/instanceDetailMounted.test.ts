@@ -8,6 +8,8 @@ import type { Instance } from './types'
 import { api } from './api'
 import { confirmDialog } from './portalkit/confirm'
 
+const toastMock = vi.hoisted(() => vi.fn())
+
 vi.mock('./api', () => ({
   api: {
     getInstance: vi.fn(),
@@ -20,6 +22,7 @@ vi.mock('./api', () => ({
 vi.mock('./portalkit/confirm', () => ({
   confirmDialog: vi.fn(),
 }))
+vi.mock('./portalkit/toast', () => ({ toast: toastMock }))
 
 const instance: Instance = {
   uid: 'uid-instance-1',
@@ -70,6 +73,7 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
   beforeEach(() => {
     vi.mocked(api.getInstance).mockResolvedValue({ ...instance })
     vi.mocked(api.getTemplate).mockResolvedValue({ template: { view: null } as never })
+    vi.mocked(api.deleteInstance).mockResolvedValue(undefined)
     vi.mocked(confirmDialog).mockResolvedValue(true)
     host = document.createElement('div')
     document.body.appendChild(host)
@@ -196,12 +200,33 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
 
     expect(host.querySelector('[role="alert"][aria-live="assertive"]')?.textContent)
       .toContain('HTTPError: delete failed')
+    expect(toastMock).not.toHaveBeenCalled()
     expect(host.querySelector('[role="status"][aria-live="polite"].instance-message')).toBeNull()
     expect(text('.k-resource-page__status .k-badge')).toContain('Ready')
     expect(host.textContent).toContain('retained-value')
     expect(refresh!.disabled).toBe(false)
     expect(back!.getAttribute('aria-disabled')).toBeNull()
     back!.click()
+    expect(navigate).toHaveBeenCalledWith('instances')
+  })
+
+  it('emits one informational toast before navigating after an accepted deletion', async () => {
+    const navigate = vi.fn()
+    app = createApp(InstanceDetailPage, {
+      instanceName: instance.name,
+      tombstones: createResourceTombstones(),
+      onNavigate: navigate,
+    })
+    app.mount(host)
+    await flush()
+
+    host.querySelector<HTMLButtonElement>('.k-action-menu__trigger')!.click()
+    await flush()
+    host.querySelector<HTMLButtonElement>('.k-action-menu__item')!.click()
+    await flush()
+
+    expect(toastMock).toHaveBeenCalledTimes(1)
+    expect(toastMock).toHaveBeenCalledWith('info', 'Instance deletion requested for demo-instance.')
     expect(navigate).toHaveBeenCalledWith('instances')
   })
 })

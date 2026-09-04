@@ -7,6 +7,7 @@ import type { Connection, ErrorResponse } from '../types'
 import type { ConnectionCreateMethod } from '../routes'
 import type { ResourceDeletions } from '../refresh'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
+import { toast } from '../portalkit/toast'
 
 const props = defineProps<{
   method: ConnectionCreateMethod
@@ -300,6 +301,7 @@ async function submit(): Promise<void> {
     if (!isCurrentMutation(generation, expectedContext)) return
     const created = await api.connect(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
+    toast('info', `Connection creation requested for ${created.name}.`)
     emit('created', created.name)
   } catch (e) {
     if (isCurrentMutation(generation, expectedContext)) formError.value = errMessage(e)

@@ -11,6 +11,7 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import {
   FAST_REFRESH_MS,
   STABLE_REFRESH_MS,
@@ -183,7 +184,9 @@ async function deleteConnection() {
   mutationError.value = null
   try {
     await api.deleteConnection(current.name)
+    if (!mounted || conn.value?.name !== current.name || conn.value?.uid !== current.uid) return
     props.deletions.acknowledge(deletionScope, current.name, current.uid)
+    toast('info', `Connection deletion requested for ${current.name}.`)
     emit('back')
   } catch (e) {
     mutationError.value = errMessage(e)

@@ -10,6 +10,7 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { formatDatabricksError, isTenantMissingError } from '../errors'
 import type { Warehouse } from '../types'
 import {
@@ -42,6 +43,7 @@ const editIDInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
+let mounted = false
 const operations = createOperationLocks()
 
 const ready = computed(() => warehouse.value?.conditions.find(c => c.type === 'Ready'))
@@ -203,12 +205,15 @@ async function saveEdit() {
   saveError.value = null
   mutationError.value = null
   try {
+    const current = warehouse.value
     await api.saveWarehouse({
-      name: warehouse.value.name,
-      connectionRef: warehouse.value.connectionRef,
+      name: current.name,
+      connectionRef: current.connectionRef,
       warehouseID: nextID,
     })
+    if (!mounted || props.name !== current.name) return
     editing.value = false
+    toast('ok', `Warehouse ${current.name} updated.`)
     load()
   } catch (e) {
     await focusSaveError(formatDatabricksError(e))
@@ -237,7 +242,9 @@ async function remove() {
   mutationError.value = null
   try {
     await api.deleteWarehouse(current.name)
+    if (!mounted || props.name !== current.name) return
     operations.tombstone(lock, current.uid)
+    toast('info', `Warehouse deletion requested for ${current.name}.`)
     emit('back')
   } catch (e) {
     mutationError.value = formatDatabricksError(e)
@@ -280,9 +287,11 @@ watch(() => props.name, () => {
 })
 
 onMounted(() => {
+  mounted = true
   load()
 })
 onUnmounted(() => {
+  mounted = false
   poll.stop()
   refresh.stop()
 })

@@ -6,6 +6,7 @@ import { api, isContextChangedError } from '../api'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import {
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
@@ -377,6 +378,7 @@ async function deleteInstance(instance: Instance) {
     await api.deleteInstance(currentInstance.name)
     if (active) {
       tombstones.add(instanceKey(currentInstance), currentInstance.uid)
+      toast('info', `Instance deletion requested for ${currentInstance.name}.`)
       reconcileAfterNextServerRead = true
       // The complete source is stale until the post-delete read proves the
       // tombstone's absence/presence, so query edits during that read must

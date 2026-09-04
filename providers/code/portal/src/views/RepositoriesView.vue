@@ -9,6 +9,7 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import {
   FAST_REFRESH_MS,
@@ -278,6 +279,7 @@ async function remove(row: Record<string, unknown>) {
     await api.deleteRepository(repository.name)
     if (!mounted) return
     props.deletions.acknowledge(deletionScope, repository.name, repository.uid)
+    toast('info', `Repository deletion requested for ${repository.name}.`)
     loadRepositories()
   } catch (e) {
     mutationError.value = errMessage(e)

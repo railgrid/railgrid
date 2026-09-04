@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     connect: vi.fn(),
     createRepository: vi.fn(),
   },
+  toast: vi.fn(),
 }))
 
 vi.mock('./api', () => ({
@@ -22,6 +23,7 @@ vi.mock('./api', () => ({
   normalizeResourceName: (value: string) => value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253) || 'x',
 }))
 vi.mock('./portalkit/confirm', () => ({ confirmDialog: vi.fn() }))
+vi.mock('./portalkit/toast', () => ({ toast: mocks.toast }))
 vi.mock('./portalkit/ResourceTable.vue', async () => {
   const { h } = await import('vue')
   type StubSlots = Record<string, () => VNode[]>
@@ -365,6 +367,27 @@ describe('connection creation authority fencing', () => {
     await handler({ preventDefault() {} })
   }
 
+  it('emits one informational toast after a current connection create succeeds', async () => {
+    const created = vi.fn()
+    const { app, root } = mount(ConnectionCreateView, {
+      method: 'token',
+      deletions: createResourceDeletions(),
+      onCreated: created,
+    })
+    await settle()
+    setInput(root, 'my-github', 'new-connection')
+    setInput(root, 'acme', 'octocat')
+    setInput(root, 'ghp_…', 'new-secret')
+
+    await submit(root)
+    await settle()
+
+    expect(mocks.toast).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).toHaveBeenCalledWith('info', 'Connection creation requested for created.')
+    expect(created).toHaveBeenCalledWith('created')
+    app.unmount()
+  })
+
   it('reports required connection fields and focuses the first invalid input', async () => {
     mocks.api.listConnections.mockResolvedValue([])
     const { app, root } = mount(ConnectionCreateView, {
@@ -500,6 +523,32 @@ describe('connection creation authority fencing', () => {
     await settle()
 
     expect(mocks.api.connect).not.toHaveBeenCalled()
+    expect(mocks.toast).not.toHaveBeenCalled()
+    expect(created).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('does not toast or navigate when connection creation resolves after the workspace changes', async () => {
+    const mutation = deferred<{ name: string }>()
+    mocks.api.connect.mockReturnValueOnce(mutation.promise)
+    const created = vi.fn()
+    const { app, root, contextGeneration } = mount(ConnectionCreateView, {
+      method: 'token',
+      deletions: createResourceDeletions(),
+      onCreated: created,
+    })
+    await settle()
+    setInput(root, 'my-github', 'new-connection')
+    setInput(root, 'acme', 'octocat')
+    setInput(root, 'ghp_…', 'new-secret')
+
+    const pendingSubmit = submit(root)
+    await settle()
+    contextGeneration.value += 1
+    mutation.resolve({ name: 'new-connection' })
+    await pendingSubmit
+
+    expect(mocks.toast).not.toHaveBeenCalled()
     expect(created).not.toHaveBeenCalled()
     app.unmount()
   })

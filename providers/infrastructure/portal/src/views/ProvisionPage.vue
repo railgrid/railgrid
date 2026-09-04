@@ -6,6 +6,7 @@ import { api, isContextChangedError } from '../api'
 import { createWritableValues } from '../createValues'
 import type { Template, ErrorResponse } from '../types'
 import { useDelayedLoading } from '../portalkit/useDelayedLoading'
+import { toast } from '../portalkit/toast'
 import { REASON_CLOUD_CREDENTIALS_MISSING, REASON_API_BINDING_MISSING, REASON_TENANT_MISSING } from '../types'
 
 const props = defineProps<{ templateName: string }>()
@@ -103,7 +104,10 @@ async function submit() {
       name: instanceName.value.trim(),
       values: writableValues,
     })
-    if (active) emit('provisioned', inst.name)
+    if (active) {
+      toast('info', `Provisioning started for ${inst.name}.`)
+      emit('provisioned', inst.name)
+    }
   } catch (e: unknown) {
     if (!active || isContextChangedError(e)) return
     const err = e as ErrorResponse

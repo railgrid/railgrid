@@ -8,6 +8,7 @@ import type { ResourceDeletions } from '../refresh'
 import { createFullListReadCoordinator } from '../hybridPagination'
 import { createOperationLocks, operationKey } from '../refresh'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
+import { toast } from '../portalkit/toast'
 
 const props = defineProps<{ deletions: ResourceDeletions }>()
 const emit = defineEmits<{
@@ -238,6 +239,7 @@ async function submit(): Promise<void> {
     if (!isCurrentMutation(generation, expectedContext)) return
     const created = await api.createRepository(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
+    toast('info', `Repository creation requested for ${created.name}.`)
     emit('created', created.name)
   } catch (e) {
     if (isCurrentMutation(generation, expectedContext)) formError.value = errMessage(e)

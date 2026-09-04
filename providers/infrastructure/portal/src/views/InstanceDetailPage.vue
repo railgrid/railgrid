@@ -12,6 +12,7 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import {
   createAdaptiveRefreshTimer,
   createLatestRefreshController,
@@ -231,6 +232,7 @@ async function executeDelete() {
     await api.deleteInstance(props.instanceName)
     if (active) {
       props.tombstones.add(deletingInstance.name, deletingInstance.uid)
+      toast('info', `Instance deletion requested for ${deletingInstance.name}.`)
       navigatingAway = true
       emit('navigate', 'instances')
     }

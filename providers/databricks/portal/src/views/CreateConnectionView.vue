@@ -10,6 +10,7 @@ import {
 } from '../refresh'
 import { resourceNameError } from '../resourceName'
 import ManualCreateGuidance from '../components/ManualCreateGuidance.vue'
+import { toast } from '../portalkit/toast'
 
 const emit = defineEmits<{
   (event: 'cancel'): void
@@ -125,6 +126,7 @@ async function submit(): Promise<void> {
     }
     const created = await api.saveConnection(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
+    toast('ok', `Connection ${created.name} saved.`)
     emit('created', created.name)
   } catch (error) {
     await focusFormError(formatDatabricksError(error), generation, expectedContext)

@@ -4,6 +4,7 @@ import { RefreshCw, Plus, ChevronRight, ChevronDown, Store, Rocket, Boxes, Serve
 import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
+import { toast } from './portalkit/toast'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -337,6 +338,8 @@ async function onDelete(w: Workload) {
   if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteWorkload(w.name)
+    if (stopped) return
+    toast('info', `Workload deletion requested for ${w.name}.`)
     await refresh('foreground', true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft, Globe2, Loader2, Plus, Server } from 'lucide-vue-next'
 import { createKubeEdgeService, fetchServiceCatalog, listEdges } from './api'
 import type { CatalogEntry } from './api'
 import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
+import { toast } from './portalkit/toast'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -26,6 +27,7 @@ const loading = ref(true)
 const busy = ref(false)
 const error = ref<string | null>(null)
 const selectedEdgeKey = ref('')
+let active = true
 
 function catalogFor(type?: string): CatalogEntry | undefined {
   return catalog.value.find((entry) => entry.type === type)
@@ -201,6 +203,8 @@ async function onCreate(): Promise<void> {
       port: Number(draft.value.port) || 8123,
       instructions: draft.value.instructions?.trim() || undefined,
     })
+    if (!active) return
+    toast('info', `Service creation requested for ${name}.`)
     emit('created', name)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
@@ -226,6 +230,9 @@ onMounted(async () => {
     error.value = (edgesResult.reason as ErrorResponse)?.message ?? 'Failed to load edges'
   }
   loading.value = false
+})
+onUnmounted(() => {
+  active = false
 })
 </script>
 

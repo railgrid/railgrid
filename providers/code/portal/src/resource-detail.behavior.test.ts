@@ -20,10 +20,12 @@ const mocks = vi.hoisted(() => ({
     deleteConnection: vi.fn(),
   },
   confirmDialog: vi.fn(),
+  toast: vi.fn(),
 }))
 
 vi.mock('./api', () => ({ api: mocks.api }))
 vi.mock('./portalkit/confirm', () => ({ confirmDialog: mocks.confirmDialog }))
+vi.mock('./portalkit/toast', () => ({ toast: mocks.toast }))
 vi.mock('./portalkit/ActionMenu.vue', async () => {
   const { h, ref } = await import('vue')
   type ActionItem = { id: string; label: string; disabled?: boolean; busy?: boolean }
@@ -439,7 +441,28 @@ describe('mounted resource deletion state', () => {
     expect(textContent(root)).toContain('GraphQLError: delete failed')
     expect(textContent(root)).toContain('github')
     expect(back).not.toHaveBeenCalled()
+    expect(mocks.toast).not.toHaveBeenCalled()
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('emits one informational toast before leaving a successfully deleted connection', async () => {
+    const back = vi.fn()
+    const { app, root } = mount(ConnectionDetailView, {
+      name: connection.name,
+      deletions: createResourceDeletions(),
+      onBack: back,
+    })
+    await settle()
+
+    click(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')!)
+    await settle()
+    click(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete connection')!)
+    await settle()
+
+    expect(mocks.toast).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).toHaveBeenCalledWith('info', 'Connection deletion requested for github.')
+    expect(back).toHaveBeenCalledTimes(1)
     app.unmount()
   })
 
@@ -461,6 +484,7 @@ describe('mounted resource deletion state', () => {
 
     expect(mocks.confirmDialog).toHaveBeenCalledTimes(1)
     expect(mocks.api.deleteConnection).not.toHaveBeenCalled()
+    expect(mocks.toast).not.toHaveBeenCalled()
     expect(findNode(root, node => node.props.role === 'menu')).toBeUndefined()
     expect(textContent(root)).not.toContain('Deleting this connection.')
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(false)

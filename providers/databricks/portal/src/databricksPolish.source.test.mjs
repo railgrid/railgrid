@@ -308,3 +308,24 @@ test('prerequisite routes keep cancellation origin separate from success continu
   assert.match(wizard, /@click="complete">Done/)
   assert.match(wizard, /@click="cancel">Cancel/)
 })
+
+test('silent-success Databricks mutations use truthful Vue toasts', async () => {
+  const sources = await Promise.all([
+    read('./views/CreateConnectionView.vue'),
+    read('./views/CreateWarehouseView.vue'),
+    read('./views/CreateTableView.vue'),
+    read('./views/ConnectionDetailView.vue'),
+    read('./views/WarehouseDetailView.vue'),
+    read('./views/TableDetailView.vue'),
+    read('./views/ConnectionsView.vue'),
+    read('./views/WarehousesView.vue'),
+    read('./views/TablesView.vue'),
+  ])
+  const source = sources.join('\n')
+  assert.equal(source.match(/\btoast\(/g)?.length, 11)
+  assert.match(source, /toast\('ok', `Connection \$\{created\.name\} saved\.`/)
+  assert.match(source, /toast\('ok', `Warehouse \$\{created\.name\} registered\.`/)
+  assert.match(source, /editing\.value \? `Table \$\{created\.name\} updated\.` : `Table \$\{created\.name\} registered\.`/)
+  assert.equal(source.match(/deletion requested/g)?.length, 6)
+  assert.doesNotMatch(source, /toast\('error'/)
+})

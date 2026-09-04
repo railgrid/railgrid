@@ -8,6 +8,7 @@ import {
 import type { CatalogEntry } from './api'
 import type { EdgeService, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
+import { toast } from './portalkit/toast'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
@@ -403,6 +404,8 @@ async function onDelete(s: EdgeService) {
   if (!(await confirmDialog({ title: `Delete service "${s.name}"?`, message: 'Its MCP tools stop being exposed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdgeService(s.name)
+    if (stopped) return
+    toast('info', `Service deletion requested for ${s.name}.`)
     await refresh('foreground', true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'

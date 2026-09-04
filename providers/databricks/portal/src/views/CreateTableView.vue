@@ -14,6 +14,7 @@ import type { DatabricksPrerequisiteKind } from '../journey'
 import type { Connection, Table, Warehouse } from '../types'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ManualCreateGuidance from '../components/ManualCreateGuidance.vue'
+import { toast } from '../portalkit/toast'
 
 const props = defineProps<{
   /** When set, this route edits the named table instead of creating one. */
@@ -216,6 +217,7 @@ async function submit(): Promise<void> {
     }
     const created = await api.saveTable(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
+    toast('ok', editing.value ? `Table ${created.name} updated.` : `Table ${created.name} registered.`)
     emit('created', created.name)
   } catch (error) {
     await focusFormError(formatDatabricksError(error), generation, expectedContext)

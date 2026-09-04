@@ -9,6 +9,7 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { formatDatabricksError, isTenantMissingError } from '../errors'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import type { Connection } from '../types'
 import {
@@ -241,11 +242,13 @@ async function remove(row: Record<string, unknown>) {
   mutationError.value = null
   try {
     await api.deleteConnection(conn)
+    if (!mounted) return
     invalidateCompleteAuthority()
     firstPageSettled.value = false
     pendingDeletions.set(conn.name, conn.uid)
     operations.tombstone(lock, conn.uid)
     connections.value = connections.value.filter(item => item.name !== conn.name)
+    toast('info', `Connection deletion requested for ${conn.name}.`)
     load()
   } catch (e) {
     mutationError.value = formatDatabricksError(e)

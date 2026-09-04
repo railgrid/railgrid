@@ -10,6 +10,7 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { formatDatabricksError, isTenantMissingError } from '../errors'
 import type { Connection } from '../types'
 import {
@@ -43,6 +44,7 @@ const editHostInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
+let mounted = false
 const operations = createOperationLocks()
 
 const validated = computed(() => conn.value?.conditions.find(c => c.type === 'Validated'))
@@ -196,18 +198,21 @@ async function saveEdit() {
   saveError.value = null
   mutationError.value = null
   try {
+    const current = conn.value
     await api.saveConnection({
-      name: conn.value.name,
+      name: current.name,
       host,
-      secretName: conn.value.secretName,
-      secretNamespace: conn.value.secretNamespace,
-      secretKey: conn.value.secretKey,
+      secretName: current.secretName,
+      secretNamespace: current.secretNamespace,
+      secretKey: current.secretKey,
       // An empty token intentionally preserves the existing Secret. Enter a
       // new token here only when rotating the credential.
       token: editToken.value || undefined,
     })
+    if (!mounted || props.name !== current.name) return
     editing.value = false
     editToken.value = ''
+    toast('ok', `Connection ${current.name} saved.`)
     load()
   } catch (e) {
     await focusSaveError(formatDatabricksError(e))
@@ -236,7 +241,9 @@ async function remove() {
   mutationError.value = null
   try {
     await api.deleteConnection(current)
+    if (!mounted || props.name !== current.name) return
     operations.tombstone(lock, current.uid)
+    toast('info', `Connection deletion requested for ${current.name}.`)
     emit('back')
   } catch (e) {
     mutationError.value = formatDatabricksError(e)
@@ -279,9 +286,11 @@ watch(() => props.name, () => {
 })
 
 onMounted(() => {
+  mounted = true
   load()
 })
 onUnmounted(() => {
+  mounted = false
   poll.stop()
   refresh.stop()
 })

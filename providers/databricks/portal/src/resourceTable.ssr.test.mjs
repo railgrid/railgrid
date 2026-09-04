@@ -26,6 +26,7 @@ const canonicalTableHelpers = resolve(repositoryRoot, 'provider-sdk/portalkit-vu
 // so provide inert constructors that keep that browser-only branch false.
 if (typeof globalThis.Document === 'undefined') globalThis.Document = class {}
 if (typeof globalThis.ShadowRoot === 'undefined') globalThis.ShadowRoot = class {}
+if (typeof globalThis.HTMLElement === 'undefined') globalThis.HTMLElement = class {}
 
 test.before(async () => {
   vite = await createServer({
@@ -324,6 +325,7 @@ function mountDetailView(Component, props, components, provides = {}) {
     head: { appendChild() {} },
     addEventListener() {},
     removeEventListener() {},
+    dispatchEvent() { return true },
   }
   globalThis.window = {
     addEventListener() {},
@@ -3895,6 +3897,7 @@ function mountNavigationApp(App, ctx, storage) {
     head: { appendChild() {} },
     addEventListener() {},
     removeEventListener() {},
+    dispatchEvent() { return true },
   }
   globalThis.window = {
     sessionStorage: storage,

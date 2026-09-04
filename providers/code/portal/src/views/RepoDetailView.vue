@@ -13,6 +13,7 @@ import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import {
   FAST_REFRESH_MS,
@@ -387,8 +388,9 @@ async function deleteRepository() {
   repositoryMutationError.value = null
   try {
     await api.deleteRepository(current.name)
-    if (!mounted) return
+    if (!mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid) return
     props.deletions.acknowledge(repositoryScope, current.name, current.uid)
+    toast('info', `Repository deletion requested for ${current.name}.`)
     loadRepository()
   } catch (e) {
     repositoryMutationError.value = errMessage(e)
@@ -524,8 +526,10 @@ async function changeConnection() {
   connError.value = null
   try {
     const updated = await api.updateRepositoryConnection(current.name, selectedConn.value)
+    if (!mounted || repo.value?.name !== current.name || repo.value?.uid !== current.uid) return
     repo.value = { ...current, ...updated, conditions: current.conditions }
     connectionExpanded.value = false
+    toast('info', `Repository connection update requested for ${current.name}.`)
     loadRepository()
   } catch (e) {
     connError.value = errMessage(e)
@@ -543,16 +547,19 @@ async function addKey() {
     return
   }
   keySubmitting.value = true
+  const repositoryName = props.name
   try {
     const created = await api.createDeployKey({
-      repositoryRef: props.name,
+      repositoryRef: repositoryName,
       title: keyTitle.value || undefined,
       publicKey: keyPublic.value || undefined,
       readOnly: keyReadOnly.value,
     })
+    if (!mounted || props.name !== repositoryName) return
     keys.value = [...keys.value.filter(item => item.name !== created.name), created]
     keysLoaded.value = true
     keyTitle.value = keyPublic.value = ''
+    toast('info', `Deploy key update requested for ${repositoryName}.`)
     loadKeys()
   } catch (e) {
     keyError.value = errMessage(e)
@@ -571,7 +578,9 @@ async function removeKey(row: Record<string, unknown>) {
   keyDeleteError.value = null
   try {
     await api.deleteDeployKey(key.name)
+    if (!mounted || props.name !== key.repositoryRef) return
     props.deletions.acknowledge(keyScope, key.name, key.uid)
+    toast('info', `Deploy key update requested for ${props.name}.`)
     loadKeys()
   } catch (e) {
     keyDeleteError.value = errMessage(e)
@@ -592,11 +601,14 @@ async function addCollab() {
     return
   }
   collabSubmitting.value = true
+  const repositoryName = props.name
   try {
-    const created = await api.createCollaborator({ repositoryRef: props.name, username: collabUser.value, permission: collabPerm.value })
+    const created = await api.createCollaborator({ repositoryRef: repositoryName, username: collabUser.value, permission: collabPerm.value })
+    if (!mounted || props.name !== repositoryName) return
     collabs.value = [...collabs.value.filter(item => item.name !== created.name), created]
     collabsLoaded.value = true
     collabUser.value = ''
+    toast('info', `Collaborator update requested for ${repositoryName}.`)
     loadCollaborators()
   } catch (e) {
     collabError.value = errMessage(e)
@@ -615,7 +627,9 @@ async function removeCollab(row: Record<string, unknown>) {
   collabDeleteError.value = null
   try {
     await api.deleteCollaborator(collab.name)
+    if (!mounted || props.name !== collab.repositoryRef) return
     props.deletions.acknowledge(collaboratorScope, collab.name, collab.uid)
+    toast('info', `Collaborator update requested for ${props.name}.`)
     loadCollaborators()
   } catch (e) {
     collabDeleteError.value = errMessage(e)

@@ -11,6 +11,7 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { formatDatabricksError, isTenantMissingError } from '../errors'
 import { confirmDialog } from '../portalkit/confirm'
+import { toast } from '../portalkit/toast'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import type { Connection, Table, Warehouse } from '../types'
 import {
@@ -246,11 +247,13 @@ async function remove(row: Record<string, unknown>) {
   mutationError.value = null
   try {
     await api.deleteTable(table.name)
+    if (!mounted) return
     invalidateCompleteAuthority()
     firstPageSettled.value = false
     pendingDeletions.set(table.name, table.uid)
     operations.tombstone(lock, table.uid)
     tables.value = tables.value.filter(item => item.name !== table.name)
+    toast('info', `Table deletion requested for ${table.name}.`)
     load()
   } catch (e) {
     mutationError.value = formatDatabricksError(e)
