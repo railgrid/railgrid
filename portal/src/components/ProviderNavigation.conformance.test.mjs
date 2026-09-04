@@ -8,6 +8,7 @@ const tile = fs.readFileSync(new URL('./DashboardTile.vue', import.meta.url), 'u
 test('provider host consumers honor replace navigation while preserving push by default', () => {
   for (const source of [frame, tile]) {
     assert.match(source, /CustomEvent<\{ path: string; replace\?: boolean \}>/)
+    assert.match(source, /if \(typeof p !== 'string'[^\n]*\) return\n[\s\S]*?e\.preventDefault\(\)/)
     assert.match(source, /if \(ce\.detail\.replace === true\) void router\.replace\(target\)/)
     assert.match(source, /else void router\.push\(target\)/)
   }

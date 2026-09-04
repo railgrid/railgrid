@@ -16,15 +16,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Vanilla-TS (string-building) portals + files.
 TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
-  "providers/agents/portal"
   "providers/quickstart/portal"
 )
-TS_FILES=(dashboardtile.ts faros-ui.css icons.ts modal.ts styles.ts tabs.ts tenant.ts toast.ts)
+TS_FILES=(dashboardtile.ts faros-ui.css form-select.ts icons.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
 VUE_PORTALS=(
   "portal"
+  "providers/agents/portal"
   "providers/app-studio/portal"
   "providers/code/portal"
   "providers/databricks/portal"
@@ -45,10 +45,9 @@ HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 TS_CANONICAL_ONLY=(README.md page-state.ts)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs)
 
-# Kuery was originally a vanilla-TS portal. Its Vue migration no longer
-# needs the vanilla confirm/alert implementation; remove that one legacy copy
-# while preserving the file for the remaining string-building portals.
-VUE_LEGACY_FILES=(modal.ts)
+# Vue migrations no longer need the vanilla confirm/alert implementation;
+# remove that legacy copy while preserving it for string-building portals.
+VUE_LEGACY_FILES=(form-select.ts modal.ts resource-table-filter.ts)
 
 # These files were visual implementations before faros-ui.css became the sole
 # recipe. Remove only this known migration set; arbitrary unexpected files are

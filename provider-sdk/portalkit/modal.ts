@@ -2,7 +2,7 @@
 // providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`.
 //
 // Promise-based in-page confirm / alert modals for the string-building
-// (vanilla-TS) provider portals — agents, kuery, quickstart — replacing the
+// (vanilla-TS) provider portals — kuery and quickstart — replacing the
 // browser's native window.confirm / window.alert so destructive actions use an
 // on-brand dialog that matches the portal's styling (light/dark via the host's
 // CSS design tokens). Self-contained: injects its own <style> once and renders

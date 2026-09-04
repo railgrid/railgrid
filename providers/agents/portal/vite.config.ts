@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
 // The faros hub serves this provider under /ui/providers/agents/. The
 // ProviderFrame injects a <script src="/ui/providers/agents/main.js"> tag once
@@ -10,11 +11,19 @@ import { defineConfig } from 'vite'
 //      and registers the custom element as a side effect.
 //   3. Place lazy chunks under /assets/ so the hub's UI proxy routes them here.
 export default defineConfig({
+  plugins: [vue()],
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+    __VUE_OPTIONS_API__: 'true',
+    __VUE_PROD_DEVTOOLS__: 'false',
+    __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
+  },
   base: '/ui/providers/agents/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
+    cssCodeSplit: false,
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
@@ -25,6 +34,7 @@ export default defineConfig({
       output: {
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash][extname]',
+        inlineDynamicImports: true,
       },
     },
   },

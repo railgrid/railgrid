@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppStore } from '../store'
 import { AgentsElement } from '../element'
 import { clearToasts, subscribeToasts, toast } from '../ui/toast'
+import { settle } from './helpers'
 
 async function flushToastLifecycle(): Promise<void> {
   // PortalKit removes cards synchronously, while the adapter observes those
@@ -98,7 +99,7 @@ describe('Agents toast adapter lifecycle', () => {
     bundleTwo.dismissToast(second)
   })
 
-  it('clears action-bearing state when the host switches tenants', () => {
+  it('clears action-bearing state when the host switches tenants', async () => {
     const action = vi.fn()
     const snapshots: Array<Array<{ id: number; action?: () => void }>> = []
     const off = subscribeToasts((items) => snapshots.push(items.map((item) => ({ id: item.id, action: item.action?.run }))))
@@ -109,8 +110,11 @@ describe('Agents toast adapter lifecycle', () => {
     const tag = 'test-agents-toast-lifecycle'
     if (!customElements.get(tag)) customElements.define(tag, AgentsElement)
     const element = document.createElement(tag) as AgentsElement
+    document.body.appendChild(element)
     element.farosContext = { basePath: '/ui/providers/agents', orgUUID: 'org-a', workspaceUUID: 'ws-a' }
+    await settle(element)
     element.farosContext = { basePath: '/ui/providers/agents', orgUUID: 'org-b', workspaceUUID: 'ws-b' }
+    await settle(element)
 
     expect(snapshots.at(-1)).toEqual([])
     expect(document.getElementById('k-toasts')).toBeNull()

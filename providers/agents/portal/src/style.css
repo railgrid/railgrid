@@ -20,7 +20,7 @@ faros-provider-agents {
 /* Inline SVG icons inherit color + size from the shared PortalKit helper. */
 faros-provider-agents .agents-navtab, faros-provider-agents .agents-subtab,
 faros-provider-agents .agents-card-chat, faros-provider-agents .agents-model-actions button,
-faros-provider-agents .agents-back, faros-provider-agents .agents-health,
+faros-provider-agents .agents-health,
 faros-provider-agents .agents-chip, faros-provider-agents .agents-phase { display: inline-flex; align-items: center; gap: 5px; }
 
 faros-provider-agents .agents-app { display: flex; flex-direction: column; gap: 16px; min-height: 460px; }
@@ -41,11 +41,6 @@ faros-provider-agents .agents-offline svg { animation: agents-spin 1.6s linear i
 /* --- shared chrome --- */
 faros-provider-agents .agents-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 faros-provider-agents .agents-panel-head h3 { margin: 0; }
-faros-provider-agents .agents-back {
-  align-self: flex-start; background: transparent; color: var(--color-text-secondary, currentColor);
-  border: 0; cursor: pointer; padding: 4px 8px; border-radius: 4px; font: inherit; font-weight: 500;
-}
-faros-provider-agents .agents-back:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, inherit); }
 faros-provider-agents :focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 
 /* --- agent card grid --- */
@@ -90,17 +85,14 @@ faros-provider-agents .agents-card-chat:hover {
 }
 
 /* --- detail shell --- */
-faros-provider-agents .agents-detail { display: flex; flex-direction: column; gap: 14px; }
-faros-provider-agents .agents-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-faros-provider-agents .agents-detail-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-faros-provider-agents .agents-detail-head h2 { margin: 0; font-size: 18px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
-faros-provider-agents .agents-detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+faros-provider-agents .agents-detail { display: flex; min-width: 0; flex-direction: column; gap: 14px; }
+faros-provider-agents .agents-resource-body { display: flex; min-width: 0; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-subnav { display: flex; gap: 4px; }
 
 /* config | chat split. The chat pane sticks while the (long) config scrolls. */
-faros-provider-agents .agents-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 460px); gap: 20px; align-items: start; }
+faros-provider-agents .agents-split { display: grid; grid-template-columns: minmax(0, 42rem) minmax(0, 460px); gap: 20px; align-items: start; }
 faros-provider-agents .agents-split-config { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-faros-provider-agents .agents-split-config agents-agent-config { display: flex; flex-direction: column; gap: 18px; }
+faros-provider-agents .agents-split-config > * { display: flex; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-split-chat { position: sticky; top: 8px; min-width: 0; }
 faros-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 
@@ -108,7 +100,7 @@ faros-provider-agents input[aria-invalid="true"] { border-color: var(--color-dan
 /* Glow-means-alive: only the solid accent (primary) button emits light. Every
  * other button-shaped control opts back out (the :is() keeps this rule's
  * specificity level with button:hover so it also suppresses the hover glow). */
-faros-provider-agents :is(button.secondary, .agents-navtab, .agents-back, .agents-subtab, .agents-card-chat,
+faros-provider-agents :is(button.secondary, .agents-navtab, .agents-subtab, .agents-card-chat,
     .agents-iconbtn, .agents-linkbtn, .agents-chip-x, .agents-modebtn,
     .agents-seg button, .agents-step-head, .agents-toolcard-head, .agents-conn-tile, .agents-badge-btn,
     .agents-code-copy, .agents-chip-btn) {
@@ -204,6 +196,16 @@ faros-provider-agents .agents-th-actions { text-align: right; }
 faros-provider-agents .agents-cell-name { font-weight: 600; }
 faros-provider-agents .agents-cell-task { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 faros-provider-agents .agents-row-actions { display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+faros-provider-agents .agents-resource-name { color: var(--color-text-primary); font-weight: 600; }
+faros-provider-agents .agents-resource-id { color: var(--color-text-muted); font-size: 11px; margin-inline-start: 8px; }
+faros-provider-agents .agents-resource-endpoint {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+faros-provider-agents .agents-resource-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 faros-provider-agents .agents-run-row { cursor: pointer; }
 faros-provider-agents .agents-iconbtn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -326,8 +328,7 @@ faros-provider-agents .agents-step-body { display: flex; flex-direction: column;
 faros-provider-agents .agents-chat {
   display: flex; flex-direction: column; gap: 8px;
   height: min(72vh, 760px); min-height: 360px; overflow: hidden;
-  padding: 12px; border-radius: 6px;
-  background: var(--color-surface-raised, #111320); border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding: 12px;
 }
 faros-provider-agents .agents-chat-head {
   flex: none; display: flex; gap: 6px; align-items: center;
@@ -360,7 +361,7 @@ faros-provider-agents .agents-body ul, faros-provider-agents .agents-body ol { m
 faros-provider-agents .agents-body li { margin: 2px 0; }
 faros-provider-agents .agents-body blockquote {
   margin: 8px 0; padding: 2px 0 2px 10px; color: var(--color-text-secondary, #8a8ca6);
-  border-left: 3px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-left: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 faros-provider-agents .agents-body a { color: var(--color-accent, #8b6bff); }
 faros-provider-agents .agents-body table { border-collapse: collapse; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
@@ -408,9 +409,32 @@ faros-provider-agents .agents-approval-head { font-size: 13px; font-weight: 600;
 faros-provider-agents .agents-approval-done { font-size: 12.5px; color: var(--color-text-secondary, #8a8ca6); }
 
 /* composer */
-faros-provider-agents .agents-composer { flex: none; display: flex; gap: 8px; align-items: flex-end; padding-top: 9px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }
-faros-provider-agents .agents-composer textarea { flex: 1; min-height: 38px; max-height: 180px; resize: none; overflow-y: auto; }
-faros-provider-agents .agents-composer button { white-space: nowrap; }
+faros-provider-agents .agents-composer { flex: none; padding-top: 9px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }
+faros-provider-agents .agents-composer-surface {
+  position: relative; min-width: 0; min-height: 72px; overflow: hidden;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 6px;
+  background: var(--color-surface, #0a0b12); transition: border-color 0.15s ease;
+}
+faros-provider-agents .agents-composer-surface:focus-within { border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 50%, transparent); }
+faros-provider-agents .agents-composer-input {
+  display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 72px; max-height: 180px;
+  padding: 10px 58px 12px 12px; resize: none; overflow-y: auto; border: 0; outline: 0;
+  background: transparent; color: var(--color-text-primary, #e9e9f2); font: inherit; font-size: 13px; line-height: 20px;
+}
+faros-provider-agents .agents-composer-input::placeholder { color: var(--color-text-muted, #8587a1); }
+faros-provider-agents .agents-composer-input:disabled { cursor: not-allowed; }
+faros-provider-agents .agents-composer-primary {
+  position: absolute; right: 8px; bottom: 8px; display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; cursor: pointer;
+  background: var(--color-accent, #8b6bff); color: var(--color-on-accent, #fff);
+  box-shadow: 0 0 16px var(--color-accent-glow); transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+faros-provider-agents .agents-composer-primary:hover { background: var(--color-accent-hover, #a18aff); }
+faros-provider-agents .agents-composer-primary:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent); outline-offset: 2px; }
+faros-provider-agents .agents-composer-primary:disabled {
+  cursor: not-allowed; background: var(--color-surface-hover, #1e2033); color: var(--color-text-muted, #8587a1); box-shadow: none;
+}
+faros-provider-agents .agents-composer-primary.is-stop { width: 32px; height: 32px; border-radius: 50%; }
 
 /* --- connection picker + type-driven form --- */
 faros-provider-agents .agents-conn-picker { display: flex; flex-direction: column; gap: 12px; }
@@ -427,6 +451,7 @@ faros-provider-agents .agents-conn-tile .muted { font-size: 12px; }
 faros-provider-agents .agents-conn-group { display: flex; flex-direction: column; gap: 8px; }
 faros-provider-agents .agents-conn-grouphead { margin: 4px 0 0; font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 faros-provider-agents .agents-conn-grouphead .muted { font-size: 12px; font-weight: 400; }
+faros-provider-agents .agents-connections-copy svg { display: inline-block; width: 14px; height: 14px; vertical-align: -2px; }
 faros-provider-agents .agents-conn-form { display: flex; flex-direction: column; gap: 12px; }
 faros-provider-agents .agents-conn-formhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 faros-provider-agents .agents-conn-formhead h4 { margin: 0; font-size: 15px; text-transform: none; letter-spacing: 0; color: inherit; display: inline-flex; align-items: center; gap: 6px; }
@@ -580,11 +605,22 @@ faros-provider-agents .agents-err {
 }
 
 /* --- responsive --- */
-@media (max-width: 1100px) {
+@container resource-page (max-width: 1100px) {
   /* The chat pane stops being a sidebar and stacks under the config. */
   faros-provider-agents .agents-split { grid-template-columns: 1fr; }
   faros-provider-agents .agents-split-chat { position: static; }
   faros-provider-agents .agents-chat { height: min(60vh, 620px); }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  faros-provider-agents .agents-composer-primary { right: 6px; bottom: 6px; width: 44px; height: 44px; }
+  faros-provider-agents .agents-composer-input { padding-right: 62px; }
+}
+@supports not (container-type: inline-size) {
+  @media (max-width: 1100px) {
+    faros-provider-agents .agents-split { grid-template-columns: 1fr; }
+    faros-provider-agents .agents-split-chat { position: static; }
+    faros-provider-agents .agents-chat { height: min(60vh, 620px); }
+  }
 }
 @media (max-width: 720px) {
   faros-provider-agents .agents-route-panel { padding: 14px; }
@@ -592,7 +628,6 @@ faros-provider-agents .agents-err {
   faros-provider-agents .agents-filter-refresh { grid-column: 1 / -1; width: 100%; justify-content: center; }
   faros-provider-agents .agents-grid { grid-template-columns: 1fr; }
   faros-provider-agents .agents-model-grid { grid-template-columns: 1fr; }
-  faros-provider-agents .agents-detail-head { align-items: flex-start; flex-direction: column; }
   faros-provider-agents .agents-inbound-actions { margin-left: 0; }
   faros-provider-agents .agents-filter-refresh { margin-left: 0; }
   faros-provider-agents .agents-bar-row { grid-template-columns: 70px 1fr auto; }
@@ -603,7 +638,7 @@ faros-provider-agents .agents-err {
    mounted by the console on its own dashboard, outside the provider page.
 
    These values mirror portalkit/dashboardtile.ts `tileClass` one-for-one. This
-   portal is vanilla TS with no Tailwind build, so the shared vocabulary cannot
+   portal ships plain CSS with no Tailwind build, so the shared vocabulary cannot
    be applied as utility classes here — it has to be restated. Keep the two in
    step: a dashboard is a row of cards, and one card with its own row padding or
    type scale is the thing users notice. */

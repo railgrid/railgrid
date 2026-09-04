@@ -90,9 +90,12 @@ test('provider create journeys adopt the shared first-run and guidance vocabular
     assert.match(await source(createPath), /CreateGuidance/, `${name} must use the shared create-guidance component`)
   }
 
-  const agents = await source('providers/agents/portal/src/ui/create-flow.ts')
-  assert.match(agents, /class="k-first-run(?:\s|\")/, 'Agents must render the shared first-run vocabulary')
-  assert.match(agents, /class="k-create-guidance"/, 'Agents must render the shared create-guidance vocabulary')
+  const agents = await Promise.all([
+    source('providers/agents/portal/src/views/AgentsList.vue'),
+    source('providers/agents/portal/src/views/AgentCreate.vue'),
+  ])
+  assert.match(agents[0], /FirstRunGuide/, 'Agents must use the shared first-run component')
+  assert.match(agents[1], /CreateGuidance/, 'Agents must use the shared create-guidance component')
 })
 
 test('Vue route-owned create flows use the shared skeleton', async () => {
@@ -116,19 +119,19 @@ test('Vue route-owned create flows use the shared skeleton', async () => {
 
 test('Agents route-owned create flows use the shared skeleton without obsolete modal fallbacks', async () => {
   const cases = [
-    ['agent', 'providers/agents/portal/src/views/agent-create.ts'],
-    ['connection', 'providers/agents/portal/src/views/connections.ts'],
-    ['assisted search', 'providers/agents/portal/src/views/assisted-search.ts'],
-    ['model', 'providers/agents/portal/src/views/models.ts'],
-    ['toolset', 'providers/agents/portal/src/views/toolsets.ts'],
+    ['agent', 'providers/agents/portal/src/views/AgentCreate.vue'],
+    ['connection', 'providers/agents/portal/src/views/Connections.vue'],
+    ['assisted search', 'providers/agents/portal/src/views/AssistedSearch.vue'],
+    ['model', 'providers/agents/portal/src/views/Models.vue'],
+    ['toolset', 'providers/agents/portal/src/views/Toolsets.vue'],
   ]
   for (const [name, path] of cases) {
     const text = await source(path)
     expectSkeleton(`Agents ${name}`, text)
   }
   const [agent, assistedSearch] = await Promise.all([
-    source('providers/agents/portal/src/views/agent-create.ts'),
-    source('providers/agents/portal/src/views/assisted-search.ts'),
+    source('providers/agents/portal/src/views/AgentCreate.vue'),
+    source('providers/agents/portal/src/views/AssistedSearch.vue'),
   ])
   assert.doesNotMatch(agent, /agents-dialog/)
   assert.doesNotMatch(assistedSearch, /agents-dialog/)

@@ -96,6 +96,11 @@ export class AppStore extends EventTarget {
   live = false
 
   private api: ApiClient
+  // A store is retired when its owning shell loses authority or unmounts.
+  // Unlike disconnect(), retirement is permanent: async work that settles
+  // afterwards must not publish UI effects or start follow-up requests with
+  // the old client.
+  private retired = false
   private abort: AbortController | null = null
   private poll: ReturnType<typeof setInterval> | null = null
   private collectionGenerations: Record<CreateCollectionKey, number> = {
@@ -121,6 +126,7 @@ export class AppStore extends EventTarget {
   }
 
   private changed(): void {
+    if (this.retired) return
     this.dispatchEvent(new Event('change'))
   }
 
@@ -182,6 +188,7 @@ export class AppStore extends EventTarget {
   // ---- loading -------------------------------------------------------------
 
   loadAll(): void {
+    if (this.retired) return
     void this.load('agents')
     void this.load('credentials')
     void this.load('connections')
@@ -198,17 +205,22 @@ export class AppStore extends EventTarget {
   // rather than an error, because every consumer of this is an optional
   // enhancement — nothing should render an error state over it.
   async loadCapabilities(): Promise<void> {
+    if (this.retired) return
     if (!this.api.hasWorkspace()) return
     const s = this.capabilities
     s.loading = true
     this.changed()
     try {
-      s.data = await this.api.capabilities()
+      const data = await this.api.capabilities()
+      if (this.retired) return
+      s.data = data
       s.error = null
     } catch (e) {
+      if (this.retired) return
       s.data = { providers: [], unavailable: true, message: (e as Error).message }
       s.error = null
     }
+    if (this.retired) return
     s.loading = false
     s.loaded = true
     this.changed()
@@ -217,6 +229,7 @@ export class AppStore extends EventTarget {
   // load refreshes one slice. Errors land on the slice (never swallowed) and
   // the previous data stays visible so a transient failure doesn't blank the UI.
   async load(key: SliceKey): Promise<void> {
+    if (this.retired) return
     if (!this.api.hasWorkspace()) return
     const s = this[key] as Slice<unknown[]>
     const loadID = ++this.nextLoadID
@@ -227,6 +240,7 @@ export class AppStore extends EventTarget {
     this.changed()
     try {
       const rows = await LOADERS[key](this.api)
+      if (this.retired) return
       // A refresh started before a successful create may return a snapshot
       // that cannot contain the newly-created item yet. Only the latest load
       // may replace the slice; when that load predates an adoption, merge the
@@ -238,10 +252,12 @@ export class AppStore extends EventTarget {
         s.hasSnapshot = true
       }
     } catch (e) {
+      if (this.retired) return
       // Preserve the error from the most recent request. An older failed
       // request must not hide a newer successful refresh (or vice versa).
       if (this.latestLoadID[key] === loadID) s.error = (e as Error).message
     } finally {
+      if (this.retired) return
       this.pendingLoads[key as CreateCollectionKey]?.delete(loadID)
       this.pruneAdoptedItems(key)
       if (this.latestLoadID[key] === loadID) {
@@ -257,6 +273,7 @@ export class AppStore extends EventTarget {
   // began at an older generation merges this item into its otherwise
   // authoritative response instead of deleting it from the UI.
   adopt<K extends CreateCollectionKey>(key: K, item: CreateCollectionItems[K]): void {
+    if (this.retired) return
     const id = createCollectionItemID(key, item)
     if (!id) return
 
@@ -300,9 +317,11 @@ export class AppStore extends EventTarget {
   }
 
   async loadOAuthApps(): Promise<void> {
+    if (this.retired) return
     if (!this.api.hasWorkspace()) return
     try {
       const res = await this.api.oauthProviders()
+      if (this.retired) return
       const next = new Set(
         Object.entries(res.providers || {})
           .filter(([, v]) => v)
@@ -323,6 +342,7 @@ export class AppStore extends EventTarget {
   // connect opens the event stream and keeps it open, reconnecting with a short
   // backoff. Callers must call disconnect() when the element goes away.
   connect(): void {
+    if (this.retired) return
     this.disconnect()
     const ac = new AbortController()
     this.abort = ac
@@ -339,7 +359,8 @@ export class AppStore extends EventTarget {
   }
 
   // markLive flips the connection indicator on stream open / first traffic.
-  private markLive(): void {
+  private markLive(ac: AbortController): void {
+    if (this.retired || ac.signal.aborted || this.abort !== ac) return
     if (this.live) return
     this.live = true
     this.changed()
@@ -353,23 +374,34 @@ export class AppStore extends EventTarget {
     this.live = false
   }
 
+  isRetired(): boolean {
+    return this.retired
+  }
+
+  retire(): void {
+    if (this.retired) return
+    this.retired = true
+    this.disconnect()
+  }
+
   private async pump(ac: AbortController): Promise<void> {
     let backoff = 1000
-    while (!ac.signal.aborted) {
+    while (!this.retired && !ac.signal.aborted && this.abort === ac) {
       try {
         // Liveness is "the stream opened", not "an event arrived": the server
         // sends only comment frames (": connected", ": keepalive") until
         // something actually happens, and the parser drops comments — so an
         // idle-but-healthy stream would otherwise read as permanently down.
-        for await (const ev of this.api.eventStream(ac.signal, () => this.markLive())) {
-          this.markLive()
+        for await (const ev of this.api.eventStream(ac.signal, () => this.markLive(ac))) {
+          if (this.retired || ac.signal.aborted || this.abort !== ac) return
+          this.markLive(ac)
           backoff = 1000
           this.applyServerEvent({ type: ev.event, data: (ev.data || {}) as ServerEvent['data'] })
         }
       } catch {
         /* stream dropped — fall through to the backoff below */
       }
-      if (ac.signal.aborted) return
+      if (this.retired || ac.signal.aborted || this.abort !== ac) return
       this.live = false
       this.changed()
       await new Promise((r) => setTimeout(r, backoff))
@@ -381,6 +413,7 @@ export class AppStore extends EventTarget {
   // raw event so run-centric views (Activity, run detail, chat) can react
   // without each holding their own subscription.
   applyServerEvent(ev: ServerEvent): void {
+    if (this.retired) return
     if (ev.type === 'inbox') void this.load('inbox')
     // A background fire moves the source's status (nextRun / lastFired /
     // lastRunID), so refresh the owning collection rather than letting the row

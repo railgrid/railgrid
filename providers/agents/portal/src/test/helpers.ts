@@ -1,7 +1,7 @@
 // Shared test fixtures: a store backed by a stub ApiClient, and a mount helper
-// that waits for lit to settle (including nested children).
+// that waits for the public Vue custom-element host to settle. updateComplete
+// remains part of that host's compatibility boundary for focused tests.
 
-import type { LitElement } from 'lit'
 import type { ApiClient } from '../api'
 import { AppStore } from '../store'
 import type { Agent } from '../types'
@@ -43,7 +43,7 @@ export function agentFixture(name = 'scout', spec: Partial<Agent['spec']> = {}):
 
 // mount creates the element, assigns properties, appends it and waits for the
 // whole subtree to finish its first update.
-export async function mount<T extends LitElement>(tag: string, props: Record<string, unknown>): Promise<T> {
+export async function mount<T extends HTMLElement>(tag: string, props: Record<string, unknown>): Promise<T> {
   const el = document.createElement(tag) as T
   Object.assign(el, props)
   document.body.appendChild(el)
@@ -51,15 +51,16 @@ export async function mount<T extends LitElement>(tag: string, props: Record<str
   return el
 }
 
-// settle flushes pending updates across the element and its lit children; a
-// couple of passes covers parent → child property propagation.
-export async function settle(el: LitElement, passes = 4): Promise<void> {
+// settle flushes pending updates across the custom-element host and its Vue
+// subtree; a couple of passes covers parent → child property propagation.
+export async function settle(el: HTMLElement, passes = 4): Promise<void> {
   for (let i = 0; i < passes; i++) {
-    await el.updateComplete
+    const root = el as HTMLElement & { updateComplete?: Promise<unknown> }
+    if (root.updateComplete) await root.updateComplete
     await Promise.resolve()
     await new Promise((r) => setTimeout(r, 0))
     for (const child of el.querySelectorAll('*')) {
-      const c = child as Partial<LitElement>
+      const c = child as HTMLElement & { updateComplete?: Promise<unknown> }
       if (c.updateComplete) await c.updateComplete
     }
   }

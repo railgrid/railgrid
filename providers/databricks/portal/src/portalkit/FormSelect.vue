@@ -317,6 +317,7 @@ onBeforeUnmount(() => {
       :name="name"
       :value="modelValue"
       :required="required || undefined"
+      :disabled="disabled || undefined"
     >
 
     <Teleport v-if="open" to="body">

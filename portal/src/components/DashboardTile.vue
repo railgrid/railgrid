@@ -181,6 +181,7 @@ function onNavigate(e: Event) {
   const ce = e as CustomEvent<{ path: string; replace?: boolean }>
   const p = ce.detail?.path
   if (typeof p !== 'string') return
+  e.preventDefault()
   const target = `/providers/${props.provider.name}/${p.replace(/^\//, '')}`
   if (ce.detail.replace === true) void router.replace(target)
   else void router.push(target)

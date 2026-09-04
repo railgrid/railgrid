@@ -29,7 +29,7 @@
   /* Bump this when a standalone primitive requires a newer stylesheet than
    * the generic canonical marker can describe. Provider bundles use it to
    * recover from a host stylesheet served from an older deployment. */
-  --faros-ui-version: 4;
+  --faros-ui-version: 5;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
   --k-layer-menu: 1000;
@@ -693,6 +693,10 @@ html.light .k-menu {
 .k-form-select {
   min-width: 0;
   position: relative;
+}
+faros-form-select {
+  display: block;
+  min-width: 0;
 }
 .k-form-select__trigger {
   align-items: center;
@@ -1500,6 +1504,7 @@ html.light [data-k-tip]::after {
   position: relative;
   transition: border-color 120ms ease;
 }
+faros-resource-table-filter { display: contents; }
 .k-table__filter--combobox {
   grid-template-columns: auto minmax(116px, 1fr);
   min-width: 210px;

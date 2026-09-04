@@ -199,10 +199,11 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 	switch p.Provider {
 	case ProviderOpenAICompatible, "openai", "":
 		cfg := &openaimodel.ChatModelConfig{
-			APIKey:     p.APIKey,
-			BaseURL:    strings.TrimRight(p.BaseURL, "/"),
-			Model:      p.Model,
-			HTTPClient: &http.Client{},
+			APIKey:          p.APIKey,
+			BaseURL:         strings.TrimRight(p.BaseURL, "/"),
+			Model:           p.Model,
+			HTTPClient:      &http.Client{},
+			ReasoningEffort: modelReasoningEffort(p.Model),
 		}
 		if modelSupportsTemperature(p.Model) {
 			t := float32(0.2)
@@ -216,6 +217,21 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 	default:
 		return nil, fmt.Errorf("provider %q is not supported yet (use %q)", p.Provider, ProviderOpenAICompatible)
 	}
+}
+
+// modelReasoningEffort returns the Chat Completions reasoning mode required by
+// a model. Luna defaults to reasoning in OpenAI-compatible gateways, where
+// function tools are rejected unless reasoning is explicitly disabled. Keep
+// the field absent for every other model so the endpoint retains its default.
+func modelReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	if m == "gpt-5.6-luna" {
+		return openaimodel.ReasoningEffortLevel("none")
+	}
+	return ""
 }
 
 // modelSupportsTemperature reports whether the model accepts a custom sampling

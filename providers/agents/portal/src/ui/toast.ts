@@ -1,6 +1,6 @@
 // Agents keeps this adapter for its existing mutation/view imports and tests,
 // while the actual DOM renderer is the canonical framework-free PortalKit
-// toast bus. Keeping the local subscription API preserves the Lit test seam
+// toast bus. Keeping the local subscription API preserves the provider test seam
 // without maintaining a second visual implementation.
 
 import { clearToasts as clearRenderedToasts, dismissToast as dismissRenderedToast, toast as renderToast } from '../portalkit/toast'

@@ -384,6 +384,10 @@ function onNavigate(e: Event) {
   const ce = e as CustomEvent<{ path: string; replace?: boolean }>
   const p = ce.detail?.path
   if (typeof p !== 'string' || !entry.value) return
+  // A cancelable provider event uses preventDefault as a synchronous
+  // acknowledgement that the host router owns this history transition.
+  // Providers can otherwise fall back to standalone hash routing.
+  e.preventDefault()
   const target = `/providers/${entry.value.name}/${p.replace(/^\//, '')}`
   if (ce.detail.replace === true) void router.replace(target)
   else void router.push(target)

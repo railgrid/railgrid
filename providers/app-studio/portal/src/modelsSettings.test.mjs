@@ -312,6 +312,7 @@ test('model creation replaces its route entry and nested navigation accepts repl
   assert.match(app, /async function cancelLLMEditor\(\)[\s\S]*Discard model changes\?[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app, /const routeOwnedCreation = isCreateModelRoute\.value && !llmEditingModelID\.value[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app, /const detail = \(e as CustomEvent<\{ path\?: unknown; replace\?: unknown \}>\)\.detail/)
+  assert.match(app, /if \(!tab \|\| tab\.kind !== 'provider'\) return\s+\/\/ A cancelable nested-provider event[\s\S]*e\.preventDefault\(\)/)
   assert.match(app, /Nested provider tabs have one persisted descriptor rather than their own/)
   assert.match(pageElement, /const navigate = \(path: string, options: NavigationOptions = \{\}\)/)
   assert.match(pageElement, /detail: \{ path, \.\.\.\(options\.replace === true \? \{ replace: true \} : \{\}\) \}/)

@@ -6,6 +6,9 @@ Phase 2 (portal) implemented in the same change. Remaining: 3.2 (compaction),
 backoff), 3.7 (template gallery), 3.8 (deferred set).**
 Date: 2026-07-30 · Scope: `providers/agents/` (Go backend + portal micro-frontend)
 
+The detailed phase notes below retain some pre-migration filenames and problem statements as
+historical context. The status and orientation sections describe the current implementation.
+
 ## What landed (2026-07-30)
 
 Backend — `providers/agents/`:
@@ -38,8 +41,8 @@ Backend — `providers/agents/`:
   toolset assembly), `spec.limits.timeoutSeconds`. `make codegen-agents-provider`
   regenerated 5 schemas.
 
-Portal — `providers/agents/portal/` (**Phase 2 in full**): ported to Lit
-(keyed rendering replaces the innerHTML-rebuild model, killing the form-wipe /
+Portal — `providers/agents/portal/` (**Phase 2 in full**): ported to Vue 3
+(reactive component rendering replaces the innerHTML-rebuild model, killing the form-wipe /
 focus-loss / rerender-per-token bug class); nav collapsed 7 → 4 (Agents ·
 Activity · Connections · Models); the agent editor is now one canonical
 config pane beside a live chat playground, with a Runs tab; **Activity + run
@@ -68,8 +71,8 @@ the tenant-Secret token bridge are covered in
 [`agent-web-access.md`](./agent-web-access.md).
 
 Verification: `go build ./...` + `go test ./...` green in `providers/agents`;
-`make codegen-agents-provider` produces a clean diff; portal `tsc --noEmit`
-clean and 34 vitest tests pass; `make build-agents-provider` produces a binary
+`make codegen-agents-provider` produces a clean diff; portal `vue-tsc --noEmit`
+is clean and 239 Vitest tests pass; `make build-agents-provider` produces a binary
 that boots clean and serves the embedded portal.
 
 Net footprint: 55+ files, roughly −600 lines overall — the new runs API, trace
@@ -110,9 +113,9 @@ Key facts an implementer needs:
 | Background executor | `api/background.go` | 30s poll over APIExport VW, optimistic status-claim, in-process 4-worker pool (`executor/executor.go`) |
 | Channels | `channels/channels.go`, `api/channels_inbound.go`, `api/discord_gateway.go` | telegram/slack/discord in+out, smtp out, slash commands `/new /status /inbox /approve /deny /answer` (`channels_inbound.go:148-235`) |
 | Store | `store/store.go` (iface), `store/postgres.go`, in-memory impl | Messages, Runs (with unused `Checkpoint` col), Memory, InboxItems, ToolCalls, Usage, Sessions, TenantRefs |
-| Portal | `portal/src/` (~5.8k lines TS) | vanilla custom element `faros-provider-agents`, full-`innerHTML` re-render + manual re-wire (`element.ts:142-160`), hash router (`router.ts`), module-singleton view state, one 610-line namespaced stylesheet |
-| Host embedding | repo `portal/src/pages/ProviderFrame.vue:92-176` | loads `/ui/providers/agents/main.js`, sets context property on the element; **no iframe/postMessage** (portal/README.md is stale on this) |
-| Build | `make build-agents-provider` (embeds portal), `make build-agents-provider-portal`, `make codegen-agents-provider`, `make agents-db-up/down`, `make run-provider-agents` | portal: `npm run build` / `npm run typecheck` in `portal/` (no tests exist) |
+| Portal | `portal/src/` | Vue 3 SFCs mounted by the `faros-provider-agents` custom-element boundary (`element.ts`), hash router (`router.ts`), component-owned state, and shared Vue PortalKit primitives |
+| Host embedding | repo `portal/src/pages/ProviderFrame.vue:92-176` | loads `/ui/providers/agents/main.js`, sets context properties on the element, and mounts the Vue app in light DOM; **no iframe/postMessage** |
+| Build | `make build-agents-provider` (embeds portal), `make build-agents-provider-portal`, `make codegen-agents-provider`, `make agents-db-up/down`, `make run-provider-agents` | portal: `npm run build`, `npm run typecheck`, and `npm test` in `portal/` |
 
 Strengths to **preserve** (do not regress while restructuring):
 
@@ -126,7 +129,7 @@ Strengths to **preserve** (do not regress while restructuring):
   `api/run.go:210-212`); image observations (`engine/engine.go:69-88,343-374`).
 - Optimistic-claim schedule dedup across replicas (`api/background.go:294-306`).
 - Portal: type-driven connection forms with setup guides (`portal/src/conn-defs.ts`), the
-  Models/usage dashboard (`portal/src/views/models.ts`), "families are derived, never
+  Models/usage dashboard (`portal/src/views/Models.vue`), "families are derived, never
   hand-picked" rule, portalkit host contract (`portal/src/portalkit/`).
 
 ---
@@ -301,10 +304,10 @@ compaction) so replay doesn't blow the context window.
 
 ## Phase 2 — Portal restructure
 
-### 2.0 Rendering foundation: port to Lit
+### 2.0 Rendering foundation: Vue 3
 
-The current model — `render(): string` + full `innerHTML` swap + manual `wire()` re-attachment
-(`portal/src/element.ts:142-160`) — is the root cause of an entire class of bugs:
+The former model — `render(): string` + full `innerHTML` swap + manual `wire()` re-attachment —
+was the root cause of an entire class of bugs:
 
 - any async store load wipes half-typed forms (worked around in exactly one place:
   `portal/src/views/agent-wiring.ts:164-170`);
@@ -314,25 +317,18 @@ The current model — `render(): string` + full `innerHTML` swap + manual `wire(
 - three divergent hand-rolled escape helpers (`types.ts:120`, `portalkit/modal.ts:65`,
   `flow.ts:148` — the last one skips `'`).
 
-Port to **Lit** (`lit` npm package, ~5KB): it is custom-element-native so the host contract
-(`ProviderFrame.vue` property-set, zero iframe) is untouched, and views are already
-`render()`-shaped so porting is mechanical view-by-view. Keyed templates fix form-wipe,
-focus loss, and streaming re-render wholesale, and `lit-html` auto-escaping retires the manual
-`escapeHTML` discipline. Add `@lit-labs/signals` or keep the existing `AppStore` with a
-`host.requestUpdate()` bridge — keep it boring.
+The portal now uses **Vue 3** behind the same custom-element host contract
+(`ProviderFrame.vue` property-set, zero iframe). Reactive SFCs preserve form and focus state,
+stream chat incrementally, and retire manual HTML-escaping and event-rewiring discipline.
+`AppStore` remains the data owner while a small Vue runtime bridge invalidates component
+snapshots on store revisions. Stateful views keep their drafts and request ownership locally.
 
-Also in this step:
-- Type the host context properly: `FarosContext` in `portal/src/types.ts:6-12` is missing
-  `subPath`, `orgUUID`, `workspaceUUID` that the host actually passes
-  (repo `portal/src/pages/ProviderFrame.vue:162`); tenant currently comes from
-  `localStorage['faros:portal:tenant']` (`portal/src/portalkit/tenant.ts`) — make the host
-  context the source of truth.
-- Kill module-singleton view state (`agent-chat.ts:12-17`, `connections.ts:21-24`,
-  `models.ts:66-74`) — move into component state so tenant switches don't need the manual
-  reset choreography in `element.ts:102-118`.
-- Generate/write TS types for the write API (mutations today are `Record<string,unknown>`
-  with hand-typed patch keys scattered across `actions.ts`/`agent-wiring.ts`/`flow-view.ts`).
-- Update `portal/README.md` (it still describes a postMessage handshake that doesn't exist).
+Also completed in this step:
+- The host context is typed by `FarosContext`, and context rotation fences asynchronous work.
+- Stateful drafts and request ownership live with their Vue components instead of module
+  singletons.
+- The write paths use shared typed API and mutation helpers.
+- `portal/README.md` documents the light-DOM Vue custom-element boundary.
 
 ### 2.1 Navigation: 7 tabs → 4
 
@@ -581,7 +577,7 @@ channels accept only the single configured chat with no per-user identity
 1. **PR 1**: 0.1 + 0.2 + 0.3 (+ tests) — security fix + run-linked full audit. Small, urgent.
 2. **PR 2**: 1.1 + 1.2 + 1.3 (runs API, async run-now, cancel) + 0.7 error-mapping fixes.
 3. **PR 3**: 1.4 (+ chat SSE ids/keepalive/start-event) + 1.5 + 1.6.
-4. **PR 4**: 2.0 Lit port of the shell + Agents + Connections/Toolsets + Models (visual
+4. **PR 4**: 2.0 Vue port of the shell + Agents + Connections/Toolsets + Models (visual
    parity, no new features) + 0.5 + 0.6 + 2.7 hygiene.
 5. **PR 5**: 2.1 nav + 2.5 Activity/trace viewer + 2.4 freshness/errors.
 6. **PR 6**: 2.2 agent editor (config+chat panes) + 2.3 chat overhaul + 2.6 wizard; Flow →

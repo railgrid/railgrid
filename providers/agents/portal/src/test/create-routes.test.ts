@@ -1,14 +1,36 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentCreateWizard } from '../views/agent-create'
-import type { Connections } from '../views/connections'
-import type { Models } from '../views/models'
-import type { Toolsets } from '../views/toolsets'
-import '../views/agent-create'
-import '../views/agents-list'
-import '../views/connections'
-import '../views/models'
-import '../views/toolsets'
-import { agentFixture, makeStore, mount, settle, stubApi } from './helpers'
+import AgentCreateView from '../views/AgentCreate.vue'
+import AgentsListView from '../views/AgentsList.vue'
+import ConnectionsView from '../views/Connections.vue'
+import ModelsView from '../views/Models.vue'
+import ToolsetsView from '../views/Toolsets.vue'
+import { agentFixture, makeStore, stubApi } from './helpers'
+import { mountVue, settleVue, type MountedVue } from './vue-helper'
+
+type AgentCreateWizard = HTMLElement
+type Connections = HTMLElement
+type Models = HTMLElement
+type Toolsets = HTMLElement
+const mountedByElement = new WeakMap<Element, MountedVue>()
+async function mount<T = HTMLElement>(_tag: string, props: Record<string, unknown>): Promise<T> {
+  const component = _tag.includes('agent-create') ? AgentCreateView
+    : _tag.includes('agents-list') ? AgentsListView
+      : _tag.includes('connections') ? ConnectionsView
+        : _tag.includes('models') ? ModelsView : ToolsetsView
+  const mounted = await mountVue(component, props)
+  mountedByElement.set(mounted.element, mounted)
+  await settleVue(1, 120)
+  return mounted.element as unknown as T
+}
+async function settle(_element: Element, passes = 4): Promise<void> { await settleVue(passes, 120) }
+async function chooseFormSelect(root: Element, selector: string, label: string): Promise<void> {
+  root.querySelector<HTMLButtonElement>(selector)!.click()
+  await settleVue()
+  const option = [...document.querySelectorAll<HTMLElement>('.k-form-select__option')].find(item => item.textContent?.includes(label))
+  expect(option).toBeTruthy()
+  option!.click()
+  await settleVue()
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -31,8 +53,7 @@ describe('route-owned creation surfaces', () => {
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     markAuthoritative(store, 'agents', 'credentials')
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
-    let result: unknown
-    el.addEventListener('agents-create-success', (e) => (result = (e as CustomEvent).detail))
+    const events = mountedByElement.get(el)!.events
 
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('.agents-create-page')).not.toBeNull()
@@ -40,15 +61,13 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('.k-create-surface--guided')).not.toBeNull()
     expect(el.querySelector('.k-create-guidance')).not.toBeNull()
     el.querySelector<HTMLInputElement>('input[name=name]')!.value = 'nova'
-    el.querySelector<HTMLInputElement>('input[name=name]')!.dispatchEvent(new Event('input'))
-    const model = el.querySelector('select') as HTMLSelectElement
-    model.value = 'main'
-    model.dispatchEvent(new Event('change'))
+    el.querySelector<HTMLInputElement>('input[name=name]')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-model', 'main')
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
 
     expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'nova', modelCredential: 'main' }))
-    expect(result).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
+    expect(events['create-success']?.[0]).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
   })
 
   it('announces agent validation and locks the create surface while submitting', async () => {
@@ -69,14 +88,12 @@ describe('route-owned creation surfaces', () => {
 
     const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
     name.value = 'nova'
-    name.dispatchEvent(new Event('input'))
-    const model = el.querySelector<HTMLSelectElement>('#agent-create-model')!
-    model.value = 'main'
-    model.dispatchEvent(new Event('change'))
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-model', 'main')
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el)
     expect(form.getAttribute('aria-busy')).toBe('true')
-    expect([...form.querySelectorAll('input, select, textarea, button')].every((control) => (control as HTMLInputElement).disabled)).toBe(true)
+    expect([...form.querySelectorAll('input:not([type=hidden]), select, textarea, button')].every((control) => (control as HTMLInputElement).disabled)).toBe(true)
 
     request.resolve({ metadata: { name: 'nova' }, spec: { displayName: 'Nova' } })
     await settle(el, 5)
@@ -128,8 +145,7 @@ describe('route-owned creation surfaces', () => {
     const store = makeStore(api)
     markAuthoritative(store, 'agents', 'credentials')
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
-    const routes: unknown[] = []
-    el.addEventListener('agents-navigate', (event) => routes.push((event as CustomEvent).detail))
+    const routes = mountedByElement.get(el)!.navigations
 
     expect(el.querySelector('form')).not.toBeNull()
     expect(el.textContent).toContain('No model credentials yet')
@@ -144,8 +160,7 @@ describe('route-owned creation surfaces', () => {
     const store = makeStore(api)
     store.connections.loaded = true
     const picker = await mount<Connections>('agents-connections', { store, api, routeOwned: true, createRoute: true, createType: '' })
-    const routes: unknown[] = []
-    picker.addEventListener('agents-navigate', (e) => routes.push((e as CustomEvent).detail))
+    const routes = mountedByElement.get(picker)!.navigations
     expect(picker.querySelector('.agents-conn-form')).toBeNull()
     picker.querySelector<HTMLButtonElement>('.agents-conn-tile')!.click()
     expect(routes).toEqual([{ kind: 'create', resource: 'connection', type: 'github' }])
@@ -155,11 +170,34 @@ describe('route-owned creation surfaces', () => {
     expect(formSurface.querySelector('.k-create-surface--guided .k-create-guidance')).not.toBeNull()
     const name = formSurface.querySelector<HTMLInputElement>('input[name=name]')!
     name.value = 'gh'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
     const token = formSurface.querySelector<HTMLInputElement>('input[name=token]')!
     token.value = 'secret'
+    token.dispatchEvent(new InputEvent('input', { bubbles: true }))
     formSurface.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(formSurface, 5)
     expect(createConnection).toHaveBeenCalledWith(expect.objectContaining({ name: 'gh', type: 'github', secret: 'secret' }))
+  })
+
+  it('reacts when a platform OAuth app becomes available after the form mounts', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.loaded = true
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, createRoute: true, createType: 'github' })
+    const oauthMode = [...el.querySelectorAll<HTMLButtonElement>('.agents-modebtn')].find(button => button.textContent?.includes('OAuth app'))!
+    oauthMode.click()
+    await settle(el, 2)
+
+    expect(el.querySelector('input[name=clientID]')).not.toBeNull()
+    expect(el.querySelector('input[name=clientSecret]')).not.toBeNull()
+
+    store.oauthApps = new Set(['github'])
+    store.dispatchEvent(new Event('change'))
+    await settle(el, 4)
+
+    expect(el.querySelector('input[name=clientID]')).toBeNull()
+    expect(el.querySelector('input[name=clientSecret]')).toBeNull()
+    expect(el.querySelector('.agents-platform-note')).not.toBeNull()
   })
 
   it('renders toolset creation separately from the connections collection', async () => {
@@ -173,6 +211,7 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('.k-create-surface--guided .k-create-guidance')).not.toBeNull()
     const name = el.querySelector<HTMLInputElement>('input[name=name]')!
     name.value = 'dev-tools'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
     expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'dev-tools', connections: [], families: ['core'] }))
@@ -189,6 +228,7 @@ describe('route-owned creation surfaces', () => {
     for (const [field, value] of Object.entries(values)) {
       const input = el.querySelector<HTMLInputElement>(`[name=${field}]`)!
       input.value = value
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }))
     }
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
@@ -245,8 +285,7 @@ describe('route-owned collection affordances', () => {
     const store = makeStore(api)
     markAuthoritative(store, 'toolsets', 'connections')
     const el = await mount<Toolsets>('agents-toolsets', { store, api, routeOwned: true })
-    const routes: unknown[] = []
-    el.addEventListener('agents-navigate', (event) => routes.push((event as CustomEvent).detail))
+    const routes = mountedByElement.get(el)!.navigations
 
     expect(el.textContent).toContain('Start with core and edge capabilities now')
     const createToolset = [...el.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Create toolset'))!
@@ -294,8 +333,7 @@ describe('route-owned collection affordances', () => {
     store.agents.data = [agentFixture('scout')]
     store.agents.loaded = true
     const el = await mount('agents-agents-list', { store, api })
-    const routes: unknown[] = []
-    el.addEventListener('agents-navigate', (e) => routes.push((e as CustomEvent).detail))
+    const routes = mountedByElement.get(el)!.navigations
     el.querySelector<HTMLButtonElement>('button')!.click()
     expect(routes).toEqual([{ kind: 'create', resource: 'agent' }])
     expect(el.querySelector('agents-agent-create')).toBeNull()

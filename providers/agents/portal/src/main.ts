@@ -4,8 +4,7 @@
 // module loader. The portal injects this once and waits for the
 // faros-provider-agents custom element to be defined.
 
-import { AgentsElement } from './element'
-import { AgentsDashboardTile } from './views/dashboard-tile'
+import { AgentsDashboardTileElement, AgentsElement } from './element'
 import { ensureFarosUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
 
@@ -32,5 +31,5 @@ if (!customElements.get(TAG)) {
 
 // Dashboard tile — shares the stylesheet registered above.
 if (!customElements.get(TILE_TAG)) {
-  customElements.define(TILE_TAG, AgentsDashboardTile)
+  customElements.define(TILE_TAG, AgentsDashboardTileElement)
 }

@@ -17,10 +17,12 @@ const inboxItem = (id: string, state = 'pending'): InboxItem => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 describe('AppStore slices', () => {
@@ -82,6 +84,63 @@ describe('AppStore slices', () => {
     store.addEventListener('change', seen)
     await store.load('connections')
     expect(seen).toHaveBeenCalled()
+  })
+
+  it('does not publish a collection response after the store retires', async () => {
+    const pending = deferred<Agent[]>()
+    const store = makeStore(stubApi({ listAgents: () => pending.promise }))
+    const changed = vi.fn()
+    store.addEventListener('change', changed)
+
+    const load = store.load('agents')
+    expect(changed).toHaveBeenCalledTimes(1)
+    store.retire()
+    pending.resolve([{ metadata: { name: 'old-workspace' }, spec: {} }])
+    await load
+
+    expect(store.agents.data).toEqual([])
+    expect(store.agents.loaded).toBe(false)
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not publish a collection failure after the store retires', async () => {
+    const pending = deferred<Agent[]>()
+    const store = makeStore(stubApi({ listAgents: () => pending.promise }))
+    const changed = vi.fn()
+    store.addEventListener('change', changed)
+
+    const load = store.load('agents')
+    store.retire()
+    pending.reject(new Error('old workspace failed'))
+    await load
+
+    expect(store.agents.error).toBeNull()
+    expect(store.agents.loaded).toBe(false)
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not publish capabilities or OAuth apps after the store retires', async () => {
+    const capabilities = deferred<{ providers: string[] }>()
+    const oauthApps = deferred<{ providers: Record<string, boolean> }>()
+    const store = makeStore(stubApi({
+      capabilities: () => capabilities.promise,
+      oauthProviders: () => oauthApps.promise,
+    }))
+    const changed = vi.fn()
+    store.addEventListener('change', changed)
+
+    const capabilityLoad = store.loadCapabilities()
+    const oauthLoad = store.loadOAuthApps()
+    expect(changed).toHaveBeenCalledTimes(1)
+    store.retire()
+    capabilities.resolve({ providers: ['old-provider'] })
+    oauthApps.resolve({ providers: { github: true } })
+    await Promise.all([capabilityLoad, oauthLoad])
+
+    expect(store.capabilities.data).toEqual({ providers: [] })
+    expect(store.capabilities.loaded).toBe(false)
+    expect(store.oauthApps).toEqual(new Set())
+    expect(changed).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -213,6 +272,38 @@ describe('server-push freshness', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(store.live).toBe(false) // the throw resets it before the backoff
     store.disconnect()
+  })
+
+  it('drops queued and directly applied events after retirement', async () => {
+    const release = deferred<void>()
+    const listInbox = vi.fn().mockResolvedValue([])
+    let markOpen: (() => void) | undefined
+    const store = makeStore(stubApi({
+      listInbox,
+      eventStream: async function* (_signal: AbortSignal, onOpen: () => void) {
+        markOpen = onOpen
+        await release.promise
+        yield { event: 'inbox', data: { id: 'old-inbox', state: 'pending' } }
+      },
+    }))
+    const changed = vi.fn()
+    const server = vi.fn()
+    store.addEventListener('change', changed)
+    store.addEventListener('server', server)
+
+    store.connect()
+    await Promise.resolve()
+    expect(markOpen).toBeTypeOf('function')
+    store.retire()
+    markOpen?.()
+    store.applyServerEvent({ type: 'inbox', data: { id: 'direct-old-inbox' } })
+    release.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(store.live).toBe(false)
+    expect(listInbox).not.toHaveBeenCalled()
+    expect(server).not.toHaveBeenCalled()
+    expect(changed).not.toHaveBeenCalled()
   })
 })
 

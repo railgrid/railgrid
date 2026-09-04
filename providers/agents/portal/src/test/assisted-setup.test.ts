@@ -3,13 +3,25 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DNS_LABEL_RE, SMOKE_QUERY, searxngSetupPrompt } from '../assisted-setup'
-import type { AgentChat } from '../views/agent-chat'
-import type { Connections } from '../views/connections'
+import AgentChatView from '../views/AgentChat.vue'
+import ConnectionsView from '../views/Connections.vue'
 import type { Capabilities, Connection } from '../types'
 import type { Route } from '../router'
-import '../views/connections'
-import '../views/agent-chat'
-import { agentFixture, makeStore, mount, settle, stubApi, text } from './helpers'
+import { agentFixture, makeStore, stubApi } from './helpers'
+import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
+
+type AgentChat = HTMLElement & { store: ReturnType<typeof makeStore>; api: ReturnType<typeof stubApi> }
+type Connections = HTMLElement & { store: ReturnType<typeof makeStore>; api: ReturnType<typeof stubApi> }
+const mountedByElement = new WeakMap<Element, MountedVue>()
+async function mount<T>(tag: string, props: Record<string, unknown>): Promise<T> {
+  const mounted = await mountVue(tag.includes('agent-chat') ? AgentChatView : ConnectionsView, props)
+  const element = mounted.element as HTMLElement & { store?: unknown; api?: unknown }
+  element.store = props.store
+  element.api = props.api
+  mountedByElement.set(element, mounted)
+  return element as unknown as T
+}
+async function settle(_element: Element, passes = 4): Promise<void> { await settleVue(passes, 250) }
 
 function connFixture(name: string, spec: Partial<Connection['spec']> = {}): Connection {
   return { metadata: { name }, spec: { type: 'websearch', ...spec } }
@@ -20,13 +32,15 @@ async function mountConnections(caps: Capabilities, agents = [agentFixture('scou
   const store = makeStore(api)
   store.agents.data = agents
   store.agents.loaded = true
+  store.agents.hasSnapshot = true
   store.capabilities.data = caps
   store.capabilities.loaded = true
   // The assist card waits for connections before deciding whether to show, so
   // an unloaded slice means "not yet", not "none".
   store.connections.loaded = true
+  store.connections.hasSnapshot = true
   const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true })
-  return { el, store, api }
+  return { el, store, api, mounted: mountedByElement.get(el as unknown as Element)! }
 }
 
 async function mountAssistedPage(
@@ -35,8 +49,7 @@ async function mountAssistedPage(
   extra: Record<string, unknown> = {},
 ) {
   const result = await mountConnections(caps, agents, extra)
-  result.el.createRoute = true
-  result.el.createType = 'assisted-search'
+  await result.mounted.setProps({ createRoute: true, createType: 'assisted-search' })
   await settle(result.el, 3)
   return result
 }
@@ -49,7 +62,7 @@ describe('connections route layout', () => {
     const { el } = await mountConnections({ providers: [] }, [])
 
     expect(el.querySelector(':scope > .agents-menu > .agents-route-panel')).not.toBeNull()
-    expect(el.querySelector('agents-toolsets .agents-route-panel')).not.toBeNull()
+    expect(el.querySelectorAll('.agents-menu > .agents-route-panel')).toHaveLength(2)
   })
 })
 
@@ -86,16 +99,45 @@ describe('capability gating', () => {
     expect(store.capabilities.data.unavailable).toBe(true)
     expect(store.hasProvider('infrastructure')).toBe(false)
   })
+
+  it('reacts when the assisted-search provider capability arrives after mount', async () => {
+    const { el, store } = await mountAssistedPage({ providers: [] })
+    expect(text(el)).toContain('Infrastructure is not enabled')
+
+    store.capabilities.data = { providers: ['infrastructure'] }
+    store.capabilities.loaded = true
+    store.dispatchEvent(new Event('change'))
+    await settle(el, 4)
+
+    expect(el.querySelector('.agents-conn-form')).not.toBeNull()
+  })
+
+  it('does not offer or open assisted setup when existing connections are unavailable', async () => {
+    const { el, store, mounted } = await mountConnections({ providers: ['infrastructure'] })
+    store.connections.hasSnapshot = false
+    store.connections.error = 'connection list unavailable'
+    store.dispatchEvent(new Event('change'))
+    await settle(el, 2)
+
+    expect(el.querySelector('.agents-assist')).toBeNull()
+
+    await mounted.setProps({ createRoute: true, createType: 'assisted-search' })
+    await settle(el, 2)
+
+    expect(el.querySelector('.agents-conn-form')).toBeNull()
+    expect(text(el.querySelector('[role="alert"]'))).toContain('Could not verify existing connections')
+    expect(text(el.querySelector('[role="alert"] button'))).toContain('Retry')
+  })
 })
 
 describe('retiring the assist card', () => {
   // The complaint that prompted this: the card showed on every visit forever,
   // including long after search was set up.
   it('disappears once a self-hosted search connection exists', async () => {
-    const { el } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], {
+    const { el, store } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], {
       listConnections: () => Promise.resolve([connFixture('search', { config: { provider: 'searxng', instance: 'search' } })]),
     })
-    await el.store.load('connections')
+    await store.load('connections')
     await settle(el, 4)
     expect(el.querySelector('.agents-assist')).toBeNull()
   })
@@ -103,10 +145,10 @@ describe('retiring the assist card', () => {
   // A Brave connection is search, but it is not SELF-HOSTED search — the thing
   // this card offers. It stays, and can be dismissed by hand.
   it('stays when the only search connection is a hosted API', async () => {
-    const { el } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], {
+    const { el, store } = await mountConnections({ providers: ['infrastructure'] }, [agentFixture('scout')], {
       listConnections: () => Promise.resolve([connFixture('brave', { config: { provider: 'brave' } })]),
     })
-    await el.store.load('connections')
+    await store.load('connections')
     await settle(el, 4)
     expect(el.querySelector('.agents-assist')).not.toBeNull()
   })
@@ -197,15 +239,32 @@ describe('assisted setup flow', () => {
     expect(el.querySelector('.agents-conn-form')).not.toBeNull()
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('[role="dialog"]')).toBeNull()
+    const sizes = [...el.querySelectorAll<HTMLButtonElement>('.agents-modebtn')]
+    expect(sizes.map(button => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
+    sizes[1].click()
+    await settle(el, 2)
+    expect(sizes.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false'])
+  })
+
+  it('labels the agent selector and links its validation error', async () => {
+    const { el } = await mountAssistedPage(
+      { providers: ['infrastructure'] },
+      [agentFixture('scout'), agentFixture('ranger')],
+    )
+    const trigger = el.querySelector<HTMLButtonElement>('.k-form-select__trigger')!
+    expect(trigger.getAttribute('aria-labelledby')?.split(' ')).toContain('assisted-search-agent-label')
+
+    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 4)
+
+    expect(trigger.getAttribute('aria-invalid')).toBe('true')
+    expect(trigger.getAttribute('aria-describedby')).toBe('assisted-search-agent-error')
+    expect(el.querySelector('#assisted-search-agent-error')?.getAttribute('role')).toBe('alert')
   })
 
   it('creates the connection naming the instance, hands off the prompt and navigates to the agent', async () => {
     const createConnection = vi.fn().mockResolvedValue({ metadata: { name: 'search' }, spec: { type: 'websearch' } })
-    const { el, store } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
-    let destination: Route | undefined
-    el.addEventListener('agents-create-success', (e) => {
-      destination = (e as CustomEvent<{ destination?: Route }>).detail.destination
-    })
+    const { el, store, mounted } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
 
     const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
     // A single agent means no picker at all.
@@ -216,6 +275,7 @@ describe('assisted setup flow', () => {
 
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 6)
+    const destination = (mounted.events['create-success']?.[0] as { destination?: Route } | undefined)?.destination
 
     expect(createConnection).toHaveBeenCalledTimes(1)
     const body = createConnection.mock.calls[0][0]
@@ -279,7 +339,16 @@ describe('assisted setup flow', () => {
     await settle(el, 4)
 
     expect(createConnection).not.toHaveBeenCalled()
-    expect(text(el.querySelector('.agents-fielderr'))).toContain('Lowercase letters')
+    const connectionError = el.querySelector('#assisted-search-connection-name-error')
+    const instanceError = el.querySelector('#assisted-search-instance-name-error')
+    expect(text(connectionError)).toContain('Lowercase letters')
+    expect(connectionError?.getAttribute('role')).toBe('alert')
+    expect(instanceError?.getAttribute('role')).toBe('alert')
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(input.getAttribute('aria-describedby')).toBe('assisted-search-connection-name-error')
+    const instance = el.querySelector<HTMLInputElement>('input[name=instance]')!
+    expect(instance.getAttribute('aria-invalid')).toBe('true')
+    expect(instance.getAttribute('aria-describedby')).toBe('assisted-search-instance-name-error')
     expect(DNS_LABEL_RE.test('search')).toBe(true)
     expect(DNS_LABEL_RE.test('-search')).toBe(false)
   })
@@ -289,33 +358,33 @@ describe('unwired tool connections', () => {
   it('flags a tool connection no agent was granted, and clears once one is', async () => {
     const conn = connFixture('search', { config: { provider: 'searxng' }, baseURL: 'https://s.example' })
     const bare = agentFixture('scout')
-    const { el } = await mountConnections({ providers: [] }, [bare], { listConnections: () => Promise.resolve([conn]) })
-    await el.store.load('connections')
+    const { el, store } = await mountConnections({ providers: [] }, [bare], { listConnections: () => Promise.resolve([conn]) })
+    await store.load('connections')
     await settle(el, 4)
-    expect(text(el.querySelector('.agents-table'))).toContain('not wired to an agent')
+    expect(text(el.querySelector('table[aria-label="Connections"]'))).toContain('not wired to an agent')
 
     const wired = agentFixture('scout')
     wired.spec.tools = { interactive: { connections: ['search'] } }
     const second = await mountConnections({ providers: [] }, [wired], { listConnections: () => Promise.resolve([conn]) })
-    await second.el.store.load('connections')
+    await second.store.load('connections')
     await settle(second.el, 4)
-    expect(text(second.el.querySelector('.agents-table'))).not.toContain('not wired to an agent')
+    expect(text(second.el.querySelector('table[aria-label="Connections"]'))).not.toContain('not wired to an agent')
   })
 
   it('does not flag channels — only tools need a grant', async () => {
     const tg = connFixture('tg', { type: 'telegram', channel: '123' })
-    const { el } = await mountConnections({ providers: [] }, [agentFixture('scout')], {
+    const { el, store } = await mountConnections({ providers: [] }, [agentFixture('scout')], {
       listConnections: () => Promise.resolve([tg]),
     })
-    await el.store.load('connections')
+    await store.load('connections')
     await settle(el, 4)
-    expect(text(el.querySelector('.agents-table'))).not.toContain('not wired to an agent')
+    expect(text(el.querySelector('table[aria-label="Connections"]'))).not.toContain('not wired to an agent')
   })
 })
 
 describe('connection needing an instance', () => {
   it('flags a searxng connection naming no instance, and not one that names it', async () => {
-    const { el } = await mountConnections({ providers: [] }, [], {
+    const { el, store } = await mountConnections({ providers: [] }, [], {
       listConnections: () =>
         Promise.resolve([
           connFixture('search', { config: { provider: 'searxng' } }),
@@ -323,7 +392,7 @@ describe('connection needing an instance', () => {
           connFixture('brave', { config: { provider: 'brave' } }),
         ]),
     })
-    await el.store.load('connections')
+    await store.load('connections')
     await settle(el, 4)
 
     const rows = [...el.querySelectorAll('tbody tr')]
@@ -336,10 +405,10 @@ describe('connection needing an instance', () => {
   // A URL left over from the old public path is not an instance: search cannot
   // use it any more, so the row must still say something is missing.
   it('is not satisfied by a leftover baseURL', async () => {
-    const { el } = await mountConnections({ providers: [] }, [], {
+    const { el, store } = await mountConnections({ providers: [] }, [], {
       listConnections: () => Promise.resolve([connFixture('stale', { config: { provider: 'searxng' }, baseURL: 'https://old.example.com' })]),
     })
-    await el.store.load('connections')
+    await store.load('connections')
     await settle(el, 4)
     expect(text(el.querySelector('tbody tr'))).toContain('needs an instance')
   })
@@ -370,9 +439,9 @@ describe('auto-send on arrival', () => {
 
     // Re-render, a tab switch back (same element re-entering an update) and a
     // name re-assignment must not resend.
-    el.requestUpdate()
+    el.store.dispatchEvent(new Event('change'))
     await settle(el, 4)
-    el.name = 'scout'
+    await mountedByElement.get(el)!.setProps({ name: 'scout' })
     await settle(el, 4)
     expect(chatStream).toHaveBeenCalledTimes(1)
 

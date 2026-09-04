@@ -1,6 +1,6 @@
 # Agents portal
 
-Vite + TypeScript + [Lit](https://lit.dev) micro-frontend for the agents
+Vite + TypeScript + [Vue 3](https://vuejs.org) micro-frontend for the agents
 provider, mounted in the faros portal under `/ui/providers/agents/`. The Go
 binary embeds `portal/dist` via `assets.go`.
 
@@ -41,16 +41,18 @@ router.
 ```
 src/
   main.ts               entry: registers the custom element + injects style.css
-  element.ts            <faros-provider-agents> shell — nav, routing, store lifecycle
+  element.ts            thin <faros-provider-agents> Vue mount boundary
+  App.vue               nav, routing, authority rotation, and store lifecycle
   api.ts                typed REST client + a spec-correct SSE reader
   store.ts              Slice<T> {data, loading, error} collections + /api/events subscription
   mutate.ts             the one write helper (optimistic → request → toast → refresh)
   router.ts             hash routes for the four tabs
   types.ts              entity + write DTO types, formatters
   conn-defs.ts          type-driven connection setup guides + shape/inbound derivation
-  portalkit/            synced kit (tenant headers, icons, modal) — edit upstream, not here
-  ui/                   base classes, icon adapter, toasts, markdown, slice states
-  views/                one component per surface (agents, agent config/chat, activity,
+  portalkit/            synced Vue kit + shared tenant/style helpers — edit upstream, not here
+  ui/                   framework-neutral toast integration
+  vue/                  Vue runtime bridge + framework-neutral chat projection helpers
+  views/                Vue components for each surface (agents, agent config/chat, activity,
                         run detail, connections, toolsets, models, automation)
   test/                 vitest component + store tests
 ```

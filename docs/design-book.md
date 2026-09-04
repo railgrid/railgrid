@@ -147,7 +147,7 @@ writing any CSS**:
 | `.k-btn` (+ `--primary/--ghost/--text/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; text = transparent, borderless inline action; danger = danger-subtle tint, **no glow** |
 | `.k-back-action` | Intrinsic-width, start-aligned borderless link modifier for `.k-btn`; 12px/500 accent link with a 6px icon gap, accent-hover underline, and no control surface. Vue resource detail pages use `ResourceBackLink`, which always renders a real `href`; only an unmodified primary activation is intercepted for caller-owned SPA `back` routing, while modified and non-primary clicks retain native browser behavior. Disabled state prevents navigation and `back` emission, exposes `aria-disabled="true"`, and leaves keyboard tab order with `tabindex="-1"`. The arrow flips in RTL; coarse and hybrid any-pointer targets are at least 44×44px. Use `.k-back-action` directly for create flows and other non-detail controls. |
 | `.k-input` | 4px overlay-bg input; focus = accent border + 3px subtle ring + glow |
-| `.k-form-select` (+ `__trigger`, `__panel`, `__option`) | Accessible single-select combobox from `portalkit-vue/FormSelect.vue`; composes the input and menu recipes, with viewport-aware teleported listbox positioning |
+| `.k-form-select` (+ `__trigger`, `__panel`, `__option`) | Accessible single-select combobox from `portalkit-vue/FormSelect.vue` or framework-neutral `portalkit/form-select.ts`; composes the input and menu recipes, with viewport-aware portalled listbox positioning |
 | `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over an expanded tabular numeral |
 | `.k-menu` / `.k-menu-item` (+ `--danger`, `.is-selected`, `.k-menu-sep`) | Dropdown/context menu panel + items; selection = accent-subtle, no glow |
 | `.k-layout-selector` (+ `__trigger`, `__menu`, `__item`) | Controlled grid/list presentation menu; compact icon trigger, radio semantics, no glow |
@@ -594,10 +594,13 @@ incrementally.
   a 3.5px chevron in `text-muted`. Native `<select>` popups cannot be styled —
   that's fine; the OS popup is sanctioned. `accent-color` themes what it can.
 - When a product-consistent popup is required, use the shared
-  `portalkit-vue/FormSelect.vue`. It provides single-select combobox/listbox
+  `portalkit-vue/FormSelect.vue` or the framework-neutral
+  `portalkit/form-select.ts`. Both provide single-select combobox/listbox
   semantics, keyboard navigation, disabled options, and viewport-aware
-  teleported positioning; providers must not copy or restyle its `.k-*`
-  recipes.
+  portalled positioning; providers must not copy or restyle their `.k-*`
+  recipes. The framework-neutral element takes `options`, `value`, and optional
+  `placeholder`, `labelledby`, and `describedby` properties and emits a bubbling
+  `change` event with the selected string in `detail`.
 - If search/multi-select is ever needed, build a combobox as: `.k-input`
   trigger + the dropdown-menu panel above + `.k-badge`-style tags for selected
   values. Never a third visual language.
@@ -653,7 +656,8 @@ retains the current page when it remains valid. The shared presentation is:
   in `text-muted`.
 - Current page indicator in `accent-subtle` with `accent` text. No number soup.
 - Search plus compact, visibly labeled facets above the table; short categorical
-  filters use the shared select-only PortalKit listbox, while resource-reference
+  filters use `portalkit/resource-table-filter.ts` (or the Vue
+  `ResourceTableFilter.vue`) as the shared select-only PortalKit listbox, while resource-reference
   inventories explicitly opt into search inside the same menu. Narrow screens stack facets at
   full width. One `Clear filters` action appears only when a facet is active.
 - For wide tables, only the table canvas scrolls horizontally. Search/filter

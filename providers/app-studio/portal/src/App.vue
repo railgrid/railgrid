@@ -8038,6 +8038,10 @@ function onNestedProviderNavigate(e: Event) {
   const path = (typeof detail?.path === 'string' ? detail.path : '').replace(/^\/+/, '')
   const tab = activeWorkbenchTab.value
   if (!tab || tab.kind !== 'provider') return
+  // A cancelable nested-provider event uses preventDefault as a synchronous
+  // acknowledgement that App Studio owns this navigation. Without it, a
+  // provider with standalone hash fallback also mutates the outer URL.
+  e.preventDefault()
   // Nested provider tabs have one persisted descriptor rather than their own
   // shell history stack. Updating that descriptor in place is therefore the
   // equivalent of both push and replace navigation, while accepting optional

@@ -270,14 +270,14 @@ versioned fallback ID. It never overwrites an existing style element, and a
 newer host stylesheet always wins.
 
 - **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
-  (vanilla-TS)** portals (`agents`, `kuery`, `quickstart`):
+  (vanilla-TS)** portals (`kuery`, `quickstart`):
   - `icons.ts` — `ic('name')` returns an inline SVG string (self-injects its
     `.ic` sizing). Use instead of emoji.
   - `modal.ts` — `confirmModal()` / `alertModal()` (promise-based, replaces
     native dialogs).
   - `tenant.ts` — see below.
-- **`provider-sdk/portalkit-vue/`** — kit for the **Vue SFC** portals (`code`,
-  `databricks`, `edges`, `app-studio`, `infrastructure`, root `portal`):
+- **`provider-sdk/portalkit-vue/`** — kit for the **Vue SFC** portals (`agents`,
+  `code`, `databricks`, `edges`, `app-studio`, `infrastructure`, root `portal`):
   - `confirm.ts` + `ConfirmDialog.vue` — promise `confirmDialog()` (mount one
     `<ConfirmDialog />` at the app root).
   - `ResourceTable.vue`, `ConditionsPanel.vue`, `StatusBadge.vue`.

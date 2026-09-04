@@ -31,14 +31,22 @@ export interface MutateOptions<T> {
 // mutate returns the write's result, or undefined if it failed (the error is
 // already surfaced as a toast — callers only need the happy path).
 export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promise<T | undefined> {
+  // A detached authority must not be able to start another write through an
+  // event delivered after its shell rotated the store.
+  if (store.isRetired()) return undefined
   opts.optimistic?.()
   if (opts.optimistic) store.dispatchEvent(new Event('change'))
   try {
     const res = await opts.run()
+    // The write may have been in flight when the host changed user, token, or
+    // workspace. The server result still belongs to that old authority; do not
+    // surface its toast or issue new reads through its retired client.
+    if (store.isRetired()) return undefined
     if (opts.success) toast('ok', opts.success, opts.action)
     for (const key of opts.reload || []) void store.load(key)
     return res
   } catch (e) {
+    if (store.isRetired()) return undefined
     opts.rollback?.()
     if (opts.rollback) store.dispatchEvent(new Event('change'))
     toast('error', `${opts.failure}: ${(e as Error).message}`)

@@ -13,7 +13,7 @@
 
 export interface FarosContext {
   token?: string | null
-  user?: { email?: string; sub?: string } | null
+  user?: { email?: string; sub?: string; userId?: string } | null
   // tenant is the kcp cluster name of the active workspace (host-side id).
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
@@ -220,8 +220,8 @@ export interface PendingApproval {
 }
 
 export interface ChatMessage {
-  // id is stable across re-renders so lit's repeat() keeps DOM nodes (and the
-  // browser keeps text selection) while a reply streams in.
+  // id is stable across Vue's keyed re-renders so DOM nodes (and browser text
+  // selection) survive while a reply streams in.
   id: string
   role: 'user' | 'assistant'
   content: string

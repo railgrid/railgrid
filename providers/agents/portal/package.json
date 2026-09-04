@@ -5,22 +5,26 @@
   "description": "Agents provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/agents/.",
   "type": "module",
   "scripts": {
+    "prebuild": "vitest run && vue-tsc --noEmit",
     "build": "vite build",
     "dev": "vite",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.3",
     "@types/node": "^26.1.2",
     "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
     "vite": "^6.4.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "vue-tsc": "^2.2.0"
   },
   "dependencies": {
     "dompurify": "^3.4.12",
-    "lit": "^3.3.3",
-    "marked": "^18.0.7"
+    "lucide-vue-next": "^0.475.0",
+    "marked": "^18.0.7",
+    "vue": "^3.5.13"
   }
 }
