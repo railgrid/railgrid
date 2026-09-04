@@ -252,7 +252,7 @@ const showHelpModal = ref(false)
 // The vertical dock defaults to a 56px icon rail so the canvas isn't taxed by
 // a permanent 192px label column; labels expand on click and the choice
 // persists per browser. Collapsed rows are icon-only with a native title
-// tooltip (design-book §6 "Sidebar rail").
+// tooltip (design.patterns.navigation-and-feedback: sidebar rail).
 const { sidebarExpanded, toggleSidebar } = useSidebarExpansion()
 
 const {

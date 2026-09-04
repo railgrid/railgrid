@@ -20,6 +20,26 @@ const BASE_CONFIG = {
 function fixtureRepo(entries, config = {}) {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'faros-ui-conformance-'))
   fs.mkdirSync(path.join(repoRoot, 'provider-sdk/portalkit'), { recursive: true })
+  fs.mkdirSync(path.join(repoRoot, 'docs/design/quality'), { recursive: true })
+  fs.writeFileSync(path.join(repoRoot, 'docs/design/quality/exceptions.md'), `---
+{
+  "schema": 1,
+  "id": "design.quality.exceptions",
+  "title": "Conformance exceptions",
+  "kind": "policy",
+  "status": "active",
+  "authority": { "design": "normative", "implementation": "none" },
+  "implementation": { "state": "not-applicable" },
+  "appliesTo": ["portal"],
+  "owner": "design-system",
+  "canonicalSource": [{ "path": "docs/design/quality/exceptions.md#conformance-exceptions", "role": "design" }],
+  "verification": { "state": "unverified", "checks": [] },
+  "relatedDocuments": []
+}
+---
+
+# Conformance exceptions
+`)
   for (const [relative, content] of Object.entries(entries)) {
     const absolute = path.join(repoRoot, relative)
     fs.mkdirSync(path.dirname(absolute), { recursive: true })
@@ -35,6 +55,30 @@ function fixtureRepo(entries, config = {}) {
 
 function rules(result) {
   return new Set(result.diagnostics.map((diagnostic) => diagnostic.rule))
+}
+
+function writeDesignEntry(repoRoot, id) {
+  const relativePath = `docs/design/quality/${id.replaceAll('.', '-')}.md`
+  const absolutePath = path.join(repoRoot, relativePath)
+  fs.writeFileSync(absolutePath, `---
+{
+  "schema": 1,
+  "id": "${id}",
+  "title": "Fixture design entry",
+  "kind": "policy",
+  "status": "active",
+  "authority": { "design": "normative", "implementation": "none" },
+  "implementation": { "state": "not-applicable" },
+  "appliesTo": ["portal"],
+  "owner": "design-system",
+  "canonicalSource": [{ "path": "${relativePath}#fixture-design-entry", "role": "design" }],
+  "verification": { "state": "unverified", "checks": [] },
+  "relatedDocuments": []
+}
+---
+
+# Fixture design entry
+`)
 }
 
 test('accepts k-* recipes, known tokens, and true circles', () => {
@@ -565,7 +609,7 @@ test('keeps dense checkboxes compact without decorative focus glow', () => {
   assert.doesNotMatch(`${checkbox}\n${focus}\n${focusVisible}`, /accent-glow/)
 })
 
-test('supports an exact, design-book-referenced exception and rejects stale locators', () => {
+test('supports an exact, design-referenced exception and rejects stale locators', () => {
   const source = 'faros-provider-fixture .bubble {\n  border-radius: 14px;\n}\n'
   const valid = fixtureRepo({ 'providers/fixture/portal/src/style.css': source })
   const validResult = valid.run({
@@ -577,7 +621,7 @@ test('supports an exact, design-book-referenced exception and rejects stale loca
         line: 2,
         column: 3,
         match: 'border-radius: 14px',
-        reference: 'design-book §3 chat bubbles',
+        reference: 'design.quality.exceptions',
         reason: 'App Studio conversational bubble geometry is explicitly sanctioned.',
       }],
     },
@@ -593,7 +637,7 @@ test('supports an exact, design-book-referenced exception and rejects stale loca
         line: 2,
         column: 4,
         match: 'border-radius: 14px',
-        reference: 'design-book §3 chat bubbles',
+        reference: 'design.quality.exceptions',
         reason: 'App Studio conversational bubble geometry is explicitly sanctioned.',
       }],
     },
@@ -614,7 +658,7 @@ test('rejects malformed or debt-like exception registries', () => {
         line: 1,
         column: 1,
         match: 'color',
-        reference: 'design-book §2',
+        reference: 'design.quality.exceptions',
         reason: 'temporary debt baseline',
       }],
     },
@@ -632,7 +676,7 @@ test('rejects malformed or debt-like exception registries', () => {
         line: 1,
         column: 1,
         match: 'color',
-        reference: 'design-book §2',
+        reference: 'design.quality.exceptions',
         reason: 'A precise sanctioned exception.',
         expires: '2099-01-01',
       }],
@@ -641,6 +685,72 @@ test('rejects malformed or debt-like exception registries', () => {
   assert.equal(unknownKey.diagnostics.length, 1)
   assert.equal(unknownKey.diagnostics[0].rule, RULES.EXCEPTION_REGISTRY)
   assert.match(unknownKey.diagnostics[0].message, /unknown key/)
+})
+
+test('rejects an exception whose stable design ID is not in the design catalog', () => {
+  const fixture = fixtureRepo({ 'providers/fixture/portal/src/style.css': '.x { color: var(--color-accent); }\n' })
+  const result = fixture.run({
+    exceptions: {
+      version: 1,
+      exceptions: [{
+        rule: RULES.RAW_COLOR,
+        path: 'providers/fixture/portal/src/style.css',
+        line: 1,
+        column: 1,
+        match: 'color',
+        reference: 'design.quality.missing',
+        reason: 'A precise sanctioned exception.',
+      }],
+    },
+  })
+  assert.equal(result.diagnostics.length, 1)
+  assert.equal(result.diagnostics[0].rule, RULES.EXCEPTION_REGISTRY)
+  assert.match(result.diagnostics[0].message, /does not resolve/i)
+})
+
+test('accepts a direct schema-valid designId outside the design namespace', () => {
+  const fixture = fixtureRepo({ 'providers/fixture/portal/src/style.css': 'color: var(--color-accent);\n' })
+  writeDesignEntry(fixture.repoRoot, 'fixture.exceptions')
+  const result = fixture.run({
+    exceptions: {
+      version: 1,
+      exceptions: [{
+        rule: RULES.RAW_COLOR,
+        path: 'providers/fixture/portal/src/style.css',
+        line: 1,
+        column: 1,
+        match: 'color',
+        designId: 'fixture.exceptions',
+        reason: 'A precise sanctioned exception.',
+      }],
+    },
+  })
+
+  assert.deepEqual(result.diagnostics, [])
+})
+
+test('rejects conflicting direct designId and legacy reference values', () => {
+  const fixture = fixtureRepo({ 'providers/fixture/portal/src/style.css': 'color: var(--color-accent);\n' })
+  writeDesignEntry(fixture.repoRoot, 'fixture.exceptions')
+  const result = fixture.run({
+    exceptions: {
+      version: 1,
+      exceptions: [{
+        rule: RULES.RAW_COLOR,
+        path: 'providers/fixture/portal/src/style.css',
+        line: 1,
+        column: 1,
+        match: 'color',
+        designId: 'fixture.exceptions',
+        reference: 'design.quality.exceptions',
+        reason: 'A precise sanctioned exception.',
+      }],
+    },
+  })
+
+  assert.equal(result.diagnostics.length, 1)
+  assert.equal(result.diagnostics[0].rule, RULES.EXCEPTION_REGISTRY)
+  assert.match(result.diagnostics[0].message, /designId and reference.*same design document/i)
 })
 
 test('canonical roots are replaceable without weakening provider scanning', () => {

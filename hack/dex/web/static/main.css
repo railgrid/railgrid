@@ -62,7 +62,7 @@
   --faros-text-secondary: #8a8ca6;
   --faros-text-muted: #5d5f78;
   --faros-on-accent: #ffffff;
-  /* §8: provider identity tiles keep the provider's brand-approved ground. */
+  /* design.quality.exceptions: provider identity tiles keep the provider's brand-approved ground. */
   --faros-brand-tile-google: #ffffff;
   --faros-brand-tile-light: #f5f5f5;
   --faros-brand-tile-oidc: rgba(255, 255, 255, 0.94);

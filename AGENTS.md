@@ -270,14 +270,15 @@ versioned fallback ID. It never overwrites an existing style element, and a
 newer host stylesheet always wins.
 
 - **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
-  (vanilla-TS)** portals (`kuery`, `quickstart`):
+  (vanilla-TS)** Quickstart portal:
   - `icons.ts` — `ic('name')` returns an inline SVG string (self-injects its
     `.ic` sizing). Use instead of emoji.
   - `modal.ts` — `confirmModal()` / `alertModal()` (promise-based, replaces
     native dialogs).
   - `tenant.ts` — see below.
 - **`provider-sdk/portalkit-vue/`** — kit for the **Vue SFC** portals (`agents`,
-  `code`, `databricks`, `edges`, `app-studio`, `infrastructure`, root `portal`):
+  `code`, `databricks`, `edges`, `app-studio`, `infrastructure`, `kuery`, root
+  `portal`):
   - `confirm.ts` + `ConfirmDialog.vue` — promise `confirmDialog()` (mount one
     `<ConfirmDialog />` at the app root).
   - `ResourceTable.vue`, `ConditionsPanel.vue`, `StatusBadge.vue`.
@@ -448,164 +449,48 @@ or the other — both bind `:9443` and share `.kcp/`.
 
 ## 8. UI & design standards (portal + provider micro-frontends)
 
-> Full system reference: [`docs/design-book.md`](docs/design-book.md) — tokens
-> for both themes, the radius law, component recipes, sanctioned exceptions,
-> build-to-this specs for components that don't exist yet (tooltips, toasts,
-> pagination, dropzones, ⌘K palette, …), and the pre-merge review checklist.
-> Before building ANY new component type, check the design book §10 for its
-> spec. This section is the enforcement summary.
+The main portal and provider micro-frontends share one design system and must
+read as one product. The structured knowledge base at
+[`docs/design/README.md`](docs/design/README.md) is the operational entrypoint;
+the legacy [`docs/design-book.md`](docs/design-book.md) path is only a
+compatibility pointer.
 
-**All UI must be standardized.** The main portal and every provider
-micro-frontend render inside the same DOM (`<faros-provider-{name}>` custom
-elements), so they share one stylesheet and must look like one product. Do **not**
-introduce per-provider fonts, ad-hoc colors, or bespoke modal/table markup. Reuse
-the shared design tokens and the existing components in
-`portal/src/components/`.
+Before changing UI, select applicable contracts: [foundations](docs/design/foundations/)
+for tokens, theme, type, geometry, icons, and integration; [patterns](docs/design/patterns/)
+for page, form, navigation, resource-read, and creation composition;
+[components](docs/design/components/) for reusable primitives and PortalKit
+assets; [quality](docs/design/quality/) for conformance, review, exceptions, and
+oddities; [AI](docs/design/ai/) for conversation, autonomy, and evidence;
+[content](docs/design/content/) for product copy; and
+[accessibility](docs/design/accessibility/) for keyboard, focus, semantics, and
+interaction. Read relevant entries, not the whole directory.
 
-**Stack:** Vue 3 + TypeScript + Vite, **Tailwind CSS v4** (`@import "tailwindcss"`),
-[`lucide-vue-next`](https://lucide.dev) icons. Tokens and global styles live in
-`portal/src/assets/main.css` under `@theme`. Provider `.vue/.ts` files are pulled
-into Tailwind's scan via `@source` directives there — a new provider portal must
-be added to that list or its classes won't compile.
+Implementation authority remains the canonical root tokens and shared
+PortalKit sources (`portal/src/assets/main.css`, `provider-sdk/portalkit/`, and
+`provider-sdk/portalkit-vue/`), plus existing host components in
+`portal/src/components/`. Reuse those contracts; provider-local copies are
+distribution outputs, not new authorities. A new primitive or shared recipe is
+added canonical-first, then propagated with `make sync-portalkit`; never invent
+a provider-local variant or edit a vendored copy directly.
 
-### Design tokens — use these, never raw hex/grays
+Treat each entry's `status`, `authority`, `implementation.state`, and
+`verification` metadata as part of the contract. Draft/proposed entries and
+planned, partial, or retired implementation states do not prove a shipped
+surface, and unverified guidance must not be reported as verified. Update the
+design entry when the implementation boundary or evidence changes.
 
-The design system is **"Violet Circuit"**: near-black violet-tinted dark ground
-by default, hairline borders, sharp corners, a single violet accent that *glows*
-only on live/active things. **Dark is the base** (defined in `@theme` in
-`main.css`); light is the `html.light` override. Both are complete CSS-variable
-palettes; reference them through the Tailwind color names, never hardcode colors.
+For every UI change, preserve the shared token/component vocabulary and check
+the applicable quality contract. Run the focused gates before handoff:
+`make verify-design-docs`, `make verify-portalkit`, and
+`make verify-ui-conformance`. The KB schema, routing rules, and exception policy
+are documented in [schema.md](docs/design/schema.md) and the linked quality
+entries; do not duplicate them here.
 
-| Token (class) | Purpose |
-|---------------|---------|
-| `surface`, `surface-raised`, `surface-overlay`, `surface-hover` | Background layers (page → card → popover → hover); dark base `#0a0b12` → `#111320` → … |
-| `border-subtle`, `border-default` | Hairline borders (white-alpha in dark, solid in light) |
-| `accent`, `accent-hover`, `accent-subtle`, `accent-glow` | Brand violet (`#8b6bff` dark / `#6b48e8` light); primary actions, focus, links. `accent-glow` is the ONLY glow source |
-| `text-primary`, `text-secondary`, `text-muted` | Text hierarchy |
-| `success`, `warning`, `danger` (+ `-subtle` variants) | Status / semantic |
-
-Theme switches via `html.dark` / `html.light` (applied pre-paint in
-`index.html`; **dark is the default and the hard fallback**); never assume a
-fixed background. Signature background texture is `.contour-grid` (+
-`.contour-grid-fade`), used sparingly on login/hero/empty states. Other global
-utilities: `.island` (floating dock card), `.shimmer` (skeletons),
-`.stagger-item` (entry animation), `.live-dot` (opacity pulse — never delete,
-providers depend on it).
-
-**Glow-means-alive:** only active nav items, primary buttons, focus rings and
-the live dot emit light (`box-shadow` from `var(--color-accent-glow)`). Nothing
-decorative glows. If you add a glow to something that is not
-live/active/focused, you are off-system.
-
-### Typography
-
-- **Fonts (self-hosted via `@fontsource`, imported in `portal/src/main.ts`):**
-  `font-sans` = Instrument Sans Variable (body), `font-display` = Archivo
-  Variable used through the `.type-display` utility (width-expanded titles, KPI
-  numerals, the FAROS wordmark), `font-mono` = IBM Plex Mono. Don't add other
-  faces.
-- **Mono:** use `font-mono` for identifiers, names, tokens, URLs, YAML, badges,
-  and any technical/copyable value (it's used heavily — keep doing it).
-- **Type scale (px, explicit):** `text-[10px]` / `text-[11px]` for labels and
-  table headers (uppercase, `tracking-wide`), `text-[12px]`–`text-[13px]` for
-  body/table cells, `text-[14px]`–`text-[18px]` for headings. Weights:
-  `font-medium` (labels/buttons), `font-semibold` (headings/badges),
-  `font-bold` sparingly.
-- **Radius law (sharp — the whole point):** cards / tables / modals **6px**,
-  controls (buttons, inputs, selects) **4px**, badges/tags **3px, square**.
-  `main.css` overrides Tailwind's `--radius-*` scale globally
-  (`xs`2 / `sm`3 / `md`4 / `lg`6 / `xl`6 / `2xl`8 / `3xl`12), so existing
-  `rounded-md/lg/xl` utilities land on-system automatically — never re-declare
-  a softer radius locally, and never use `rounded-full` / `9999px` on anything
-  that isn't a true circle (dot, avatar, spinner). **No pills.** Pill-shaped
-  chips are the old system; new chips are square mono tags (see `.k-badge`).
-
-### Component standards — reuse, don't reinvent
-
-The shared, security- and consistency-critical primitives now live in the
-**portalkit** (see §5.7) and are vendored into each portal's `src/portalkit/`.
-Prefer them; never hand-roll a native `window.confirm/alert` or a bespoke copy.
-
-| Need | Use (Vue) | Use (vanilla-TS) | Pattern |
-|------|-----------|------------------|---------|
-| **Confirm / destructive action** | `confirmDialog()` from `portalkit/confirm.ts` (+ one `<ConfirmDialog />` from `portalkit/ConfirmDialog.vue` mounted at the app root) | `confirmModal()` from `portalkit/modal.ts` | Promise-based; `await confirmDialog({ title, message?, confirmLabel?, danger? })` → `true/false`. **Never** `window.confirm/alert` — CI-free but reviewer-enforced. |
-| **Table / list** | `portalkit/ResourceTable.vue` | — | uppercase `text-[10px]` headers, `text-[13px]` cells, built-in loading/error/empty states; named slots per column. Interactive native rows use `tabindex="0"` with Enter/Space activation; nested explicit controls do not activate the row, and rows do not use `role="button"`. |
-| **Status / phase** | `portalkit/StatusBadge.vue` | — | Square mono tag + dot (3px radius, `k-badge` recipe); `ready` pulses. `ready/active`→success, `pending`→warning, `terminating`/disconnected→danger. |
-| **Icons** | `lucide-vue-next` (`h-4 w-4`, `:stroke-width="1.75"`) | `ic('name')` from `portalkit/icons.ts` | Vanilla portals get an inline SVG string; **no emoji anywhere**. |
-| **Tenant headers / basePath** | `portalkit/tenant.ts` (`readTenant`, `tenantHeaders`, `serviceBase`) | same | Security-critical; must match the hub proxy — see §5.7. |
-| Wizard / multi-step | `FirstEdgeWizard.vue`, `FirstWorkspaceWizard.vue` | — | |
-| YAML display | `YamlViewer.vue` | — | |
-| Theme toggle | `ThemeSwitch.vue` | — | |
-
-When a provider needs something not in the portalkit or `portal/src/components/`,
-prefer adding it to the canonical kit (§5.7) over inventing a provider-local
-variant — consistency across the embedded micro-frontends is the whole point.
-
-### Page content width — fluid shell, local readability
-
-Page width is owned by **`AppLayout`**, not by pages. Every ordinary page
-inherits one fluid `w-full` content column and the same layout padding. This is
-intentional: tables, visualizations, workbenches, and responsive collections
-may use the available viewport instead of leaving ultrawide screens empty.
-
-- **Do NOT add a page-level `mx-auto` / `max-w-*` wrapper** to a page or provider
-  micro-frontend. That reintroduces route-to-route width drift. Bound the
-  specific task region that needs a readable measure instead.
-- Prose should stay near 65–75 characters per line. Simple forms and search
-  controls should normally stop around `42rem`. Dense provisioning forms may
-  fill the page, but must reflow into responsive columns with roughly `20rem`
-  minimum field width and no more than three columns.
-- Tables and data visualizations may fill the fluid column and should own their
-  internal overflow. Collection grids own a deliberate minimum card width and
-  responsive column strategy rather than inheriting one global page cap.
-- A page that needs to own the viewport itself passes `<AppLayout full-bleed>`
-  and manages its own padding and scrolling (for example, the App Studio
-  workbench). Use this for viewport-owned tools, not merely wide content.
-- Horizontal and vertical page padding comes from `AppLayout`
-  (`px-4 py-5 sm:px-8`); do not re-pad the top-level page wrapper.
-
-### Provider portals that ship their own stylesheet
-
-Some provider portals (e.g. `providers/edges`, `providers/infrastructure`)
-are standalone IIFE bundles that render in **light DOM** and inject one namespaced
-`style.css` (imported `?raw` in `main.ts`) instead of compiling Tailwind utilities
-through the host. That is allowed — but the stylesheet is **not** a license to
-invent a look. It is bound by the same design system, enforced by these rules:
-
-- **Colour ONLY through the portal's `--color-*` custom properties.** They
-  cascade in from the host `:root` and are the *same* tokens the Tailwind classes
-  compile to (`--color-surface-raised`, `--color-border-subtle`, `--color-accent`,
-  `--color-text-secondary`, `--color-success|warning|danger`, …). **Never write a
-  raw hex/rgb colour** (the terminal canvas `#0a0a0f` is the one deliberate
-  exception). Raw colours don't flip with `html.light`/`html.dark` and immediately
-  drift from the portal — this is exactly the "random styles" failure mode.
-- **Do not add stale fallbacks** like `var(--color-accent, #5b6cff)` — the host
-  always defines the token, and a wrong fallback silently diverges. Reference the
-  bare `var(--color-*)`.
-- **State/accent tints** (the equivalent of Tailwind's `bg-accent/[0.03]` or
-  `border-accent/30`) use `color-mix(in srgb, var(--color-accent) 30%, transparent)`,
-  not a baked-in translucent hex.
-- **Namespace every selector** under the element tag (e.g.
-  `faros-provider-edges .btn { … }`) so the styles cannot leak into the host.
-- **Match the same recipes** as the shared components, not approximations —
-  the canonical recipes are the `k-*` classes in
-  `provider-sdk/portalkit/faros-ui.css` (the host copy is
-  `portal/src/assets/faros-ui.css`): `k-card`, `k-table`, `k-badge`, `k-btn`,
-  `k-input`, `k-eyebrow`/`k-kpi`,
-  which cascade into every light-DOM provider; prefer using them directly. If
-  you must hand-roll: buttons/inputs 4px radius; cards/tables 6px
-  `surface-raised` with a `border-subtle` hairline; table headers `10px`/`600`
-  uppercase `letter-spacing:.15em` `text-muted`; rows `13px` `text-secondary`
-  with an accent-tinted hover; status tags are **square** (3px) mono uppercase
-  with `*-subtle` bg, solid token text, and a
-  `color-mix(in srgb, currentColor 35%, transparent)` hairline border — never
-  pills. Primary buttons get `box-shadow: 0 0 16px var(--color-accent-glow)`;
-  input focus gets the accent ring + glow; nothing else glows.
-
-**Canonical reference:** [`providers/edges/portal/src/style.css`](providers/edges/portal/src/style.css)
-carries the full contract in its header comment — copy that file's approach for any
-new hand-rolled provider stylesheet. When in doubt, open the matching component in
-`portal/src/components/` and reproduce its token/radius/type values exactly.
+For appearance changes, add a proportionate rendered check on the affected
+route or component at representative viewport sizes. Check both `html.dark`
+and `html.light` whenever appearance changes; record browser evidence separately
+from source, parity, and conformance gates, which do not prove rendered,
+responsive, or interaction behavior.
 
 ---
 

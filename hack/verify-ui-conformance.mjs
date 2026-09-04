@@ -13,6 +13,8 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
+import { isStableDesignID, validateDesignDocs } from './verify-design-docs.mjs'
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..')
 const DEFAULT_CONFIG_PATH = path.join(HERE, 'ui-conformance.config.json')
@@ -49,7 +51,7 @@ const DEFAULT_VENDORED_SEGMENTS = ['portalkit', 'portalkit-vue']
 const DEFAULT_CANONICAL_CONSUMER_PATHS = []
 const DEFAULT_TOKEN_AUTHORITY_PATHS = []
 
-// This is the token vocabulary documented in docs/design-book.md §2 and
+// This is the token vocabulary documented by design.foundations.colors and
 // declared by portal/src/assets/main.css.  Keep this list explicit: deriving
 // it from a stylesheet would let a typo become a token merely by declaring it.
 export const COLOR_TOKENS = Object.freeze(new Set([
@@ -167,7 +169,7 @@ const CONTENT_ASSIGNMENT_RE = /(?:\bcontent\s*:|\b(?:textContent|innerHTML|creat
 const MARKUP_TAG_RE = /<\s*(\/?)\s*([A-Za-z][A-Za-z0-9:._-]*)([^<>]*?)>/g
 const VOID_TAG_NAMES = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
 
-const EXCEPTION_KEYS = new Set(['rule', 'path', 'line', 'column', 'match', 'reference', 'reason'])
+const EXCEPTION_KEYS = new Set(['rule', 'path', 'line', 'column', 'match', 'reference', 'designId', 'reason'])
 const EXCEPTION_RULES = new Set(Object.values(RULES).filter((rule) => rule !== RULES.EXCEPTION_REGISTRY))
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -265,20 +267,44 @@ function validateExceptionRegistry(registry, filesByPath, repoRoot) {
   if (registry.version !== 1) fail('exception registry.version must be 1')
   if (!Array.isArray(registry.exceptions)) fail('exception registry.exceptions must be an array')
 
+  let designIDs = new Set()
+  if (registry.exceptions.length > 0) {
+    let designCatalog
+    try {
+      designCatalog = validateDesignDocs({ repoRoot })
+    } catch (error) {
+      fail(`cannot validate design document IDs: ${error.message}`)
+    }
+    if (designCatalog.diagnostics.length > 0) {
+      fail(`cannot validate design document IDs: ${designCatalog.diagnostics[0].message}`)
+    }
+    designIDs = new Set(designCatalog.catalog.documents.map((document) => document.id))
+  }
+
   const validated = []
   for (const [index, exception] of registry.exceptions.entries()) {
     assertPlainObject(exception, `exception registry.exceptions[${index}]`)
     for (const key of Object.keys(exception)) {
       if (!EXCEPTION_KEYS.has(key)) fail(`exception ${index} has unknown key ${JSON.stringify(key)}`)
     }
-    for (const key of ['rule', 'path', 'match', 'reference', 'reason']) {
+    for (const key of ['rule', 'path', 'match', 'reason']) {
       if (typeof exception[key] !== 'string' || !exception[key].trim()) fail(`exception ${index}.${key} must be a non-empty string`)
     }
-    if (!EXCEPTION_RULES.has(exception.rule)) fail(`exception ${index}.rule ${JSON.stringify(exception.rule)} is not an allowed rule`)
-    if (!/^design-book\s+§\s*[0-9]+(?:\.[0-9]+)?(?:\b.*)?$/i.test(exception.reference)) {
-      fail(`exception ${index}.reference must name a design-book section`)
+    const designReference = exception.designId ?? exception.reference
+    if (typeof designReference !== 'string' || !designReference.trim()) {
+      fail(`exception ${index} must include a stable designId`)
     }
-    if (/\b(?:debt|temporary|todo|legacy|baseline)\b/i.test(`${exception.reference} ${exception.reason}`)) {
+    if (exception.designId !== undefined && exception.reference !== undefined && exception.designId !== exception.reference) {
+      fail(`exception ${index}.designId and reference must identify the same design document`)
+    }
+    if (!isStableDesignID(designReference)) {
+      fail(`exception ${index}.designId must be a stable design document ID`)
+    }
+    if (!designIDs.has(designReference)) {
+      fail(`exception ${index}.designId ${JSON.stringify(designReference)} does not resolve to a document in docs/design`)
+    }
+    if (!EXCEPTION_RULES.has(exception.rule)) fail(`exception ${index}.rule ${JSON.stringify(exception.rule)} is not an allowed rule`)
+    if (/\b(?:debt|temporary|todo|legacy|baseline)\b/i.test(`${designReference} ${exception.reason}`)) {
       fail(`exception ${index} cannot describe debt, a baseline, or a temporary waiver`)
     }
     if (!Number.isInteger(exception.line) || exception.line < 1) fail(`exception ${index}.line must be a positive integer`)
@@ -295,7 +321,7 @@ function validateExceptionRegistry(registry, filesByPath, repoRoot) {
     if (matchColumn < 0 || matchColumn + 1 !== exception.column) {
       fail(`exception ${index} locator does not match ${normalizedPath}:${exception.line}:${exception.column}`)
     }
-    validated.push({ ...exception, path: normalizedPath })
+    validated.push({ ...exception, designId: designReference, path: normalizedPath })
   }
   return validated
 }
@@ -859,7 +885,7 @@ function scanRadii(diagnostics, source, masked, starts) {
     const parsed = parseRadius(value)
     const pill = /(?:9999?px|9999?rem|9999?em|100%|50%)/i.test(value) || (parsed && parsed.pixels > 12)
     if (!pill || isCircleDeclaration(masked, match.index, value)) continue
-    addMatch(diagnostics, source, starts, RULES.PILL_RADIUS, match.index, `${match[0].split(':')[0]}: ${value}`, 'pill/soft radius is outside the sharp radius law; use a k-* recipe or a design-book exact exception')
+    addMatch(diagnostics, source, starts, RULES.PILL_RADIUS, match.index, `${match[0].split(':')[0]}: ${value}`, 'pill/soft radius is outside the sharp radius law; use a k-* recipe or a design exception')
   }
 
   const classRe = /\bclass(?:Name)?\s*=\s*(["'`])([\s\S]*?)\1/g
@@ -871,7 +897,7 @@ function scanRadii(diagnostics, source, masked, starts) {
       const arbitrary = name.match(/^rounded-\[([0-9.]+)(px|rem|em|%)\]$/i)
       const isPill = name === 'rounded-full' || (arbitrary && ((arbitrary[2] === '%' && Number(arbitrary[1]) >= 50) || (arbitrary[2] !== '%' && Number(arbitrary[1]) * (arbitrary[2] === 'px' ? 1 : 16) > 12)))
       if (!isPill || (name === 'rounded-full' && hasEqualCircleDimensions(context))) continue
-      addMatch(diagnostics, source, starts, RULES.PILL_RADIUS, match.index + match[0].indexOf(name), name, 'pill/soft radius utility is outside the sharp radius law; use a k-* recipe or a design-book exact exception')
+      addMatch(diagnostics, source, starts, RULES.PILL_RADIUS, match.index + match[0].indexOf(name), name, 'pill/soft radius utility is outside the sharp radius law; use a k-* recipe or a design exception')
     }
   }
 }

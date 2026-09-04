@@ -66,6 +66,13 @@ jobs:
     - name: Verify provider UI conformance
       run: make verify-ui-conformance
 
+  verify-design-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Verify design-document metadata
+      run: make verify-design-docs
+
   verify-codegen:
     runs-on: ubuntu-latest
     steps:

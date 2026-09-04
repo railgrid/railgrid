@@ -27,9 +27,9 @@ the Vue toast files.
   exposes `data-k-tab-id`, while routing remains caller-owned.
 - `modal.ts` — promise-based `confirmModal()` / `alertModal()`, replacing native
   `window.confirm` / `window.alert` with an on-brand in-page dialog.
-- `toast.ts` — frozen framework-neutral toast bus retained for Agents' existing
-  compatibility adapter. It is not the Vue toast implementation and is copied
-  only to Agents.
+- `toast.ts` — frozen framework-neutral toast bus retained in the Quickstart
+  TypeScript kit and for Agents' existing compatibility adapter. It is not the
+  Vue toast implementation.
 - `styles.ts` — the standalone handoff for the exact canonical
   `provider-sdk/portalkit/faros-ui.css` bytes.
 - `FirstRunGuide.vue` — Vue first-use value, action, and ordered journey

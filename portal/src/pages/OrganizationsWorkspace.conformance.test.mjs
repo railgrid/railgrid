@@ -1128,7 +1128,7 @@ test('workspace popover links its trigger and panel for assistive technology', (
   assert.match(switcher, /:aria-controls=/)
 })
 
-test('workspace popover supports design-book keyboard navigation', () => {
+test('workspace popover supports design.patterns.navigation-and-feedback keyboard navigation', () => {
   assert.match(switcher, /@keydown=/)
   assert.match(switcher, /ArrowDown|ArrowUp|Home|End/)
 })

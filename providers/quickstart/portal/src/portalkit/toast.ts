@@ -2,7 +2,7 @@
 // providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`.
 //
 // Framework-free toast bus + renderer ("Violet Circuit" toast recipe,
-// docs/design-book.md §10). Tone is carried by the leading icon in the
+// docs/design/components/toast.md). Tone is carried by the leading icon in the
 // semantic colour; the error variant also turns the card border danger. No
 // tinted backgrounds, no glow. One fixed bottom-right stack per document.
 //
