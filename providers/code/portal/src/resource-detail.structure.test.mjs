@@ -122,6 +122,8 @@ describe('Code repository resource detail cards', () => {
     expect(integration).toMatch(/class="repo-integration-card__connection"/)
     expect(integration).toMatch(/integrationHealth/)
     expect(integration).toMatch(/:aria-expanded="connectionExpanded" aria-controls="repository-integration-editor"[\s\S]*Change/)
+    expect(integration).toContain('for="repository-managing-connection"')
+    expect(integration).toContain('id="repository-managing-connection"')
     expect(integration).not.toMatch(/API version|Generation|Labels|Clone URL|SSH URL|Faros ID/)
     expect(conditions).toMatch(/<ConditionsPanel[\s\S]*:conditions="repo\?\.conditions \|\| \[\]"/)
     expect(conditions).toMatch(/Provider status[\s\S]*Repository ID[\s\S]*Browser URL[\s\S]*Clone URL[\s\S]*SSH URL/)

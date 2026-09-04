@@ -69,6 +69,7 @@ export interface TemplateView {
 
 export interface JSONSchema {
   type?: string
+  title?: string
   properties?: Record<string, JSONSchema>
   required?: string[]
   enum?: unknown[]
@@ -76,6 +77,14 @@ export interface JSONSchema {
   description?: string
   minimum?: number
   maximum?: number
+  minLength?: number
+  maxLength?: number
+  pattern?: string
+  minItems?: number
+  maxItems?: number
+  items?: JSONSchema
+  additionalProperties?: boolean | JSONSchema
+  readOnly?: boolean
 }
 
 export interface Instance {

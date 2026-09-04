@@ -891,7 +891,8 @@ onUnmounted(() => {
               </div>
               <div v-if="connectionExpanded" id="repository-integration-editor" class="repo-integration-editor">
               <div class="conn-edit" :aria-busy="connectionsLoading">
-                <select v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
+                <label class="sr-only" for="repository-managing-connection">Managing connection</label>
+                <select id="repository-managing-connection" v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
                   <option v-for="c in connectionChoices" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
                 </select>
                 <button class="k-btn k-btn--primary" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection"><ArrowLeftRight :size="14" aria-hidden="true" />{{ changingConn ? 'Changing…' : 'Change' }}</button>

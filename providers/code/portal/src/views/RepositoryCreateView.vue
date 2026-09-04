@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
 import { contextGenerationKey } from '../context'
@@ -31,6 +31,10 @@ const description = ref('')
 const autoInit = ref(true)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+type RepositoryField = 'connection' | 'name'
+const fieldErrors = ref<Partial<Record<RepositoryField, string>>>({})
+const connectionInput = ref<HTMLSelectElement | null>(null)
+const nameInput = ref<HTMLInputElement | null>(null)
 const contextGeneration = inject(contextGenerationKey, ref(0))
 
 const repositoryFullRead = createFullListReadCoordinator(() => api.listRepositories())
@@ -59,6 +63,32 @@ function isCurrentConnectionRead(generation: number, expectedContext: number): b
 
 function isCurrentMutation(generation: number, expectedContext: number): boolean {
   return mounted && generation === mutationGeneration && contextGeneration.value === expectedContext
+}
+
+function clearFieldError(field: RepositoryField): void {
+  if (!fieldErrors.value[field]) return
+  const next = { ...fieldErrors.value }
+  delete next[field]
+  fieldErrors.value = next
+}
+
+function focusField(field: RepositoryField): void {
+  void nextTick(() => (field === 'connection' ? connectionInput.value : nameInput.value)?.focus?.())
+}
+
+function setFieldError(field: RepositoryField, message: string): void {
+  fieldErrors.value = { ...fieldErrors.value, [field]: message }
+  focusField(field)
+}
+
+function validateFields(): boolean {
+  const errors: Partial<Record<RepositoryField, string>> = {}
+  if (!connectionRef.value) errors.connection = 'Select an active connection.'
+  if (!name.value.trim()) errors.name = 'Enter an object name.'
+  fieldErrors.value = errors
+  const first = (['connection', 'name'] as const).find(field => errors[field])
+  if (first) focusField(first)
+  return !first
 }
 
 function cancel(): void {
@@ -131,12 +161,9 @@ async function submit(): Promise<void> {
     formError.value = 'Repository data is still loading. Retry failed reads before creating a repository.'
     return
   }
-  if (!name.value || !connectionRef.value) {
-    formError.value = 'name and connection are required'
-    return
-  }
+  if (!validateFields()) return
   if (!connectionChoices.value.some(connection => connection.name === connectionRef.value)) {
-    formError.value = 'Select an active connection before creating a repository.'
+    setFieldError('connection', 'Select an active connection before creating a repository.')
     return
   }
   const payload = {
@@ -150,7 +177,7 @@ async function submit(): Promise<void> {
   const desiredName = normalizeResourceName(payload.name)
   const lock = operationKey('repository', desiredName)
   if (!operations.acquire(lock, 'creating')) {
-    formError.value = `Repository "${desiredName}" already has an operation in progress.`
+    setFieldError('name', `Repository "${desiredName}" already has an operation in progress.`)
     return
   }
   submitting.value = true
@@ -171,20 +198,20 @@ async function submit(): Promise<void> {
     connectionsError.value = null
     const existing = allRepositories.find(repository => normalizeResourceName(repository.name) === desiredName)
     if (existing && (existing.deletionTimestamp || props.deletions.has('repository', existing.name, existing.uid))) {
-      formError.value = `Repository "${existing.name}" is still deleting. Wait for it to disappear before recreating it.`
+      setFieldError('name', `Repository "${existing.name}" is still deleting. Wait for it to disappear before recreating it.`)
       return
     }
     if (existing) {
-      formError.value = `Repository "${existing.name}" already exists.`
+      setFieldError('name', `Repository "${existing.name}" already exists.`)
       return
     }
     if (props.deletions.has('repository', desiredName)) {
-      formError.value = `Repository "${desiredName}" is still deleting. Wait for it to disappear before recreating it.`
+      setFieldError('name', `Repository "${desiredName}" is still deleting. Wait for it to disappear before recreating it.`)
       return
     }
     const currentConnection = currentConnections.find(connection => connection.name === payload.connectionRef)
     if (!currentConnection || currentConnection.deletionTimestamp || props.deletions.has('connection', currentConnection.name, currentConnection.uid)) {
-      formError.value = `Connection "${payload.connectionRef}" is no longer active. Select another connection and retry.`
+      setFieldError('connection', `Connection "${payload.connectionRef}" is no longer active. Select another connection and retry.`)
       return
     }
     if (!isCurrentMutation(generation, expectedContext)) return
@@ -235,15 +262,16 @@ onUnmounted(() => {
     </div>
     <p v-if="connectionsLoaded && !connectionChoices.length" class="empty">Add a ready connection first, then create repositories under it.</p>
 
-    <form class="k-create-surface" @submit.prevent="submit">
+    <form class="k-create-surface" :aria-busy="submitting" novalidate @submit.prevent="submit">
       <div class="k-create-body">
-        <label class="field">
+        <label class="field" for="code-repository-connection">
           <span class="field-label">Connection</span>
-          <select v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded">
+          <select id="code-repository-connection" ref="connectionInput" v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded" required aria-required="true" :aria-invalid="fieldErrors.connection ? 'true' : undefined" :aria-describedby="fieldErrors.connection ? 'code-repository-connection-error' : undefined" @change="clearFieldError('connection')">
             <option v-for="connection in connectionChoices" :key="connection.name" :value="connection.name">{{ connection.name }} ({{ connection.owner }})</option>
           </select>
+          <span v-if="fieldErrors.connection" id="code-repository-connection-error" class="error" role="alert">{{ fieldErrors.connection }}</span>
         </label>
-        <label class="field"><span class="field-label">Object name</span><input v-model="name" class="k-input" placeholder="my-service" autocomplete="off" /></label>
+        <label class="field" for="code-repository-name"><span class="field-label">Object name</span><input id="code-repository-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-service" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-repository-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-repository-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
         <label class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" class="k-input" placeholder="my-service" autocomplete="off" /></label>
         <label class="field">
           <span class="field-label">Visibility</span>
@@ -256,6 +284,7 @@ onUnmounted(() => {
         <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
         <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
         <span v-if="formError" class="error" role="alert">{{ formError }}</span>
+        <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>

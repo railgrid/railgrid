@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import DynamicForm from '../components/DynamicForm.vue'
 import { api, isContextChangedError } from '../api'
+import { createWritableValues } from '../createValues'
 import type { Template, ErrorResponse } from '../types'
 import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import { REASON_CLOUD_CREDENTIALS_MISSING, REASON_API_BINDING_MISSING, REASON_TENANT_MISSING } from '../types'
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 const template = ref<Template | null>(null)
 const values = ref<Record<string, unknown>>({})
 const instanceName = ref('')
+const provisionForm = ref<HTMLFormElement | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
 const initialReadPending = computed(() => loading.value && !loaded.value)
@@ -25,6 +27,22 @@ const mutationError = ref<string | null>(null)
 const submitting = ref(false)
 let loadSerial = 0
 let active = true
+
+// Templates conventionally expose spec.name because the runtime CR needs it,
+// while the platform Instance also has metadata.name. Show one authoritative
+// control and mirror it into values only at submission.
+const inputSchema = computed(() => {
+  const schema = template.value?.inputsSchema
+  if (!schema?.properties?.name) return schema ?? {}
+  const { name: _name, ...properties } = schema.properties
+  return {
+    ...schema,
+    properties,
+    required: schema.required?.filter(field => field !== 'name'),
+  }
+})
+
+const schemaUsesName = computed(() => Boolean(template.value?.inputsSchema?.properties?.name))
 
 async function load() {
   const serial = ++loadSerial
@@ -67,18 +85,23 @@ onUnmounted(() => {
 async function submit() {
   if (!template.value || !loaded.value || loading.value || submitting.value) return
   const currentTemplate = template.value
-  if (!instanceName.value) {
-    mutationError.value = 'instance name required'
+  if (!instanceName.value.trim()) {
+    mutationError.value = 'Enter an instance name.'
+    provisionForm.value?.querySelector<HTMLInputElement>('#infrastructure-instance-name')?.focus()
     return
   }
   mutationError.value = null
   submitting.value = true
   try {
+    const writableValues = createWritableValues(currentTemplate.inputsSchema, values.value)
+    if (schemaUsesName.value && !currentTemplate.inputsSchema?.properties?.name?.readOnly) {
+      writableValues.name = instanceName.value.trim()
+    }
     const inst = await api.createInstance({
       templateName: currentTemplate.name,
       templateVersion: currentTemplate.version,
-      name: instanceName.value,
-      values: values.value,
+      name: instanceName.value.trim(),
+      values: writableValues,
     })
     if (active) emit('provisioned', inst.name)
   } catch (e: unknown) {
@@ -93,7 +116,7 @@ async function submit() {
       return
     }
     if (err.reason === REASON_TENANT_MISSING) {
-      mutationError.value = 'No tenant identity on this request — the faros hub did not inject X-Faros-Tenant. (Phase-3 hub wiring required.)'
+      mutationError.value = 'The selected workspace is no longer available. Choose a workspace in the sidebar, then try again.'
       return
     }
     mutationError.value = err.message || 'provision failed'
@@ -132,7 +155,7 @@ async function submit() {
         <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
-      <form class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" @submit.prevent="submit">
+      <form ref="provisionForm" class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" @submit.prevent="submit">
         <div class="k-create-body">
           <div class="provision-identity">
             <div class="dynform-row">
@@ -140,11 +163,23 @@ async function submit() {
                 <span class="dynform-label">Instance name<span class="required">*</span></span>
                 <span class="dynform-desc">DNS-1123 subdomain. Lowercase alnum, '-', '.'.</span>
               </label>
-              <input id="infrastructure-instance-name" v-model="instanceName" class="k-input" placeholder="my-instance" />
+              <input
+                id="infrastructure-instance-name"
+                v-model="instanceName"
+                class="k-input"
+                placeholder="my-instance"
+                autocomplete="off"
+                required
+                aria-required="true"
+                pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?"
+                maxlength="253"
+                :aria-invalid="mutationError && !instanceName.trim() ? 'true' : undefined"
+                :aria-describedby="mutationError ? 'infrastructure-provision-error' : undefined"
+              />
             </div>
           </div>
-          <DynamicForm :schema="template.inputsSchema" v-model:values="values" />
-          <div v-if="mutationError" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
+          <DynamicForm :schema="inputSchema" v-model:values="values" />
+          <div v-if="mutationError" id="infrastructure-provision-error" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
         </div>
         <div class="k-create-actions">

@@ -329,6 +329,7 @@ spec:
             type: array
             items:
               type: string
+            readOnly: true
             description: "Reserved for v1 (accepted but not yet wired; defaults to allowing any authenticated user)."
           scopes:
             type: string

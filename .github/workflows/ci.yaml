@@ -31,6 +31,8 @@ jobs:
         go-version-file: go.mod
     - name: Test
       run: make test
+    - name: Test Infrastructure install package
+      run: cd providers/infrastructure && go test -count=1 ./install
 
   lint:
     runs-on: ubuntu-latest

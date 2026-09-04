@@ -875,6 +875,34 @@ func TestApplicationDatabaseSizeMapsToPersistentStorage(t *testing.T) {
 	t.Fatal("dbStatefulSet resource not found")
 }
 
+func TestApplicationEmailDomainsIsReadOnly(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/application.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	oidc, ok := properties["oidc"].(map[string]any)
+	if !ok {
+		t.Fatal("application schema has no oidc property")
+	}
+	oidcProperties, _ := oidc["properties"].(map[string]any)
+	emailDomains, ok := oidcProperties["emailDomains"].(map[string]any)
+	if !ok {
+		t.Fatal("application oidc schema has no emailDomains property")
+	}
+	if emailDomains["readOnly"] != true {
+		t.Fatalf("emailDomains readOnly = %#v, want true", emailDomains["readOnly"])
+	}
+}
+
 func TestApplicationLocksStatefulDatabaseInputsAfterCreation(t *testing.T) {
 	raw, err := fs.ReadFile(seedTemplatesFS, "templates/application.yaml")
 	if err != nil {

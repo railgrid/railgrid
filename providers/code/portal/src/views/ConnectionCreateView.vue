@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
 import { contextGenerationKey } from '../context'
@@ -27,6 +27,11 @@ const token = ref('')
 const baseURL = ref('')
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+type ConnectionField = 'name' | 'owner' | 'token'
+const fieldErrors = ref<Partial<Record<ConnectionField, string>>>({})
+const nameInput = ref<HTMLInputElement | null>(null)
+const ownerInput = ref<HTMLInputElement | null>(null)
+const tokenInput = ref<HTMLInputElement | null>(null)
 const contextGeneration = inject(contextGenerationKey, ref(0))
 
 // GitHub OAuth is deliberately kept on the creation route. The collection
@@ -73,6 +78,33 @@ function isCurrentOAuthRead(generation: number, expectedContext: number): boolea
 
 function isCurrentMutation(generation: number, expectedContext: number): boolean {
   return mounted && generation === mutationGeneration && contextGeneration.value === expectedContext
+}
+
+function clearFieldError(field: ConnectionField): void {
+  if (!fieldErrors.value[field]) return
+  const next = { ...fieldErrors.value }
+  delete next[field]
+  fieldErrors.value = next
+}
+
+function focusField(field: ConnectionField): void {
+  void nextTick(() => ({ name: nameInput, owner: ownerInput, token: tokenInput })[field].value?.focus?.())
+}
+
+function setFieldError(field: ConnectionField, message: string): void {
+  fieldErrors.value = { ...fieldErrors.value, [field]: message }
+  focusField(field)
+}
+
+function validateFields(): boolean {
+  const errors: Partial<Record<ConnectionField, string>> = {}
+  if (!name.value.trim()) errors.name = 'Enter a connection name.'
+  if (!owner.value.trim()) errors.owner = 'Enter a GitHub account or organization.'
+  if (!oauthAuthorized.value && !token.value) errors.token = 'Enter a personal access token.'
+  fieldErrors.value = errors
+  const first = (['name', 'owner', 'token'] as const).find(field => errors[field])
+  if (first) focusField(first)
+  return !first
 }
 
 async function loadConnections(): Promise<void> {
@@ -177,6 +209,7 @@ function onMessage(ev: MessageEvent): void {
   token.value = data.token
   owner.value = data.login || ''
   name.value = data.login ? 'github-' + data.login : 'github'
+  fieldErrors.value = {}
   oauthAuthorized.value = true
 }
 
@@ -189,10 +222,7 @@ async function submit(): Promise<void> {
     formError.value = 'Connection list is still loading. Retry the read before creating a connection.'
     return
   }
-  if (!name.value || !owner.value || !token.value) {
-    formError.value = 'name, owner, and token are required'
-    return
-  }
+  if (!validateFields()) return
   const payload = {
     name: name.value,
     owner: owner.value,
@@ -216,15 +246,15 @@ async function submit(): Promise<void> {
     props.deletions.reconcile('connection', currentConnections)
     const existing = currentConnections.find(connection => normalizeResourceName(connection.name) === desiredName)
     if (existing && isDeleting(existing)) {
-      formError.value = `Connection "${existing.name}" is still deleting. Wait for it to disappear before reconnecting.`
+      setFieldError('name', `Connection "${existing.name}" is still deleting. Wait for it to disappear before reconnecting.`)
       return
     }
     if (existing) {
-      formError.value = `Connection "${existing.name}" already exists.`
+      setFieldError('name', `Connection "${existing.name}" already exists.`)
       return
     }
     if (props.deletions.has('connection', desiredName)) {
-      formError.value = `Connection "${desiredName}" is still deleting. Wait for it to disappear before reconnecting.`
+      setFieldError('name', `Connection "${desiredName}" is still deleting. Wait for it to disappear before reconnecting.`)
       return
     }
     if (!isCurrentMutation(generation, expectedContext)) return
@@ -312,18 +342,19 @@ onMounted(() => window.addEventListener('message', onMessage))
       </div>
     </div>
 
-    <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface" @submit.prevent="submit">
+    <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface" :aria-busy="submitting" novalidate @submit.prevent="submit">
       <div class="k-create-body">
         <p v-if="oauthAuthorized" class="muted">
           Authorized via GitHub<span v-if="owner"> as <code>{{ owner }}</code></span>. Pick the org/account to create repositories under, then confirm.
         </p>
-        <label class="field"><span class="field-label">Name</span><input v-model="name" class="k-input" placeholder="my-github" autocomplete="off" /></label>
-        <label class="field"><span class="field-label">Owner (org or user)</span><input v-model="owner" class="k-input" placeholder="acme" autocomplete="off" /></label>
-        <label v-if="!oauthAuthorized" class="field"><span class="field-label">Personal access token</span><input v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="off" /></label>
+        <label class="field" for="code-connection-name"><span class="field-label">Name</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
+        <label class="field" for="code-connection-owner"><span class="field-label">Owner (org or user)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
+        <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error' : undefined" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
         <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
-        <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="off" /></label>
+        <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
         <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
         <span v-if="formError" class="error" role="alert">{{ formError }}</span>
+        <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating connection…</span>
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>

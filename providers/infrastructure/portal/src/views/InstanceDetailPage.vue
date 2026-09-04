@@ -291,6 +291,7 @@ onUnmounted(() => {
         <span v-else class="muted">Template metadata unavailable</span>
       </template>
       <template v-if="inst" #status>
+        <span class="instance-status-label">Status</span>
         <StatusBadge
           :status="displayedPhase"
           :tone="displayedPhase === 'Deleting' ? 'warning' : null"

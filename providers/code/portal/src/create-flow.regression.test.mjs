@@ -54,3 +54,17 @@ it('route cancellation cannot hide an in-flight create mutation', () => {
   expect(connectionCreate).toMatch(/if \(oauthBusy\.value\) clearOAuthWait\(\)/)
   expect(connectionCreate).toMatch(/if \(popup && !popup\.closed\) popup\.close\(\)/)
 })
+
+it('primary create forms expose native constraints, field errors, focus recovery, and progress', () => {
+  for (const source of [connectionCreate, repositoryCreate]) {
+    expect(source).toContain('fieldErrors')
+    expect(source).toContain('function focusField(')
+    expect(source).toMatch(/required aria-required="true"/)
+    expect(source).toContain(':aria-invalid=')
+    expect(source).toContain(':aria-describedby=')
+    expect(source).toMatch(/role="status" aria-live="polite"/)
+    expect(source).toContain(':aria-busy="submitting"')
+  }
+  expect(connectionCreate).toContain('autocomplete="new-password"')
+  expect(repositoryCreate).toContain('code-repository-connection-error')
+})

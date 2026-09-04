@@ -56,4 +56,53 @@ describe('DynamicForm field identity', () => {
     expect(html).toMatch(/<input[^>]*class="k-checkbox"[^>]*type="checkbox"/)
     expect(html).toContain('checked')
   })
+
+  it('renders line arrays, map rows, and complex array fallback while omitting read-only fields', async () => {
+    const html = await renderToString(createSSRApp(DynamicForm, {
+      schema: {
+        type: 'object',
+        required: ['domains', 'settings'],
+        properties: {
+          domains: {
+            type: 'array',
+            items: { type: 'string' },
+            minItems: 1,
+            description: 'Allowed domains',
+          },
+          settings: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            description: 'Environment settings',
+          },
+          rules: {
+            type: 'array',
+            items: { type: 'object', properties: { path: { type: 'string' } } },
+          },
+          database: {
+            type: 'object',
+            properties: {
+              version: { type: 'string', pattern: '^[0-9]+$', minLength: 2, maxLength: 2 },
+            },
+          },
+          generated: { type: 'string', readOnly: true },
+        },
+      },
+      values: { domains: ['example.com'], settings: { MODE: 'prod' }, generated: 'server-owned' },
+    }))
+
+    expect(html.match(/<textarea/g)).toHaveLength(2)
+    expect(html).toContain('required')
+    expect(html).toContain('Enter one item per line.')
+    expect(html).toContain('Add entry')
+    expect(html).toContain('Key for settings')
+    expect(html).toContain('Value for settings key MODE')
+    expect(html).toContain('Remove settings key MODE')
+    expect(html).not.toContain('server-owned')
+    expect(html).not.toContain('generated')
+    expect(html).not.toContain('readonly')
+    expect(html).toContain('pattern="^[0-9]+$"')
+    expect(html).toContain('minlength="2"')
+    expect(html).toContain('maxlength="2"')
+    expect(html).toContain('example.com')
+  })
 })

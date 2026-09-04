@@ -206,6 +206,95 @@ faros-provider-infrastructure .dynform-desc {
   color: var(--color-text-muted, #5d5f78);
 }
 
+faros-provider-infrastructure .dynform-json,
+faros-provider-infrastructure .dynform-lines {
+  min-height: 7rem;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+faros-provider-infrastructure .dynform-map {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+faros-provider-infrastructure .dynform-map-head,
+faros-provider-infrastructure .dynform-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
+  gap: 6px;
+  align-items: start;
+}
+
+faros-provider-infrastructure .dynform-map-head {
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+faros-provider-infrastructure .dynform-map-json {
+  min-height: 3.5rem;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+
+faros-provider-infrastructure .dynform-map-remove {
+  width: 34px;
+  min-width: 34px;
+  padding-inline: 0;
+}
+
+faros-provider-infrastructure .dynform-map-add {
+  align-self: flex-start;
+}
+
+faros-provider-infrastructure .dynform-sr-only {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+
+faros-provider-infrastructure .dynform-error {
+  color: var(--color-danger, #ff5d5d);
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  faros-provider-infrastructure .dynform-map-head {
+    display: none;
+  }
+
+  faros-provider-infrastructure .dynform-map-row {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  faros-provider-infrastructure .dynform-map-row > :nth-child(4) {
+    grid-column: 1;
+  }
+
+  faros-provider-infrastructure .dynform-map-remove {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+faros-provider-infrastructure .instance-status-label {
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 faros-provider-infrastructure .actions {
   display: flex;
   gap: 8px;

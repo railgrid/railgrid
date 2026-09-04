@@ -5,6 +5,7 @@ import ProvisionPage from './views/ProvisionPage.vue'
 import InstanceListPage from './views/InstanceListPage.vue'
 import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
+import Tabs from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { setBasePath, setTenant, setToken } from './api'
@@ -58,6 +59,11 @@ function parseSubPath(sub: string | null | undefined): Route {
 }
 
 const route = computed<Route>(() => parseSubPath(props.ctx?.subPath))
+const sectionTabs = [
+  { id: 'templates', label: 'Templates' },
+  { id: 'instances', label: 'Instances' },
+] as const
+const activeSection = computed(() => route.value.page === 'instances' ? 'instances' : 'templates')
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
 const contextInitialized = computed(() => props.ctx !== null)
 const contextPending = computed(() => !contextInitialized.value)
@@ -104,6 +110,10 @@ function navigate(path: string) {
   el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 
+function selectSection(section: string) {
+  if (section === 'templates' || section === 'instances') navigate(section)
+}
+
 // Bridge legacy navigate('catalog' | 'provision' | 'instances' | 'detail' | 'missing-credentials')
 // emits from the existing view components — they were written before URL
 // routing existed. Maps each legacy verb to the new path scheme so we
@@ -140,6 +150,13 @@ function provisioned(name: string) {
 
 <template>
   <div ref="rootRef" class="app">
+    <Tabs
+      v-if="contextInitialized && tenantPath"
+      :tabs="sectionTabs"
+      :active="activeSection"
+      aria-label="Infrastructure sections"
+      @select="selectSection"
+    />
     <!--
       Every routed page calls into api.ts on mount, which queries the
       /graphql/<tenant> gateway. Without a tenant the call

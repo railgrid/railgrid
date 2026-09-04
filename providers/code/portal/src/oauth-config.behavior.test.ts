@@ -81,6 +81,7 @@ interface TreeNode {
   addEventListener?(name: string, handler: unknown): void
   removeEventListener?(name: string, handler: unknown): void
   getRootNode?(): TreeNode
+  focus?(): void
 }
 
 function textNode(text: string): TreeNode {
@@ -108,6 +109,9 @@ function createTreeElement(type: string): TreeNode {
     },
     getRootNode() {
       return this
+    },
+    focus() {
+      this.props.focused = true
     },
   }
   return node
@@ -340,6 +344,45 @@ describe('connection creation authority fencing', () => {
     if (typeof handler !== 'function') throw new Error('connection form had no submit handler')
     await handler({ preventDefault() {} })
   }
+
+  it('reports required connection fields and focuses the first invalid input', async () => {
+    mocks.api.listConnections.mockResolvedValue([])
+    const { app, root } = mount(ConnectionCreateView, {
+      method: 'token',
+      deletions: createResourceDeletions(),
+    })
+    await settle()
+
+    await submit(root)
+    await settle()
+
+    expect(textContent(root)).toContain('Enter a connection name.')
+    expect(textContent(root)).toContain('Enter a GitHub account or organization.')
+    expect(textContent(root)).toContain('Enter a personal access token.')
+    const first = findNode(root, node => node.type === 'input' && node.props.id === 'code-connection-name')
+    expect(first?.props['aria-invalid']).toBe('true')
+    expect(first?.props.focused).toBe(true)
+    app.unmount()
+  })
+
+  it('reports required repository fields and focuses the first invalid control', async () => {
+    mocks.api.listConnections.mockResolvedValue([])
+    mocks.api.listRepositories.mockResolvedValue([])
+    const { app, root } = mount(RepositoryCreateView, {
+      deletions: createResourceDeletions(),
+    })
+    await settle()
+
+    await submit(root)
+    await settle()
+
+    expect(textContent(root)).toContain('Select an active connection.')
+    expect(textContent(root)).toContain('Enter an object name.')
+    const first = findNode(root, node => node.type === 'select' && node.props.id === 'code-repository-connection')
+    expect(first?.props['aria-invalid']).toBe('true')
+    expect(first?.props.focused).toBe(true)
+    app.unmount()
+  })
 
   it('re-reads before mutation and refuses an active normalized name collision', async () => {
     mocks.api.listConnections.mockReset()
