@@ -540,20 +540,28 @@ When a provider needs something not in the portalkit or `portal/src/components/`
 prefer adding it to the canonical kit (§5.7) over inventing a provider-local
 variant — consistency across the embedded micro-frontends is the whole point.
 
-### Page content width — one column, set centrally
+### Page content width — fluid shell, local readability
 
-Page content width is owned by **`AppLayout`**, not by pages. The layout slot
-renders every non-full-bleed page in one centered `mx-auto w-full max-w-7xl`
-column, so the content doesn't resize or shift when navigating between pages.
+Page width is owned by **`AppLayout`**, not by pages. Every ordinary page
+inherits one fluid `w-full` content column and the same layout padding. This is
+intentional: tables, visualizations, workbenches, and responsive collections
+may use the available viewport instead of leaving ultrawide screens empty.
 
-- **Do NOT add your own `mx-auto` / `max-w-*` wrapper** to a page or provider
-  micro-frontend — that reintroduces per-page width drift (the bug that made the
-  MCP and edges tables different widths). Just render your content; it inherits
-  the shared column.
-- A page that genuinely needs full width passes `<AppLayout full-bleed>` and
-  manages its own width/scroll (e.g. `app-studio`). Use this sparingly.
-- Horizontal/vertical page padding also comes from `AppLayout` (`px-8 py-5`) —
-  don't re-pad the top-level page wrapper.
+- **Do NOT add a page-level `mx-auto` / `max-w-*` wrapper** to a page or provider
+  micro-frontend. That reintroduces route-to-route width drift. Bound the
+  specific task region that needs a readable measure instead.
+- Prose should stay near 65–75 characters per line. Simple forms and search
+  controls should normally stop around `42rem`. Dense provisioning forms may
+  fill the page, but must reflow into responsive columns with roughly `20rem`
+  minimum field width and no more than three columns.
+- Tables and data visualizations may fill the fluid column and should own their
+  internal overflow. Collection grids own a deliberate minimum card width and
+  responsive column strategy rather than inheriting one global page cap.
+- A page that needs to own the viewport itself passes `<AppLayout full-bleed>`
+  and manages its own padding and scrolling (for example, the App Studio
+  workbench). Use this for viewport-owned tools, not merely wide content.
+- Horizontal and vertical page padding comes from `AppLayout`
+  (`px-4 py-5 sm:px-8`); do not re-pad the top-level page wrapper.
 
 ### Provider portals that ship their own stylesheet
 

@@ -170,6 +170,28 @@ texture (login, empty states — sparingly), `.island` floating dock card,
 
 ## 6. Component patterns
 
+### Fluid page composition
+
+`AppLayout` owns one fluid `w-full` column for ordinary routes. Providers do
+not add page-level centering or `max-w-*` wrappers: navigation between routes
+must not change the shell geometry, and wide tables, visualizations, and
+responsive collections are allowed to use the viewport.
+
+Readability is local to the content that needs it. Keep prose near 65–75
+characters per line and simple forms or search controls at no more than about
+`42rem`. Dense provisioning forms may fill the shell, but should use responsive
+columns with a roughly `20rem` minimum field width and no more than three
+columns. A fieldset, validation summary, or nested structural group spans those
+columns rather than being squeezed into one track. Collection grids choose a
+minimum card width and column strategy appropriate to their content. Tables own
+horizontal overflow inside their canvas while their surrounding controls stay
+reachable.
+
+`<AppLayout full-bleed>` is a separate viewport-ownership contract: it removes
+the ordinary page padding and delegates scrolling to the surface, as the App
+Studio workbench does. Do not use full-bleed merely because a table or grid is
+wide, and do not use a local readable region as a competing page shell.
+
 - **Buttons.** One solid-accent primary per view, and it glows
   (`0 0 16px var(--color-accent-glow)`, 22px on hover). Everything else is
   ghost (overlay bg + hairline) or text-level. Danger actions use the
@@ -746,7 +768,9 @@ Before merging any UI change:
       routing, `aria-current="page"`, and no tab glow/shadow.
 - [ ] Works in BOTH themes (toggle it — don't trust the default).
 - [ ] Uses `k-*` / portalkit primitives instead of re-derived markup.
-- [ ] No per-page `max-w-*` wrapper (width is owned by `AppLayout`).
+- [ ] Ordinary routes use the fluid `AppLayout` column with no competing
+      page-level `max-w-*` wrapper; prose, simple forms/search, and dense forms
+      apply the local readability rules in §6.
 - [ ] The creation surface matches the task: focused and route-owned for
       independently managed resources; contextual for compact, parent-dependent
       additions. Route-owned flows use the canonical creation skeleton, and

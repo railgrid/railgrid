@@ -58,7 +58,7 @@ const { clampDockPosition } = clampDockPositionModule
 test('ordinary pages use the shared fluid desktop column without becoming full bleed', () => {
   assert.match(appLayout, /'relative z-10 min-h-0 min-w-0 flex-1'/)
   assert.match(appLayout, /layoutProps\.fullBleed \? 'h-full min-h-0' : 'w-full'/)
-  assert.doesNotMatch(appLayout, /max-w-5xl/)
+  assert.doesNotMatch(appLayout, /max-w-(?:5xl|7xl)/)
 })
 
 test('flat shell modes flatten provider children with qualified labels', () => {
