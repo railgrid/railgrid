@@ -12,6 +12,7 @@ import {
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
+import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 
 // Micro-frontend mount: instead of dropping an iframe, we load the
 // provider's /main.js (which defines a custom element faros-provider-{name})
@@ -34,6 +35,8 @@ const elementRef = ref<HTMLElement | null>(null)
 // Loading state covers script fetch + customElements.whenDefined.
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const loadError = ref<string | null>(null)
+const providerLoadPending = computed(() => loadState.value === 'loading')
+const showProviderLoading = useDelayedLoading(providerLoadPending)
 const providerFullBleedOverride = ref<boolean | null>(null)
 // Every async bundle load and mount is fenced by this generation. A workspace
 // switch can make access disappear while a script is still in flight; that
@@ -57,6 +60,21 @@ onMounted(() => {
 })
 
 const entry = computed(() => providers.byName(props.providerName))
+const providerReadinessLabel = computed(() => {
+  if (entry.value?.ready) return 'Ready'
+  switch (entry.value?.readinessReason) {
+    case 'BackendUnhealthy': return 'Degraded'
+    case 'HeartbeatStale': return 'Disconnected'
+    case 'InvalidEndpoint': return 'Not ready'
+    default: return 'Starting'
+  }
+})
+const providerReadinessClass = computed(() => {
+  if (entry.value?.ready) return 'border border-success/30 bg-success-subtle text-success'
+  if (entry.value?.readinessReason === 'HeartbeatStale') return 'border border-danger/30 bg-danger-subtle text-danger'
+  if (entry.value?.readinessReason === 'BackendUnhealthy') return 'border border-warning/30 bg-warning-subtle text-warning'
+  return 'border border-border-default bg-surface-overlay text-text-muted'
+})
 const catalogSettled = computed(() =>
   providers.loaded && !providers.loading && !providers.error && providers.catalogOrgUUID === tenant.orgUUID,
 )
@@ -68,6 +86,7 @@ const isAppStudioLandingRoute = computed(() =>
   props.providerName === 'app-studio' &&
   ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value),
 )
+const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
 const isFullBleedProvider = computed(() =>
   props.providerName === 'app-studio' &&
   (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true),
@@ -438,11 +457,9 @@ onBeforeUnmount(() => {
             </h1>
             <span
               class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
-              :class="entry.ready
-                ? 'border border-success/30 bg-success-subtle text-success'
-                : 'border border-border-default bg-surface-overlay text-text-muted'"
+              :class="providerReadinessClass"
             >
-              {{ entry.ready ? 'Ready' : 'Pending' }}
+              {{ providerReadinessLabel }}
             </span>
           </div>
           <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
@@ -464,7 +481,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
-      <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
+      <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
         Loading provider catalog&hellip;
       </div>
       <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
@@ -476,9 +493,9 @@ onBeforeUnmount(() => {
       >
         <AlertCircle class="h-4 w-4 mt-0.5 text-text-muted" :stroke-width="1.75" />
         <div>
-          <div class="font-medium text-text-secondary">Provider not ready</div>
+          <div class="font-medium text-text-secondary">Provider {{ providerReadinessLabel.toLowerCase() }}</div>
           <div class="mt-1 text-xs">
-            Waiting for <code class="text-text-secondary">{{ entry.name }}</code> to report Ready.
+            {{ entry.readinessMessage || `Waiting for ${entry.name} to report ready.` }}
           </div>
         </div>
       </div>
@@ -515,6 +532,9 @@ onBeforeUnmount(() => {
       <div
         v-else-if="bindingChecking"
         class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
       >
         Checking provider access&hellip;
       </div>
@@ -533,8 +553,33 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div
-        v-else-if="loadState === 'loading'"
+        v-else-if="loadState === 'loading' && showProviderLoading && isAppStudioWorkspaceRoute"
+        class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-lg border border-border-subtle bg-border-subtle md:grid-cols-[minmax(12rem,18rem)_minmax(0,2fr)_minmax(16rem,28rem)]"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="Loading App Studio workspace"
+      >
+        <span class="sr-only">Loading App Studio workspace</span>
+        <div class="hidden content-start gap-3 bg-surface-raised p-4 md:grid" aria-hidden="true">
+          <div class="shimmer h-4 w-2/3 rounded bg-surface-overlay" />
+          <div v-for="i in 4" :key="`thread-${i}`" class="shimmer h-9 rounded bg-surface-overlay" />
+        </div>
+        <div class="grid content-start gap-3 bg-surface p-4" aria-hidden="true">
+          <div class="shimmer h-4 w-1/3 rounded bg-surface-overlay" />
+          <div v-for="i in 5" :key="`message-${i}`" class="shimmer h-16 rounded bg-surface-overlay" />
+        </div>
+        <div class="hidden content-start gap-3 bg-surface-raised p-4 md:grid" aria-hidden="true">
+          <div class="shimmer h-4 w-1/2 rounded bg-surface-overlay" />
+          <div v-for="i in 3" :key="`workbench-${i}`" class="shimmer h-12 rounded bg-surface-overlay" />
+        </div>
+      </div>
+      <div
+        v-else-if="loadState === 'loading' && showProviderLoading"
         class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
       >
         Loading provider&hellip;
       </div>

@@ -28,6 +28,7 @@ abstract class LazyAppStudioElement extends HTMLElement {
   private mountHandle: LazyMount | null = null
 
   protected abstract loadMount(): Promise<MountModule>
+  protected abstract loadingSurface: LazySurface
 
   set farosContext(value: FarosContext | null) {
     this.context = value
@@ -46,17 +47,68 @@ abstract class LazyAppStudioElement extends HTMLElement {
   private startLoad(): void {
     if (!this.isConnected) return
     const generation = ++this.generation
-    const status = document.createElement('p')
+    const compactPage = this.loadingSurface === 'page' && window.matchMedia('(max-width: 767px)').matches
+    if (this.loadingSurface === 'page') {
+      Object.assign(this.style, {
+        display: 'block',
+        height: '100%',
+        minHeight: '100%',
+      })
+    }
+    const status = document.createElement('div')
     status.className = 'k-loading-reveal'
     Object.assign(status.style, {
+      background: 'var(--color-border-subtle, rgba(255, 255, 255, 0.07))',
+      border: '1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07))',
+      borderRadius: '6px',
+      display: 'grid',
+      gap: '1px',
       margin: '0',
-      padding: '16px',
+      minHeight: this.loadingSurface === 'page' ? '100%' : '120px',
+      overflow: 'hidden',
       color: 'var(--color-text-muted, #8587a1)',
       fontSize: '14px',
     })
     status.setAttribute('role', 'status')
     status.setAttribute('aria-live', 'polite')
-    status.textContent = 'Loading App Studio…'
+    status.setAttribute('aria-busy', 'true')
+    status.setAttribute('aria-label', 'Loading App Studio')
+    if (this.loadingSurface === 'page') {
+      status.style.gridTemplateColumns = compactPage
+        ? 'minmax(0, 1fr)'
+        : 'minmax(3.5rem, .65fr) minmax(0, 2fr) minmax(4.5rem, .95fr)'
+      const regionRows = compactPage ? [5] : [3, 5, 4]
+      for (const [regionIndex, rows] of regionRows.entries()) {
+        const region = document.createElement('div')
+        Object.assign(region.style, {
+          background: regionIndex === 1
+            ? 'var(--color-surface, #0a0b12)'
+            : 'var(--color-surface-raised, #111320)',
+          display: 'grid',
+          alignContent: 'start',
+          gap: '12px',
+          minWidth: '0',
+          padding: '16px',
+        })
+        for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
+          const row = document.createElement('div')
+          row.className = 'shimmer'
+          Object.assign(row.style, {
+            background: 'var(--color-surface-overlay, #171927)',
+            borderRadius: '4px',
+            height: rowIndex === 0 ? '18px' : regionIndex === 1 ? '64px' : '32px',
+            width: rowIndex === 0 ? '62%' : '100%',
+          })
+          region.append(row)
+        }
+        status.append(region)
+      }
+    } else {
+      const label = document.createElement('p')
+      Object.assign(label.style, { margin: '0', padding: '16px' })
+      label.textContent = 'Loading App Studio…'
+      status.append(label)
+    }
     this.replaceChildren(status)
     void this.loadMount()
       .then(({ mount }) => {
@@ -117,12 +169,16 @@ abstract class LazyAppStudioElement extends HTMLElement {
 }
 
 class ProjectsElement extends LazyAppStudioElement {
+  protected loadingSurface: LazySurface = 'page'
+
   protected loadMount(): Promise<MountModule> {
     return loadCurrentMount('page')
   }
 }
 
 class AppStudioDashboardTileElement extends LazyAppStudioElement {
+  protected loadingSurface: LazySurface = 'tile'
+
   protected loadMount(): Promise<MountModule> {
     return loadCurrentMount('tile')
   }
