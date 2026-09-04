@@ -119,15 +119,130 @@ export function buildElements(anchor: ObjectResult): BuildResult {
   return { elements, nodeIndex }
 }
 
+export interface TopologyResourceRow {
+  // Stable key used by the accessible list to route activation back to the
+  // exact ObjectResult. The API id is preferred, with a deterministic fallback
+  // for older sync records that did not include one.
+  key: string
+  object: ObjectResult
+  edge: string
+  namespace: string
+  kind: string
+  name: string
+}
+
+export interface TopologyNamespaceGroup {
+  key: string
+  name: string
+  // A synced Namespace is the actual tier node in the graph. The list keeps
+  // that same object available as an inspectable resource button without
+  // duplicating it as a child row.
+  resource?: TopologyResourceRow
+  resources: TopologyResourceRow[]
+}
+
+export interface TopologyEdgeGroup {
+  key: string
+  // Full cluster key, including the tenant prefix. Graph node ids use this so
+  // two edges with the same display name cannot collide.
+  cluster: string
+  name: string
+  namespaces: TopologyNamespaceGroup[]
+  resources: TopologyResourceRow[]
+}
+
+export interface TopologyTree {
+  edges: TopologyEdgeGroup[]
+}
+
+function topologyResource(
+  object: ObjectResult,
+  edge: string,
+  clusterKey: string,
+): TopologyResourceRow {
+  const metadata = object.object?.metadata ?? {}
+  const kind = object.object?.kind || '?'
+  const name = metadata.name || '?'
+  const namespace = metadata.namespace || ''
+  return {
+    key: object.id || `${clusterKey}/${kind}/${namespace}/${name}`,
+    object,
+    edge,
+    namespace,
+    kind,
+    name,
+  }
+}
+
+// deriveTopologyTree is the pointer-free representation of the same topology
+// query used by buildTopologyElements. It is deliberately pure: filters are
+// applied to the cached API result and the returned Edge → Namespace → Resource
+// hierarchy carries only rows that are actually visible in that view.
+//
+// A Namespace object is the real namespace tier (and remains an inspectable
+// resource button in the list). When no Namespace object was synced, a
+// namespace group is synthesized from a namespaced member, matching the graph
+// fallback. Cluster-scoped members remain directly under their Edge.
+export function deriveTopologyTree(
+  clusters: ObjectResult[],
+  opts?: { kind?: string; namespace?: string },
+): TopologyTree {
+  const wantKind = opts?.kind || ''
+  const wantNs = opts?.namespace || ''
+  const edges: TopologyEdgeGroup[] = []
+
+  clusters.forEach((cluster, clusterIndex) => {
+    const clusterName = cluster.cluster || cluster.object?.metadata?.name || 'cluster'
+    const edge = edgeOf(clusterName)
+    const edgeKey = `${clusterName}:${clusterIndex}`
+    const edgeGroup: TopologyEdgeGroup = { key: edgeKey, cluster: clusterName, name: edge, namespaces: [], resources: [] }
+    const namespaceByName = new Map<string, TopologyNamespaceGroup>()
+    const members = cluster.relations?.members ?? []
+
+    const ensureNamespace = (name: string): TopologyNamespaceGroup => {
+      const existing = namespaceByName.get(name)
+      if (existing) return existing
+      const group: TopologyNamespaceGroup = { key: `${edgeKey}/namespace/${name}`, name, resources: [] }
+      namespaceByName.set(name, group)
+      edgeGroup.namespaces.push(group)
+      return group
+    }
+
+    // Preserve the graph's rule that real Namespace objects establish visible
+    // namespace tiers before ordinary members are attached to them.
+    members.forEach((member) => {
+      const object = member.object ?? {}
+      if (object.kind !== 'Namespace') return
+      const name = object.metadata?.name || ''
+      if (!name || (wantKind && wantKind !== 'Namespace') || (wantNs && wantNs !== name)) return
+      const group = ensureNamespace(name)
+      group.resource = topologyResource(member, edge, clusterName)
+    })
+
+    members.forEach((member) => {
+      const object = member.object ?? {}
+      const kind = object.kind || '?'
+      if (kind === 'Namespace') return
+      const namespace = object.metadata?.namespace || ''
+      if ((wantKind && wantKind !== kind) || (wantNs && wantNs !== namespace)) return
+      const row = topologyResource(member, edge, clusterName)
+      if (namespace) ensureNamespace(namespace).resources.push(row)
+      else edgeGroup.resources.push(row)
+    })
+
+    // A cluster with no matching rows should not produce an empty Edge item in
+    // the list. The graph also only creates namespace tiers when it has a row.
+    if (edgeGroup.resources.length || edgeGroup.namespaces.length) edges.push(edgeGroup)
+  })
+
+  return { edges }
+}
+
 // buildTopologyElements turns a clusters-rooted query result (each cluster
 // with its `members` relation) into a fleet tree: Edge → Namespace → object,
 // with cluster-scoped objects hanging straight off the Edge. Structural edges
-// all use rel "namespace" so they share the containment color.
-//
-// A namespace's tier node IS the real `Namespace` object when one was synced
-// (so it carries children AND is clickable → its `namespaced` impact), rather
-// than rendering the Namespace both as a synthetic group and a childless leaf.
-// Falls back to a synthetic tier when the Namespace object isn't in the set.
+// all use rel "namespace" so they share the containment color. Both graph and
+// list views consume deriveTopologyTree so filtering cannot make the two drift.
 export function buildTopologyElements(
   clusters: ObjectResult[],
   opts?: { kind?: string; namespace?: string },
@@ -136,8 +251,6 @@ export function buildTopologyElements(
   const nodeIndex: Record<string, ObjectResult> = {}
   const nodes = new Set<string>()
   const edges = new Set<string>()
-  const wantKind = opts?.kind || ''
-  const wantNs = opts?.namespace || ''
 
   const addNode = (id: string, data: Record<string, unknown>) => {
     if (nodes.has(id)) return
@@ -151,57 +264,26 @@ export function buildTopologyElements(
     elements.push({ data: { id, source, target, rel: 'namespace' } })
   }
 
-  for (const c of clusters) {
-    const cname = c.cluster || c.object?.metadata?.name || 'cluster'
-    const cid = `cluster:${cname}`
-    addNode(cid, { label: edgeOf(cname), tier: 'cluster', anchor: 'true', kind: 'Cluster', name: edgeOf(cname) })
+  for (const edgeGroup of deriveTopologyTree(clusters, opts).edges) {
+    const cid = `cluster:${edgeGroup.cluster}`
+    addNode(cid, { label: edgeGroup.name, tier: 'cluster', anchor: 'true', kind: 'Cluster', name: edgeGroup.name })
 
-    const members = c.relations?.members ?? []
-
-    // Index the real Namespace objects so a tier can adopt one as its node.
-    const nsObjByName = new Map<string, ObjectResult>()
-    for (const mem of members) {
-      if (mem.object?.kind === 'Namespace') nsObjByName.set(mem.object.metadata?.name || '', mem)
-    }
-    // ensureNs returns the tier node id for a namespace, creating it (and the
-    // Edge→Namespace edge) on first use. Uses the real Namespace object's id
-    // when available so the tier is the object itself.
-    const ensureNs = (nsName: string): string => {
-      const real = nsObjByName.get(nsName)
-      const nid = real?.id || `ns:${cname}/${nsName}`
-      if (!nodes.has(nid)) {
-        addNode(nid, { label: nsName, tier: 'namespace', kind: 'Namespace', name: nsName })
-        if (real) nodeIndex[nid] = real
-        addEdge(cid, nid)
-      }
-      return nid
-    }
-
-    // Show every namespace as a tier — even empty ones — unless filtering to a
-    // different kind.
-    if (!wantKind || wantKind === 'Namespace') {
-      for (const nsName of nsObjByName.keys()) {
-        if (!nsName) continue
-        if (wantNs && nsName !== wantNs) continue
-        ensureNs(nsName)
+    for (const namespaceGroup of edgeGroup.namespaces) {
+      const namespaceId = namespaceGroup.resource?.object.id || `ns:${edgeGroup.cluster}/${namespaceGroup.name}`
+      addNode(namespaceId, { label: namespaceGroup.name, tier: 'namespace', kind: 'Namespace', name: namespaceGroup.name })
+      if (namespaceGroup.resource) nodeIndex[namespaceId] = namespaceGroup.resource.object
+      addEdge(cid, namespaceId)
+      for (const row of namespaceGroup.resources) {
+        addNode(row.key, { label: `${row.kind}\n${row.name}`, tier: 'object', kind: row.kind, name: row.name, edge: row.edge })
+        nodeIndex[row.key] = row.object
+        addEdge(namespaceId, row.key)
       }
     }
 
-    for (const mem of members) {
-      const o = mem.object ?? {}
-      const kind = o.kind || '?'
-      if (kind === 'Namespace') continue // already represented as a tier node
-      const name = o.metadata?.name || '?'
-      const ns = o.metadata?.namespace || ''
-      // Client-side facet filters. Namespace "" (cluster-scoped) is excluded
-      // when a specific namespace is selected.
-      if (wantKind && kind !== wantKind) continue
-      if (wantNs && ns !== wantNs) continue
-      const oid = mem.id || `${cname}/${kind}/${ns}/${name}`
-      const parent = ns ? ensureNs(ns) : cid
-      addNode(oid, { label: `${kind}\n${name}`, tier: 'object', kind, name, edge: edgeOf(mem.cluster) })
-      nodeIndex[oid] = mem
-      addEdge(parent, oid)
+    for (const row of edgeGroup.resources) {
+      addNode(row.key, { label: `${row.kind}\n${row.name}`, tier: 'object', kind: row.kind, name: row.name, edge: row.edge })
+      nodeIndex[row.key] = row.object
+      addEdge(cid, row.key)
     }
   }
   return { elements, nodeIndex }
@@ -336,6 +418,29 @@ export interface GraphHandle {
   nodeCount(): number
 }
 
+export type GraphKeyAction = 'pan-up' | 'pan-down' | 'pan-left' | 'pan-right' | 'zoom-in' | 'zoom-out' | 'fullscreen' | 'escape'
+
+// Keep keyboard routing deterministic and separate from Cytoscape so the
+// portal can prove that global arrow keys remain untouched until the graph is
+// the active focus owner.
+export function graphKeyAction(key: string): GraphKeyAction | null {
+  switch (key) {
+    case 'ArrowUp': case 'w': case 'W': return 'pan-up'
+    case 'ArrowDown': case 's': case 'S': return 'pan-down'
+    case 'ArrowLeft': case 'a': case 'A': return 'pan-left'
+    case 'ArrowRight': case 'd': case 'D': return 'pan-right'
+    case '+': case '=': return 'zoom-in'
+    case '-': case '_': return 'zoom-out'
+    case 'f': case 'F': return 'fullscreen'
+    case 'Escape': return 'escape'
+    default: return null
+  }
+}
+
+export function graphOwnsFocus(graph: Element | null, activeElement: Element | null): boolean {
+  return !!graph && (graph === activeElement || (!!activeElement && graph.contains(activeElement)))
+}
+
 // relationElements builds the child nodes/edges for one already-placed node
 // (anchorId) from an impact result's relations. It does NOT emit the anchor
 // itself. Child node ids are the objects' stable kuery ids, so re-expanding or
@@ -421,9 +526,16 @@ export async function mountGraph(
   // Every node is tappable; the caller decides what (if anything) to do — for
   // the explorer that's expand/collapse, for the impact view it re-anchors.
   cy.on('tap', 'node', (evt: cytoscape.EventObject) => onNodeTap(evt.target.id()))
+  // Cytoscape's canvas is not itself a keyboard control. Let a pointer user
+  // opt into the same graph shortcuts without making the shortcuts global.
+  const focusGraph = () => container.focus()
+  container.addEventListener('pointerdown', focusGraph)
 
   return {
-    destroy: () => cy.destroy(),
+    destroy: () => {
+      container.removeEventListener('pointerdown', focusGraph)
+      cy.destroy()
+    },
     hasNode: (id) => cy.getElementById(id).nonempty(),
     isExpanded: (id) => cy.getElementById(id).data('expanded') === 'true',
     markExpanded: (id, expanded) => {

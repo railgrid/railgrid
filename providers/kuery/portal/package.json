@@ -9,6 +9,7 @@
     "vendor-cytoscape": "node -e \"require('fs').copyFileSync('node_modules/cytoscape/dist/cytoscape.min.js','dist/cytoscape.min.js')\"",
     "vendor-codemirror": "node vendor-codemirror.cjs",
     "dev": "vite",
+    "test": "node --test --test-concurrency=1 *.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

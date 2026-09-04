@@ -11,6 +11,7 @@ import { ic } from './portalkit/icons'
 import { tabClass, tabsClass } from './portalkit/tabs'
 import {
   buildElements,
+  deriveTopologyTree,
   buildTopologyElements,
   relationElements,
   themeStyle,
@@ -18,7 +19,11 @@ import {
   RELATION_COLORS,
   RELATION_LABELS,
   RELATION_DIR,
+  graphKeyAction,
+  graphOwnsFocus,
   type GraphHandle,
+  type TopologyEdgeGroup,
+  type TopologyResourceRow,
 } from './graph'
 import { loadCodeMirror, collectSchemaWords, createEditor, EXAMPLES, type EditorHandle } from './playground'
 
@@ -91,6 +96,7 @@ export class KueryElement extends HTMLElement {
 
   // Topology graph controls — all client-side (no refetch): layout + facet
   // filters re-render from the cached _topology. Edge filter does refetch.
+  private _topoView: 'graph' | 'list' = 'graph'
   private _topoLayout: 'breadthfirst' | 'concentric' | 'circle' | 'cose' = 'breadthfirst'
   private _topoKind = ''
   private _topoNamespace = ''
@@ -125,6 +131,9 @@ export class KueryElement extends HTMLElement {
   // can query that object's relations) and which taps are in flight.
   private _graphObjects = new Map<string, ObjectResult>()
   private _expanding = new Set<string>()
+  // The accessible topology list uses stable row keys rather than positional
+  // indexes so a button always activates the exact object it labels.
+  private _topologyListObjects = new Map<string, ObjectResult>()
 
   // Filter state survives re-renders.
   private _fEdge = ''
@@ -484,7 +493,7 @@ export class KueryElement extends HTMLElement {
     if (this._view === 'topology') {
       this.innerHTML = this._renderTopology()
       this._bindTopology()
-      if (this._topology.length && !this._topologyError && !this._loading) void this._mountTopologyGraph()
+      if (this._topoView === 'graph' && this._topology.length && !this._topologyError && !this._loading) void this._mountTopologyGraph()
       return
     }
     if (this._view === 'playground') {
@@ -647,6 +656,50 @@ export class KueryElement extends HTMLElement {
     return { kinds: [...kinds].sort(), namespaces: [...namespaces].sort() }
   }
 
+  private _topologyViewToggle(): string {
+    const btn = (view: 'graph' | 'list', label: string) =>
+      `<button class="k-btn k-btn--ghost kuery-view-btn" type="button" data-topology-view="${view}" aria-pressed="${this._topoView === view}">${label}</button>`
+    return `<div class="kuery-view-switch" role="group" aria-label="Topology representation">${btn('graph', 'Graph')}${btn('list', 'List')}</div>`
+  }
+
+  private _topologyResourceButton(row: TopologyResourceRow): string {
+    this._topologyListObjects.set(row.key, row.object)
+    const resourceName = row.namespace ? `${row.namespace}/${row.name}` : row.name
+    const label = `Inspect ${row.kind} ${resourceName} on ${row.edge}`
+    return `<button class="kuery-topology-resource" type="button" data-topology-resource="${esc(row.key)}" aria-label="${esc(label)}"><span class="kuery-topology-resource-kind">${esc(row.kind)}</span><span class="kuery-topology-resource-name">${esc(resourceName)}</span></button>`
+  }
+
+  private _renderTopologyList(tree = deriveTopologyTree(this._topology, { kind: this._topoKind, namespace: this._topoNamespace })): string {
+    this._topologyListObjects = new Map()
+
+    const resourceItem = (row: TopologyResourceRow) => `<li class="kuery-topology-resource-item">${this._topologyResourceButton(row)}</li>`
+    const resourceList = (rows: TopologyResourceRow[]) =>
+      rows.length ? `<ul class="kuery-topology-resources">${rows.map(resourceItem).join('')}</ul>` : ''
+    const countLabel = (count: number) => `${count} resource${count === 1 ? '' : 's'}`
+
+    const namespaceItem = (group: TopologyEdgeGroup['namespaces'][number]) => {
+      const count = group.resources.length + (group.resource ? 1 : 0)
+      const namespace = group.resource
+        ? this._topologyResourceButton(group.resource)
+        : `<span class="kuery-topology-namespace-name">Namespace <code>${esc(group.name)}</code></span>`
+      return `<li class="kuery-topology-namespace"><div class="kuery-topology-group-label"><span>${namespace}</span><span class="meta">${countLabel(count)}</span></div>${resourceList(group.resources)}</li>`
+    }
+
+    const edgeItem = (group: TopologyEdgeGroup) => {
+      const namespaceCount = group.namespaces.reduce((total, ns) => total + ns.resources.length + (ns.resource ? 1 : 0), 0)
+      const count = group.resources.length + namespaceCount
+      const clusterResources = group.resources.length
+        ? `<li class="kuery-topology-namespace"><div class="kuery-topology-group-label"><span class="kuery-topology-namespace-name">Cluster-scoped</span><span class="meta">${countLabel(group.resources.length)}</span></div>${resourceList(group.resources)}</li>`
+        : ''
+      return `<li class="kuery-topology-edge"><div class="kuery-topology-group-label kuery-topology-edge-label"><span><span class="kuery-topology-edge-name">Edge <code>${esc(group.name)}</code></span></span><span class="meta">${countLabel(count)}</span></div><ul class="kuery-topology-namespaces">${group.namespaces.map(namespaceItem).join('')}${clusterResources}</ul></li>`
+    }
+
+    if (!tree.edges.length) {
+      return '<p class="k-card kuery-read-state muted" role="status">no resources match the current topology filters</p>'
+    }
+    return `<div id="kuery-topology-list" class="kuery-topology-list" role="region" aria-label="Fleet topology list"><ul class="kuery-topology-tree">${tree.edges.map(edgeItem).join('')}</ul></div>`
+  }
+
   private _renderTopology(): string {
     const opt = (value: string, label: string, sel: string) =>
       `<option value="${esc(value)}"${value === sel ? ' selected' : ''}>${esc(label)}</option>`
@@ -669,6 +722,10 @@ export class KueryElement extends HTMLElement {
     const nsOptions = [opt('', 'All namespaces', this._topoNamespace)]
       .concat(facets.namespaces.map((n) => opt(n, n, this._topoNamespace)))
       .join('')
+    const topologyTree = this._topology.length
+      ? deriveTopologyTree(this._topology, { kind: this._topoKind, namespace: this._topoNamespace })
+      : null
+    const hasTopologyRows = !!topologyTree?.edges.length
 
     let body: string
     if (this._loading) {
@@ -677,8 +734,12 @@ export class KueryElement extends HTMLElement {
       body = `<p class="k-card kuery-read-state kuery-error" role="alert">${esc(this._topologyError)}</p>`
     } else if (this._topology.length === 0) {
       body = `<p class="k-card kuery-read-state muted" role="status">no clusters engaged — connect a kubernetes edge to see its tree</p>`
+    } else if (!hasTopologyRows) {
+      body = '<p class="k-card kuery-read-state muted" role="status">no resources match the current topology filters</p>'
+    } else if (this._topoView === 'list') {
+      body = this._renderTopologyList(topologyTree ?? undefined)
     } else {
-      body = `<div id="kuery-graph" class="kuery-graph"></div>`
+      body = `<div id="kuery-graph" class="kuery-graph" role="region" aria-label="Fleet topology graph" aria-describedby="kuery-graph-help" tabindex="0"></div>`
     }
 
     return `
@@ -687,10 +748,12 @@ export class KueryElement extends HTMLElement {
           <h2 class="kuery-panel-title">Fleet topology</h2>
           <div class="head-actions">
             ${this._viewToggle()}
+            ${this._topologyViewToggle()}
             <span class="k-badge ${this._edges.length ? 'k-badge--success' : 'k-badge--warning'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
           </div>
         </div>
-        <p class="meta">Click a node to expand, again to collapse; <b>Expand all</b> walks the whole net. Arrows show impact flow: <b>A→B</b> means deleting A breaks B — so a Namespace/owner points <i>into</i> its pods, not out. Pan with arrows/WASD, zoom +/−, <b>F</b> full screen.</p>
+        <p class="meta">Activate a graph node to expand, again to collapse; <b>Expand all</b> walks the whole net. Arrows show impact flow: <b>A→B</b> means deleting A breaks B — so a Namespace/owner points <i>into</i> its pods, not out.</p>
+        ${this._topoView === 'graph' ? '<p id="kuery-graph-help" class="meta">Focus the graph to use Arrow keys or W/A/S/D to pan, +/− to zoom, F for full screen, and Escape to exit full screen.</p>' : '<p class="meta">Use Tab to reach a resource, then press Enter or Space to inspect its declared impact.</p>'}
         <div class="kuery-toolbar">
           <select class="k-input kuery-control" id="t-layout" title="Layout" aria-label="Layout">${layoutOptions}</select>
           <select class="k-input kuery-control" id="f-edge" title="Edge" aria-label="Edge">${edgeOptions}</select>
@@ -708,6 +771,21 @@ export class KueryElement extends HTMLElement {
 
   private _bindTopology(): void {
     this._bindViewToggle()
+    this.querySelectorAll('[data-topology-view]').forEach((button) =>
+      button.addEventListener('click', () => {
+        const view = (button as HTMLElement).dataset.topologyView as 'graph' | 'list' | undefined
+        if (!view || view === this._topoView) return
+        this._topoView = view
+        this._render()
+      }),
+    )
+    this.querySelectorAll('[data-topology-resource]').forEach((button) =>
+      button.addEventListener('click', () => {
+        const key = (button as HTMLElement).dataset.topologyResource || ''
+        const row = this._topologyListObjects.get(key)
+        if (row) void this._runImpact(row)
+      }),
+    )
     // Edge change refetches (it scopes the server query); layout/kind/namespace
     // are pure client-side re-renders off the cached _topology.
     this.querySelector('#f-edge')?.addEventListener('change', () => {
@@ -786,23 +864,25 @@ export class KueryElement extends HTMLElement {
   }
 
   // _onKeyDown gives the topology graph keyboard navigation: arrows/WASD pan,
-  // +/- zoom, F toggles full screen, Esc exits it. Ignored while typing in a
-  // form control or when the graph isn't the active view.
+  // +/- zoom, F toggles full screen, Esc exits it. The handler is installed on
+  // window because the Cytoscape canvas is not a native control, but it only
+  // acts while the labeled graph region owns focus.
   private _onKeyDown(ev: KeyboardEvent): void {
     if (this._view !== 'topology' || this._impactOf || !this._cy) return
-    const t = ev.target as HTMLElement | null
-    if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return
+    const graph = this.querySelector('#kuery-graph') as HTMLElement | null
+    if (!graphOwnsFocus(graph, document.activeElement)) return
     const PAN = 70
+    const action = graphKeyAction(ev.key)
     let handled = true
-    switch (ev.key) {
-      case 'ArrowUp': case 'w': case 'W': this._cy.panBy(0, PAN); break
-      case 'ArrowDown': case 's': case 'S': this._cy.panBy(0, -PAN); break
-      case 'ArrowLeft': case 'a': case 'A': this._cy.panBy(PAN, 0); break
-      case 'ArrowRight': case 'd': case 'D': this._cy.panBy(-PAN, 0); break
-      case '+': case '=': this._cy.zoomBy(1.15); break
-      case '-': case '_': this._cy.zoomBy(1 / 1.15); break
-      case 'f': case 'F': this._toggleFull(); break
-      case 'Escape': if (this._topoFull) this._toggleFull(); else handled = false; break
+    switch (action) {
+      case 'pan-up': this._cy.panBy(0, PAN); break
+      case 'pan-down': this._cy.panBy(0, -PAN); break
+      case 'pan-left': this._cy.panBy(PAN, 0); break
+      case 'pan-right': this._cy.panBy(-PAN, 0); break
+      case 'zoom-in': this._cy.zoomBy(1.15); break
+      case 'zoom-out': this._cy.zoomBy(1 / 1.15); break
+      case 'fullscreen': this._toggleFull(); break
+      case 'escape': if (this._topoFull) this._toggleFull(); else handled = false; break
       default: handled = false
     }
     if (handled) ev.preventDefault()
@@ -1040,7 +1120,7 @@ export class KueryElement extends HTMLElement {
       body = '<p class="k-card kuery-read-state muted" role="status">no declared coupling found — nothing references, selects, or descends from this object (network-level dependencies are not visible to kuery)</p>'
     } else if (this._impactView === 'graph') {
       // The graph mounts into this container after render (see _mountGraph).
-      body = `${this._renderLegend()}<div id="kuery-graph" class="kuery-graph"></div>`
+      body = `${this._renderLegend()}<div id="kuery-graph" class="kuery-graph" role="region" aria-label="Impact graph for ${esc(title)}" tabindex="0"></div>`
     } else {
       body = this._renderImpactList()
     }

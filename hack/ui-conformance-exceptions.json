@@ -4,7 +4,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/element.ts",
-      "line": 1079,
+      "line": 1159,
       "column": 44,
       "match": "#888",
       "reference": "design-book §8 Kuery graph",
@@ -94,7 +94,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 242,
+      "line": 324,
       "column": 49,
       "match": "rgba(127,127,127,0.16)",
       "reference": "design-book §8 Kuery graph",
@@ -103,7 +103,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 243,
+      "line": 325,
       "column": 47,
       "match": "rgba(127,127,127,0.45)",
       "reference": "design-book §8 Kuery graph",
@@ -112,7 +112,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 244,
+      "line": 326,
       "column": 43,
       "match": "#e9e9f2",
       "reference": "design-book §8 Kuery graph",
@@ -121,7 +121,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 245,
+      "line": 327,
       "column": 42,
       "match": "#5d5f78",
       "reference": "design-book §8 Kuery graph",
@@ -130,7 +130,7 @@
     {
       "rule": "raw-color",
       "path": "providers/kuery/portal/src/graph.ts",
-      "line": 246,
+      "line": 328,
       "column": 39,
       "match": "#8b6bff",
       "reference": "design-book §8 Kuery graph",
