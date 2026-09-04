@@ -128,6 +128,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   const installTargets = ref<EdgeInstallTarget[]>([])
   const installTargetsEligible = ref(false)
   const installTargetsReason = ref<string | null>(null)
+  const installTargetsError = ref<string | null>(null)
   const installTargetsLoading = ref(false)
   const installTargetsLoaded = ref(false)
 
@@ -182,6 +183,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     const url = orgURL('/install-targets')
     if (!url || installTargetsLoading.value) return
     installTargetsLoading.value = true
+    installTargetsError.value = null
     try {
       const res = await authFetch(url, { tenant: true })
       if (res.status === 501) {
@@ -195,12 +197,13 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
       installTargetsReason.value = body.reason ?? null
       installTargetsLoaded.value = true
     } catch (e) {
-      // Surfaced through the same error slot as the rest of the surface; the
-      // caller renders self-hosting as unavailable rather than guessing it is
-      // fine, because guessing "fine" produces a 409 on click.
-      error.value = e instanceof Error ? e.message : String(e)
+      // Keep this failure local to the preflight surface. The caller renders
+      // self-hosting as unavailable rather than guessing it is fine, because
+      // guessing "fine" produces a 409 on click.
+      installTargetsError.value = e instanceof Error ? e.message : String(e)
       installTargetsEligible.value = false
       installTargetsReason.value = 'could not check for a connected cluster'
+      installTargetsLoaded.value = true
     } finally {
       installTargetsLoading.value = false
     }
@@ -278,6 +281,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     eligibleInstallTargets,
     installTargetsEligible,
     installTargetsReason,
+    installTargetsError,
     installTargetsLoading,
     installTargetsLoaded,
     loadInstallTargets,
