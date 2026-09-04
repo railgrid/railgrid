@@ -68,7 +68,11 @@ describe('Code repository resource detail cards', () => {
     expect(detail).toMatch(/<div class="repo-detail__actions" role="group" aria-label="Repository actions">/)
     expect(detail).toMatch(/Open repository[\s\S]*k-btn--primary/)
     expect(detail).toMatch(/class="k-btn k-btn--ghost"[\s\S]*@click="loadAll"/)
-    expect(detail).toMatch(/<details ref="actionsMenu" class="repo-detail__menu">[\s\S]*Delete repository/)
+    expect(detail).toContain("import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'")
+    expect(detail).toContain('const actionItems = computed<ActionMenuItem[]>(() =>')
+    expect(detail).toMatch(/<ActionMenu[\s\S]*label="More repository actions"[\s\S]*:items="actionItems"[\s\S]*:disabled="!repo \|\| repositoryActionBusy"[\s\S]*@select="selectAction"/)
+    expect(detail).not.toContain('<details')
+    expect(detail).not.toContain('repo-detail__menu')
     expect(detail).toMatch(/@retry="loadRepository"/)
     expect(detail).toMatch(/async function deleteRepository\(\)/)
     expect(detail).toMatch(/confirmDialog\(\{[\s\S]*danger: true/)
@@ -78,11 +82,13 @@ describe('Code repository resource detail cards', () => {
     expect(detail).toMatch(/<p v-if="repositoryDeleting" class="repo-detail__deleting" role="status" aria-live="polite">[\s\S]*Deleting this repository\./)
   })
 
-  it('keeps overflow action menus wider than their icon triggers', () => {
-    expect(style).toMatch(/\.repo-detail \.repo-detail__menu-popover\s*\{[\s\S]*width:\s*max-content;[\s\S]*min-width:\s*170px;[\s\S]*max-width:\s*min\(240px, calc\(100vw - 32px\)\)/)
-    expect(style).toMatch(/\.repo-detail__menu-item\s*\{[\s\S]*width:\s*100%;[\s\S]*white-space:\s*nowrap/)
-    expect(style).toMatch(/\.connection-detail \.connection-detail__menu-popover\s*\{[\s\S]*width:\s*max-content;[\s\S]*min-width:\s*170px;[\s\S]*max-width:\s*min\(240px, calc\(100vw - 32px\)\)/)
-    expect(style).toMatch(/\.connection-detail__menu-item\s*\{[\s\S]*width:\s*100%;[\s\S]*white-space:\s*nowrap/)
+  it('uses shared overflow action styling and a complete warning hint border', () => {
+    expect(style).not.toMatch(/__menu-popover|__menu-item/)
+    const hintRule = style.match(/\.connection-detail__hint\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    expect(hintRule).toContain('border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent);')
+    expect(hintRule).toContain('border-radius: 6px;')
+    expect(hintRule).toContain('background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));')
+    expect(hintRule).not.toContain('border-left')
   })
 
   it('uses compact provider-owned stat cards and canonical section cards', () => {
@@ -169,7 +175,13 @@ describe('Code connection resource detail cards', () => {
       page.indexOf('<template #status>'),
     ]
     expect(headerOrder).toEqual([...headerOrder].sort((a, b) => a - b))
-    expect(connectionDetail).toMatch(/<template #actions>[\s\S]*Refresh[\s\S]*More connection actions[\s\S]*Delete connection/)
+    expect(connectionDetail).toMatch(/<template #actions>[\s\S]*Refresh[\s\S]*<ActionMenu[\s\S]*More connection actions/)
+    expect(connectionDetail).toContain("import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'")
+    expect(connectionDetail).toContain('const actionItems = computed<ActionMenuItem[]>(() =>')
+    expect(connectionDetail).toContain("label: deleting.value ? 'Deleting connection…' : 'Delete connection'")
+    expect(connectionDetail).toMatch(/<ActionMenu[\s\S]*label="More connection actions"[\s\S]*:items="actionItems"[\s\S]*:disabled="connectionActionBusy"[\s\S]*@select="selectAction"/)
+    expect(connectionDetail).not.toContain('<details')
+    expect(connectionDetail).not.toContain('connection-detail__menu')
     expect(connectionDetail).toContain(':loaded="connectionReadState"')
     expect(connectionDetail).toContain(':stale="loaded && !!error"')
     expect(connectionDetail).toContain('@retry="load"')

@@ -24,6 +24,36 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./api', () => ({ api: mocks.api }))
 vi.mock('./portalkit/confirm', () => ({ confirmDialog: mocks.confirmDialog }))
+vi.mock('./portalkit/ActionMenu.vue', async () => {
+  const { h, ref } = await import('vue')
+  type ActionItem = { id: string; label: string; disabled?: boolean; busy?: boolean }
+  return {
+    default: {
+      props: ['label', 'items', 'disabled'],
+      emits: ['select'],
+      setup: (props: { label: string; items: readonly ActionItem[]; disabled?: boolean }, { emit }: { emit: (event: string, id: string) => void }) => {
+        const open = ref(false)
+        const toggle = () => {
+          if (!props.disabled) open.value = !open.value
+        }
+        const select = (item: ActionItem) => {
+          if (props.disabled || item.disabled || item.busy) return
+          open.value = false
+          emit('select', item.id)
+        }
+        return () => h('div', { class: 'action-menu-stub' }, [
+          h('button', { type: 'button', 'aria-label': props.label, disabled: props.disabled, onClick: toggle }, props.label),
+          open.value ? h('div', { role: 'menu' }, props.items.map(item => h('button', {
+            type: 'button',
+            disabled: item.disabled || item.busy,
+            'aria-busy': item.busy ? 'true' : undefined,
+            onClick: () => select(item),
+          }, item.label))) : null,
+        ])
+      },
+    },
+  }
+})
 vi.mock('./portalkit/ConditionsPanel.vue', async () => {
   const { h } = await import('vue')
   return { default: { setup: () => () => h('div', { class: 'conditions-stub' }) } }
@@ -319,20 +349,27 @@ describe('mounted resource deletion state', () => {
     expect(mocks.api.listCollaborators).toHaveBeenCalled()
     expect(mocks.api.listPackagesPage).toHaveBeenCalled()
     const refreshButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Refresh')
-    const deleteButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete repository')
     expect(refreshButton?.props.disabled).toBe(false)
+    const menuTrigger = findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')
+    expect(menuTrigger?.props.disabled).toBe(false)
+    click(menuTrigger!)
+    await settle()
+    const deleteButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete repository')
     expect(deleteButton?.props.disabled).toBe(false)
-
-    const menu = findNode(root, node => node.type === 'details')
-    expect(menu).toBeDefined()
-    menu!.setAttribute('open', '')
     click(deleteButton!)
     await settle()
 
-    expect(menu!.props.open).toBeUndefined()
+    expect(mocks.confirmDialog).toHaveBeenCalledWith({
+      title: 'Delete repository "orders"?',
+      message: 'This removes the repository on the git host. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    expect(findNode(root, node => node.props.role === 'menu')).toBeUndefined()
     expect(textContent(root)).toContain('orders')
     expect(textContent(root)).toContain('Deleting this repository.')
     expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Deleting this repository.'))).toBeDefined()
+    expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(true)
 
     deleteRequest.reject({ reason: 'GraphQLError', message: 'delete failed' })
     await settle()
@@ -341,6 +378,7 @@ describe('mounted resource deletion state', () => {
     expect(textContent(root)).toContain('GraphQLError: delete failed')
     expect(textContent(root)).toContain('orders')
     expect(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Refresh')?.props.disabled).toBe(false)
+    expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(false)
     app.unmount()
   })
 
@@ -356,18 +394,26 @@ describe('mounted resource deletion state', () => {
     })
     await settle()
 
+    const menuTrigger = findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')
+    expect(menuTrigger?.props.disabled).toBe(false)
+    click(menuTrigger!)
+    await settle()
     const deleteButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete connection')
-    const menu = findNode(root, node => node.type === 'details')
     expect(deleteButton?.props.disabled).toBe(false)
-    expect(menu).toBeDefined()
-    menu!.setAttribute('open', '')
     click(deleteButton!)
     await settle()
 
-    expect(menu!.props.open).toBeUndefined()
+    expect(mocks.confirmDialog).toHaveBeenCalledWith({
+      title: 'Delete connection "github"?',
+      message: 'Repositories using it will stop reconciling.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    expect(findNode(root, node => node.props.role === 'menu')).toBeUndefined()
     expect(textContent(root)).toContain('github')
     expect(textContent(root)).toContain('Deleting this connection.')
     expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Deleting this connection.'))).toBeDefined()
+    expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(true)
 
     deleteRequest.reject({ reason: 'GraphQLError', message: 'delete failed' })
     await settle()
@@ -376,7 +422,31 @@ describe('mounted resource deletion state', () => {
     expect(textContent(root)).toContain('GraphQLError: delete failed')
     expect(textContent(root)).toContain('github')
     expect(back).not.toHaveBeenCalled()
-    expect(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete connection')?.props.disabled).toBe(false)
+    expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('closes the connection menu and leaves the resource actionable when deletion is cancelled', async () => {
+    mocks.confirmDialog.mockResolvedValueOnce(false)
+    const { app, root } = mount(ConnectionDetailView, {
+      name: connection.name,
+      deletions: createResourceDeletions(),
+    })
+    await settle()
+
+    const menuTrigger = findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')
+    expect(menuTrigger?.props.disabled).toBe(false)
+    click(menuTrigger!)
+    await settle()
+    const deleteButton = findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Delete connection')
+    click(deleteButton!)
+    await settle()
+
+    expect(mocks.confirmDialog).toHaveBeenCalledTimes(1)
+    expect(mocks.api.deleteConnection).not.toHaveBeenCalled()
+    expect(findNode(root, node => node.props.role === 'menu')).toBeUndefined()
+    expect(textContent(root)).not.toContain('Deleting this connection.')
+    expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(false)
     app.unmount()
   })
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { AlertTriangle, ArrowLeftRight, Ellipsis, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeftRight, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
 import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -50,7 +51,6 @@ const repoLoading = ref(true)
 const repoLoaded = ref(false)
 const repoError = ref<string | null>(null)
 const repositoryMutationError = ref<string | null>(null)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 const connectionExpanded = ref(false)
 const accessExpanded = ref(false)
 const packagesExpanded = ref(false)
@@ -138,6 +138,13 @@ const packageRefreshMode = ref<ResourceRefreshMode>('foreground')
 const repositoryRefreshing = computed(() => repoLoading.value)
 const repositoryForegroundRefreshing = computed(() => repoLoading.value && repositoryRefreshMode.value === 'foreground')
 const repositoryActionBusy = computed(() => repositoryForegroundRefreshing.value || repositoryDeleting.value || operations.isLocked(operationKey('repository', props.name)))
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: repositoryDeleting.value ? 'Deleting repository…' : 'Delete repository',
+  tone: 'danger',
+  disabled: !repo.value || repositoryActionBusy.value,
+  busy: repositoryDeleting.value,
+}])
 const keyRows = computed<Array<Record<string, unknown>>>(() => keys.value
   .map(key => {
     const deleting = isDeleting(keyScope, key)
@@ -390,9 +397,8 @@ async function deleteRepository() {
   }
 }
 
-function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
-  void deleteRepository()
+function selectAction(action: string): void {
+  if (action === 'delete') void deleteRepository()
 }
 
 function toggleConnectionEditor() {
@@ -842,17 +848,12 @@ onUnmounted(() => {
             <RefreshCw :size="14" :class="{ spin: repositoryForegroundRefreshing }" aria-hidden="true" />
           {{ repositoryForegroundRefreshing ? 'Refreshing…' : 'Refresh' }}
         </button>
-        <details ref="actionsMenu" class="repo-detail__menu">
-          <summary class="k-btn k-btn--ghost" aria-label="More repository actions">
-            <Ellipsis :size="16" aria-hidden="true" />
-            <span class="sr-only">More actions</span>
-          </summary>
-          <div class="repo-detail__menu-popover">
-            <button type="button" class="repo-detail__menu-item" :disabled="!repo || repositoryActionBusy" @click="deleteFromMenu">
-              Delete repository
-            </button>
-          </div>
-        </details>
+        <ActionMenu
+          label="More repository actions"
+          :items="actionItems"
+          :disabled="!repo || repositoryActionBusy"
+          @select="selectAction"
+        />
       </div>
     </template>
 

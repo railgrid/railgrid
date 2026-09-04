@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Ellipsis, GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
+import { GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -31,7 +32,6 @@ const error = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 const operations = createOperationLocks()
 let mounted = false
 let refresh!: LatestRefreshController
@@ -89,6 +89,13 @@ const connectionActionBusy = computed(() =>
   deleting.value ||
   operations.isLocked(operationKey('connection', conn.value?.name || props.name)),
 )
+const actionItems = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: deleting.value ? 'Deleting connection…' : 'Delete connection',
+  tone: 'danger',
+  disabled: !conn.value || connectionActionBusy.value,
+  busy: deleting.value,
+}])
 // ResourcePage distinguishes an explicit first read from the expected
 // TenantMissing/no-context state while the host changes workspaces. Keep the
 // null sentinel for that no-context state so the body is not replaced by a
@@ -185,9 +192,8 @@ async function deleteConnection() {
   }
 }
 
-function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
-  void deleteConnection()
+function selectAction(action: string): void {
+  if (action === 'delete') void deleteConnection()
 }
 
 refresh = createLatestRefreshController(async (requestID, mode) => {
@@ -289,22 +295,12 @@ onUnmounted(() => {
               <RefreshCw :size="14" :class="{ spin: foregroundRefreshing }" aria-hidden="true" />
               {{ foregroundRefreshing ? 'Refreshing…' : 'Refresh' }}
             </button>
-            <details ref="actionsMenu" class="connection-detail__menu">
-              <summary class="k-btn k-btn--ghost" aria-label="More connection actions">
-                <Ellipsis :size="16" aria-hidden="true" />
-                <span class="sr-only">More actions</span>
-              </summary>
-              <div class="connection-detail__menu-popover">
-                <button
-                  type="button"
-                  class="connection-detail__menu-item"
-                  :disabled="connectionActionBusy"
-                  @click="deleteFromMenu"
-                >
-                  Delete connection
-                </button>
-              </div>
-            </details>
+            <ActionMenu
+              label="More connection actions"
+              :items="actionItems"
+              :disabled="connectionActionBusy"
+              @select="selectAction"
+            />
           </div>
         </template>
 
