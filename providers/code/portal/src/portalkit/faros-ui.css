@@ -30,6 +30,7 @@
    * the generic canonical marker can describe. Provider bundles use it to
    * recover from a host stylesheet served from an older deployment. */
   --faros-ui-version: 5;
+  --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
   --k-layer-menu: 1000;
@@ -1257,8 +1258,8 @@ html.light [data-k-tip]::after {
  * here so host and standalone providers cannot drift. */
 #k-toasts {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  bottom: calc(var(--k-toast-bottom-offset, 16px) + env(safe-area-inset-bottom, 0px));
   z-index: var(--k-layer-toast, 2147483001);
   display: flex;
   flex-direction: column;
@@ -1285,8 +1286,10 @@ html.light [data-k-tip]::after {
 .k-toast__icon { flex: none; margin-top: 1px; width: 14px; height: 14px; }
 .k-toast__icon svg { display: block; width: 100%; height: 100%; }
 .k-toast--ok .k-toast__icon { color: var(--color-success, #2fd6a0); }
+.k-toast--warning .k-toast__icon { color: var(--color-warning, #f0a63a); }
 .k-toast--error .k-toast__icon { color: var(--color-danger, #ff5d5d); }
 .k-toast--info .k-toast__icon { color: var(--color-accent, #8b6bff); }
+.k-toast--warning { border-color: var(--color-warning, #f0a63a); }
 .k-toast--error { border-color: var(--color-danger, #ff5d5d); }
 .k-toast__message { flex: 1; overflow-wrap: anywhere; }
 .k-toast__action {
@@ -1295,6 +1298,7 @@ html.light [data-k-tip]::after {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   color: var(--color-accent, #8b6bff);
   border-radius: 4px;
+  min-height: 24px;
   padding: 2px 8px;
   font: inherit;
   font-size: 12px;
@@ -1306,9 +1310,9 @@ html.light [data-k-tip]::after {
   flex: none;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  margin: -2px -4px 0 0;
+  width: 24px;
+  height: 24px;
+  margin: -2px -6px 0 0;
   border: 0;
   background: transparent;
   color: var(--color-text-muted, #8587a1);
@@ -1317,6 +1321,132 @@ html.light [data-k-tip]::after {
 }
 .k-toast__dismiss svg { width: 12px; height: 12px; }
 .k-toast__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: inherit; }
+
+/* ── Vue toast host and contextual notifications ──────────────────────────
+ * Vue providers share a document-level queue. The host owns one visual stack;
+ * status and alert live channels stay mounted independently for assistive
+ * technology and never duplicate the visible cards. */
+.k-toast-host {
+  position: fixed;
+  inset-inline-end: calc(16px + env(safe-area-inset-right, 0px));
+  inset-block-end: calc(var(--k-toast-bottom-offset, 16px) + env(safe-area-inset-bottom, 0px));
+  z-index: var(--k-layer-toast, 2147483001);
+  inline-size: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+.k-toast-host--dormant {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+.k-toast-host__visual,
+.k-toast-host__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: none;
+}
+.k-toast-host .k-toast {
+  inline-size: 100%;
+  min-inline-size: 0;
+  pointer-events: auto;
+}
+.k-toast__body {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.k-toast__title {
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.k-toast__source {
+  color: var(--color-text-muted, #8587a1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.k-toast__action-spinner { inline-size: 12px; block-size: 12px; animation: k-toast-spin 0.8s linear infinite; }
+@keyframes k-toast-spin { to { transform: rotate(360deg); } }
+.k-toast__action-error {
+  color: var(--color-danger, #ff5d5d);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.k-toast__action[aria-busy="true"] { cursor: wait; opacity: 0.7; }
+.k-toast-host__channel {
+  position: absolute;
+  block-size: 1px;
+  inline-size: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  margin: -1px;
+  padding: 0;
+  white-space: nowrap;
+}
+.k-toast-enter-active,
+.k-toast-leave-active,
+.k-toast-move { transition: opacity 0.16s cubic-bezier(0.2, 0.8, 0.3, 1), transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1); }
+.k-toast-enter-from,
+.k-toast-leave-to { opacity: 0; transform: translateY(8px); }
+
+.k-inline-notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-inline-size: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.k-inline-notification--info { border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 42%, transparent); }
+.k-inline-notification--success { border-color: color-mix(in srgb, var(--color-success, #2fd6a0) 42%, transparent); }
+.k-inline-notification--warning { border-color: color-mix(in srgb, var(--color-warning, #f0a63a) 55%, transparent); }
+.k-inline-notification--error { border-color: color-mix(in srgb, var(--color-danger, #ff5d5d) 55%, transparent); }
+.k-inline-notification__icon { flex: none; margin-top: 1px; inline-size: 15px; block-size: 15px; }
+.k-inline-notification__icon svg { display: block; inline-size: 100%; block-size: 100%; }
+.k-inline-notification--info .k-inline-notification__icon { color: var(--color-accent, #8b6bff); }
+.k-inline-notification--success .k-inline-notification__icon { color: var(--color-success, #2fd6a0); }
+.k-inline-notification--warning .k-inline-notification__icon { color: var(--color-warning, #f0a63a); }
+.k-inline-notification--error .k-inline-notification__icon { color: var(--color-danger, #ff5d5d); }
+.k-inline-notification__body { display: flex; min-inline-size: 0; flex: 1; flex-direction: column; gap: 2px; }
+.k-inline-notification__title { font-size: 12px; line-height: 1.3; }
+.k-inline-notification__message { min-inline-size: 0; overflow-wrap: anywhere; }
+.k-inline-notification__action,
+.k-inline-notification__dismiss {
+  flex: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 24px;
+  padding: 3px 7px;
+}
+.k-inline-notification__action { border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent); background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
+.k-inline-notification__action:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent); }
+.k-inline-notification__action:disabled { cursor: wait; opacity: 0.65; }
+.k-inline-notification__dismiss { display: grid; place-items: center; min-width: 24px; color: var(--color-text-muted, #8587a1); padding: 2px; }
+.k-inline-notification__dismiss svg { inline-size: 13px; block-size: 13px; }
+.k-inline-notification__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2); }
+.k-toast-host button:focus-visible,
+.k-inline-notification button:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
 
 /* ── Resource table states and actions ────────────────────────────────────
  * ResourceTable uses `.k-table` for the shell and these namespaced descendants
@@ -2489,6 +2619,13 @@ faros-resource-table-filter { display: contents; }
   .live-dot { animation: none; }
   .k-resource-technical__chevron { transition: none; }
   .k-action-menu__busy { animation: none; }
+  .k-toast__action-spinner { animation: none; }
+  .k-toast-host,
+  .k-toast-enter-active,
+  .k-toast-leave-active,
+  .k-toast-move { transition: none !important; }
+  .k-toast-enter-from,
+  .k-toast-leave-to { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2501,7 +2638,27 @@ faros-resource-table-filter { display: contents; }
   .k-table-action { opacity: 1; }
 }
 @media (max-width: 640px) {
-  #k-toasts { left: 12px; right: 12px; max-width: none; align-items: stretch; }
+  #k-toasts { left: calc(12px + env(safe-area-inset-left, 0px)); right: calc(12px + env(safe-area-inset-right, 0px)); max-width: none; align-items: stretch; }
+  .k-toast-host { inset-inline-start: calc(12px + env(safe-area-inset-left, 0px)); inset-inline-end: calc(12px + env(safe-area-inset-right, 0px)); max-width: none; inline-size: auto; align-items: stretch; }
+}
+@media (max-width: 420px) {
+  .k-toast-host .k-toast,
+  .k-inline-notification { gap: 7px; padding: 9px 10px; }
+  .k-toast-host .k-toast__action,
+  .k-inline-notification__action { max-inline-size: 38%; overflow-wrap: anywhere; }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-toast__action,
+  .k-toast-host .k-toast__action,
+  .k-toast-host .k-toast__dismiss,
+  .k-inline-notification__action,
+  .k-inline-notification__dismiss {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .k-toast__dismiss,
+  .k-toast-host .k-toast__dismiss,
+  .k-inline-notification__dismiss { min-width: 44px; }
 }
 @media (max-width: 560px) {
   .k-tabs { gap: 2px; padding-bottom: 8px; }

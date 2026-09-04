@@ -40,6 +40,8 @@ import {
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectAPIRequestError, type ProjectAssistantThreadItemPage } from './api'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ToastHost from './portalkit/ToastHost.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import Tabs from './portalkit/Tabs.vue'
 import LayoutSelector from './portalkit/LayoutSelector.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
@@ -7011,10 +7013,12 @@ async function requestDeleteProject(project: Project) {
     }
     toast('info', `Deletion accepted for ${projectLabel}. Cleanup continues in the background.`)
     if (!hasRemainingProjects && !selectedProjectWasDeleted) props.navigate(CREATE_PROJECT_ROUTE)
-  } catch (e) {
+  } catch {
     if (responseIsCurrent()) {
-      const detail = e instanceof Error ? e.message : String(e)
-      const failureMessage = `Could not delete ${projectLabel}. ${detail || 'The server rejected the request.'}`
+      // Keep provider and transport details out of the contextual message.
+      // They may contain implementation paths or other data unsuitable for
+      // a user-facing surface; the retry action carries the recovery path.
+      const failureMessage = `Could not delete ${projectLabel}. Try again.`
       const retryContextFingerprint = operation.context.fingerprint
       const retryRoutePath = operation.context.routePath
       const retryDeletion = () => {
@@ -7029,10 +7033,6 @@ async function requestDeleteProject(project: Project) {
       error.value = null
       projectDeletionError.value = failureMessage
       projectDeletionRetry.value = retryDeletion
-      toast('error', failureMessage, {
-        label: 'Retry deletion',
-        run: retryDeletion,
-      })
     }
   } finally {
     if (lifecycleIsCurrent()) {
@@ -8547,10 +8547,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <LayoutSelector v-model="projectLayout" class="ml-auto" aria-label="Project layout" />
         </div>
 
-        <div v-if="projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
-          <span class="min-w-0 flex-1">{{ projectDeletionError }}</span>
-          <button type="button" class="font-medium underline underline-offset-2" @click="projectDeletionRetry?.()">Retry deletion</button>
-        </div>
+        <InlineNotification
+          v-if="projectDeletionError"
+          class="mb-4 max-w-[720px]"
+          tone="error"
+          :message="projectDeletionError"
+          action-label="Retry deletion"
+          @action="projectDeletionRetry?.()"
+        />
         <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
@@ -9103,10 +9107,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </template>
         <template v-else>{{ error }}</template>
       </div>
-      <div v-if="projectDeletionError" class="mx-3 mt-3 flex flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
-        <span class="min-w-0 flex-1">{{ projectDeletionError }}</span>
-        <button type="button" class="font-medium underline underline-offset-2" @click="projectDeletionRetry?.()">Retry deletion</button>
-      </div>
+      <InlineNotification
+        v-if="projectDeletionError"
+        class="mx-3 mt-3"
+        tone="error"
+        :message="projectDeletionError"
+        action-label="Retry deletion"
+        @action="projectDeletionRetry?.()"
+      />
 
       <template v-if="selected || projectRouteShellVisible">
         <div class="relative min-h-0 flex-1">
@@ -10899,6 +10907,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   <Teleport to="body">
     <ConfirmDialog />
   </Teleport>
+  <ToastHost owner="fallback" />
   <ProjectShareDialog
     v-if="shareDialogOpen"
     :open="shareDialogOpen"

@@ -59,6 +59,7 @@ test('adapts filtered projects into an interactive canonical list with isolated 
 
 test('locks the deleted project and reconciles the accepted request locally', () => {
   assert.match(app, /import \{ toast \} from '\.\/portalkit\/toast'/)
+  assert.match(app, /import InlineNotification from '\.\/portalkit\/InlineNotification\.vue'/)
   assert.match(app, /import \{[\s\S]*createProjectDeletionController,[\s\S]*sameProjectIdentity,[\s\S]*\} from '\.\/projectDeletion'/)
   assert.match(app, /function isProjectDeleting\(project: Project \| string\): boolean/)
   assert.match(app, /phase: isProjectDeleting\(project\) \? 'Deleting…' : project\.phase \|\| 'Pending'/)
@@ -88,7 +89,8 @@ test('locks the deleted project and reconciles the accepted request locally', ()
   const deleteRequestIndex = deleteFlow.indexOf("await api.deleteProject(props.ctx, name, target.uid ?? '')")
   assert.ok(deleteRequestIndex >= 0 && deleteRequestIndex < deleteFlow.indexOf('removeProjectFromLocalList(target)'))
   assert.match(deleteFlow, /toast\('info', `Deletion accepted for \$\{projectLabel\}\. Cleanup continues in the background\.`\)/)
-  assert.match(deleteFlow, /toast\('error', failureMessage, \{[\s\S]*label: 'Retry deletion'/)
+  assert.doesNotMatch(deleteFlow, /toast\('error', failureMessage/)
+  assert.match(deleteFlow, /projectDeletionError\.value = failureMessage/)
   assert.match(deleteFlow, /const retryContextFingerprint = operation\.context\.fingerprint/)
   assert.match(deleteFlow, /const retryRoutePath = operation\.context\.routePath/)
   assert.match(deleteFlow, /appContextFingerprint\(props\.ctx\) !== retryContextFingerprint \|\| routePath\.value !== retryRoutePath/)

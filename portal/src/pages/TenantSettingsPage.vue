@@ -35,6 +35,7 @@ import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableFilter from '@/portalkit/ResourceTableFilter.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
 import type { TableFilterDefinition, TableFilterOption } from '@/portalkit/table'
 import { toast } from '@/portalkit/toast'
 import { useEscapeKey } from '@/composables/useEscapeKey'
@@ -133,6 +134,17 @@ const canEditOrg = computed(() => canManageOrg.value && !organizationSettingsOrg
 const canManageOrgMembers = computed(() => canManageOrg.value && !organizationSettingsOrg.value?.deletionRequestedAt)
 const canDeleteOrg = computed(() => canEditOrg.value && !organizationSettingsOrg.value?.personal)
 
+// A settings mutation failure is contextual to the route and selected
+// authority that initiated it. Clear the shared fallback on navigation so an
+// old organization/workspace failure is never announced after moving to a
+// different settings surface or destination.
+watch(
+  () => route.fullPath,
+  (path, previousPath) => {
+    if (path !== previousPath) tenant.clearError()
+  },
+)
+
 const editingOrgName = ref(false)
 const orgNameDraft = ref('')
 const orgBusy = ref(false)
@@ -153,8 +165,6 @@ async function saveOrgName(): Promise<void> {
     if (ok) {
       toast('ok', 'Organization renamed.')
       editingOrgName.value = false
-    } else {
-      toast('error', tenant.error ?? 'Failed to rename organization.')
     }
   } finally {
     orgBusy.value = false
@@ -193,7 +203,6 @@ async function onDeleteOrg(): Promise<void> {
       toast('ok', 'Organization deletion requested. Restore it within 30 days.')
     } else {
       clearManagedOrgSnapshot()
-      toast('error', tenant.error ?? 'Failed to delete organization.')
     }
   } finally {
     expectedOrgLifecycleRefresh.value = null
@@ -213,8 +222,6 @@ async function onUndeleteOrg(): Promise<void> {
       // store. The local snapshot was only a recovery bridge, not a second
       // organization chooser.
       clearManagedOrgSnapshot()
-    } else {
-      toast('error', tenant.error ?? 'Failed to restore organization.')
     }
   } finally {
     orgBusy.value = false
@@ -292,8 +299,6 @@ async function onAddOrgMember(user: string, role: 'admin' | 'member'): Promise<b
       toast('ok', `Added ${user} to the organization as ${role}.`)
       await reloadOrgMembers(target)
       return currentOrgMemberContext(context)
-    } else {
-      toast('error', tenant.error ?? 'Failed to add organization member.')
     }
     return false
   } finally {
@@ -316,8 +321,6 @@ async function onChangeOrgMemberRole(user: string, role: 'admin' | 'member'): Pr
     if (ok) {
       toast('ok', `Updated ${user}'s organization role to ${role}.`)
       await reloadOrgMembers(target)
-    } else {
-      toast('error', tenant.error ?? 'Failed to update organization role.')
     }
   } finally {
     if (currentOrgMemberContext(context)) {
@@ -346,8 +349,6 @@ async function onRemoveOrgMember(user: string): Promise<void> {
     if (ok) {
       toast('ok', `Removed ${user} from the organization.`)
       await reloadOrgMembers(target)
-    } else {
-      toast('error', tenant.error ?? 'Failed to remove organization member.')
     }
   } finally {
     if (currentOrgMemberContext(context)) {
@@ -857,8 +858,6 @@ async function onCreateWorkspace() {
       // visible here, but do not force it to become an operating target while
       // its control plane is still provisioning.
       await reloadScopedWorkspaces(org)
-    } else {
-      toast('error', tenant.error ?? 'Failed to create workspace.')
     }
   } finally {
     if (request === workspaceCreateRequest) newWsBusy.value = false
@@ -889,8 +888,6 @@ async function saveWsName() {
     if (ok) {
       toast('ok', 'Workspace renamed.')
       editingWsName.value = false
-    } else {
-      toast('error', tenant.error ?? 'Failed to rename workspace.')
     }
   } finally {
     wsBusy.value = false
@@ -906,7 +903,6 @@ async function onDeleteWorkspace() {
   try {
     const ok = await tenant.deleteWorkspace(target.org, target.ws)
     if (ok) toast('ok', 'Workspace deletion requested. It can be restored for 30 days.')
-    else toast('error', tenant.error ?? 'Failed to delete workspace.')
   } finally {
     wsBusy.value = false
   }
@@ -919,7 +915,6 @@ async function onUndeleteWorkspace() {
   try {
     const ok = await tenant.undeleteWorkspace(target.org, target.ws)
     if (ok) toast('ok', 'Workspace restored.')
-    else toast('error', tenant.error ?? 'Failed to restore workspace.')
   } finally {
     wsBusy.value = false
   }
@@ -933,8 +928,7 @@ async function onDownloadKubeconfig() {
     // Reuse the persisted install variant for kubeconfig downloads. Defaults
     // to 'faros'.
     const install = (localStorage.getItem('faros:portal:kubeconfig:install') === 'krew' ? 'krew' : 'faros') as 'faros' | 'krew'
-    const ok = await tenant.downloadKubeconfig(target.org, target.ws, install)
-    if (!ok) toast('error', tenant.error ?? 'Failed to download kubeconfig.')
+    await tenant.downloadKubeconfig(target.org, target.ws, install)
   } finally {
     kubeconfigBusy.value = false
   }
@@ -1013,8 +1007,6 @@ async function onAddWsMember(user: string, role: 'admin' | 'member'): Promise<bo
       toast('ok', `Added ${user} to the workspace as ${role}.`)
       await reloadWsMembers()
       return isCurrentWsMembersContext(context)
-    } else {
-      toast('error', tenant.error ?? 'Failed to add workspace member.')
     }
     return false
   } finally {
@@ -1038,8 +1030,6 @@ async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
     if (ok) {
       toast('ok', `Updated ${user}'s workspace role to ${role}.`)
       await reloadWsMembers()
-    } else {
-      toast('error', tenant.error ?? 'Failed to update role.')
     }
   } finally {
     if (isCurrentWsMembersContext(context)) {
@@ -1064,8 +1054,6 @@ async function onRemoveWsMember(user: string) {
     if (ok) {
       toast('ok', `Removed ${user} from the workspace.`)
       await reloadWsMembers()
-    } else {
-      toast('error', tenant.error ?? 'Failed to remove workspace member.')
     }
   } finally {
     if (isCurrentWsMembersContext(context)) {
@@ -1168,8 +1156,6 @@ async function onRevokeAppAccess(grant: AppAccessGrantRow) {
     if (ok) {
       toast('ok', `Revoked ${grant.user}'s access to ${grant.app}.`)
       await reloadAppAccessGrants()
-    } else {
-      toast('error', tenant.error || 'Failed to revoke app access.')
     }
   } finally {
     if (isCurrentAppAccessContext(context)) {
@@ -1253,6 +1239,7 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onTokenDialogKeydown)
+  tenant.clearError()
   if (deletionCountdownTimer !== null) {
     window.clearInterval(deletionCountdownTimer)
     deletionCountdownTimer = null
@@ -1332,8 +1319,6 @@ async function onCreateSA() {
       newSAName.value = ''
       newSARole.value = 'member'
       await reloadSAs()
-    } else {
-      toast('error', tenant.error ?? 'Failed to create service account.')
     }
   } finally {
     if (isCurrentServiceAccountContext(context)) saCreateBusy.value = false
@@ -1354,8 +1339,6 @@ async function onDeleteSA(uuid: string, name: string) {
     if (ok) {
       toast('ok', `Deleted service account "${name}".`)
       await reloadSAs()
-    } else {
-      toast('error', tenant.error ?? 'Failed to delete service account.')
     }
   } finally {
     if (isCurrentServiceAccountContext(context)) endSAOperation(uuid)
@@ -1382,7 +1365,6 @@ async function onIssueToken(uuid: string, name: string) {
       canEditWs.value &&
       activeSection.value === 'workspaces'
     if (!tok) {
-      if (tokenResponseIsCurrent) toast('error', tenant.error ?? 'Failed to issue token.')
       return
     }
     // A one-time token must never be shown under a different workspace,
@@ -1411,8 +1393,6 @@ async function onRevokeTokens(uuid: string, name: string) {
     if (ok) {
       toast('ok', `Revoked tokens for "${name}".`)
       await reloadSAs()
-    } else {
-      toast('error', tenant.error ?? 'Failed to revoke tokens.')
     }
   } finally {
     if (isCurrentServiceAccountContext(context)) endSAOperation(uuid)
@@ -1560,6 +1540,14 @@ function fmtDate(s?: string | null): string {
       />
 
       <div class="mt-4">
+        <InlineNotification
+          v-if="tenant.error && organizationSettingsOrg"
+          class="mb-4"
+          tone="error"
+          :title="activeSection === 'organizations' ? 'Organization operation failed' : 'Workspace operation failed'"
+          :message="tenant.error"
+          announce="auto"
+        />
         <div
           v-if="tenant.loading && !tenant.orgs.length && !organizationSettingsOrg"
           class="rounded-lg border border-border-subtle bg-surface-raised/60 p-8 text-center text-sm text-text-muted"
@@ -1579,7 +1567,14 @@ function fmtDate(s?: string | null): string {
           <p class="mt-1 max-w-sm text-[12px] text-text-muted">
             Select an organization before managing its settings.
           </p>
-          <p v-if="tenant.error" class="mt-3 text-[11px] text-danger" role="alert">{{ tenant.error }}</p>
+          <InlineNotification
+            v-if="tenant.error"
+            class="mt-3 w-full"
+            tone="error"
+            title="Unable to load organization"
+            :message="tenant.error"
+            announce="auto"
+          />
           <router-link
             :to="{ path: '/organizations', query: { from: activeSection === 'organizations' ? '/settings/organizations' : '/settings/workspaces' } }"
             class="k-btn k-btn--primary mt-4 text-[11px]"

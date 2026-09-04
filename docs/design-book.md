@@ -158,10 +158,13 @@ writing any CSS**:
 | `.k-avatar` (+ `--sm`) | Mono-initials circle, 28/20px; presence = `.live-dot` success dot |
 | `.k-dropzone` (+ `.is-dragover`, `.is-error`) | Dashed drop target; accent tint on drag-over, no glow |
 
-For toasts, use `portalkit/toast.ts` (`toast('ok' | 'error' | 'info', message,
-action?)`) — a framework-free bus + bottom-right stack with auto-dismiss,
-hover-pause and `aria-live`; vendored into every portal via
-`make sync-portalkit`.
+For Vue surfaces, use the canonical `provider-sdk/portalkit-vue/toast.ts` with
+`ToastHost.vue`; mount exactly one `<ToastHost owner="primary" />` in the root
+shell. A standalone Vue provider may mount an `owner="fallback"` host. Use
+`InlineNotification.vue` beside a contextual failure, without duplicating it as
+a toast. The framework-neutral `provider-sdk/portalkit/toast.ts` is frozen
+legacy infrastructure copied only into Agents for its existing compatibility
+adapter.
 
 Signature utilities in `main.css`: `.contour-grid` (+ `-fade`) wavy-line hero
 texture (login, empty states — sparingly), `.island` floating dock card,
@@ -359,24 +362,52 @@ styled variant.
 - Behavior: 300ms show delay, 0ms hide; shows on focus as well as hover;
   never glows.
 
-### Toast / snackbar — ✅ implemented as `portalkit/toast.ts`
-Framework-free bus + renderer, vendored into every portal. The agents
-provider's lit host (`providers/agents/portal/src/ui/toast.ts`) predates it
-and renders the identical recipe; it can migrate opportunistically. Contract:
-- Geometry: 6px radius card, bottom-right stack, `gap: 8px`, max 3 visible.
+### Toast / snackbar — ✅ implemented as Vue PortalKit
+
+The Vue implementation is split across the canonical
+`provider-sdk/portalkit-vue/toast.ts`, `ToastHost.vue`, and
+`InlineNotification.vue`. Its versioned document command transport crosses
+independently bundled Vue portals. Toast copy is rendered as plain text; the
+active `ToastHost` owns rendering, the queue, timers, and visual lifecycle. The
+root shell mounts exactly one
+`<ToastHost owner="primary" />`. A provider may mount an `owner="fallback"`
+host for standalone operation; fallback is dormant while a primary host exists.
+
+Contract:
+
+- Geometry: 6px radius card, bottom-right placement, `gap: 8px`, and one
+  visible toast. The root portal owns `--k-toast-bottom-offset`, combining
+  navigation and terminal chrome; shared CSS adds safe-area insets. Coarse-
+  pointer action and dismiss controls are at least 44×44px.
 - Surface: `surface-raised`, `border-default` hairline,
-  `0 12px 34px rgba(0,0,0,.4)` elevation. Tone is carried by the leading
-  **icon** in the semantic color (success / danger / info = accent); the error
-  variant additionally turns the card border `danger`. No tinted backgrounds.
-- Type: 13px `text-primary` message; optional 10px mono uppercase eyebrow for
-  the source ("EDGES", "BUILD").
-- Behavior: auto-dismiss `ok` in 4s, `info` in 6s, and `error` in 9s; pause on
-  hover and re-arm with the full duration on leave. Every card has an explicit
-  dismiss button; the host uses `role="status"` (`role="alert"` for errors).
-  Entry is a slide-up fade (`k-toast-in`); toasts never glow. The Agents
-  adapter delegates DOM, timers, actions, and the visible-item cap to this
-  canonical bus while retaining its subscription API and reconciling renderer
-  removals.
+  `0 12px 34px rgba(0,0,0,.4)` elevation. Tone is carried by the leading icon
+  in the semantic color; warning and error also use their semantic border.
+  Toasts never glow.
+- Content: plain text, at most one action, and an explicit dismiss button.
+  `source` is rendered only when explicitly supplied by the caller; do not
+  infer a provider or component label.
+- Queue: priority is `error > warning > info > ok`. Only a strictly
+  higher-priority toast preempts the visible toast; the preempted item is
+  requeued with its remaining time. `ok` auto-dismisses after 5s and `info`
+  after 6s. Warnings and errors are persistent by default, but an explicitly
+  supplied finite numeric duration overrides that default and clamps to at
+  least 5s. Toasts with an action remain persistent regardless of duration.
+- Accessibility and lifecycle: separate live regions remain mounted from first
+  paint, one polite and one assertive. `announcement: "auto"` sends errors to
+  assertive and other kinds to polite; explicit `polite`, `assertive`, and
+  `off` choices are honored. Hover, focus, and a hidden document pause timers;
+  resume preserves remaining time. Escape dismisses only from within the host,
+  and focus returns to the next toast or recorded origin. Reduced-motion media
+  queries remove host/card transitions and action-spinner animation.
+- Ownership takeover preserves the visible toast's remaining timer, action
+  busy/error state, and focused toast control.
+- Contextual failures use `InlineNotification` beside the failed operation and
+  must not also produce a duplicate toast. The root portal and App Studio have
+  adopted these Vue primitives.
+
+The framework-neutral `provider-sdk/portalkit/toast.ts` is frozen legacy
+infrastructure for Agents only. Agents toast migration and adoption by other
+providers are out of scope for this standard.
 
 ### Dropdown / context menu — ✅ implemented as `.k-menu` (faros-ui.css)
 App-studio's `PreviewActionsMenu` / `ResponseModePicker` /

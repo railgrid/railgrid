@@ -1,18 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, watch, watchEffect } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
+import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useRoute, useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
 import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
+import { useLayoutInsets } from '@/composables/useLayoutInsets'
+import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
 import TerminalDock from '@/components/TerminalDock.vue'
 import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
+import InlineNotification from '@/portalkit/InlineNotification.vue'
+import ToastHost from '@/portalkit/ToastHost.vue'
 
 const auth = useAuthStore()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
+const terminal = useTerminalSessionsStore()
+const layoutInsets = useLayoutInsets()
 const route = useRoute()
 const router = useRouter()
 
@@ -40,6 +47,33 @@ const showProvisioning = computed(
   () => hasPortalSession.value && tenant.bootstrapState === 'provisioning',
 )
 
+// TenantSettingsPage and the organization chooser own their contextual error
+// surfaces. Other routes still need a shell-level destination for a tenant
+// operation failure, so keep one inline notification as the cross-route
+// fallback rather than turning store errors into duplicate toasts.
+const showTenantErrorInline = computed(() => {
+  if (!hasPortalSession.value || !tenant.error) return false
+  return !route.path.startsWith('/settings') && !route.path.startsWith('/organizations')
+})
+
+// ToastHost teleports its visual stack to <body>, outside AppLayout's DOM
+// subtree. Publish the same shell clearance at the document root so the host
+// follows a bottom navigation dock and the persistent TerminalDock without
+// requiring either component to know about toast rendering.
+const toastBottomOffset = computed(() => `${toastBottomOffsetPx({
+  navigationBottom: layoutInsets.bottom,
+  terminalVisible: !hideTerminalDock.value && terminal.isVisible,
+  terminalSessionCount: terminal.sessions.length,
+  terminalHeight: terminal.panelState.height,
+  terminalMinimized: terminal.panelState.isMinimized,
+  terminalFullscreen: terminal.panelState.isFullscreen,
+})}px`)
+
+watchEffect(() => {
+  if (typeof document === 'undefined') return
+  document.documentElement.style.setProperty('--k-toast-bottom-offset', toastBottomOffset.value)
+})
+
 // A dead gateway session (401/403/404) is detected deep inside
 // useGraphQL, which can't import `@/router` without dragging the whole
 // SPA into provider bundles. It signals here instead; the shell owns
@@ -59,7 +93,22 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(() => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired))
+onUnmounted(() => {
+  window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.removeProperty('--k-toast-bottom-offset')
+  }
+})
+
+// Tenant errors belong to the route that initiated the operation. Clear them
+// as navigation leaves that context so a failed settings mutation cannot
+// reappear later as a shell announcement on an unrelated destination.
+watch(
+  () => route.fullPath,
+  (path, previousPath) => {
+    if (path !== previousPath) tenant.clearError()
+  },
+)
 
 // Authentication can arrive after onMounted (token login form). Watch the
 // bearer rather than the workspace target so organization-only state does not
@@ -148,6 +197,14 @@ watch(
 
 <template>
   <router-view />
+  <InlineNotification
+    v-if="tenant.error && showTenantErrorInline"
+    class="pointer-events-auto fixed inset-x-4 top-4 z-[2147483001] mx-auto max-w-[720px] shadow-xl"
+    tone="error"
+    title="Tenant operation failed"
+    :message="tenant.error ?? ''"
+    announce="assertive"
+  />
   <ControlPlaneProvisioning v-if="showProvisioning" :attempts="tenant.bootstrapAttempts" />
   <!-- Persistent singleton: mounted above the router-view boundary so navigating
        between pages never unmounts the dock. AppLayout (which every page renders)
@@ -155,4 +212,5 @@ watch(
        live xterm buffer + SSH WebSocket across route changes. -->
   <TerminalDock v-show="!hideTerminalDock" />
   <PkConfirmDialog />
+  <ToastHost owner="primary" />
 </template>
