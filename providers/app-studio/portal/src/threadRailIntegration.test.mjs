@@ -36,6 +36,8 @@ test('keeps pin and manual read state project scoped and archives through the ca
   assert.match(archiveSource, /archiveFailed = true/)
   assert.match(archiveSource, /finally \{[\s\S]*releaseThreadMutationLatch\(threadMutationLatchOwner\)[\s\S]*if \(archiveFailed\) threadRailRef\.value\?\.focusThread\?\.\(threadID\)/)
   assert.match(archiveSource, /activeAssistantThreadID\.value = ''[\s\S]*messages\.value = \[\]/)
+  assert.match(archiveSource, /assistantThreads\.value = remaining[\s\S]*toast\('ok', 'Conversation archived\.'\)[\s\S]*if \(!wasActive\)/)
+  assert.equal((archiveSource.match(/Conversation archived\./g) ?? []).length, 1)
   assert.match(archiveSource, /if \(!wasActive\) \{[\s\S]*focusThread\?\.\(activeAssistantThreadID\.value\)/)
   assert.match(archiveSource, /if \(requestIsCurrent\(\)\) \{[\s\S]*threadError\.value = e instanceof Error \? e\.message : String\(e\)[\s\S]*archiveFailed = true[\s\S]*\}\n    return[\s\S]*finally/)
   assert.match(archiveSource, /if \(!requestIsCurrent\(\) \|\| !contextIsCurrent\(\)\) return/)

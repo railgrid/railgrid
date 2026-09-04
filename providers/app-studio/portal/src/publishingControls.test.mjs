@@ -8,6 +8,35 @@ const releasePipeline = await readFile(new URL('./ReleasePipeline.vue', import.m
 const promotionState = await readFile(new URL('./promotionState.ts', import.meta.url), 'utf8')
 const productionSettings = await readFile(new URL('./useProductionSettings.ts', import.meta.url), 'utf8')
 
+function functionSource(start, end) {
+  const startIndex = app.indexOf(start)
+  const endIndex = app.indexOf(end, startIndex)
+  assert.ok(startIndex >= 0 && endIndex > startIndex)
+  return app.slice(startIndex, endIndex)
+}
+
+test('emits truthful publishing and access toasts only after current responses', () => {
+  const publish = functionSource('async function publishCurrentProject', '\n\n// savePreviewAccess')
+  assert.match(publish, /if \(selected\.value\?\.name !== name\) return[\s\S]*productionAccessUpdateToast\(\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
+
+  const preview = functionSource('async function savePreviewAccess', '\n\n// Preview grants')
+  assert.match(preview, /if \(selected\.value\?\.name !== name\) return[\s\S]*previewAccessUpdateToast\(state\.converged\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
+
+  const previewGrantCalls = functionSource('async function grantCurrentProjectPreviewAccess', '\n\ninterface PreviewGrantMutation')
+  assert.match(previewGrantCalls, /mutation: 'grant'[\s\S]*mutation: 'invite'[\s\S]*mutation: 'revoke'/)
+  const previewGrants = functionSource('interface PreviewGrantMutation', '\n\nasync function unpublishCurrentProject')
+  assert.match(previewGrants, /if \(selected\.value\?\.name !== name\) return[\s\S]*accessMutationToast\('preview', operation\.mutation, operation\.subject\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
+
+  const unpublish = functionSource('async function unpublishCurrentProject', '\n\nasync function grantCurrentProjectAccess')
+  assert.match(unpublish, /if \(selected\.value\?\.name !== name\) return[\s\S]*toast\('ok', 'Production access disabled\.'\)/)
+
+  const productionGrants = functionSource('async function grantCurrentProjectAccess', '\n\nasync function promoteToProd')
+  assert.equal((productionGrants.match(/accessMutationToast\('production'/g) ?? []).length, 2)
+  assert.equal((productionGrants.match(/toast\(notice\.kind, notice\.message\)/g) ?? []).length, 2)
+  assert.equal((productionGrants.match(/if \(selected\.value\?\.name !== name\) return/g) ?? []).length, 2)
+  assert.doesNotMatch([publish, preview, previewGrants, unpublish, productionGrants].join('\n'), /toast\('error'/)
+})
+
 test('exposes Publishing separately and keeps workspace model config out of Project Settings', () => {
   assert.doesNotMatch(app, /type ProjectSettingsPane/)
   assert.doesNotMatch(app, /projectSettingsPanes/)

@@ -51,6 +51,12 @@ import { confirmDialog, confirmState } from './portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from './portalkit/layoutPreference'
 import { toast } from './portalkit/toast'
 import {
+  accessMutationToast,
+  previewAccessUpdateToast,
+  productionAccessUpdateToast,
+  type AccessMutation,
+} from './toastPolicy'
+import {
   canSubmitCreatePrompt,
   createSetupItems,
   gitConnectionReady,
@@ -3999,6 +4005,8 @@ async function publishCurrentProject() {
     // publication immediately; the background refresh intentionally does not
     // overwrite a live Share draft while the dialog is open.
     shareMode.value = state.publication?.mode === 'public' ? 'public' : mode
+    const notice = productionAccessUpdateToast()
+    toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
     if (selected.value?.name === name) {
@@ -4022,6 +4030,8 @@ async function savePreviewAccess() {
     if (selected.value?.name !== name) return
     previewAccess.value = state
     previewMode.value = state.mode === 'public' ? 'public' : 'restricted'
+    const notice = previewAccessUpdateToast(state.converged)
+    toast(notice.kind, notice.message)
   } catch (err) {
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
@@ -4035,30 +4045,49 @@ async function savePreviewAccess() {
 // instance, so the two grant lists are independent — revoking preview access
 // leaves production access untouched.
 async function grantCurrentProjectPreviewAccess(user: string) {
-  await mutatePreviewGrants((name) => api.createPreviewGrant(props.ctx, name, user, false))
+  await mutatePreviewGrants({
+    mutation: 'grant',
+    subject: user,
+    run: (name) => api.createPreviewGrant(props.ctx, name, user, false),
+  })
 }
 
 async function inviteCurrentProjectPreviewAccess(email: string) {
-  await mutatePreviewGrants((name) => api.createPreviewGrant(props.ctx, name, email, true))
+  await mutatePreviewGrants({
+    mutation: 'invite',
+    subject: email,
+    run: (name) => api.createPreviewGrant(props.ctx, name, email, true),
+  })
 }
 
 async function revokeCurrentProjectPreviewAccess(grant: string) {
-  await mutatePreviewGrants((name) => api.revokePreviewGrant(props.ctx, name, grant))
+  await mutatePreviewGrants({
+    mutation: 'revoke',
+    run: (name) => api.revokePreviewGrant(props.ctx, name, grant),
+  })
 }
 
-async function mutatePreviewGrants(run: (name: string) => Promise<ProjectPublishingGrant[]>) {
+interface PreviewGrantMutation {
+  mutation: AccessMutation
+  subject?: string
+  run: (name: string) => Promise<ProjectPublishingGrant[]>
+}
+
+async function mutatePreviewGrants(operation: PreviewGrantMutation) {
   const name = selected.value?.name
   if (!name || publishingActionBusy.value) return
   publishingActionBusy.value = true
   publishingActionError.value = null
   try {
-    const grants = await run(name)
+    const grants = await operation.run(name)
     if (selected.value?.name !== name) return
     // Keep the visibility fields and swap only the grant list, so the toggle's
     // converged/pending state is not reset by a grant mutation.
     previewAccess.value = previewAccess.value
       ? { ...previewAccess.value, grants }
       : previewAccess.value
+    const notice = accessMutationToast('preview', operation.mutation, operation.subject)
+    toast(notice.kind, notice.message)
   } catch (err) {
     if (selected.value?.name === name) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
@@ -4091,6 +4120,7 @@ async function unpublishCurrentProject() {
     const state = await api.unpublishProject(props.ctx, name)
     if (selected.value?.name !== name) return
     publishing.value = state
+    toast('ok', 'Production access disabled.')
     await loadPublishing()
     disableSucceeded = true
   } catch (err) {
@@ -4124,6 +4154,8 @@ async function grantOrInviteProjectAccess(user: string, invite: boolean) {
   try {
     await api.grantPublishingAccess(props.ctx, name, selectedUser, invite)
     if (selected.value?.name !== name) return
+    const notice = accessMutationToast('production', invite ? 'invite' : 'grant', selectedUser)
+    toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
     if (selected.value?.name === name) {
@@ -4142,6 +4174,8 @@ async function revokeCurrentProjectAccess(grant: string) {
   try {
     await api.revokePublishingAccess(props.ctx, name, grant)
     if (selected.value?.name !== name) return
+    const notice = accessMutationToast('production', 'revoke')
+    toast(notice.kind, notice.message)
     await loadPublishing()
   } catch (err) {
     if (selected.value?.name === name) {
@@ -5832,6 +5866,7 @@ async function archiveAssistantThread(threadID: string) {
     unreadAssistantThreadIDs.value = unreadAssistantThreadIDs.value.filter((candidate) => candidate !== threadID)
     const remaining = assistantThreads.value.filter((thread) => thread.id !== threadID)
     assistantThreads.value = remaining
+    toast('ok', 'Conversation archived.')
     if (!wasActive) {
       threadRailRef.value?.focusThread?.(activeAssistantThreadID.value)
       return
