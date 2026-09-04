@@ -39,6 +39,7 @@ import { api } from './api'
 const props = defineProps<{
   ctx: FarosContext | null
   projectName: string
+  refreshRevision: number
 }>()
 
 const files = ref<ProjectFileInfo[]>([])
@@ -51,6 +52,7 @@ const content = ref<ProjectFileContent | null>(null)
 const loadingFile = ref(false)
 const fileError = ref<string | null>(null)
 let fileRequestSerial = 0
+let workspaceRefreshSerial = 0
 
 const collapsed = ref<Set<string>>(new Set())
 const mobileTreeOpen = ref(true)
@@ -244,12 +246,26 @@ async function openFile(path: string, projectName = props.projectName, requestCo
   }
 }
 
+async function refreshWorkspaceSnapshot() {
+  const projectName = props.projectName
+  const requestContext = props.ctx
+  if (!projectName) return
+  const serial = ++workspaceRefreshSerial
+  const path = selectedPath.value
+  await loadTree()
+  if (serial !== workspaceRefreshSerial || !isCurrentProject(projectName, requestContext)) return
+  if (path && selectedPath.value === path && files.value.some((file) => file.path === path)) {
+    await openFile(path, projectName, requestContext)
+  }
+}
+
 const contentLines = computed(() => (content.value?.content ?? '').split('\n'))
 const treeState = computed(() => codeExplorerTreeState(loadingTree.value, files.value.length > 0, treeError.value))
 
 watch(
   () => [props.projectName, props.ctx] as const,
   () => {
+    workspaceRefreshSerial++
     treeRequestSerial++
     fileRequestSerial++
     files.value = []
@@ -276,6 +292,13 @@ watch(rows, (visibleRows) => {
     activeTreePath.value = visibleRows.find((row) => row.node.path === selectedPath.value)?.node.path ?? visibleRows[0].node.path
   }
 })
+
+watch(
+  () => props.refreshRevision,
+  () => {
+    if (props.projectName) void refreshWorkspaceSnapshot()
+  },
+)
 </script>
 
 <template>
@@ -294,7 +317,7 @@ watch(rows, (visibleRows) => {
           title="Refresh"
           aria-label="Refresh workspace files"
           :disabled="loadingTree"
-          @click="loadTree"
+          @click="refreshWorkspaceSnapshot"
         >
           <Loader2 v-if="loadingTree" class="h-4 w-4 animate-spin" aria-hidden="true" />
           <RefreshCw v-else class="h-4 w-4" aria-hidden="true" />
@@ -305,7 +328,7 @@ watch(rows, (visibleRows) => {
         <div v-else-if="treeState === 'refresh-error'" class="mx-2 mb-2 grid gap-1 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="alert" aria-live="polite">
           <span>{{ treeError }}</span>
           <span class="text-text-muted">Showing the last loaded tree.</span>
-          <button type="button" class="app-studio-touch-target inline-flex w-fit items-center rounded-sm font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" @click="loadTree">Retry refresh</button>
+          <button type="button" class="app-studio-touch-target inline-flex w-fit items-center rounded-sm font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" @click="refreshWorkspaceSnapshot">Retry refresh</button>
         </div>
         <div v-else-if="treeState === 'initial-loading'" class="grid gap-2 px-3 py-3" role="status" aria-live="polite" aria-label="Loading workspace files">
           <span class="sr-only">Loading workspace files…</span>

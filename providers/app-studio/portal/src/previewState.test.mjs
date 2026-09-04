@@ -221,7 +221,7 @@ test('an unavailable iframe is replaced when the browser tab wakes', () => {
 test('terminal preview refresh hydrates the selected project before authorizing', () => {
   assert.match(
     appSource,
-    /normalized\.message\.metadata\?\.previewRefreshNeeded === true\)\s*\{\s*void refreshDevelopmentPreviewFrame\('Preview refreshed', \{ refreshProject: true \}\)/,
+    /normalized\.message\.metadata\?\.previewRefreshNeeded === true\)\s*\{\s*codeExplorerRefreshRevision\.value \+= 1\s*void refreshDevelopmentPreviewFrame\('Preview refreshed', \{ refreshProject: true \}\)/,
   )
   assert.match(
     appSource,

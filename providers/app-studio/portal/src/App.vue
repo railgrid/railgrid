@@ -807,6 +807,7 @@ const developmentPreviewAccessError = ref<string | null>(null)
 const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
+const codeExplorerRefreshRevision = ref(0)
 const developmentPreviewFrameRef = ref<HTMLIFrameElement | null>(null)
 const developmentPreviewFrameLoaded = ref(false)
 const developmentPreviewDocumentState = ref<PreviewBridgeConnectionState>('disabled')
@@ -5932,6 +5933,7 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
     conversationStatus.value = ''
     assistantRunController.disconnect()
     if (normalized.message.metadata?.previewRefreshNeeded === true) {
+      codeExplorerRefreshRevision.value += 1
       void refreshDevelopmentPreviewFrame('Preview refreshed', { refreshProject: true })
     }
   } else if (requiresLiveControls) {
@@ -10059,7 +10061,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <CodeExplorer :ctx="props.ctx" :project-name="selected?.name || ''" />
+        <CodeExplorer
+          :ctx="props.ctx"
+          :project-name="selected?.name || ''"
+          :refresh-revision="codeExplorerRefreshRevision"
+        />
       </div>
 
       <div

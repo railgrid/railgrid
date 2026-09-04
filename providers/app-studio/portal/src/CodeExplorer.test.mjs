@@ -4,6 +4,7 @@ import test from 'node:test'
 import { createServer } from 'vite'
 
 const source = await readFile(new URL('./CodeExplorer.vue', import.meta.url), 'utf8')
+const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 const { codeExplorerTreeState } = await vite.ssrLoadModule('/src/CodeExplorer.vue')
 test.after(async () => vite.close())
@@ -34,7 +35,7 @@ test('keeps a cached tree visible and reports refresh failure separately from in
   assert.equal(codeExplorerTreeState(true, true, null), 'refreshing')
   assert.equal(codeExplorerTreeState(false, true, 'Could not refresh files.'), 'refresh-error')
   assert.equal(codeExplorerTreeState(false, true, null), 'ready')
-  assert.match(source, /class="app-studio-touch-target[^\"]*focus-visible:ring-2[^\"]*" @click="loadTree">Retry refresh<\/button>/)
+  assert.match(source, /class="app-studio-touch-target[^\"]*focus-visible:ring-2[^\"]*" @click="refreshWorkspaceSnapshot">Retry refresh<\/button>/)
 })
 
 test('adapts the explorer to one pane on mobile and exposes a complete keyboard tree', () => {
@@ -53,4 +54,17 @@ test('adapts the explorer to one pane on mobile and exposes a complete keyboard 
   assert.match(source, /event\.key === 'ArrowDown'/)
   assert.match(source, /event\.key === 'ArrowRight'/)
   assert.match(source, /event\.key === 'Home'/)
+})
+
+test('refreshes the tree and selected file after a workspace revision changes', () => {
+  assert.match(source, /refreshRevision: number/)
+  assert.match(source, /async function refreshWorkspaceSnapshot\(\)[\s\S]*const path = selectedPath\.value[\s\S]*await loadTree\(\)[\s\S]*await openFile\(path, projectName, requestContext\)/)
+  assert.match(source, /\(\) => props\.refreshRevision[\s\S]*void refreshWorkspaceSnapshot\(\)/)
+  assert.match(source, /@click="refreshWorkspaceSnapshot"/)
+})
+
+test('advances the explorer revision only for an accepted terminal workspace mutation', () => {
+  assert.match(appSource, /const codeExplorerRefreshRevision = ref\(0\)/)
+  assert.match(appSource, /assistantRunTerminal\(normalized\.run\.status\) && acceptedTerminal[\s\S]*normalized\.message\.metadata\?\.previewRefreshNeeded === true[\s\S]*codeExplorerRefreshRevision\.value \+= 1/)
+  assert.match(appSource, /<CodeExplorer[\s\S]*:refresh-revision="codeExplorerRefreshRevision"/)
 })
