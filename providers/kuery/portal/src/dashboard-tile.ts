@@ -21,16 +21,27 @@ import {
   type TileContext,
   type TilePoller,
 } from './portalkit/dashboardtile'
+import { createKueryRequestContext } from './request-context'
 
 export class KueryDashboardTile extends HTMLElement {
-  private _ctx: TileContext & { orgUUID?: string | null; workspaceUUID?: string | null } | null = null
+  private _ctx: TileContext | null = null
   private _poller: TilePoller | null = null
   private _edges: string[] = []
   private _loading = true
   private _error: string | null = null
+  private _contextGeneration = 0
+  private _connected = false
 
-  set farosContext(v: (TileContext & { orgUUID?: string | null; workspaceUUID?: string | null }) | null) {
+  set farosContext(v: TileContext | null) {
+    const changed = createKueryRequestContext(v).identity !== createKueryRequestContext(this._ctx).identity
     this._ctx = v
+    if (changed) {
+      this._contextGeneration += 1
+      this._edges = []
+      this._error = null
+      this._loading = true
+      if (this._connected) this._render()
+    }
     this._poller?.refresh()
   }
   get farosContext(): TileContext | null {
@@ -38,6 +49,7 @@ export class KueryDashboardTile extends HTMLElement {
   }
 
   connectedCallback(): void {
+    this._connected = true
     if (!this._poller) {
       this._poller = createTilePoller(() => this._load())
       this._poller.start()
@@ -45,33 +57,42 @@ export class KueryDashboardTile extends HTMLElement {
   }
 
   disconnectedCallback(): void {
+    this._connected = false
+    this._contextGeneration += 1
     this._poller?.stop()
     this._poller = null
   }
 
   private async _load(): Promise<void> {
-    if (!hasWorkspaceContext(this._ctx)) {
+    const generation = this._contextGeneration
+    const request = createKueryRequestContext(this._ctx)
+    const isCurrent = (): boolean =>
+      this._connected &&
+      generation === this._contextGeneration &&
+      createKueryRequestContext(this._ctx).identity === request.identity
+    const ctx = this._ctx
+    if (!hasWorkspaceContext(ctx)) {
+      if (!isCurrent()) return
       this._edges = []
       this._error = null
       this._loading = false
       this._render()
       return
     }
-    const base = (this._ctx?.basePath || '').replace(/^\/ui\/providers\//, '/services/providers/')
-    const headers: Record<string, string> = {}
-    if (this._ctx?.token) headers['Authorization'] = `Bearer ${this._ctx.token}`
-    if (this._ctx?.orgUUID) headers['X-Faros-Org'] = this._ctx.orgUUID
-    if (this._ctx?.workspaceUUID) headers['X-Faros-Workspace'] = this._ctx.workspaceUUID
     try {
-      const res = await fetch(base + '/api/edges', { credentials: 'same-origin', headers })
+      const res = await fetch(request.basePath + '/api/edges', { credentials: 'same-origin', headers: request.headers })
+      if (!isCurrent()) return
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
       const out = (await res.json()) as { edges?: string[] }
+      if (!isCurrent()) return
       this._edges = out.edges ?? []
       this._error = null
     } catch (e) {
+      if (!isCurrent()) return
       this._edges = []
       this._error = isBenignTileError(e) ? null : tileErrorText(e)
     } finally {
+      if (!isCurrent()) return
       this._loading = false
       this._render()
     }

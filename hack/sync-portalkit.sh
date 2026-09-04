@@ -17,7 +17,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/agents/portal"
-  "providers/kuery/portal"
   "providers/quickstart/portal"
 )
 TS_FILES=(dashboardtile.ts faros-ui.css icons.ts modal.ts styles.ts tabs.ts tenant.ts toast.ts)
@@ -31,6 +30,7 @@ VUE_PORTALS=(
   "providers/databricks/portal"
   "providers/edges/portal"
   "providers/infrastructure/portal"
+  "providers/kuery/portal"
 )
 VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useDelayedLoading.ts)
 
@@ -44,6 +44,11 @@ HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 # above so adding a new source file cannot silently skip every portal.
 TS_CANONICAL_ONLY=(README.md page-state.ts)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs)
+
+# Kuery was originally a vanilla-TS portal. Its Vue migration no longer
+# needs the vanilla confirm/alert implementation; remove that one legacy copy
+# while preserving the file for the remaining string-building portals.
+VUE_LEGACY_FILES=(modal.ts)
 
 # These files were visual implementations before faros-ui.css became the sole
 # recipe. Remove only this known migration set; arbitrary unexpected files are
@@ -69,6 +74,13 @@ remove_obsolete() {
   for p in "${ALL_PORTALS[@]}"; do
     local dst="$ROOT/$p/src/portalkit"
     for f in "${OBSOLETE_FILES[@]}"; do
+      rm -f "$dst/$f"
+    done
+  done
+
+  for p in "${VUE_PORTALS[@]}"; do
+    local dst="$ROOT/$p/src/portalkit"
+    for f in "${VUE_LEGACY_FILES[@]}"; do
       rm -f "$dst/$f"
     done
   done

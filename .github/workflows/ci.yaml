@@ -143,7 +143,7 @@ jobs:
             test: false
             typecheck: false
           - provider: kuery
-            test: false
+            test: true
             typecheck: true
           - provider: quickstart
             test: false

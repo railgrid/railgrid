@@ -39,8 +39,31 @@ const QuerySpecSchema = `{
       }
     },
     "limit": { "type": "integer", "description": "Max root objects (default 100, max 10000)." },
+    "page": {
+      "type": "object",
+      "description": "Pagination parameters. Use first for an offset or cursor for an opaque keyset cursor returned by a previous response.",
+      "additionalProperties": false,
+      "properties": {
+        "first": { "type": "integer", "minimum": 0, "description": "Number of root objects to skip (offset pagination)." },
+        "cursor": { "type": "string", "description": "Opaque cursor from QueryStatus.cursor.next; pass it back unchanged." }
+      }
+    },
+    "order": {
+      "type": "array",
+      "description": "Stable root-object sort order. Kuery appends namespace and name ascending tie-breakers when absent.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field"],
+        "properties": {
+          "field": { "type": "string", "enum": ["name", "namespace", "kind", "apiGroup", "cluster", "creationTimestamp"] },
+          "direction": { "type": "string", "enum": ["Asc", "Desc"] }
+        }
+      }
+    },
     "maxDepth": { "type": "integer", "description": "Transitive relation depth for '+' relations (default 10, max 20)." },
     "count": { "type": "boolean", "description": "Also return the total count of matching root objects (expensive)." },
+    "cursor": { "type": "boolean", "description": "Include an opaque cursor for the next page in the response." },
     "filter": {
       "type": "object",
       "description": "Object-level filters. filter.objects[] entries are OR-ed; criteria within one entry are AND-ed.",

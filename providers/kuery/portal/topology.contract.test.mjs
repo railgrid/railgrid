@@ -136,39 +136,106 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
 })
 
 test('topology switch and resource activation are native, labeled controls', () => {
-  const elementSource = readFileSync(new URL('./src/element.ts', import.meta.url), 'utf8')
-  assert.match(elementSource, /data-topology-view=/u)
-  assert.match(elementSource, /role="group" aria-label="Topology representation"/u)
-  assert.match(elementSource, /aria-pressed="\$\{this\._topoView === view\}"/u)
-  assert.match(elementSource, /this\._topoView = view[\s\S]{0,120}this\._render\(\)/u)
-  assert.match(elementSource, /data-topology-resource=/u)
-  assert.match(elementSource, /const row = this\._topologyListObjects\.get\(key\)/u)
-  assert.match(elementSource, /button\.addEventListener\('click'/u)
-  assert.match(elementSource, /if \(row\) void this\._runImpact\(row\)/u)
-  assert.match(elementSource, /role="region" aria-label="Fleet topology graph"[^>]*tabindex="0"/u)
+  const source = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+  assert.match(source, /role="group" aria-label="Topology representation"/u)
+  assert.match(source, /:aria-pressed="representation === value"/u)
+  assert.match(source, /@click="emit\('inspect', row\.object\)"/u)
+  assert.match(source, /role="region" aria-label="Fleet topology graph"[^>]*tabindex="0"/u)
+  assert.match(source, /FormSelect v-model="layout"/u)
+  assert.match(source, /Reset graph/u)
 })
 
 test('filtered-empty topology renders a status before either representation', () => {
-  const elementSource = readFileSync(new URL('./src/element.ts', import.meta.url), 'utf8')
-  assert.match(elementSource, /const topologyTree = this\._topology\.length[\s\S]{0,180}deriveTopologyTree\(this\._topology/u)
-  assert.match(elementSource, /else if \(!hasTopologyRows\)[\s\S]{0,180}no resources match the current topology filters/u)
-  assert.match(elementSource, /else if \(this\._topology\.length === 0\) \{\s*body = `[^`]*no clusters engaged/u)
-  assert.match(elementSource, /else if \(!hasTopologyRows\)[\s\S]{0,240}else if \(this\._topoView === 'list'\)/u)
+  const source = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+  const noClusters = source.indexOf('No clusters engaged')
+  const noMatches = source.indexOf('No resources match the current topology filters')
+  const list = source.indexOf("representation === 'list'")
+  assert.ok(noClusters > 0 && noMatches > noClusters && list > noMatches)
 })
 
 test('graph keyboard routing is focus-scoped and fullscreen uses the shared layer token', () => {
-  const elementSource = readFileSync(new URL('./src/element.ts', import.meta.url), 'utf8')
+  const elementSource = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
   const graphSource = readFileSync(new URL('./src/graph.ts', import.meta.url), 'utf8')
   const styleSource = readFileSync(new URL('./src/style.css', import.meta.url), 'utf8')
   const sharedStyleSource = readFileSync(new URL('./src/portalkit/faros-ui.css', import.meta.url), 'utf8')
 
-  assert.match(elementSource, /if \(!graphOwnsFocus\(graph, document\.activeElement\)\) return/u)
-  assert.match(elementSource, /if \(handled\) ev\.preventDefault\(\)/u)
+  assert.match(elementSource, /@keydown="graphKeydown"/u)
+  assert.match(elementSource, /if \(handled\) event\.preventDefault\(\)/u)
   assert.match(graphSource, /const focusGraph = \(\) => container\.focus\(\)/u)
   assert.match(graphSource, /container\.addEventListener\('pointerdown', focusGraph\)/u)
   assert.match(graphSource, /container\.removeEventListener\('pointerdown', focusGraph\)/u)
-  assert.match(elementSource, /panel\.requestFullscreen\(\)\.catch\(\(\) => this\._toggleFullCSS\(panel\)\)/u)
-  assert.match(elementSource, /this\._toggleFullCSS\(panel\)/u)
+  assert.match(elementSource, /target\.requestFullscreen/u)
+  assert.match(elementSource, /document\.fullscreenElement === panel\.value/u)
   assert.match(styleSource, /z-index: var\(--k-layer-fullscreen, 2000\)/u)
   assert.match(sharedStyleSource, /--k-layer-fullscreen: 2000/u)
+})
+
+test('relation metadata is the shared source for labels, direction, and graph colors', () => {
+  const metadata = graphModule.RELATION_METADATA
+  assert.ok(metadata.length > 0)
+  assert.deepEqual(graphModule.IMPACT_RELATIONS, metadata.map(({ name }) => name))
+  for (const relation of metadata) {
+    assert.equal(graphModule.RELATION_COLORS[relation.name], relation.color)
+    assert.equal(graphModule.RELATION_LABELS[relation.name], relation.label)
+    assert.equal(graphModule.RELATION_DIR[relation.name], relation.direction)
+    assert.ok(relation.description.length > 0)
+  }
+})
+
+test('impact graph keeps distinct declared relations between the same objects', () => {
+  const related = (id, kind) => ({
+    id,
+    cluster: 'org/edge-a',
+    object: { kind, apiVersion: 'v1', metadata: { name: id } },
+  })
+  const built = graphModule.buildElements({
+    id: 'pod-1',
+    cluster: 'org/edge-a',
+    object: { kind: 'Pod', apiVersion: 'v1', metadata: { name: 'api' } },
+    relations: {
+      owners: [related('controller-1', 'Deployment')],
+      references: [related('controller-1', 'Deployment')],
+    },
+  })
+  const relationEdges = built.elements.filter(element => element.data.source)
+
+  assert.equal(relationEdges.length, 2)
+  assert.deepEqual(relationEdges.map(element => element.data.rel), ['owners', 'references'])
+  assert.equal(new Set(relationEdges.map(element => element.data.id)).size, relationEdges.length, 'each legend relation needs its own graph edge')
+})
+
+test('topology and impact disclose bounded results without conflating response truncation', () => {
+  const topology = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+  const impact = readFileSync(new URL('./src/components/ImpactView.vue', import.meta.url), 'utf8')
+
+  assert.match(topology, /const requestGeneration = \+\+loadGeneration/u)
+  assert.match(topology, /loadGeneration !== requestGeneration/u)
+  assert.match(impact, /const requestGeneration = \+\+loadGeneration/u)
+  assert.match(impact, /loadGeneration !== requestGeneration/u)
+  assert.match(topology, /up to 1,000 members per edge/u)
+  assert.match(topology, /depth 5/u)
+  assert.match(topology, /200 objects for Namespace membership/u)
+  assert.match(topology, /4,000 nodes or 30 rounds/u)
+  assert.match(impact, /depth 5/u)
+  assert.match(impact, /at most 200 related objects/u)
+  assert.match(topology, /does not identify relation-level bounds/u)
+  assert.match(impact, /does not identify relation-level bounds/u)
+  assert.doesNotMatch(topology, /Select one edge for a complete view/u)
+  assert.match(impact, /not a complete relation traversal/u)
+})
+
+test('CSS fullscreen fallback has a deterministic exit after rejected native requests', () => {
+  const source = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+  assert.match(source, /if \(!document\.fullscreenElement && full\.value\) full\.value = false/u)
+  assert.match(source, /catch \{ if \([^}]*!document\.fullscreenElement\) full\.value = true \}/u)
+})
+
+test('impact view exposes a semantic relation legend from shared metadata', () => {
+  const source = readFileSync(new URL('./src/components/ImpactView.vue', import.meta.url), 'utf8')
+  assert.match(source, /RELATION_METADATA/u)
+  assert.match(source, /<aside[^>]+aria-labelledby="impact-legend-title"/u)
+  assert.match(source, /<dl class="legend">/u)
+  assert.match(source, /v-for="relation in legendRelations"/u)
+  assert.match(source, /class="legend-swatch"[^>]+backgroundColor: relation\.color/u)
+  assert.doesNotMatch(source, /kuery-impact-legend kuery-panel k-card/u)
 })

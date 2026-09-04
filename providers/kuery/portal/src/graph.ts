@@ -11,41 +11,13 @@
 // erased at build time, so this module pulls in zero Cytoscape bytes.
 
 import type cytoscape from 'cytoscape'
-import type { ObjectResult } from './element'
+import type { ObjectResult } from './api'
 
 // The UMD bundle assigns this global.
 declare global {
   interface Window {
     cytoscape?: typeof cytoscape
   }
-}
-
-// Relation type → edge color. These double as the legend swatches in
-// element.ts, so the graph and its legend can never drift. Keys match the
-// IMPACT_RELATIONS set the impact query requests.
-export const RELATION_COLORS: Record<string, string> = {
-  owners: '#e0b34f',
-  'descendants+': '#4f9be0',
-  references: '#9b6de0',
-  selects: '#4fe0a8',
-  'selected-by': '#e07a4f',
-  'linked+': '#e0519b',
-  grouped: '#8a93a8',
-  namespace: '#5fae7a',
-  namespaced: '#5fae7a',
-}
-
-// Short legend labels (the impact list uses longer titles).
-export const RELATION_LABELS: Record<string, string> = {
-  owners: 'owners',
-  'descendants+': 'descendants',
-  references: 'references',
-  selects: 'selects',
-  'selected-by': 'selected-by',
-  'linked+': 'linked',
-  grouped: 'grouped',
-  namespace: 'namespace',
-  namespaced: 'contains',
 }
 
 // Impact direction per relation, from the anchor's point of view. An edge is
@@ -63,24 +35,85 @@ export const RELATION_LABELS: Record<string, string> = {
 // Mirror of kuery's engine.RelationDirections (pkg/engine/relations.go) — the
 // authority. Keep in lockstep: up = engine "upstream", down = "downstream".
 export type RelDir = 'up' | 'down' | 'lateral'
+
+/**
+ * The one relation vocabulary shared by graph styling, list labels, and the
+ * impact legend. Keeping color, direction, and explanatory text together
+ * prevents a graph edge from acquiring a meaning the legend does not explain.
+ */
+export interface RelationMetadata {
+  name: string
+  label: string
+  legendLabel: string
+  color: string
+  direction: RelDir
+  description: string
+}
+
+export const RELATION_METADATA: readonly RelationMetadata[] = [
+  {
+    name: 'owners', label: 'owners', legendLabel: 'Owners', color: '#e0b34f', direction: 'up',
+    description: 'Upstream - deleting the related object impacts this object.',
+  },
+  {
+    name: 'descendants+', label: 'descendants', legendLabel: 'Descendants', color: '#4f9be0', direction: 'down',
+    description: 'Downstream - deleting this object impacts the related object.',
+  },
+  {
+    name: 'references', label: 'references', legendLabel: 'References', color: '#9b6de0', direction: 'up',
+    description: 'Upstream - deleting the related object impacts this object.',
+  },
+  {
+    name: 'selects', label: 'selects', legendLabel: 'Selects', color: '#4fe0a8', direction: 'up',
+    description: 'Upstream - deleting the related object impacts this object.',
+  },
+  {
+    name: 'selected-by', label: 'selected-by', legendLabel: 'Selected by', color: '#e07a4f', direction: 'down',
+    description: 'Downstream - deleting this object impacts the related object.',
+  },
+  {
+    name: 'linked+', label: 'linked', legendLabel: 'Linked', color: '#e0519b', direction: 'lateral',
+    description: 'Lateral - no deletion direction is implied.',
+  },
+  {
+    name: 'grouped', label: 'grouped', legendLabel: 'Grouped', color: '#8a93a8', direction: 'lateral',
+    description: 'Lateral - no deletion direction is implied.',
+  },
+  {
+    name: 'namespace', label: 'namespace', legendLabel: 'Namespace', color: '#5fae7a', direction: 'up',
+    description: 'Upstream - deleting the related object impacts this object.',
+  },
+  {
+    name: 'namespaced', label: 'contains', legendLabel: 'Contains', color: '#5fae7a', direction: 'down',
+    description: 'Downstream - deleting this object impacts the related object.',
+  },
+]
+
+// These derived maps remain exported for callers that need O(1) lookup, while
+// RELATION_METADATA is the source of truth for the graph and the legend.
+export const IMPACT_RELATIONS: readonly string[] = RELATION_METADATA.map(({ name }) => name)
+export const RELATION_COLORS: Record<string, string> = Object.fromEntries(
+  RELATION_METADATA.map(({ name, color }) => [name, color]),
+)
+export const RELATION_LABELS: Record<string, string> = Object.fromEntries(
+  RELATION_METADATA.map(({ name, label }) => [name, label]),
+)
 export const RELATION_DIR: Record<string, RelDir> = {
-  owners: 'up',
-  references: 'up',
-  selects: 'up',
-  namespace: 'up',
+  ...Object.fromEntries(RELATION_METADATA.map(({ name, direction }) => [name, direction])),
+  // The non-transitive spellings are accepted by the engine and remain useful
+  // when rendering a custom QuerySpec outside the built-in impact query.
   descendants: 'down',
-  'descendants+': 'down',
-  'selected-by': 'down',
-  namespaced: 'down',
   linked: 'lateral',
-  'linked+': 'lateral',
-  grouped: 'lateral',
 }
 
 // orientEdge returns [source, target] for an edge between the anchor and a
 // related node, per the relation's impact direction (see RELATION_DIR).
 function orientEdge(anchorId: string, relatedId: string, rel: string): [string, string] {
   return (RELATION_DIR[rel] ?? 'down') === 'up' ? [relatedId, anchorId] : [anchorId, relatedId]
+}
+
+function relationEdgeId(source: string, target: string, rel: string): string {
+  return `${source}>${target}:${rel}`
 }
 
 export interface BuildResult {
@@ -103,6 +136,7 @@ export function buildElements(anchor: ObjectResult): BuildResult {
   const elements: cytoscape.ElementDefinition[] = []
   const nodeIndex: Record<string, ObjectResult> = {}
   const seen = new Set<string>()
+  const relationEdges = new Set<string>()
 
   const anchorId = anchor.id || 'anchor'
   pushNode(elements, nodeIndex, seen, anchorId, anchor, true)
@@ -113,7 +147,10 @@ export function buildElements(anchor: ObjectResult): BuildResult {
       const id = it.id || `${rel}:${i}`
       pushNode(elements, nodeIndex, seen, id, it, false)
       const [source, target] = orientEdge(anchorId, id, rel)
-      elements.push({ data: { id: `${source}>${target}`, source, target, rel } })
+      const edgeId = relationEdgeId(source, target, rel)
+      if (relationEdges.has(edgeId)) return
+      relationEdges.add(edgeId)
+      elements.push({ data: { id: edgeId, source, target, rel } })
     })
   }
   return { elements, nodeIndex }
@@ -257,11 +294,11 @@ export function buildTopologyElements(
     nodes.add(id)
     elements.push({ data: { id, ...data } })
   }
-  const addEdge = (source: string, target: string) => {
-    const id = `${source}>${target}`
+  const addEdge = (source: string, target: string, rel = 'namespace') => {
+    const id = relationEdgeId(source, target, rel)
     if (edges.has(id)) return
     edges.add(id)
-    elements.push({ data: { id, source, target, rel: 'namespace' } })
+    elements.push({ data: { id, source, target, rel } })
   }
 
   for (const edgeGroup of deriveTopologyTree(clusters, opts).edges) {
@@ -390,8 +427,8 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
       },
     },
   ]
-  for (const [rel, color] of Object.entries(RELATION_COLORS)) {
-    style.push({ selector: `edge[rel = "${rel}"]`, style: { 'line-color': color, 'target-arrow-color': color } })
+  for (const { name, color } of RELATION_METADATA) {
+    style.push({ selector: `edge[rel = "${name}"]`, style: { 'line-color': color, 'target-arrow-color': color } })
   }
   return style
 }
@@ -415,6 +452,7 @@ export interface GraphHandle {
   panBy(dx: number, dy: number): void
   zoomBy(factor: number): void
   fit(): void
+  restyle(style: cytoscape.StylesheetStyle[]): void
   nodeCount(): number
 }
 
@@ -449,6 +487,7 @@ export function graphOwnsFocus(graph: Element | null, activeElement: Element | n
 export function relationElements(anchorId: string, anchor: ObjectResult): BuildResult {
   const elements: cytoscape.ElementDefinition[] = []
   const nodeIndex: Record<string, ObjectResult> = {}
+  const relationEdges = new Set<string>()
   const rels = anchor.relations ?? {}
   for (const [rel, items] of Object.entries(rels)) {
     ;(items ?? []).forEach((it, i) => {
@@ -460,11 +499,14 @@ export function relationElements(anchorId: string, anchor: ObjectResult): BuildR
       })
       nodeIndex[id] = it
       // Orient by impact direction: upstream relations point INTO the anchor
-      // (related → anchor), downstream out of it. Endpoint-based edge id so a
-      // pair reached twice (e.g. the namespace already linked in the base tree)
-      // dedupes to one edge.
+      // (related → anchor), downstream out of it. Relation-qualified edge ids
+      // dedupe repeated copies of one relation while keeping parallel
+      // relations between the same pair visible.
       const [source, target] = orientEdge(anchorId, id, rel)
-      elements.push({ data: { id: `${source}>${target}`, source, target, rel } })
+      const edgeId = relationEdgeId(source, target, rel)
+      if (relationEdges.has(edgeId)) return
+      relationEdges.add(edgeId)
+      elements.push({ data: { id: edgeId, source, target, rel } })
     })
   }
   return { elements, nodeIndex }
@@ -579,6 +621,7 @@ export async function mountGraph(
       cy.resize()
       cy.fit(undefined, 24)
     },
+    restyle: (style) => { cy.style(style).update() },
     nodeCount: () => cy.nodes().length,
   }
 }

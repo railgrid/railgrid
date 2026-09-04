@@ -10,13 +10,20 @@
     "vendor-codemirror": "node vendor-codemirror.cjs",
     "dev": "vite",
     "test": "node --test --test-concurrency=1 *.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-vue-next": "^0.475.0",
+    "vue": "^3.5.13"
   },
   "devDependencies": {
     "@types/cytoscape": "^3.21.9",
+    "@vitejs/plugin-vue": "^5.2.1",
     "codemirror": "^5.65.16",
     "cytoscape": "^3.34.0",
     "typescript": "^5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.1.10"
   }
 }
