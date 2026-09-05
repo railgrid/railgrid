@@ -13,7 +13,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -114,6 +116,51 @@ type createAgentRequest struct {
 	// stays undiscovered. Unknown names are dropped; core is always granted.
 	InteractiveFamilies []string `json:"interactiveFamilies,omitempty"`
 	BackgroundFamilies  []string `json:"backgroundFamilies,omitempty"`
+}
+
+var budgetDecimalPattern = regexp.MustCompile(`^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$`)
+
+// normalizeAgentBudget applies the requested budget fields to the current
+// budget, validates the effective limits, and removes zero-valued caps. The
+// same boundary serves REST and MCP mutations through applyAgentCreate and
+// applyAgentUpdate. Existing stored values keep their historical runtime
+// behavior; this validator governs new writes without acting as a migration.
+func normalizeAgentBudget(current *agentsv1alpha1.AgentBudget, tokenLimit *int64, usdLimit *string) (*agentsv1alpha1.AgentBudget, error) {
+	budget := agentsv1alpha1.AgentBudget{Window: "month"}
+	if current != nil {
+		budget = *current
+		if budget.Window == "" {
+			budget.Window = "month"
+		}
+	}
+	if tokenLimit != nil {
+		budget.TokenLimit = *tokenLimit
+	}
+	if usdLimit != nil {
+		budget.USDLimit = strings.TrimSpace(*usdLimit)
+	} else {
+		budget.USDLimit = strings.TrimSpace(budget.USDLimit)
+	}
+
+	if budget.TokenLimit < 0 {
+		return nil, errors.New("budgetTokens must be zero or greater")
+	}
+	if budget.USDLimit != "" {
+		limit, err := strconv.ParseFloat(budget.USDLimit, 64)
+		if !budgetDecimalPattern.MatchString(budget.USDLimit) || err != nil || math.IsNaN(limit) || math.IsInf(limit, 0) {
+			return nil, errors.New("budgetUSD must be a finite number zero or greater")
+		}
+		if limit < 0 {
+			return nil, errors.New("budgetUSD must be zero or greater")
+		}
+		if limit == 0 {
+			budget.USDLimit = ""
+		}
+	}
+	if budget.TokenLimit == 0 && budget.USDLimit == "" {
+		return nil, nil
+	}
+	return &budget, nil
 }
 
 // channelInput is the REST shape of an agent channel binding.
@@ -222,6 +269,10 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 	if req.Name == "" {
 		return nil, errBadRequest("name is required")
 	}
+	budget, err := normalizeAgentBudget(nil, &req.BudgetTokens, &req.BudgetUSD)
+	if err != nil {
+		return nil, errBadRequest(err.Error())
+	}
 	if strings.TrimSpace(req.DisplayName) == "" {
 		req.DisplayName = req.Name
 	}
@@ -240,9 +291,7 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 	if fb := trimmedList(req.ModelFallbacks); len(fb) > 0 {
 		a.Spec.ModelFallbacks = fb
 	}
-	if req.BudgetTokens > 0 || strings.TrimSpace(req.BudgetUSD) != "" {
-		a.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month", TokenLimit: req.BudgetTokens, USDLimit: strings.TrimSpace(req.BudgetUSD)}
-	}
+	a.Spec.Budget = budget
 	if len(req.InteractiveFamilies) > 0 {
 		a.Spec.Tools.Interactive.Families = normalizeFamilies(req.InteractiveFamilies)
 	}
@@ -374,9 +423,24 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 // so both surfaces have identical semantics: absent fields are untouched, list
 // fields replace wholesale, and core is always re-added to family grants.
 func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateAgentRequest) (*agentsv1alpha1.Agent, error) {
+	if req.BudgetTokens != nil || req.BudgetUSD != nil {
+		// Validate caller-supplied values before reading or mutating the resource.
+		// The second normalization below combines a valid partial patch with the
+		// stored counterpart.
+		if _, err := normalizeAgentBudget(nil, req.BudgetTokens, req.BudgetUSD); err != nil {
+			return nil, errBadRequest(err.Error())
+		}
+	}
 	agent, err := c.Agents().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
+	}
+	var budget *agentsv1alpha1.AgentBudget
+	if req.BudgetTokens != nil || req.BudgetUSD != nil {
+		budget, err = normalizeAgentBudget(agent.Spec.Budget, req.BudgetTokens, req.BudgetUSD)
+		if err != nil {
+			return nil, errBadRequest(err.Error())
+		}
 	}
 	if req.ModelCredential != nil {
 		cred := strings.TrimSpace(*req.ModelCredential)
@@ -448,19 +512,7 @@ func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, n
 		agent.Spec.Tools.Background.Connections = *req.BackgroundConnections
 	}
 	if req.BudgetTokens != nil || req.BudgetUSD != nil {
-		if agent.Spec.Budget == nil {
-			agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month"}
-		}
-		if req.BudgetTokens != nil {
-			agent.Spec.Budget.TokenLimit = *req.BudgetTokens
-		}
-		if req.BudgetUSD != nil {
-			agent.Spec.Budget.USDLimit = strings.TrimSpace(*req.BudgetUSD)
-		}
-		// A fully-zeroed budget means "remove the cap".
-		if agent.Spec.Budget.TokenLimit == 0 && agent.Spec.Budget.USDLimit == "" {
-			agent.Spec.Budget = nil
-		}
+		agent.Spec.Budget = budget
 	}
 	return c.Agents().Update(ctx, agent, metav1.UpdateOptions{})
 }

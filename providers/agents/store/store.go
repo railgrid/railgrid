@@ -334,6 +334,7 @@ type Store interface {
 
 	// Approvals inbox.
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
+	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
 	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error)
 

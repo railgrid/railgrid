@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentConfig from '../views/AgentConfig.vue'
 import AgentCreate from '../views/AgentCreate.vue'
-import type { AgentPatch } from '../types'
+import type { AgentPatch, Connection } from '../types'
 import { familiesForConns } from '../conn-defs'
 import { clearToasts, subscribeToasts } from '../ui/toast'
 import { agentFixture, makeStore, stubApi } from './helpers'
@@ -130,6 +130,46 @@ describe('agent config', () => {
     sectionButton(el, 'Save policy').click()
     await settle(4)
     expect(patchAgent.mock.calls[0][1]).toMatchObject({ maxToolTurns: 0, timeoutSeconds: 0, budgetTokens: 0 })
+  })
+
+  it.each([
+    ['not-a-number', '', 'Enter a finite amount'],
+    ['-1', '', 'Enter a finite amount'],
+    ['NaN', '', 'Enter a finite amount'],
+    ['Infinity', '', 'Enter a finite amount'],
+    ['', '-1', 'Enter a whole number'],
+    ['', '1.5', 'Enter a whole number'],
+  ])('rejects an invalid budget draft without patching (%s, %s)', async (usd, tokens, message) => {
+    const { el, patchAgent } = await mountConfig()
+    const inputs = [...el.querySelectorAll<HTMLInputElement>('input')]
+    const usdInput = inputs.find(input => input.placeholder === 'blank = unlimited')!
+    const tokenInput = inputs.filter(input => input.placeholder === 'blank = unlimited')[1]!
+    usdInput.value = usd
+    usdInput.dispatchEvent(new Event('input'))
+    tokenInput.value = tokens
+    tokenInput.dispatchEvent(new Event('input'))
+    sectionButton(el, 'Save policy').click()
+    await settle()
+
+    expect(patchAgent).not.toHaveBeenCalled()
+    expect(text(el)).toContain(message)
+    const invalid = usd ? usdInput : tokenInput
+    expect(invalid.getAttribute('aria-invalid')).toBe('true')
+    expect(invalid.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  it('normalizes explicit zero budgets to unlimited values', async () => {
+    const { el, patchAgent } = await mountConfig()
+    const [usdInput, tokenInput] = [...el.querySelectorAll<HTMLInputElement>('input')]
+      .filter(input => input.placeholder === 'blank = unlimited')
+    usdInput.value = '0.00'
+    usdInput.dispatchEvent(new Event('input'))
+    tokenInput.value = '0'
+    tokenInput.dispatchEvent(new Event('input'))
+    sectionButton(el, 'Save policy').click()
+    await settle(4)
+
+    expect(patchAgent).toHaveBeenCalledWith('scout', expect.objectContaining({ budgetUSD: '', budgetTokens: 0 }))
   })
 
   it('rolls the optimistic edit back when the save fails', async () => {
@@ -631,6 +671,63 @@ describe('agent config', () => {
 })
 
 describe('connection test feedback', () => {
+  it('keeps the Slack inbound request URL out of ordinary feedback and exposes only explicit masked copy', async () => {
+    const requestURL = 'https://faros.example.test/services/providers/agents/inbound/slack/secret'
+    const enableInbound = vi.fn().mockResolvedValue({ registered: false, note: 'Paste this request URL into Slack.', webhookURL: requestURL })
+    const connection = { metadata: { name: 'slack' }, spec: { type: 'slack', channel: 'C012345' } } satisfies Connection
+    const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([connection]) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { channels: [{ name: 'primary', connectionRef: 'slack', primary: true }] })]
+    store.connections.data = [connection]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    store.agents.loaded = true
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle()
+    clearToasts()
+
+    const enable = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-inbound-actions button')]
+      .find(button => text(button).includes('Enable inbound'))!
+    enable.click()
+    await settle(6)
+
+    expect(view.element.innerHTML).not.toContain(requestURL)
+    expect(document.body.innerHTML).not.toContain(requestURL)
+    const copy = [...view.element.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => text(button) === 'Copy Slack request URL')!
+    expect(copy).toBeTruthy()
+    copy.click()
+    await settle()
+    expect(writeText).toHaveBeenCalledWith(requestURL)
+  })
+
+  it('reports Telegram registration success without presenting its callback URL', async () => {
+    const callbackURL = 'https://faros.example.test/services/providers/agents/inbound/telegram/secret'
+    const enableInbound = vi.fn().mockResolvedValue({ registered: true, note: 'Telegram webhook registered.', webhookURL: callbackURL })
+    const connection = { metadata: { name: 'tg' }, spec: { type: 'telegram', channel: '123' } } satisfies Connection
+    const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([connection]) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { channels: [{ name: 'primary', connectionRef: 'tg', primary: true }] })]
+    store.connections.data = [connection]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    store.agents.loaded = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle()
+    clearToasts()
+
+    const enable = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-inbound-actions button')]
+      .find(button => text(button).includes('Enable inbound'))!
+    enable.click()
+    await settle(6)
+
+    expect(text(document.body)).toContain('Telegram webhook registered.')
+    expect(document.body.innerHTML).not.toContain(callbackURL)
+    expect(view.element.innerHTML).not.toContain(callbackURL)
+    expect(text(view.element)).not.toContain('Copy Slack request URL')
+  })
+
   it('surfaces the reason from a failed channel test (HTTP error convention)', async () => {
     const testConnection = vi.fn().mockRejectedValue(new Error('telegram: 403 bot was blocked by the user'))
     const api = stubApi({ testConnection })

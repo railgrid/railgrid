@@ -4,7 +4,6 @@ import {
   Check,
   ChevronRight,
   Circle,
-  KeyRound,
   RefreshCw,
   Wrench,
   X,
@@ -33,6 +32,8 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { approvalDisclosureAvailable } from '../approval-disclosure'
+import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -320,10 +321,9 @@ onBeforeUnmount(() => {
 
       <ResourceSectionCard v-if="run.phase === 'PendingApproval' && run.pending" title="Approval required">
         <div class="agents-approval" role="group" aria-label="Tool approval required">
-          <div class="agents-approval-head"><KeyRound :stroke-width="1.75" aria-hidden="true" /> Paused — approval required for <span class="mono">{{ run.pending.tool }}</span></div>
-          <pre v-if="run.pending.args" class="agents-approval-args">{{ prettyJSON(run.pending.args) }}</pre>
+          <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused />
           <div class="agents-approval-actions">
-            <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID" :aria-busy="resolvingInboxID === run.pending.inboxID || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID ? 'Resolving…' : 'Approve & resume' }}</button>
+            <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID ? 'Resolving…' : 'Approve & resume' }}</button>
             <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
           </div>
         </div>

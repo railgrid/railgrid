@@ -183,6 +183,10 @@ func TestPostgres_InboxMemoryTenantRefTeardown(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("inbox add: %v", err)
 	}
+	gotItem, err := ps.GetInboxItem(ctx, sc, itemID)
+	if err != nil || gotItem.Payload["tool"] != "github__merge" {
+		t.Fatalf("inbox get: %v %+v", err, gotItem)
+	}
 	pending, err := ps.ListInbox(ctx, Scope{OrgUUID: sc.OrgUUID, WorkspaceUUID: sc.WorkspaceUUID}, InboxStatePending)
 	if err != nil || len(pending) != 1 || pending[0].Payload["tool"] != "github__merge" {
 		t.Fatalf("inbox list: %v %+v", err, pending)

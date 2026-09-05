@@ -202,7 +202,7 @@ describe('Activity.vue', () => {
     const store = makeStore(api)
     const item: InboxItem = {
       id: 'i1', agentName: 'scout', runID: 'r9', kind: 'approval', state: 'pending',
-      prompt: 'scout wants to run edges__pods_delete', payload: { tool: 'edges__pods_delete' }, createdAt: new Date().toISOString(),
+      prompt: 'scout wants to run edges__pods_delete', payload: { tool: 'edges__pods_delete', args: '{}' }, createdAt: new Date().toISOString(),
     }
     store.inbox.data = [item]
     store.inbox.loaded = true
@@ -213,6 +213,8 @@ describe('Activity.vue', () => {
       ['H3', 'Activity'],
       ['H4', 'Needs your attention (1)'],
     ])
+    expect(text(view.element.querySelector('.agents-approval-disclosure'))).toContain('edges__pods_delete')
+    expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
 
     const actions = view.element.querySelector('.agents-approval-actions')!
     buttonWithText(actions, 'Approve').click()
@@ -226,6 +228,30 @@ describe('Activity.vue', () => {
     resolution.resolve({})
     await settleVue()
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
+  })
+
+  it('blocks approval without a valid disclosed argument object but leaves denial available', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    store.inbox.data = [{
+      id: 'i1', agentName: 'scout', runID: 'r9', kind: 'approval', state: 'pending',
+      prompt: 'scout wants to run edges__pods_delete', payload: { tool: 'edges__pods_delete', args: 'not-json' }, createdAt: new Date().toISOString(),
+    }]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    const approve = buttonWithText(actions, 'Approve')
+    const deny = buttonWithText(actions, 'Deny')
+    expect(approve.disabled).toBe(true)
+    expect(deny.disabled).toBe(false)
+    expect(text(view.element.querySelector('[role="alert"]'))).toContain('Approval details are unavailable or malformed')
+
+    deny.click()
+    await settleVue()
+    expect(resolveInbox).toHaveBeenCalledWith('i1', 'deny')
   })
 })
 
@@ -370,6 +396,28 @@ describe('RunDetail.vue', () => {
 
     resolution.resolve({})
     await settleVue()
+  })
+
+  it('blocks a run approval with missing disclosure while leaving denial available', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const api = stubApi({
+      getRun: vi.fn().mockResolvedValue(detail({
+        phase: 'PendingApproval',
+        pending: { inboxID: 'i7', tool: '', args: '{}' },
+      })),
+      resolveInbox,
+    })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    const approve = buttonWithText(actions, 'Approve & resume')
+    const deny = buttonWithText(actions, 'Deny')
+
+    expect(approve.disabled).toBe(true)
+    expect(deny.disabled).toBe(false)
+    expect(text(view.element.querySelector('.agents-approval-disclosure-error'))).toContain('Deny this request or inspect the run')
+    deny.click()
+    await settleVue()
+    expect(resolveInbox).toHaveBeenCalledWith('i7', 'deny')
   })
 
   it('ignores server events for unrelated runs', async () => {

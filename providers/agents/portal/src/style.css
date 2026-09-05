@@ -127,6 +127,16 @@ faros-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8p
 faros-provider-agents .agents-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 faros-provider-agents .agents-hint { font-size: 12px; color: var(--color-text-muted, inherit); font-weight: 400; }
 faros-provider-agents .agents-fielderr { font-size: 12px; color: var(--color-danger, #ff5d5d); font-weight: 500; }
+faros-provider-agents .agents-secret-handoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+faros-provider-agents .agents-secret-handoff > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
+faros-provider-agents .agents-secret-handoff code { color: var(--color-text-muted); letter-spacing: 0.08em; }
+faros-provider-agents .agents-secret-handoff-actions { flex-wrap: wrap; justify-content: flex-end; }
 
 /* Routed Agents panels own their interior spacing. The canonical k-card recipe
  * supplies the surface and border, while this provider wrapper keeps Activity,

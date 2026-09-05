@@ -10,8 +10,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -163,6 +167,118 @@ func TestApprovalGrantAuthorizesExactCall(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("unapproved calls executed (calls=%d)", calls)
+	}
+}
+
+func TestResolveInboxDecisionRequiresDisclosedObjectBeforeApproval(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     store.InboxItemKind
+		payload  map[string]any
+		state    store.InboxItemState
+		wantCode int
+	}{
+		{name: "missing tool", payload: map[string]any{"args": `{}`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "missing arguments", payload: map[string]any{"tool": "notify"}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "malformed arguments", payload: map[string]any{"tool": "notify", "args": `{`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "null arguments", payload: map[string]any{"tool": "notify", "args": `null`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "array arguments", payload: map[string]any{"tool": "notify", "args": `[]`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "scalar arguments", payload: map[string]any{"tool": "notify", "args": `true`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
+		{name: "empty object is valid", payload: map[string]any{"tool": "notify", "args": `{}`}, state: store.InboxStateApproved},
+		{name: "denial remains available", payload: map[string]any{}, state: store.InboxStateDenied},
+		{name: "non-approval kind keeps existing decision behavior", kind: store.InboxKindQuestion, payload: map[string]any{}, state: store.InboxStateApproved},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := store.NewMemoryStore()
+			s := &Server{store: st}
+			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws"}
+			now := time.Now().UTC()
+			kind := tc.kind
+			if kind == "" {
+				kind = store.InboxKindApproval
+			}
+			if err := st.AddInboxItem(ctx, scope, store.InboxItem{
+				ID: "i1", Kind: kind, State: store.InboxStatePending,
+				Payload: tc.payload, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := s.resolveInboxDecision(ctx, scope, "i1", tc.state, "", now.Add(time.Second))
+			if tc.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("resolve: %v", err)
+				}
+				got, getErr := st.GetInboxItem(ctx, scope, "i1")
+				if getErr != nil || got.State != tc.state {
+					t.Fatalf("state = %q (err %v), want %q", got.State, getErr, tc.state)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("approval unexpectedly resolved without a complete disclosure")
+			}
+			got, getErr := st.GetInboxItem(ctx, scope, "i1")
+			if getErr != nil || got.State != store.InboxStatePending {
+				t.Fatalf("invalid approval mutated inbox state to %q (err %v)", got.State, getErr)
+			}
+			w := httptest.NewRecorder()
+			writeUpdateError(w, err)
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantCode, w.Body.String())
+			}
+			var body map[string]any
+			if decodeErr := json.Unmarshal(w.Body.Bytes(), &body); decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			if body["reason"] != "ApprovalDisclosureUnavailable" {
+				t.Fatalf("reason = %#v, want ApprovalDisclosureUnavailable", body["reason"])
+			}
+		})
+	}
+}
+
+func TestChannelApprovalReportsUnavailableDisclosureWithoutMutating(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	s := &Server{store: st}
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "ada"}
+	now := time.Now().UTC()
+	if err := st.AddInboxItem(ctx, scope, store.InboxItem{
+		ID: "i1", AgentName: "ada", Kind: store.InboxKindApproval, State: store.InboxStatePending,
+		Prompt: "Allow the tool?", Payload: map[string]any{"tool": "notify", "args": `not-json secret-value`},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	listed, handled := s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/inbox")
+	if !handled || !strings.Contains(listed, "Allow the tool?") {
+		t.Fatalf("inbox disclosure = %q", listed)
+	}
+	if strings.Contains(listed, "secret-value") {
+		t.Fatalf("malformed arguments were rendered back to the channel: %q", listed)
+	}
+
+	reply, handled := s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/approve 1")
+	if !handled || !strings.Contains(reply, approvalDisclosureUnavailableMessage) {
+		t.Fatalf("approve reply = %q", reply)
+	}
+	item, err := st.GetInboxItem(ctx, scope, "i1")
+	if err != nil || item.State != store.InboxStatePending {
+		t.Fatalf("invalid channel approval mutated inbox state to %q (err %v)", item.State, err)
+	}
+
+	if reply, handled = s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/deny 1"); !handled || !strings.Contains(reply, "Denied") {
+		t.Fatalf("deny reply = %q", reply)
+	}
+	item, err = st.GetInboxItem(ctx, scope, "i1")
+	if err != nil || item.State != store.InboxStateDenied {
+		t.Fatalf("denial state = %q (err %v), want denied", item.State, err)
 	}
 }
 

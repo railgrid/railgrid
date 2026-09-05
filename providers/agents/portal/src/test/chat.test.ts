@@ -282,6 +282,29 @@ describe('chat streaming', () => {
     expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
   })
 
+  it('blocks malformed approval disclosure while leaving denial available', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({ id: 'i1', state: 'denied' })
+    const { el } = await mountChat(
+      scripted([
+        { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+        {
+          event: 'approval_required',
+          data: { runID: 'r1', inboxID: 'i1', tool: 'edges__pods_delete', args: 'not-json', content: 'Approve?' },
+        },
+      ]),
+      { resolveInbox },
+    )
+    await send(el, 'delete it')
+
+    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')]
+    expect(approve.disabled).toBe(true)
+    expect(deny.disabled).toBe(false)
+    expect(text(el.querySelector('.agents-approval-disclosure-error'))).toContain('Approval details are unavailable or malformed')
+    deny.click()
+    await settle(4)
+    expect(resolveInbox).toHaveBeenCalledWith('i1', 'deny')
+  })
+
   it('does not show a failed approval after the user leaves its session', async () => {
     const resolution = deferred<{ id: string; state: string }>()
     const { el } = await mountChat(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 import {
   ArrowLeftRight,
   Check,
@@ -15,6 +15,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
+import { validateBudgetInputs } from '../budget-validation'
+import SecretHandoff from '../components/SecretHandoff.vue'
 import { channelInbound } from '../conn-defs'
 import { mutate } from '../mutate'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
@@ -53,11 +55,14 @@ const fallbacks = ref<string[]>([])
 const autonomy = ref<Autonomy>('ask')
 const budgetUSD = ref('')
 const budgetTokens = ref('')
+const budgetUSDError = ref('')
+const budgetTokensError = ref('')
 const maxToolTurns = ref('')
 const timeoutSeconds = ref('')
 const channels = ref<ChannelRow[]>([])
 const channelError = ref('')
 const channelErrorTarget = ref<{ key: number; field: 'name' | 'connection' } | null>(null)
+const slackRequestURL = ref('')
 
 let hydratedStore: AppStore | null = null
 let hydratedName = ''
@@ -130,6 +135,8 @@ function hydrate(source: Agent): void {
   autonomy.value = (source.spec?.autonomy as Autonomy) || 'ask'
   budgetUSD.value = source.spec?.budget?.usdLimit || ''
   budgetTokens.value = source.spec?.budget?.tokenLimit ? String(source.spec.budget.tokenLimit) : ''
+  budgetUSDError.value = ''
+  budgetTokensError.value = ''
   maxToolTurns.value = source.spec?.limits?.maxToolTurns ? String(source.spec.limits.maxToolTurns) : ''
   timeoutSeconds.value = source.spec?.limits?.timeoutSeconds ? String(source.spec.limits.timeoutSeconds) : ''
   channels.value = (source.spec?.channels || []).map(channel => ({ ...channel, key: ++rowKey }))
@@ -197,10 +204,14 @@ function saveModel(): void {
 }
 
 function savePolicy(): void {
-  const tokens = intOrZero(budgetTokens.value)
+  const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
+  budgetUSDError.value = budget.usdError
+  budgetTokensError.value = budget.tokenError
+  if (budget.usdError || budget.tokenError) return
+  const tokens = budget.budgetTokens
   const turns = intOrZero(maxToolTurns.value)
   const timeout = intOrZero(timeoutSeconds.value)
-  const usd = budgetUSD.value.trim()
+  const usd = budget.budgetUSD
   const mode = autonomy.value
   void save(
     { autonomy: mode, budgetUSD: usd, budgetTokens: tokens, maxToolTurns: turns, timeoutSeconds: timeout },
@@ -376,15 +387,21 @@ async function saveChannels(): Promise<void> {
 async function enableInbound(name: string): Promise<void> {
   const authority = captureAuthority()
   const agentName = props.name
+  slackRequestURL.value = ''
   const result = await mutate(authority.store, {
     run: () => authority.api.enableInbound(name),
     failure: 'Enable inbound failed',
     reload: ['connections'],
   })
   if (result && authorityIsCurrent(authority) && props.name === agentName) {
-    toast(result.registered ? 'ok' : 'info', `${result.note} ${result.webhookURL}`)
+    const connection = channelConnections.value.find(item => item.metadata.name === name)
+    if (connection?.spec.type === 'slack' && result.webhookURL) slackRequestURL.value = result.webhookURL
+    toast(result.registered ? 'ok' : 'info', result.note)
   }
 }
+
+watch(() => [props.store, props.authorityEpoch, props.name], () => { slackRequestURL.value = '' })
+onBeforeUnmount(() => { slackRequestURL.value = '' })
 
 async function testChannel(name: string): Promise<void> {
   const authority = captureAuthority()
@@ -472,8 +489,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Budget</span>
         <div class="agents-grid2">
-          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" inputmode="decimal" placeholder="blank = unlimited" /></label>
-          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" inputmode="numeric" placeholder="blank = unlimited" /></label>
+          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? 'agent-budget-usd-error' : undefined" /><span v-if="budgetUSDError" id="agent-budget-usd-error" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
+          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? 'agent-budget-tokens-error' : undefined" /><span v-if="budgetTokensError" id="agent-budget-tokens-error" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
         </div>
       </div>
       <div class="agents-fieldset">
@@ -544,6 +561,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-channels-heading" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
+      <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
       <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>

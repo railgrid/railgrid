@@ -207,7 +207,7 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 			state = store.InboxStateDenied
 			verb = "🚫 Denied"
 		}
-		resolved, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, "via channel", time.Now().UTC())
+		resolved, err := s.resolveInboxDecision(ctx, wsScope, item.ID, state, "via channel", time.Now().UTC())
 		if err != nil {
 			return "Failed: " + err.Error(), true
 		}

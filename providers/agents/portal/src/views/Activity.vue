@@ -10,6 +10,8 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import type { Route } from '../router'
+import { approvalDisclosureAvailable } from '../approval-disclosure'
+import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -224,16 +226,16 @@ onBeforeUnmount(() => {
         <div v-for="item in pending" :key="item.id" class="agents-approval-row">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
+            <ApprovalDisclosure v-if="item.kind === 'approval'" :tool="item.payload?.tool" :args="item.payload?.args" />
             <div class="agents-approval-meta">
               <span class="k-badge agents-badge">{{ item.agentName }}</span>
-              <span v-if="item.payload?.tool" class="k-badge agents-badge mono">{{ item.payload.tool }}</span>
               <span class="muted">{{ fmtTime(item.createdAt) }}</span>
               <button v-if="item.runID" class="k-btn k-btn--ghost agents-linkbtn" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">view run</button>
             </div>
           </div>
           <div class="agents-approval-actions">
             <template v-if="item.kind === 'approval'">
-              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.has(item.id) || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.has(item.id) ? 'Resolving…' : 'Approve' }}</button>
+              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.has(item.id) || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.has(item.id) ? 'Resolving…' : 'Approve' }}</button>
               <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
             </template>
             <span v-else class="agents-hint">Answer from the agent's channel or chat.</span>

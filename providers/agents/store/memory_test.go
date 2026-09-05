@@ -120,6 +120,10 @@ func TestMemoryStore_InboxResolve(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add inbox: %v", err)
 	}
+	got, err := s.GetInboxItem(ctx, sc, "i1")
+	if err != nil || got.RunID != "r1" {
+		t.Fatalf("get inbox: %v %+v", err, got)
+	}
 	pending, err := s.ListInbox(ctx, sc, InboxStatePending)
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("list pending: %v n=%d", err, len(pending))

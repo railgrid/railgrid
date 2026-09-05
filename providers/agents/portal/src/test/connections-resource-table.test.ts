@@ -40,6 +40,25 @@ function toolset(name: string, connections: string[] = []): Toolset {
 }
 
 describe('Connections resource tables', () => {
+  it('shows secret-bearing webhook destinations as configured without putting their URLs in the table', async () => {
+    const secrets = [
+      { metadata: { name: 'slack-hook' }, spec: { type: 'slack', displayName: 'Slack hook', channel: 'https://hooks.slack.com/services/T/B/secret' } },
+      { metadata: { name: 'discord-hook' }, spec: { type: 'discord', displayName: 'Discord hook', channel: 'https://discord.com/api/webhooks/1/secret' } },
+      { metadata: { name: 'slack-channel' }, spec: { type: 'slack', displayName: 'Slack channel', channel: 'C012345' } },
+    ] satisfies Connection[]
+    const api = stubApi()
+    const store = makeStore(api)
+    store.connections.data = secrets
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true })
+
+    expect(el.innerHTML).not.toContain('hooks.slack.com')
+    expect(el.innerHTML).not.toContain('discord.com/api/webhooks')
+    expect(text(el)).toContain('Configured')
+    expect(text(el)).toContain('C012345')
+  })
+
   it.each([
     {
       label: 'initial load failure',
@@ -154,6 +173,76 @@ describe('Connections resource tables', () => {
     await settle(el, 6)
 
     expect(patchConnection).toHaveBeenCalledWith(original.metadata.name, expected)
+  })
+
+  it('keeps a stored webhook write-only and omits an unchanged destination from its patch', async () => {
+    const original = {
+      metadata: { name: 'slack-hook' },
+      spec: { type: 'slack', displayName: 'Slack hook', channel: 'https://hooks.slack.com/services/T/B/secret' },
+    } satisfies Connection
+    const patchConnection = vi.fn().mockResolvedValue(original)
+    const api = stubApi({ patchConnection, listConnections: () => Promise.resolve([original]) })
+    const store = makeStore(api)
+    store.connections.data = [original]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, editRoute: true, editName: original.metadata.name })
+    const form = el.querySelector<HTMLFormElement>('form')!
+
+    expect(el.innerHTML).not.toContain('hooks.slack.com')
+    expect(text(form)).toContain('Replacement webhook URL')
+    expect(form.querySelector<HTMLInputElement>('input[name="endpoint"]')?.value).toBe('')
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 6)
+
+    expect(patchConnection).toHaveBeenCalledWith('slack-hook', { displayName: 'Slack hook' })
+  })
+
+  it('sends an explicitly entered webhook replacement', async () => {
+    const original = {
+      metadata: { name: 'slack-hook' },
+      spec: { type: 'slack', displayName: 'Slack hook', channel: 'https://hooks.slack.com/services/T/B/secret' },
+    } satisfies Connection
+    const patchConnection = vi.fn().mockResolvedValue(original)
+    const api = stubApi({ patchConnection, listConnections: () => Promise.resolve([original]) })
+    const store = makeStore(api)
+    store.connections.data = [original]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, editRoute: true, editName: original.metadata.name })
+    const form = el.querySelector<HTMLFormElement>('form')!
+    const endpoint = form.querySelector<HTMLInputElement>('input[name="endpoint"]')!
+    endpoint.value = 'https://hooks.slack.com/services/new'
+    endpoint.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 6)
+
+    expect(patchConnection).toHaveBeenCalledWith('slack-hook', {
+      displayName: 'Slack hook',
+      channel: 'https://hooks.slack.com/services/new',
+    })
+  })
+
+  it('keeps a Slack request URL masked and copies it only from the explicit handoff action', async () => {
+    const requestURL = 'https://faros.example.test/services/providers/agents/inbound/slack/secret'
+    const item = { metadata: { name: 'slack' }, spec: { type: 'slack', displayName: 'Slack', channel: 'C012345' } } satisfies Connection
+    const enableInbound = vi.fn().mockResolvedValue({ registered: false, note: 'Paste this request URL into Slack.', webhookURL: requestURL })
+    const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([item]) })
+    const store = makeStore(api)
+    store.connections.data = [item]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true })
+
+    el.querySelector<HTMLButtonElement>('[aria-label="Enable inbound chat for slack"]')!.click()
+    await settle(el, 6)
+    expect(el.innerHTML).not.toContain(requestURL)
+    const copy = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Copy Slack request URL')!
+    expect(copy).toBeTruthy()
+    copy.click()
+    await settle(el)
+    expect(writeText).toHaveBeenCalledWith(requestURL)
+    el.querySelector<HTMLButtonElement>('[aria-label="Dismiss Slack request URL"]')!.click()
+    await settle(el)
+    expect(text(el)).not.toContain('Slack request URL')
   })
 
   it('keeps routed connection edits single-flight and preserves a failed draft', async () => {

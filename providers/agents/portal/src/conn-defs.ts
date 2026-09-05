@@ -91,6 +91,12 @@ export function connShape(c: Pick<Connection, 'spec'>): ConnShape {
   }
 }
 
+/** Webhook URLs are credentials: show their configured state, never the value. */
+export function isSecretBearingWebhook(c: Pick<Connection, 'spec'>): boolean {
+  const channel = (c.spec.channel || '').trim().toLowerCase()
+  return (c.spec.type === 'slack' && channel.startsWith('https://hooks.slack.com/')) || connShape(c).discordWebhook
+}
+
 export interface InboundState {
   on: boolean
   canEnable: boolean

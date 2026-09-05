@@ -486,6 +486,19 @@ func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxIte
 	return nil
 }
 
+func (m *MemoryStore) GetInboxItem(_ context.Context, scope Scope, id string) (InboxItem, error) {
+	if err := scope.validate(); err != nil {
+		return InboxItem{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it, ok := m.inbox[tenantKey(scope)+"|"+id]
+	if !ok {
+		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
+	}
+	return it, nil
+}
+
 func (m *MemoryStore) ListInbox(_ context.Context, scope Scope, state InboxItemState) ([]InboxItem, error) {
 	if err := scope.validate(); err != nil {
 		return nil, err

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
-import { Check, ChevronRight, KeyRound, LoaderCircle, X } from 'lucide-vue-next'
+import { Check, ChevronRight, LoaderCircle, X } from 'lucide-vue-next'
 import { attachCodeCopy, sanitizedMarkdown } from '../vue/chat'
 import { fmtDuration, fmtTokens, fmtUSD, prettyJSON, type ChatMessage, type ToolCall } from '../types'
+import { approvalDisclosureAvailable } from '../approval-disclosure'
+import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
@@ -92,10 +94,7 @@ onBeforeUnmount(() => { mounted = false })
     <div v-else class="agents-body agents-thinking"><span class="agents-dots" aria-hidden="true"></span> thinking…</div>
 
     <div v-if="message.approval" class="agents-approval" role="group" aria-label="Tool approval required">
-      <div class="agents-approval-head">
-        <KeyRound aria-hidden="true" /> Approval required — <span class="mono">{{ message.approval.tool }}</span>
-      </div>
-      <pre v-if="message.approval.args" class="agents-approval-args">{{ prettyJSON(message.approval.args) }}</pre>
+      <ApprovalDisclosure :tool="message.approval.tool" :args="message.approval.args" />
       <div v-if="message.approval.resolved" class="agents-approval-done">
         {{ message.approval.resolved === 'approve' ? 'Approved — the run is resuming.' : 'Denied — the agent was told no.' }}
       </div>
@@ -103,7 +102,7 @@ onBeforeUnmount(() => { mounted = false })
         <button
           class="k-btn k-btn--primary"
           type="button"
-          :disabled="!!approvalBusy"
+          :disabled="!!approvalBusy || !approvalDisclosureAvailable(message.approval.tool, message.approval.args)"
           :aria-busy="approvalBusy ? 'true' : undefined"
           @click="emit('approval', { inboxID: message.approval!.inboxID, decision: 'approve' })"
         >

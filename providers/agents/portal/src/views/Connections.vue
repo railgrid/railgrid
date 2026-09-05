@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuffle, Wrench } from 'lucide-vue-next'
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import type { ApiClient } from '../api'
-import { CATEGORY_META, CONN_DEFS, connCategory, connShape, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
+import SecretHandoff from '../components/SecretHandoff.vue'
+import { CATEGORY_META, CONN_DEFS, connCategory, connShape, isSecretBearingWebhook, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
@@ -46,6 +47,7 @@ const deletingName = ref('')
 const createValues = ref<Record<string, string>>({})
 const editValues = ref<Record<string, string>>({})
 const editValuesFor = ref('')
+const slackRequestURL = ref('')
 const fence = (): Fence => ({ store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession })
 
 const connections = computed(() => { revision.value; return { ...props.store.connections } })
@@ -65,7 +67,10 @@ const filters: TableFilterDefinition[] = [
 ]
 const categoryIcons: Record<ConnCategory, Component> = { tool: Wrench, channel: Megaphone, connection: Plug }
 
-function endpoint(item: Connection): string { return item.spec.config?.instance || item.spec.baseURL || item.spec.channel || '' }
+function endpoint(item: Connection): string {
+  if (isSecretBearingWebhook(item)) return 'Configured'
+  return item.spec.config?.instance || item.spec.baseURL || item.spec.channel || ''
+}
 function selfHostedSearch(item: Connection): boolean { return item.spec.type === 'websearch' && item.spec.config?.provider === 'searxng' }
 function instanceBacked(item: Connection): boolean { return selfHostedSearch(item) || (item.spec.type === 'mcp' && !!item.spec.config?.instance) }
 function needsInstance(item: Connection): boolean { return selfHostedSearch(item) && !item.spec.config?.instance }
@@ -141,7 +146,7 @@ async function create(def: ConnTypeDef): Promise<void> {
 function hydrateEdit(item: Connection): void {
   const usesChannel = connCategory(item.spec.type) === 'channel' || Boolean(item.spec.channel)
   editValuesFor.value = item.metadata.name
-  editValues.value = { displayName: item.spec.displayName || '', endpoint: (usesChannel ? item.spec.channel : item.spec.baseURL) || '', instance: item.spec.config?.instance || '', secret: '' }
+  editValues.value = { displayName: item.spec.displayName || '', endpoint: isSecretBearingWebhook(item) ? '' : (usesChannel ? item.spec.channel : item.spec.baseURL) || '', instance: item.spec.config?.instance || '', secret: '' }
 }
 async function saveEdit(item: Connection): Promise<void> {
   if (editBusy.value) return
@@ -150,8 +155,9 @@ async function saveEdit(item: Connection): Promise<void> {
   const get = (key: string) => (editValues.value[key] || '').trim()
   const patch: ConnectionWrite = { displayName: get('displayName') }
   if (instanceBacked(item)) patch.config = { ...item.spec.config, instance: get('instance') }
-  else if (usesChannel) patch.channel = get('endpoint')
-  else patch.baseURL = get('endpoint')
+  else if (usesChannel) {
+    if (get('endpoint')) patch.channel = get('endpoint')
+  } else patch.baseURL = get('endpoint')
   if (get('secret')) patch.secret = get('secret')
   editBusy.value = true
   try {
@@ -193,11 +199,17 @@ async function enableInbound(name: string): Promise<void> {
   actionBusy.value = operation
   try {
     const result = await mutate(authority.store, { run: () => authority.api.enableInbound(name), failure: 'Enable inbound failed', reload: ['connections'] })
-    if (result && authorityIsCurrent(authority)) toast(result.registered ? 'ok' : 'info', `${result.note} ${result.webhookURL}`)
+    if (result && authorityIsCurrent(authority)) {
+      const connection = connections.value.data.find(item => item.metadata.name === name)
+      if (connection?.spec.type === 'slack' && result.webhookURL) slackRequestURL.value = result.webhookURL
+      toast(result.registered ? 'ok' : 'info', result.note)
+    }
   } finally {
     if (actionBusy.value === operation) actionBusy.value = ''
   }
 }
+watch(() => [props.store, props.authorityEpoch], () => { slackRequestURL.value = '' })
+onBeforeUnmount(() => { slackRequestURL.value = '' })
 async function oauth(name: string): Promise<void> {
   if (actionBusy.value || deletePendingName.value || deletingName.value) return
   const authority = captureAuthority()
@@ -285,7 +297,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
             <div class="k-create-body k-create-fields">
               <label>Display name<input v-model="editValues.displayName" class="k-input" name="displayName" :placeholder="currentEdit.metadata.name" :disabled="editBusy" /></label>
               <label v-if="instanceBacked(currentEdit)">Instance name *<input v-model="editValues.instance" class="k-input" name="instance" placeholder="search" required autocomplete="off" :disabled="editBusy" /><span class="agents-hint">The instance under Infrastructure. Agents reach it over the platform's internal path — there is no URL and no token.</span></label>
-              <label v-else>{{ endpointLabel(currentEdit) }}<input v-model="editValues.endpoint" class="k-input" name="endpoint" :disabled="editBusy" /></label>
+              <label v-else>{{ isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit) }}<input v-model="editValues.endpoint" class="k-input" name="endpoint" :placeholder="isSecretBearingWebhook(currentEdit) ? 'Configured — leave blank to keep it' : ''" :disabled="editBusy" /><span v-if="isSecretBearingWebhook(currentEdit)" class="agents-hint">Configured; leave blank to keep the current destination.</span></label>
               <p v-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook && currentEdit.spec.auth === 'oauth'" class="agents-hint">This is an OAuth connection — use the <Link :stroke-width="1.75" /> button in the table to re-authorize. Client credentials aren't edited here.</p>
               <label v-else-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook">New {{ connShape(currentEdit).discordBot ? 'bot token' : 'secret / token' }}<input v-model="editValues.secret" class="k-input" name="secret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span class="agents-hint">Only set this to rotate the credential.</span></label>
             </div>
@@ -298,6 +310,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
   <div v-else class="agents-menu">
     <div class="agents-panel k-card agents-route-panel">
       <div class="agents-panel-head"><h3 tabindex="-1" data-connections-heading>Connections</h3><button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="emit('navigate', { kind: 'create', resource: 'connection' })"><Plus :stroke-width="1.75" /> New connection</button></div>
+      <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
       <p class="muted agents-connections-copy">Shared credentials for external systems. Each is a <Wrench :stroke-width="1.75" /> <strong>Tool</strong> agents call, a <Megaphone :stroke-width="1.75" /> <strong>Channel</strong> they message you on, or a <Plug :stroke-width="1.75" /> generic <strong>Connection</strong>. Stored as Secrets in your workspace.</p>
       <template v-if="showFirstRun">
         <div v-if="connections.error" class="agents-stale" role="status">

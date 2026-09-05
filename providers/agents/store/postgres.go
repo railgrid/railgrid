@@ -703,6 +703,32 @@ func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item Inbo
 	return err
 }
 
+func (p *PostgresStore) GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error) {
+	if err := scope.validate(); err != nil {
+		return InboxItem{}, err
+	}
+	var it InboxItem
+	var kind, state string
+	var payload []byte
+	err := p.db.QueryRowContext(ctx, `
+		SELECT id, agent_name, run_id, kind, state, prompt, payload, response, created_at, updated_at
+		FROM agents_inbox WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, id,
+	).Scan(&it.ID, &it.AgentName, &it.RunID, &kind, &state, &it.Prompt, &payload, &it.Response, &it.CreatedAt, &it.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
+	}
+	if err != nil {
+		return InboxItem{}, err
+	}
+	it.Kind, it.State = InboxItemKind(kind), InboxItemState(state)
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &it.Payload)
+	}
+	it.CreatedAt, it.UpdatedAt = it.CreatedAt.UTC(), it.UpdatedAt.UTC()
+	return it, nil
+}
+
 func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error) {
 	if err := scope.validate(); err != nil {
 		return nil, err
