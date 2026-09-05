@@ -70,8 +70,10 @@ test('wizard focus trap follows the natural tab sequence', async () => {
 
 test('split create uses canonical buttons and menu items', async () => {
   const source = await readFile(new URL('./components/SplitCreateButton.vue', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
   assert.match(source, /class="k-btn k-btn--primary split-create-main"/)
   assert.match(source, /class="k-btn k-btn--primary split-create-toggle"/)
+  assert.doesNotMatch(styles, /\.split-create-toggle\s*\{[^}]*min-width:\s*30px/)
   assert.match(source, /class="split-create-menu k-menu" role="menu"/)
   assert.match(source, /class="k-menu-item split-create-menu-item" type="button" role="menuitem" tabindex="-1"/)
   assert.doesNotMatch(source, /class="(?:secondary|icon-button)[^"]*"/)

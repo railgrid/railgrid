@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
 import DatabricksEmptyState from '../components/DatabricksEmptyState.vue'
+import { contextGenerationKey } from '../context'
 import SplitCreateButton from '../components/SplitCreateButton.vue'
 import type { DatabricksJourneyAction, DatabricksPrerequisiteKind } from '../journey'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -42,6 +43,7 @@ const emit = defineEmits<{
   (e: 'edit', name: string): void
   (e: 'prerequisite', kind: DatabricksPrerequisiteKind): void
 }>()
+const contextGeneration = inject(contextGenerationKey, ref(0))
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
@@ -99,7 +101,6 @@ const rows = computed<Array<Record<string, unknown>>>(() =>
   })),
 )
 const showFirstRun = computed(() => firstPageSettled.value
-  && !error.value
   && rows.value.length === 0
   && tablePage.value === 1
   && !hasActiveFilters(tableQuery.value, tableFiltersValue.value))
@@ -263,6 +264,7 @@ async function remove(row: Record<string, unknown>) {
 }
 
 refresh = createLatestRefreshController(async (requestID, mode) => {
+  const expectedContext = contextGeneration.value
   const request = currentTableRequest()
   let walkGeneration: number | undefined
   let supportGeneration: number | undefined
@@ -278,7 +280,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     supportGeneration = authorityGeneration
     const [availableConnections, availableWarehouses] = await supportRead.request()
     supportReadPending = false
-    if (!mounted || supportGeneration !== authorityGeneration) return
+    if (!mounted || contextGeneration.value !== expectedContext || supportGeneration !== authorityGeneration) return
     connections.value = availableConnections
     warehouses.value = availableWarehouses
 
@@ -287,7 +289,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
       fullWalkPending = true
       walkGeneration = authorityGeneration
       const tableList = await completeRead.request()
-      if (!mounted) return
+      if (!mounted || contextGeneration.value !== expectedContext) return
       if (walkGeneration !== authorityGeneration) return
       const current = currentTableRequest()
       if (!current.active && current.mode === 'server') return
@@ -308,7 +310,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
       serverPageGeneration = authorityGeneration
       const tablePageResult = await serverPageRead.request()
       serverPageReadPending = false
-      if (!mounted || serverPageGeneration !== authorityGeneration) return
+      if (!mounted || contextGeneration.value !== expectedContext || serverPageGeneration !== authorityGeneration) return
       const currentAfterPage = currentTableRequest()
       const currentIsActive = currentAfterPage.active || currentAfterPage.mode === 'client'
       const nextPageInfo = toPageInfo(tablePageResult.continue)
@@ -324,7 +326,7 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
         fullWalkPending = true
         walkGeneration = authorityGeneration
         const tableList = await completeRead.request()
-        if (!mounted) return
+        if (!mounted || contextGeneration.value !== expectedContext) return
         if (walkGeneration !== authorityGeneration) return
         const current = currentTableRequest()
         if (!current.active && current.mode === 'server') return
@@ -381,13 +383,13 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     const staleSupport = supportGeneration !== undefined && supportGeneration !== authorityGeneration
     const staleServerPage = serverPageGeneration !== undefined && serverPageGeneration !== authorityGeneration
     const staleServerRequest = !(current.active || current.mode === 'client') && !tableRequestIsCurrent(requestID, request)
-    if (!mounted || staleWalk || staleSupport || staleServerPage || staleServerRequest) return
+    if (!mounted || contextGeneration.value !== expectedContext || staleWalk || staleSupport || staleServerPage || staleServerRequest) return
     error.value = isTenantMissingError(e) ? null : formatDatabricksError(e)
   } finally {
     fullWalkPending = false
     supportReadPending = false
     serverPageReadPending = false
-    if (refresh.isCurrent(requestID) && mode === 'foreground') loading.value = false
+    if (contextGeneration.value === expectedContext && refresh.isCurrent(requestID) && mode === 'foreground') loading.value = false
   }
 })
 onMounted(() => {
@@ -432,13 +434,18 @@ onUnmounted(() => {
       <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
-    <DatabricksEmptyState
-      v-if="showFirstRun"
-      kind="table"
-      :has-connections="connections.length > 0"
-      :has-warehouses="warehouses.length > 0"
-      @action="handleFirstRunAction"
-    />
+    <template v-if="showFirstRun">
+      <div v-if="error" class="error" role="status" aria-live="polite">
+        Showing the last successful result. {{ error }}
+        <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
+      </div>
+      <DatabricksEmptyState
+        kind="table"
+        :has-connections="connections.length > 0"
+        :has-warehouses="warehouses.length > 0"
+        @action="handleFirstRunAction"
+      />
+    </template>
 
     <div v-else class="databricks-resource-table">
       <ResourceTable

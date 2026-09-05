@@ -247,7 +247,7 @@ test('wide provider surfaces stay readable at 4K and in detail/import views', as
   assert.match(sharedStyles, /\.k-create-guidance\s*\{[\s\S]*max-inline-size: 75ch/)
   assert.match(styles, /@container k-create-surface \(min-width: 1800px\)[\s\S]*\.manual-create-body-guided[\s\S]*minmax\(17\.5rem, min\(32rem, 40%\)\)/)
   assert.match(styles, /@container k-create-surface \(min-width: 1800px\)[\s\S]*\.manual-create-fields-grid--connection[\s\S]*repeat\(3, minmax\(0, 1fr\)/)
-  assert.match(styles, /@container k-create-surface \(min-width: 3000px\)[\s\S]*\.manual-create-form-fields--table \.form-grid[\s\S]*repeat\(4, minmax\(0, 1fr\)/)
+  assert.doesNotMatch(styles, /\.manual-create-fields-grid--(?:connection|warehouse),?[\s\S]{0,500}repeat\(4, minmax\(0, 1fr\)/)
   assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.manual-create-form input:not\(\[type='hidden'\]\)[\s\S]*min-height: 44px/)
   assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.manual-create-form > \.manual-create-body-guided \+ div\s*\{[\s\S]*position: static[\s\S]*z-index: auto/)
   assert.match(warehouseCreate, /manual-create-support-note/)

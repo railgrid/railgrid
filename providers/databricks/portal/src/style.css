@@ -288,7 +288,6 @@ faros-provider-databricks .split-create-toggle {
   border-bottom-left-radius: 0 !important;
   border-left-color: var(--color-accent-hover, #a18aff) !important;
   border-top-left-radius: 0 !important;
-  min-width: 30px;
   padding-left: 8px !important;
   padding-right: 8px !important;
 }
@@ -830,15 +829,6 @@ faros-provider-databricks .import-primary > :is(.import-actions, footer) :where(
   faros-provider-databricks .manual-create-fields-grid--warehouse,
   faros-provider-databricks .manual-create-form-fields--table .form-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@container k-create-surface (min-width: 3000px) {
-  /* At 4K, keep each control below a comfortable reading width. */
-  faros-provider-databricks .manual-create-fields-grid--connection,
-  faros-provider-databricks .manual-create-fields-grid--warehouse,
-  faros-provider-databricks .manual-create-form-fields--table .form-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

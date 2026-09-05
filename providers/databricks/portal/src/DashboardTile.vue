@@ -29,8 +29,14 @@ const rootRef = ref<HTMLElement | null>(null)
 const warehouses = ref<Warehouse[]>([])
 const connections = ref<Connection[]>([])
 const loading = ref(true)
+const loaded = ref(false)
 const error = ref<string | null>(null)
 let poller: TilePoller | null = null
+let requestGeneration = 0
+
+function contextIdentity(ctx: TileContext | null): string {
+  return JSON.stringify([ctx?.tenant ?? '', ctx?.orgUUID ?? '', ctx?.workspaceUUID ?? ''])
+}
 
 // Databricks reports warehouse state in its own vocabulary; treat anything
 // that is not explicitly RUNNING/STARTING as stopped rather than guessing at
@@ -49,45 +55,85 @@ const stats = computed(() => {
 const rows = computed(() => mostRecent(warehouses.value, (w) => w.creationTimestamp))
 
 async function load() {
+  const generation = ++requestGeneration
   const ctx = props.context
   if (!hasWorkspaceContext(ctx)) {
+    if (generation !== requestGeneration) return
     warehouses.value = []
     connections.value = []
     error.value = null
     loading.value = false
+    loaded.value = true
     return
   }
+  loading.value = true
   setToken(ctx?.token ?? null)
   setTenant(ctx?.tenant ?? null)
   setTenantSelection(ctx?.orgUUID ?? null, ctx?.workspaceUUID ?? null)
   try {
     const [w, c] = await Promise.all([api.listWarehouses(), api.listConnections()])
+    if (generation !== requestGeneration) return
     warehouses.value = w
     connections.value = c
     error.value = null
+    loaded.value = true
   } catch (e) {
-    warehouses.value = []
-    connections.value = []
-    error.value = isBenignTileError(e) ? null : formatDatabricksError(e)
+    if (generation !== requestGeneration || (e as { reason?: string })?.reason === 'ContextChanged') return
+    if (isBenignTileError(e)) {
+      warehouses.value = []
+      connections.value = []
+      error.value = null
+      loaded.value = true
+    } else {
+      error.value = formatDatabricksError(e)
+    }
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) loading.value = false
   }
+}
+
+function retry() {
+  poller?.refresh()
 }
 
 onMounted(() => {
   poller = createTilePoller(load)
   poller.start()
 })
-onUnmounted(() => poller?.stop())
-watch(() => props.context, () => poller?.refresh())
+onUnmounted(() => {
+  requestGeneration += 1
+  poller?.stop()
+})
+watch(
+  () => [props.context?.tenant, props.context?.orgUUID, props.context?.workspaceUUID, props.context?.token, props.context?.basePath] as const,
+  (_next, previous) => {
+    requestGeneration += 1
+    if (contextIdentity(props.context) !== JSON.stringify([previous?.[0] ?? '', previous?.[1] ?? '', previous?.[2] ?? ''])) {
+      warehouses.value = []
+      connections.value = []
+      error.value = null
+      loaded.value = false
+      loading.value = true
+    }
+    poller?.refresh()
+  },
+)
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root">
-    <div v-if="loading" :class="tileClass.message">Loading warehouses&hellip;</div>
-    <div v-else-if="error" :class="tileClass.error">Failed to load: {{ error }}</div>
+  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
+    <div v-if="!loaded && loading" :class="tileClass.message" role="status" aria-live="polite">Loading warehouses&hellip;</div>
+    <div v-else-if="!loaded && error" :class="tileClass.error" role="alert" aria-live="assertive">
+      Failed to load: {{ error }}
+      <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
+    </div>
 
     <template v-else>
+      <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating Databricks warehouses…</span>
+      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">
+        Showing the last successful result. {{ error }}
+        <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
+      </div>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <Package :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />

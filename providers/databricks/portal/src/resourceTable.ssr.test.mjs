@@ -356,12 +356,214 @@ function mountDetailView(Component, props, components, provides = {}) {
   }
 }
 
+function mountDashboardTile(Component, initialContext) {
+  const previousDocument = globalThis.document
+  const previousWindow = globalThis.window
+  globalThis.document = {
+    documentElement: { style: { getPropertyValue: () => '' } },
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '', setAttribute() {} }),
+    head: { appendChild() {} },
+  }
+  globalThis.window = {
+    addEventListener() {},
+    removeEventListener() {},
+    setInterval: () => 1,
+    clearInterval() {},
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+  }
+  const context = reactive({ ...initialContext })
+  const { renderer, root } = createHostRenderer()
+  const app = renderer.createApp({
+    render: () => h(Component, { context }),
+  })
+  const IconStub = { setup: () => () => h('svg', { 'aria-hidden': 'true' }) }
+  for (const name of ['Package', 'Check', 'Link2', 'ChevronRight']) app.component(name, IconStub)
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  app.mount(root)
+  return {
+    context,
+    root,
+    get instance() {
+      return app._instance?.subTree?.component
+    },
+    find: predicate => findHostNode(root, predicate),
+    unmount() {
+      app.unmount()
+      if (previousDocument === undefined) delete globalThis.document
+      else globalThis.document = previousDocument
+      if (previousWindow === undefined) delete globalThis.window
+      else globalThis.window = previousWindow
+    },
+  }
+}
+
 async function flushVue() {
   for (let i = 0; i < 6; i += 1) {
     await Promise.resolve()
     await nextTick()
   }
 }
+
+function pendingDashboardRead(pendingReads, kind, tenant) {
+  const index = pendingReads.findIndex(read => read.kind === kind && read.tenant === tenant)
+  assert.ok(index >= 0, `the dashboard tile started a ${kind} read for ${tenant}`)
+  return pendingReads.splice(index, 1)[0]
+}
+
+test('dashboard tile fences prior-tenant results before committing a refreshed snapshot', async () => {
+  const [DashboardTile, apiModule] = await Promise.all([
+    loadMountedSFC('/src/DashboardTile.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = {
+    listWarehouses: apiModule.api.listWarehouses,
+    listConnections: apiModule.api.listConnections,
+  }
+  const pendingReads = []
+  let activeTenant = 'tenant-a'
+  const queue = kind => new Promise((resolve, reject) => pendingReads.push({ kind, tenant: activeTenant, resolve, reject }))
+  apiModule.api.listWarehouses = () => queue('warehouses')
+  apiModule.api.listConnections = () => queue('connections')
+
+  const mounted = mountDashboardTile(DashboardTile, {
+    tenant: 'tenant-a',
+    orgUUID: 'org-a',
+    workspaceUUID: 'workspace-a',
+    token: 'token-a',
+  })
+  try {
+    await nextTick()
+    assert.equal(pendingReads.length, 2, 'the first tenant load is pending')
+
+    activeTenant = 'tenant-b'
+    Object.assign(mounted.context, {
+      tenant: 'tenant-b',
+      orgUUID: 'org-b',
+      workspaceUUID: 'workspace-b',
+      token: 'token-b',
+    })
+    await nextTick()
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-a').resolve([{
+      name: 'tenant-a-warehouse',
+      state: 'RUNNING',
+      creationTimestamp: '2026-09-04T10:00:00Z',
+    }])
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-a').resolve([{
+      name: 'tenant-a-connection',
+      host: 'https://tenant-a.example.com',
+      authType: 'pat',
+      status: 'Ready',
+    }])
+    await flushVue()
+
+    assert.doesNotMatch(hostText(mounted.root), /tenant-a-warehouse/, 'the late prior-tenant row is never rendered')
+    assert.equal(mounted.instance.setupState.loaded, false, 'the late prior-tenant response does not establish snapshot authority')
+    assert.equal(pendingReads.filter(read => read.tenant === 'tenant-b').length, 2, 'the queued refresh starts for the current tenant')
+
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-b').resolve([{
+      name: 'tenant-b-warehouse',
+      state: 'STOPPED',
+      creationTimestamp: '2026-09-04T11:00:00Z',
+    }])
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-b').resolve([{
+      name: 'tenant-b-connection',
+      host: 'https://tenant-b.example.com',
+      authType: 'pat',
+      status: 'Ready',
+    }])
+    await flushVue()
+
+    assert.match(hostText(mounted.root), /tenant-b-warehouse/, 'the current tenant result becomes the authoritative snapshot')
+    assert.equal(mounted.instance.setupState.loaded, true)
+  } finally {
+    mounted.unmount()
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listConnections = original.listConnections
+  }
+})
+
+test('dashboard tile distinguishes initial failure from stale failure, retains its snapshot, and retries', async () => {
+  const [DashboardTile, apiModule] = await Promise.all([
+    loadMountedSFC('/src/DashboardTile.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = {
+    listWarehouses: apiModule.api.listWarehouses,
+    listConnections: apiModule.api.listConnections,
+  }
+  const pendingReads = []
+  const queue = kind => new Promise((resolve, reject) => pendingReads.push({ kind, tenant: 'tenant-a', resolve, reject }))
+  apiModule.api.listWarehouses = () => queue('warehouses')
+  apiModule.api.listConnections = () => queue('connections')
+
+  const mounted = mountDashboardTile(DashboardTile, {
+    tenant: 'tenant-a',
+    orgUUID: 'org-a',
+    workspaceUUID: 'workspace-a',
+    token: 'token-a',
+  })
+  try {
+    await nextTick()
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-a').reject(new Error('initial read unavailable'))
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-a').resolve([])
+    await flushVue()
+
+    const initialAlert = mounted.find(node => node.props?.role === 'alert')
+    assert.ok(initialAlert, 'an initial failure is assertive because there is no useful snapshot')
+    assert.match(hostText(initialAlert), /Failed to load: Databricks request failed/, 'the initial failure uses the provider error boundary')
+    const initialRetry = mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Retry')
+    assert.ok(initialRetry, 'initial failure exposes Retry')
+    assert.equal(initialRetry.props.class, 'k-dashboard-action', 'initial Retry uses the canonical dashboard action recipe')
+
+    initialRetry.props.onClick()
+    await flushVue()
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-a').resolve([{
+      name: 'orders-warehouse',
+      state: 'RUNNING',
+      creationTimestamp: '2026-09-04T12:00:00Z',
+    }])
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-a').resolve([{
+      name: 'analytics',
+      host: 'https://dbc.example.com',
+      authType: 'pat',
+      status: 'Ready',
+    }])
+    await flushVue()
+    assert.match(hostText(mounted.root), /orders-warehouse/, 'Retry can establish the first successful snapshot')
+
+    mounted.instance.setupState.load()
+    await nextTick()
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-a').reject(new Error('background refresh unavailable'))
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-a').resolve([])
+    await flushVue()
+
+    assert.match(hostText(mounted.root), /orders-warehouse/, 'a background failure retains the last successful row')
+    assert.equal(mounted.find(node => node.props?.role === 'alert'), null, 'a stale-result failure does not interrupt with an assertive alert')
+    const staleStatus = mounted.find(node => node.props?.role === 'status' && /last successful result/i.test(hostText(node)))
+    assert.ok(staleStatus, 'a stale-result failure labels the retained snapshot politely')
+    const staleRetry = mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Retry')
+    assert.ok(staleRetry, 'stale-result failure exposes Retry')
+    assert.equal(staleRetry.props.class, 'k-dashboard-action', 'stale Retry uses the canonical dashboard action recipe')
+
+    staleRetry.props.onClick()
+    await flushVue()
+    pendingDashboardRead(pendingReads, 'warehouses', 'tenant-a').resolve([{
+      name: 'fresh-warehouse',
+      state: 'RUNNING',
+      creationTimestamp: '2026-09-04T13:00:00Z',
+    }])
+    pendingDashboardRead(pendingReads, 'connections', 'tenant-a').resolve([])
+    await flushVue()
+    assert.match(hostText(mounted.root), /fresh-warehouse/, 'Retry replaces the stale snapshot with fresh data')
+    assert.doesNotMatch(hostText(mounted.root), /orders-warehouse/)
+    assert.equal(mounted.find(node => node.props?.role === 'status' && /last successful result/i.test(hostText(node))), null)
+  } finally {
+    mounted.unmount()
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listConnections = original.listConnections
+  }
+})
 
 test('ResourceBackLink keeps the href fallback and emits only for active clicks', async () => {
   const ResourceBackLink = await loadMountedSFC(canonicalResourceBackLink)
@@ -2038,6 +2240,13 @@ async function settleResourceListPage(pendingReads, pageKind, result) {
   await flushVue()
 }
 
+async function rejectResourceListPage(pendingReads, pageKind, error) {
+  const index = pendingReads.findIndex(read => read.kind === pageKind)
+  assert.ok(index >= 0, `the view started a ${pageKind} read`)
+  pendingReads.splice(index, 1)[0].reject(error)
+  await flushVue()
+}
+
 function resourceListCreateControl(mounted, kind) {
   return mounted.find(node => kind === 'connections'
     ? node.type === 'button' && hostText(node).includes('Add connection')
@@ -2140,6 +2349,132 @@ test('collection create controls wait for authority and known-empty surfaces sta
     apiModule.api.listWarehousesPage = original.listWarehousesPage
     apiModule.api.listTablesPage = original.listTablesPage
     apiModule.api.deleteConnection = original.deleteConnection
+  }
+})
+
+test('collection reads reject results settled after the tenant context changes', async () => {
+  const [ConnectionsView, WarehousesView, TablesView, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/views/ConnectionsView.vue'),
+    loadMountedSFC('/src/views/WarehousesView.vue'),
+    loadMountedSFC('/src/views/TablesView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listConnectionsPage: apiModule.api.listConnectionsPage,
+    listWarehousesPage: apiModule.api.listWarehousesPage,
+    listTablesPage: apiModule.api.listTablesPage,
+  }
+  const cases = [
+    {
+      kind: 'connections', Component: ConnectionsView, pageKind: 'connections-page', supportKinds: [],
+      rows: [{ name: 'tenant-a-connection', uid: 'connection-a', host: 'https://dbc.example.com', authType: 'pat', status: 'Ready' }],
+    },
+    {
+      kind: 'warehouses', Component: WarehousesView, pageKind: 'warehouses-page', supportKinds: ['connections'],
+      rows: [{ name: 'tenant-a-warehouse', uid: 'warehouse-a', connectionRef: 'tenant-a-connection', warehouseID: 'warehouse-a', status: 'Ready' }],
+    },
+    {
+      kind: 'tables', Component: TablesView, pageKind: 'tables-page', supportKinds: ['connections', 'warehouses'],
+      rows: [{ name: 'tenant-a-table', uid: 'table-a', connectionRef: 'tenant-a-connection', warehouseRef: 'tenant-a-warehouse', catalog: 'main', schema: 'sales', table: 'orders', fullName: 'main.sales.orders', columns: [], status: 'Ready' }],
+    },
+  ]
+
+  try {
+    for (const testCase of cases) {
+      const pendingReads = []
+      const queue = kind => new Promise((resolve, reject) => pendingReads.push({ kind, resolve, reject }))
+      apiModule.api.listConnections = () => queue('connections')
+      apiModule.api.listWarehouses = () => queue('warehouses')
+      apiModule.api.listConnectionsPage = () => queue('connections-page')
+      apiModule.api.listWarehousesPage = () => queue('warehouses-page')
+      apiModule.api.listTablesPage = () => queue('tables-page')
+      const contextGeneration = ref(1)
+      const mounted = mountDetailView(
+        testCase.Component,
+        {},
+        resourceListStubComponents(),
+        { [contextModule.contextGenerationKey]: contextGeneration },
+      )
+      try {
+        await nextTick()
+        await settleResourceListSupport(pendingReads, testCase.supportKinds)
+        assert.equal(pendingReads.filter(read => read.kind === testCase.pageKind).length, 1, `${testCase.kind} page read is pending before context rotation`)
+
+        contextGeneration.value += 1
+        resourceListPendingRead(pendingReads, testCase.pageKind)({ items: testCase.rows, continue: null })
+        await flushVue()
+
+        assert.equal(
+          mounted.find(node => className(node).includes('k-table'))?.props?.['data-row-count'],
+          '0',
+          `${testCase.kind} did not commit the prior tenant's late page`,
+        )
+        assert.equal(mounted.instance.setupState.loaded, false, `${testCase.kind} did not mark the prior tenant's late page loaded`)
+      } finally {
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listConnectionsPage = original.listConnectionsPage
+    apiModule.api.listWarehousesPage = original.listWarehousesPage
+    apiModule.api.listTablesPage = original.listTablesPage
+  }
+})
+
+test('background failures preserve authoritative empty collection snapshots and expose Retry', async () => {
+  const [ConnectionsView, WarehousesView, apiModule] = await Promise.all([
+    loadMountedSFC('/src/views/ConnectionsView.vue'),
+    loadMountedSFC('/src/views/WarehousesView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listConnectionsPage: apiModule.api.listConnectionsPage,
+    listWarehousesPage: apiModule.api.listWarehousesPage,
+  }
+  const cases = [
+    { kind: 'connections', Component: ConnectionsView, pageKind: 'connections-page', supportKinds: [] },
+    { kind: 'warehouses', Component: WarehousesView, pageKind: 'warehouses-page', supportKinds: ['connections'] },
+  ]
+
+  try {
+    for (const testCase of cases) {
+      const pendingReads = []
+      const queue = kind => new Promise((resolve, reject) => pendingReads.push({ kind, resolve, reject }))
+      apiModule.api.listConnections = () => queue('connections')
+      apiModule.api.listWarehouses = () => queue('warehouses')
+      apiModule.api.listConnectionsPage = () => queue('connections-page')
+      apiModule.api.listWarehousesPage = () => queue('warehouses-page')
+      const mounted = mountDetailView(testCase.Component, {}, resourceListStubComponents())
+      try {
+        await nextTick()
+        await settleResourceListSupport(pendingReads, testCase.supportKinds)
+        await settleResourceListPage(pendingReads, testCase.pageKind, { items: [], continue: null })
+        assert.ok(mounted.find(node => className(node).includes('databricks-first-run')), `${testCase.kind} starts from an authoritative empty snapshot`)
+
+        mounted.instance.setupState.load('background')
+        await nextTick()
+        await settleResourceListSupport(pendingReads, testCase.supportKinds)
+        await rejectResourceListPage(pendingReads, testCase.pageKind, new Error('background refresh unavailable'))
+
+        assert.ok(mounted.find(node => className(node).includes('databricks-first-run')), `${testCase.kind} keeps its authoritative empty snapshot after a background failure`)
+        assert.ok(mounted.find(node => node.props?.role === 'status' && /last successful result/i.test(hostText(node))), `${testCase.kind} labels the retained snapshot as stale without an assertive interruption`)
+        assert.ok(mounted.find(node => node.type === 'button' && hostText(node).trim() === 'Retry'), `${testCase.kind} exposes Retry after a background failure`)
+      } finally {
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listConnectionsPage = original.listConnectionsPage
+    apiModule.api.listWarehousesPage = original.listWarehousesPage
   }
 })
 
