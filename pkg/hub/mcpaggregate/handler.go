@@ -23,23 +23,40 @@ limitations under the License.
 // in exactly like every other provider (kuery, code, infrastructure, …).
 //
 // Per request the handler parses the tenant cluster + MCPServer name out of the
-// path, authenticates the caller's bearer, builds a fresh stateless mcp.Server,
-// federates every Ready provider's own /mcp endpoint into it, and serves the
-// MCP protocol over streamable HTTP.
+// path, verifies the caller's bearer against that tenant (see BearerVerifier),
+// builds a fresh stateless mcp.Server, federates every Ready provider's own
+// /mcp endpoint into it, and serves the MCP protocol over streamable HTTP.
+// Nothing is federated for a bearer that fails verification.
 package mcpaggregate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/faroshq/faros/pkg/apiurl"
 )
+
+// DefaultVerifyCacheTTL is how long a successful bearer verification is
+// reused for the same (bearer, cluster, MCPServer) before it is re-checked.
+const DefaultVerifyCacheTTL = 60 * time.Second
+
+// RateLimiter admits or rejects a pre-authentication verification attempt
+// for one client address. The hub's token-login limiter satisfies it.
+type RateLimiter interface {
+	Allow(clientIP string) bool
+}
 
 // impl is the MCP Implementation advertised on `initialize`.
 var impl = &mcp.Implementation{
@@ -57,42 +74,162 @@ type Options struct {
 	ExternalURL string
 	// Logger is used for federation diagnostics. Optional.
 	Logger logr.Logger
+	// Verifier checks the bearer against the tenant cluster and MCPServer
+	// named by the request before anything is federated. Required: without
+	// one every request is refused with 503 rather than forwarded unverified.
+	Verifier BearerVerifier
+	// VerifyCacheTTL bounds how long a successful verification is reused for
+	// the same bearer, cluster and MCPServer. Defaults to DefaultVerifyCacheTTL.
+	VerifyCacheTTL time.Duration
+	// RateLimiter, when set, caps uncached verification attempts per client
+	// address; cache hits are never counted so verified clients are not
+	// throttled. Optional.
+	RateLimiter RateLimiter
+	// ClientIP derives the address the rate limiter keys on. Defaults to the
+	// host part of RemoteAddr; the hub passes its proxy-header-aware helper.
+	ClientIP func(*http.Request) string
 }
 
 // New returns the http.Handler mounted at apiurl.PathPrefixMCPServer. The
 // handler expects the prefix to have been stripped, so it sees
 // /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
-	log := opts.Logger
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cluster, name, ok := parseMCPServerPath(r.URL.Path)
-		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
-			return
-		}
-		token := extractBearer(r)
-		if token == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+	h := &handler{opts: opts, verified: make(map[string]time.Time)}
+	if h.opts.VerifyCacheTTL <= 0 {
+		h.opts.VerifyCacheTTL = DefaultVerifyCacheTTL
+	}
+	if h.opts.ClientIP == nil {
+		h.opts.ClientIP = remoteHost
+	}
+	return h
+}
 
-		// Fresh, stateless server per request so a provider that just became
-		// Ready shows up on the very next tools/list.
-		handler := mcp.NewStreamableHTTPHandler(
-			func(req *http.Request) *mcp.Server {
-				return buildServer(req.Context(), buildParams{
-					cluster:     cluster,
-					name:        name,
-					token:       token,
-					externalURL: opts.ExternalURL,
-					enumerate:   opts.Providers,
-					log:         log,
-				})
-			},
-			&mcp.StreamableHTTPOptions{Stateless: true},
-		)
-		handler.ServeHTTP(w, r)
-	})
+type handler struct {
+	opts Options
+
+	mu       sync.Mutex
+	verified map[string]time.Time // verification cache key -> expiry
+}
+
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cluster, name, ok := parseMCPServerPath(r.URL.Path)
+	if !ok {
+		http.Error(w, "invalid path: expected /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
+		return
+	}
+	token := extractBearer(r)
+	if token == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !h.authorize(w, r, token, cluster, name) {
+		return
+	}
+
+	// Fresh, stateless server per request so a provider that just became
+	// Ready shows up on the very next tools/list.
+	handler := mcp.NewStreamableHTTPHandler(
+		func(req *http.Request) *mcp.Server {
+			return buildServer(req.Context(), buildParams{
+				cluster:     cluster,
+				name:        name,
+				token:       token,
+				externalURL: h.opts.ExternalURL,
+				enumerate:   h.opts.Providers,
+				log:         h.opts.Logger,
+			})
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	handler.ServeHTTP(w, r)
+}
+
+// authorize verifies the bearer for (cluster, name), writing the rejection
+// and returning false on failure. Successful verifications are cached by
+// sha256(bearer)+cluster+name for VerifyCacheTTL; only uncached attempts are
+// counted against the per-address rate limit, so the pre-auth path is what
+// gets throttled, never an already-verified client.
+func (h *handler) authorize(w http.ResponseWriter, r *http.Request, token, cluster, name string) bool {
+	key := verifyCacheKey(token, cluster, name)
+	if h.cached(key) {
+		return true
+	}
+	if h.opts.RateLimiter != nil && !h.opts.RateLimiter.Allow(h.opts.ClientIP(r)) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded - too many requests", http.StatusTooManyRequests)
+		return false
+	}
+	if h.opts.Verifier == nil {
+		http.Error(w, "bearer verification is not configured", http.StatusServiceUnavailable)
+		return false
+	}
+	if err := h.opts.Verifier.Verify(r, token, cluster, name); err != nil {
+		status, msg := http.StatusServiceUnavailable, "bearer verification unavailable"
+		switch {
+		case errors.Is(err, ErrUnauthenticated):
+			status, msg = http.StatusUnauthorized, "Unauthorized"
+		case errors.Is(err, ErrForbidden):
+			status, msg = http.StatusForbidden, "Forbidden"
+		}
+		h.opts.Logger.Info("mcp aggregate: bearer rejected",
+			"cluster", cluster, "mcpserver", name, "client", h.opts.ClientIP(r), "status", status, "reason", err.Error())
+		http.Error(w, msg, status)
+		return false
+	}
+	h.remember(key)
+	return true
+}
+
+func (h *handler) cached(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	exp, ok := h.verified[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(h.verified, key)
+		return false
+	}
+	return true
+}
+
+// maxVerifiedEntries bounds the cache; expired entries are swept once it is
+// exceeded so a flood of distinct bearers cannot grow it without limit.
+const maxVerifiedEntries = 4096
+
+func (h *handler) remember(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	if len(h.verified) >= maxVerifiedEntries {
+		for k, exp := range h.verified {
+			if now.After(exp) {
+				delete(h.verified, k)
+			}
+		}
+	}
+	if len(h.verified) >= maxVerifiedEntries {
+		return
+	}
+	h.verified[key] = now.Add(h.opts.VerifyCacheTTL)
+}
+
+// verifyCacheKey never stores the bearer itself: only its digest, bound to
+// the cluster and MCPServer it was verified for.
+func verifyCacheKey(token, cluster, name string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:]) + "|" + cluster + "|" + name
+}
+
+// remoteHost is the default ClientIP: the connection's peer address with no
+// proxy headers consulted.
+func remoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type buildParams struct {

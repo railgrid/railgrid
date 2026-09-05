@@ -84,6 +84,13 @@ const (
 	// and authorization-code records. Readers already refuse expired entries,
 	// so this cadence only affects storage, never correctness.
 	sharedStoreGCInterval = 10 * time.Minute
+
+	// mcpVerifyBurst is how many uncached aggregate-MCP bearer verifications
+	// one client address may start before the bucket (refilled one per second)
+	// throttles it. Verified bearers are cached and never counted, and
+	// providers such as app-studio call the aggregate for many users from one
+	// pod address, so this is deliberately looser than token-login.
+	mcpVerifyBurst = 60
 )
 
 // Server is the faros hub server orchestrator.
@@ -480,10 +487,31 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return out
 	}
+	// Every aggregate request is verified against the tenant cluster named in
+	// its path before anything is federated: a TokenReview must prove the
+	// bearer is that MCPServer's own ServiceAccount, or (wired below once the
+	// kcp proxy exists) a hub user who is a member of that tenant. Uncached
+	// verifications share the token-login limiter's per-address bucket;
+	// dev mode skips it for the same reason token-login does.
+	mcpVerifier := mcpaggregate.NewVerifier(func(cluster string) *rest.Config {
+		if kcpConfig == nil {
+			return nil
+		}
+		cfg := rest.CopyConfig(kcpConfig)
+		cfg.Host = apiurl.KCPClusterURL(kcpConfig.Host, cluster)
+		return cfg
+	})
+	var mcpRateLimiter mcpaggregate.RateLimiter
+	if !s.opts.DevMode {
+		mcpRateLimiter = proxy.NewIPRateLimiter(time.Second, mcpVerifyBurst)
+	}
 	mcpAggregate := mcpaggregate.New(mcpaggregate.Options{
 		ExternalURL: s.opts.HubExternalURL,
 		Logger:      logger,
 		Providers:   mcpProviderEnumerator,
+		Verifier:    mcpVerifier,
+		RateLimiter: mcpRateLimiter,
+		ClientIP:    proxy.ClientIP,
 	})
 	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(
 		http.StripPrefix(apiurl.PathPrefixMCPServer, mcpAggregate))
@@ -657,6 +685,9 @@ func (s *Server) Run(ctx context.Context) error {
 			membershipLookup := tenant.MembershipLookupFunc(func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 			})
+			// Let hub users (CLI `faros mcp`, e2e) reach the aggregate MCP
+			// endpoint with their own bearer, gated on tenant membership.
+			mcpVerifier.SetUserIdentity(kcpProxy.IdentifyUser, membershipLookup.GetUserMembershipIndex)
 
 			// GET /api/providers: authenticated, Org optional. The catalog
 			// describes what this deployment runs, so it is not enumerable

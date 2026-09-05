@@ -23,10 +23,232 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const testMCPPath = "/some-cluster/apis/faros.sh/v1alpha1/mcpservers/default/mcp"
+
+// allowAll is the verifier the federation-focused tests use so they exercise
+// the aggregate itself rather than bearer verification.
+var allowAll = BearerVerifierFunc(func(*http.Request, string, string, string) error { return nil })
+
+// countingVerifier records every verification attempt and answers with a
+// fixed error (nil = allow).
+type countingVerifier struct {
+	calls atomic.Int32
+	err   error
+	last  struct{ token, cluster, name string }
+}
+
+func (c *countingVerifier) Verify(_ *http.Request, token, cluster, name string) error {
+	c.calls.Add(1)
+	c.last.token, c.last.cluster, c.last.name = token, cluster, name
+	return c.err
+}
+
+// countingProvider is a fake upstream provider /mcp endpoint that counts how
+// many federated calls reach it.
+func countingProvider(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// toolsList POSTs tools/list with the given bearer and returns the status.
+func toolsList(h http.Handler, bearer string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.RemoteAddr = "203.0.113.7:4242"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+// TestGarbageBearerNeverReachesProviders is the finding-4 regression: a
+// bearer the verifier rejects gets 401 and no provider is contacted.
+func TestGarbageBearerNeverReachesProviders(t *testing.T) {
+	provider, upstream := countingProvider(t)
+	v := &countingVerifier{err: ErrUnauthenticated}
+	h := New(Options{
+		Providers: func(context.Context) []ProviderTarget {
+			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
+		},
+		Verifier: v,
+	})
+
+	rr := toolsList(h, "garbage")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("garbage bearer: status = %d, want 401", rr.Code)
+	}
+	if got := v.calls.Load(); got != 1 {
+		t.Fatalf("verifier calls = %d, want 1", got)
+	}
+	if v.last.token != "garbage" || v.last.cluster != "some-cluster" || v.last.name != "default" {
+		t.Fatalf("verifier saw %+v, want (garbage, some-cluster, default)", v.last)
+	}
+	if got := upstream.Load(); got != 0 {
+		t.Fatalf("upstream provider received %d calls for a rejected bearer, want 0", got)
+	}
+}
+
+// TestValidTokenForOtherClusterForbidden: a real credential that does not
+// belong to the addressed tenant is 403 and never federated.
+func TestValidTokenForOtherClusterForbidden(t *testing.T) {
+	provider, upstream := countingProvider(t)
+	h := New(Options{
+		Providers: func(context.Context) []ProviderTarget {
+			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
+		},
+		Verifier: &countingVerifier{err: ErrForbidden},
+	})
+
+	if rr := toolsList(h, "other-tenant-token"); rr.Code != http.StatusForbidden {
+		t.Fatalf("foreign bearer: status = %d, want 403", rr.Code)
+	}
+	if got := upstream.Load(); got != 0 {
+		t.Fatalf("upstream provider received %d calls for a forbidden bearer, want 0", got)
+	}
+}
+
+// TestVerifierOutageIsNotBypassed: an infrastructure error from the verifier
+// fails closed with 503 rather than forwarding.
+func TestVerifierOutageIsNotBypassed(t *testing.T) {
+	provider, upstream := countingProvider(t)
+	h := New(Options{
+		Providers: func(context.Context) []ProviderTarget {
+			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
+		},
+		Verifier: &countingVerifier{err: context.DeadlineExceeded},
+	})
+	if rr := toolsList(h, "t"); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("verifier error: status = %d, want 503", rr.Code)
+	}
+	if got := upstream.Load(); got != 0 {
+		t.Fatalf("upstream provider received %d calls during verifier outage, want 0", got)
+	}
+
+	// No verifier at all is the same: fail closed.
+	h = New(Options{Providers: func(context.Context) []ProviderTarget { return nil }})
+	if rr := toolsList(h, "t"); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil verifier: status = %d, want 503", rr.Code)
+	}
+}
+
+// TestValidTokenProceedsAndIsCached: a verified bearer federates, and the
+// second request within the TTL reuses the verification instead of asking
+// the verifier (and thus kcp) again. A different bearer is verified afresh.
+func TestValidTokenProceedsAndIsCached(t *testing.T) {
+	provider, upstream := countingProvider(t)
+	v := &countingVerifier{}
+	h := New(Options{
+		Providers: func(context.Context) []ProviderTarget {
+			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
+		},
+		Verifier: v,
+	})
+
+	for i := 0; i < 2; i++ {
+		if rr := toolsList(h, "sa-token"); rr.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200 (body %s)", i, rr.Code, rr.Body.String())
+		}
+	}
+	if got := v.calls.Load(); got != 1 {
+		t.Fatalf("verifier calls after two requests = %d, want 1 (cache hit)", got)
+	}
+	if got := upstream.Load(); got == 0 {
+		t.Fatal("verified bearer was never federated to the provider")
+	}
+	if rr := toolsList(h, "another-sa-token"); rr.Code != http.StatusOK {
+		t.Fatalf("second bearer: status = %d, want 200", rr.Code)
+	}
+	if got := v.calls.Load(); got != 2 {
+		t.Fatalf("verifier calls after a new bearer = %d, want 2", got)
+	}
+}
+
+// TestVerificationCacheExpires: once the TTL lapses the bearer is re-verified.
+func TestVerificationCacheExpires(t *testing.T) {
+	v := &countingVerifier{}
+	h := New(Options{
+		Providers:      func(context.Context) []ProviderTarget { return nil },
+		Verifier:       v,
+		VerifyCacheTTL: time.Nanosecond,
+	})
+	for i := 0; i < 2; i++ {
+		if rr := toolsList(h, "sa-token"); rr.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, rr.Code)
+		}
+	}
+	if got := v.calls.Load(); got != 2 {
+		t.Fatalf("verifier calls with expired cache = %d, want 2", got)
+	}
+}
+
+// fixedLimiter admits the first n attempts from any address.
+type fixedLimiter struct {
+	n    int
+	seen []string
+}
+
+func (l *fixedLimiter) Allow(ip string) bool {
+	l.seen = append(l.seen, ip)
+	l.n--
+	return l.n >= 0
+}
+
+// TestRateLimitCoversOnlyUncachedVerifications: unverified attempts consume
+// the per-address budget and get 429 when it is exhausted; a cached bearer
+// is never counted.
+func TestRateLimitCoversOnlyUncachedVerifications(t *testing.T) {
+	provider, upstream := countingProvider(t)
+	lim := &fixedLimiter{n: 2}
+	h := New(Options{
+		Providers: func(context.Context) []ProviderTarget {
+			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
+		},
+		Verifier: BearerVerifierFunc(func(_ *http.Request, token, _, _ string) error {
+			if token == "good" {
+				return nil
+			}
+			return ErrUnauthenticated
+		}),
+		RateLimiter: lim,
+	})
+
+	if rr := toolsList(h, "good"); rr.Code != http.StatusOK {
+		t.Fatalf("good bearer: status = %d, want 200", rr.Code)
+	}
+	if rr := toolsList(h, "bad-1"); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("bad-1: status = %d, want 401", rr.Code)
+	}
+	if rr := toolsList(h, "bad-2"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("bad-2 over budget: status = %d, want 429", rr.Code)
+	}
+	if rr := toolsList(h, "good"); rr.Code != http.StatusOK {
+		t.Fatalf("cached good bearer while throttled: status = %d, want 200", rr.Code)
+	}
+	if len(lim.seen) != 3 {
+		t.Fatalf("limiter consulted %d times, want 3 (cache hit not counted)", len(lim.seen))
+	}
+	for _, ip := range lim.seen {
+		if ip != "203.0.113.7" {
+			t.Fatalf("limiter keyed on %q, want RemoteAddr host 203.0.113.7", ip)
+		}
+	}
+	if got := upstream.Load(); got == 0 {
+		t.Fatal("good bearer was never federated")
+	}
+}
 
 func TestParseMCPServerPath(t *testing.T) {
 	cluster, name, ok := parseMCPServerPath(testMCPPath)
@@ -80,7 +302,7 @@ func jsonrpc(t *testing.T, h http.Handler, method string, params string) (json.R
 // TestAlwaysOnEmptyAggregate is the core guarantee: with zero providers the
 // endpoint still initializes and serves an (empty) tools/list — never 501.
 func TestAlwaysOnEmptyAggregate(t *testing.T) {
-	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }})
+	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll})
 
 	if _, code := jsonrpc(t, h, "initialize", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}`); code != http.StatusOK {
 		t.Fatalf("initialize status = %d, want 200 (endpoint must be always-on)", code)
@@ -105,7 +327,7 @@ func TestAlwaysOnEmptyAggregate(t *testing.T) {
 
 // TestUnauthorizedAndBadPath covers the two request-level guards.
 func TestUnauthorizedAndBadPath(t *testing.T) {
-	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }})
+	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll})
 
 	noAuth := httptest.NewRequest(http.MethodPost, testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	rr := httptest.NewRecorder()
@@ -147,7 +369,7 @@ func TestFederatesReadyProvider(t *testing.T) {
 
 	h := New(Options{Providers: func(context.Context) []ProviderTarget {
 		return []ProviderTarget{{Name: "infra", DisplayName: "Infrastructure", MCPURL: provider.URL}}
-	}})
+	}, Verifier: allowAll})
 
 	result, code := jsonrpc(t, h, "tools/list", `{}`)
 	if code != http.StatusOK {

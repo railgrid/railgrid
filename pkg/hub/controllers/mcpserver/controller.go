@@ -50,8 +50,9 @@ import (
 )
 
 // mcpIdentityNamespace is the tenant-workspace namespace the per-MCPServer
-// ServiceAccount + token Secret live in.
-const mcpIdentityNamespace = "default"
+// ServiceAccount + token Secret live in. Shared with the aggregate handler,
+// which verifies bearers against exactly this identity.
+const mcpIdentityNamespace = mcpaggregate.MCPIdentityNamespace
 
 // toolsRefreshInterval is how often a Ready MCPServer re-discovers its federated
 // providers' tools and restamps status. Kept modest so the portal reflects newly
@@ -199,8 +200,8 @@ func (r *Reconciler) tenantConfig(clusterName string) *rest.Config {
 // kcp's token controller has populated it yet (a short poll; if still empty the
 // caller requeues rather than blocking).
 func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer) (*corev1.SecretReference, string, bool, error) {
-	saName := srv.Name + "-mcp"
-	secretName := srv.Name + "-mcp-token"
+	saName := mcpaggregate.ServiceAccountName(srv.Name)
+	secretName := saName + "-token"
 
 	owner := metav1.OwnerReference{
 		APIVersion: farosv1alpha1.SchemeGroupVersion.String(),

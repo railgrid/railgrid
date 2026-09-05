@@ -162,6 +162,33 @@ func (rl *rateLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// IPRateLimiter is the per-client-address token bucket the hub uses on its
+// pre-authentication endpoints (token-login, the aggregate MCP bearer check).
+// It is the same limiter HandleTokenLoginRateLimited applies, exposed so other
+// packages can share one implementation without importing its internals.
+type IPRateLimiter struct {
+	rl *rateLimiter
+}
+
+// NewIPRateLimiter returns a limiter that admits burstSize requests per client
+// address immediately and refills one token per interval up to burstSize.
+func NewIPRateLimiter(interval time.Duration, burstSize int) *IPRateLimiter {
+	return &IPRateLimiter{rl: newRateLimiter(interval, burstSize)}
+}
+
+// Allow reports whether a request from clientIP may proceed, consuming one
+// token when it may.
+func (l *IPRateLimiter) Allow(clientIP string) bool {
+	return l.rl.isAllowed(clientIP)
+}
+
+// ClientIP derives the client address the hub keys rate limits on. It trusts
+// X-Forwarded-For and X-Real-IP the same way the token-login limiter does,
+// falling back to the connection's RemoteAddr.
+func ClientIP(r *http.Request) string {
+	return getClientIP(r)
+}
+
 // getClientIP extracts the client IP from the request.
 func getClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header

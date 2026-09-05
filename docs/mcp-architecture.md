@@ -158,6 +158,22 @@ AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServ
                           → acts AS the caller, authorized by the caller's RBAC
 ```
 
+**The hub verifies the bearer before federating.** The aggregate handler
+(`pkg/hub/mcpaggregate`) never forwards an unverified token. Before it builds
+the per-request server it runs a `TokenReview` in the tenant cluster named by
+the URL and requires the reviewed identity to be that MCPServer's own
+ServiceAccount (`system:serviceaccount:default:{name}-mcp`, the account the
+`MCPServer` controller provisions). A hub user bearer (static token or OIDC,
+as used by `faros mcp` and the e2e suites) is accepted instead when the hub's
+normal identity path resolves it and the user holds a live Membership covering
+the cluster's Organization or Workspace per the `UserMembershipIndex`. Anything
+else is answered with `401` (unrecognised) or `403` (valid, but for another
+tenant or MCPServer) and no provider is contacted. Successful verifications
+are cached by `sha256(token)+cluster+name` for 60 seconds, and uncached
+attempts are rate-limited per client address with the same limiter that
+protects `/api/auth/token-login`, so the endpoint cannot be used as a token
+oracle against providers.
+
 Two consequences:
 
 - **Per-MCPServer credentials.** The bearer token a client uses is a per-server,
