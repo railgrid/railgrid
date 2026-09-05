@@ -3,6 +3,9 @@ bin/
 /faros
 /faros-hub
 /faros-agent
+# `go build` inside providers/quickstart drops the module binary next to main.go
+/providers/quickstart/provider-quickstart
+/providers/quickstart/quickstart
 *.exe
 *.exe~
 *.dll
@@ -71,6 +74,8 @@ data/
 # Stray extension-less kubeconfig dumps at the repo root (a `kind export
 # kubeconfig > tilt` once committed a client private key under this name).
 /tilt
+# Same story: a kind kubeconfig (client key included) was once committed as `kk`.
+/kk
 
 # Dev tools and certs
 hack/tools/
