@@ -48,14 +48,6 @@ export CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.19.2}"
 export ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.7.0}"
 export ETCD_IMAGE="${ETCD_IMAGE:-gcr.io/etcd-development/etcd:v3.6.4}"
 
-# --- auth --------------------------------------------------------------------
-# Static bearer token shared by the hub and kcp. The hub derives a
-# deterministic kcp identity from it (see pkg/hub/kcp/embedded.go):
-#   user = faros:static:<first 16 hex chars of sha256("static-token/"+token)>
-# The kcp token-auth CSV below MUST use the same mapping or requests
-# authenticate at kcp as the wrong user and get 403.
-export FAROS_STATIC_TOKEN="${FAROS_STATIC_TOKEN:-dev-token}"
-
 # --- faros hub ---------------------------------------------------------------
 export HUB_NAMESPACE="${HUB_NAMESPACE:-faros-system}"
 # Hostname the hub is reachable at THROUGH the Envoy gateway (TLS passthrough).
@@ -72,6 +64,49 @@ export HUB_IMAGE_TAG="${HUB_IMAGE_TAG:-}"
 export HUB_IMAGE_PULL_POLICY="${HUB_IMAGE_PULL_POLICY:-}"
 # When "true", `kind load` the hub image into the cluster before installing.
 export HUB_KIND_LOAD="${HUB_KIND_LOAD:-false}"
+
+# --- auth --------------------------------------------------------------------
+# Static bearer token shared by the hub and kcp. The hub derives a
+# deterministic kcp identity from it (see pkg/hub/kcp/embedded.go):
+#   user = faros:static:<first 16 hex chars of sha256("static-token/"+token)>
+# The kcp token-auth CSV below MUST use the same mapping or requests
+# authenticate at kcp as the wrong user and get 403.
+#
+# There is deliberately no fixed default: an install that shipped with a
+# well-known token ("dev-token") was reachable by anyone who read the docs.
+# Precedence:
+#   1. FAROS_STATIC_TOKEN set in the environment — used as-is (the e2e suites
+#      and CI pin it this way). Nothing is written to disk.
+#   2. ${FAROS_INSTALL_STATE_DIR}/hub-token exists — reused, so every script
+#      of one install (and re-runs of it) agree on the token.
+#   3. Otherwise a random token is generated, written to that file (mode 0600)
+#      and printed once. teardown.sh removes the state dir, so a fresh install
+#      gets a fresh token.
+FAROS_STATIC_TOKEN_FILE="${FAROS_INSTALL_STATE_DIR}/hub-token"
+
+random_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+if [[ -z "${FAROS_STATIC_TOKEN:-}" ]]; then
+  if [[ -s "${FAROS_STATIC_TOKEN_FILE}" ]]; then
+    FAROS_STATIC_TOKEN="$(<"${FAROS_STATIC_TOKEN_FILE}")"
+  else
+    FAROS_STATIC_TOKEN="$(random_token)"
+    (umask 077 && printf '%s\n' "${FAROS_STATIC_TOKEN}" > "${FAROS_STATIC_TOKEN_FILE}")
+    echo "Generated a new static auth token for this install:" >&2
+    echo "  ${FAROS_STATIC_TOKEN}" >&2
+    echo "Saved to ${FAROS_STATIC_TOKEN_FILE} (mode 0600);" >&2
+    echo "every hack/install script reuses it from there. To log in later:" >&2
+    echo "  faros login --hub-url ${HUB_EXTERNAL_URL} --token \"\$(cat ${FAROS_STATIC_TOKEN_FILE})\" --insecure-skip-tls-verify" >&2
+    echo "Set FAROS_STATIC_TOKEN in the environment to use your own token instead." >&2
+  fi
+fi
+export FAROS_STATIC_TOKEN
 
 # --- helpers -----------------------------------------------------------------
 kc() { kubectl --context "${KUBE_CONTEXT}" "$@"; }

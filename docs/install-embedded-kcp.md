@@ -77,10 +77,15 @@ helm upgrade --install faros-hub deploy/charts/faros-hub \
   --set hub.hubExternalURL=https://localhost:9443 \
   --set hub.devMode=true \
   --set hub.embeddedGraphQL=true \
-  --set 'hub.staticAuthTokens={dev-token}' \
+  --set "hub.staticAuthTokens={$(cat .faros-install/hub-token)}" \
   --set 'hub.tls.selfSigned.dnsNames={faros.kcp.localhost}' \
   --wait
 ```
+
+The static token is not a fixed value: the first `hack/install` script you
+run generates a random one, saves it to `.faros-install/hub-token` and prints
+it; every later script reuses it. Export `FAROS_STATIC_TOKEN` before step 1 to
+bring your own.
 
 No `kcp.*` overrides: embedded kcp is the chart default. The pod runs two
 containers (kcp + hub); the hub waits for kcp's `admin.kubeconfig` before
@@ -101,7 +106,7 @@ curl -k --resolve faros.kcp.localhost:8443:127.0.0.1 \
   https://faros.kcp.localhost:8443/healthz              # hub via the gateway
 
 faros login --hub-url https://localhost:9443 \
-  --token dev-token --insecure-skip-tls-verify
+  --token "$(cat .faros-install/hub-token)" --insecure-skip-tls-verify
 kubectl get organizations
 ```
 

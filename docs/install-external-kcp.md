@@ -38,7 +38,7 @@ All knobs are environment variables with defaults (see `hack/install/lib.sh`):
 | `KCP_DOMAIN` | `kcp.localhost` | kcp base domain (front-proxy hostname) |
 | `KCP_SHARD_2` | `theseus` | name of the second shard |
 | `KCP_GATEWAY_IP` | `10.96.2.2` | fixed ClusterIP the gateway claims |
-| `FAROS_STATIC_TOKEN` | `dev-token` | shared static bearer token |
+| `FAROS_STATIC_TOKEN` | random, saved to `.faros-install/hub-token` | shared static bearer token (generated and printed by the first script you run; set it to bring your own) |
 | `HUB_DOMAIN` | `faros.kcp.localhost` | hub hostname on the gateway |
 | `HUB_EXTERNAL_URL` | `https://localhost:9443` | URL baked into kubeconfigs |
 | `HUB_REPLICAS` | `2` | hub Deployment replicas |
@@ -237,8 +237,9 @@ This is the heart of the install. The script applies (all in namespace
 `default`; full YAML in the script):
 
 1. **`Secret kcp-static-tokens`** — a `--token-auth-file` CSV mapping
-   `dev-token` to the identity the faros hub derives from the same token
-   (`faros:static:<first 16 hex of sha256("static-token/dev-token")>`). Both
+   the static token (`$FAROS_STATIC_TOKEN`, from `.faros-install/hub-token`)
+   to the identity the faros hub derives from the same token
+   (`faros:static:<first 16 hex of sha256("static-token/<token>")>`). Both
    the shards *and* the front-proxy get this file via `spec.auth.tokenAuthFile`
    — the front-proxy authenticates first, so wiring only the shards would 401.
 2. **`RootShard root`** — etcd prefix `/shard/root`, shard base URL
@@ -307,7 +308,7 @@ helm upgrade --install faros-hub deploy/charts/faros-hub \
   --set hub.hubExternalURL=https://localhost:9443 \
   --set hub.devMode=true \
   --set hub.embeddedGraphQL=true \
-  --set 'hub.staticAuthTokens={dev-token}' \
+  --set "hub.staticAuthTokens={$(cat .faros-install/hub-token)}" \
   --set 'hub.tls.selfSigned.dnsNames={faros.kcp.localhost}' \
   --set hostAliases[0].ip=10.96.2.2 \
   --set hostAliases[0].hostnames[0]=kcp.localhost \
@@ -335,9 +336,13 @@ curl -k --resolve faros.kcp.localhost:8443:127.0.0.1 \
   https://faros.kcp.localhost:8443/healthz              # hub via the gateway
 
 faros login --hub-url https://localhost:9443 \
-  --token dev-token --insecure-skip-tls-verify
+  --token "$(cat .faros-install/hub-token)" --insecure-skip-tls-verify
 kubectl get organizations
 ```
+
+The token is the random one the first install script generated and printed
+(`.faros-install/hub-token`); if you exported `FAROS_STATIC_TOKEN` yourself,
+use that value instead.
 
 ---
 

@@ -18,8 +18,13 @@ versa.**
 API token required) and is intentionally not covered by e2e.
 
 Every knob is an environment variable with a sane default — see `lib.sh` for
-the full contract. State (extracted kubeconfigs, port-forward pidfiles) lands
-in `.faros-install/` at the repo root (git-ignored).
+the full contract. State (extracted kubeconfigs, port-forward pidfiles, the
+generated hub token) lands in `.faros-install/` at the repo root (git-ignored).
+
+The hub's static auth token has no fixed default: the first script you run
+generates a random one, saves it to `.faros-install/hub-token` and prints it;
+later scripts and re-runs reuse it. Set `FAROS_STATIC_TOKEN` to bring your own
+(the e2e suites do).
 
 Quick start (external kcp):
 

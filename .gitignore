@@ -82,7 +82,8 @@ hack/tools/
 certs/
 dex.db
 .kcp/
-.faros-install/
+# hack/install state (kubeconfigs, pidfiles, hub-token); e2e uses .faros-install-e2e
+.faros-install*/
 .env
 .kind-kubeconfig
 .edge-kubeconfig

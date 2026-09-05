@@ -33,7 +33,9 @@ func TestHubHealth(t *testing.T) {
 	testenv.Test(t, cases.HubHealth())
 }
 
-// TestStaticTokenLogin mirrors the doc's `faros login --token dev-token`.
+// TestStaticTokenLogin mirrors the doc's `faros login --token <static token>`.
+// The install scripts generate a random token by default; this suite pins
+// FAROS_STATIC_TOKEN to framework.DevToken (see installScriptEnv).
 func TestStaticTokenLogin(t *testing.T) {
 	testenv.Test(t, cases.StaticTokenLogin())
 }
