@@ -8,14 +8,13 @@ defineEmits<{ (e: 'select', name: string): void }>()
 
 // Say up front whether this thing will have a URL. Users otherwise provision,
 // wait, and go looking for a link that is never coming — and 'public' is the
-// unremarkable case, so only the other two get an icon. The icon alone marks
-// "not (necessarily) public"; the tooltip carries the actual explanation.
+// unremarkable case, so only the other two get a visible supporting label.
 const exposure = computed(() => {
   switch (props.template.exposure || 'internal') {
     case 'internal':
-      return { kind: 'internal' as const, title: 'Internal — no public URL. Reached from inside the platform, authorized per caller.' }
+      return { kind: 'internal' as const, label: 'Internal — no public URL' }
     case 'optional':
-      return { kind: 'optional' as const, title: 'Internal by default — no public URL unless the instance asks for one, and then only behind an OIDC gate.' }
+      return { kind: 'optional' as const, label: 'Internal by default — OIDC-gated URL optional' }
     default:
       return null
   }
@@ -31,14 +30,13 @@ const exposure = computed(() => {
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
       <span v-if="template.cloud" class="k-badge k-badge--muted">{{ template.cloud }}</span>
-      <span v-if="exposure" class="exposure-icon" :data-k-tip="exposure.title" :aria-label="exposure.title" role="img">
-        <!-- internal: closed padlock — never public -->
-        <Lock v-if="exposure.kind === 'internal'" :size="14" :stroke-width="1.75" aria-hidden="true" />
-        <!-- optional: dashed globe — may be published if the instance asks -->
-        <Globe2 v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
-      </span>
     </div>
     <p class="template-card-desc">{{ template.description }}</p>
+    <span v-if="exposure" class="exposure-note">
+      <Lock v-if="exposure.kind === 'internal'" :size="14" :stroke-width="1.75" aria-hidden="true" />
+      <Globe2 v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
+      {{ exposure.label }}
+    </span>
     <div class="template-card-foot">
       <span class="kind">{{ template.kind }}</span>
       <span v-if="template.version" class="version">v{{ template.version }}</span>

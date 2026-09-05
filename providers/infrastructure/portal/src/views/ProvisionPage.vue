@@ -182,7 +182,9 @@ async function submit() {
               />
             </div>
           </div>
-          <DynamicForm :schema="inputSchema" v-model:values="values" />
+          <div class="provision-generated-fields">
+            <DynamicForm :schema="inputSchema" v-model:values="values" />
+          </div>
           <div v-if="mutationError" id="infrastructure-provision-error" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
         </div>

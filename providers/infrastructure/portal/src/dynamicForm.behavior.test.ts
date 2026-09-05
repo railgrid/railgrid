@@ -94,6 +94,8 @@ describe('DynamicForm collection editors', () => {
 
     const remove = rows[1].querySelector<HTMLButtonElement>('button')!
     expect(remove.getAttribute('aria-label')).toContain('Remove limits key memory')
+	expect(remove.classList.contains('k-icon-action')).toBe(true)
+	expect(remove.getAttribute('data-k-tip')).toContain('Remove limits key memory')
 	remove.click()
 	await nextTick()
 	expect(values.value.limits).toEqual({ cpu: 2 })

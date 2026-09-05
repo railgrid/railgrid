@@ -105,15 +105,12 @@ faros-provider-infrastructure .template-card-head {
   gap: 8px;
 }
 
-faros-provider-infrastructure .exposure-icon {
+faros-provider-infrastructure .exposure-note {
   align-items: center;
   color: var(--color-text-muted, #5d5f78);
-  cursor: help;
   display: inline-flex;
-  flex: none;
-  height: 18px;
-  justify-content: center;
-  width: 18px;
+  font-size: 11px;
+  gap: 6px;
 }
 
 faros-provider-infrastructure .template-card-title {
@@ -150,6 +147,10 @@ faros-provider-infrastructure .dynform {
 faros-provider-infrastructure .provision-identity {
   width: 100%;
   max-width: 42rem;
+}
+
+faros-provider-infrastructure .provision-generated-fields {
+  width: min(100%, 42rem);
 }
 
 faros-provider-infrastructure .dynform-row {
@@ -213,7 +214,7 @@ faros-provider-infrastructure .dynform-map {
 faros-provider-infrastructure .dynform-map-head,
 faros-provider-infrastructure .dynform-map-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
   align-items: start;
 }
@@ -230,12 +231,6 @@ faros-provider-infrastructure .dynform-map-json {
   resize: vertical;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
-}
-
-faros-provider-infrastructure .dynform-map-remove {
-  width: 34px;
-  min-width: 34px;
-  padding-inline: 0;
 }
 
 faros-provider-infrastructure .dynform-map-add {
@@ -265,7 +260,7 @@ faros-provider-infrastructure .dynform-error {
   }
 
   faros-provider-infrastructure .dynform-map-row {
-    grid-template-columns: minmax(0, 1fr) 34px;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   faros-provider-infrastructure .dynform-map-row > :nth-child(4) {

@@ -9,6 +9,7 @@ describe('Infrastructure dashboard tile navigation affordances', () => {
     expect(source).toMatch(/Open Instances\s*<ArrowRight[^>]*aria-hidden="true"/)
     expect(source).not.toContain('Browse templates →')
     expect(source).not.toContain('Open Instances →')
+    expect(source.match(/k-dashboard-action/g)).toHaveLength(4)
   })
 
   it('uses the shared serial poller and navigation dispatcher', () => {

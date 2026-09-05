@@ -172,14 +172,14 @@ function dotFor(phase: string) {
     </div>
     <div v-else-if="!loaded && error" :class="tileClass.error" role="alert" aria-live="assertive">
       Failed to load: {{ error }}
-      <button type="button" class="ml-2 font-medium underline" @click="retry">Retry</button>
+      <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
     </div>
 
     <template v-else>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
       <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">
         Showing the last successful result. {{ error }}
-        <button type="button" class="ml-2 font-medium underline" @click="retry">Retry</button>
+        <button type="button" class="k-dashboard-action" @click="retry">Retry</button>
       </div>
       <!-- Slim horizontal status row (matches the clusters/edges tiles): a
            single inline line of icon + count + label chips rather than four
@@ -251,7 +251,7 @@ function dotFor(phase: string) {
           No instances yet in this workspace.
           <button
             type="button"
-            class="ml-1 font-medium text-accent transition-colors hover:text-accent-hover"
+            class="k-dashboard-action ml-1"
             @click="navigateFromTile(rootRef, 'templates')"
           >
             Browse templates <ArrowRight :size="14" aria-hidden="true" />
@@ -261,7 +261,7 @@ function dotFor(phase: string) {
           Provisioned before picking a workspace?
           <button
             type="button"
-            class="font-medium text-accent transition-colors hover:text-accent-hover"
+            class="k-dashboard-action"
             @click="navigateFromTile(rootRef, 'instances')"
           >
             Open Instances <ArrowRight :size="14" aria-hidden="true" />
