@@ -452,7 +452,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-else-if="!credentialSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner" aria-hidden="true" /> Loading model credentials…</div>
+      <div v-else-if="!credentialSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading model credentials…</div>
       <div v-else-if="credentialSlice.error" class="agents-stale" role="status">
         Showing the last loaded credentials. {{ credentialSlice.error }}
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -460,7 +460,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <label v-if="credentialSlice.hasSnapshot">
         <span id="agent-model-credential-label">Model credential</span>
         <FormSelect v-model="modelCredential" :options="credentialOptions" labelledby="agent-model-credential-label" />
-        <span v-if="credentials.length === 0" class="agents-hint">No models yet — <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
+        <span v-if="credentials.length === 0" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
       </label>
       <div v-if="credentialSlice.hasSnapshot" class="agents-fieldset">
         <span id="agent-fallbacks-label" class="agents-fieldset-legend">Fallbacks</span>
@@ -511,7 +511,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
         </div>
-        <div v-else-if="!toolsetSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner" aria-hidden="true" /> Loading toolsets…</div>
+        <div v-else-if="!toolsetSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading toolsets…</div>
         <template v-else>
           <div v-if="toolsetSlice.error" class="agents-stale" role="status">
             Showing the last loaded toolsets. {{ toolsetSlice.error }}
@@ -521,7 +521,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <label class="agents-check"><input type="checkbox" :checked="linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ toolset.spec.displayName || toolset.metadata.name }}</label>
             <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so tools stay interactive-only unless opted in here."><input type="checkbox" :checked="backgroundToolsets(agent).has(toolset.metadata.name)" :disabled="!linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
           </div>
-          <p v-if="toolsets.length === 0" class="agents-hint">No toolsets yet — create one in the <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button> tab.</p>
+          <p v-if="toolsets.length === 0" class="agents-hint">No toolsets yet — create one in the <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button> tab.</p>
         </template>
       </fieldset>
 
@@ -545,7 +545,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <span>Could not load tool connections. {{ connectionSlice.error }}</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
         </div>
-        <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner" aria-hidden="true" /> Loading tool connections…</div>
+        <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading tool connections…</div>
         <template v-else>
           <div v-if="connectionSlice.error" class="agents-stale" role="status">
             Showing the last loaded connections. {{ connectionSlice.error }}
@@ -555,7 +555,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <label class="agents-check"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.spec.displayName || connection.metadata.name }} <span class="muted">{{ connection.spec.type }}</span></label>
             <label class="agents-check agents-bg-toggle"><input type="checkbox" :checked="backgroundTools(agent).has(connection.metadata.name)" :disabled="!linkedTools(agent).has(connection.metadata.name)" @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
           </div>
-          <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
+          <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
         </template>
       </fieldset>
     </ResourceSectionCard>
@@ -566,12 +566,12 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner" aria-hidden="true" /> Loading channel connections…</div>
+      <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading channel connections…</div>
       <div v-else-if="connectionSlice.error" class="agents-stale" role="status">
         Showing the last loaded connections. {{ connectionSlice.error }}
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <p v-if="connectionSlice.hasSnapshot && channelConnections.length === 0" class="agents-hint">No channels yet — add a Telegram / Slack / Discord / email connection under <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
+      <p v-if="connectionSlice.hasSnapshot && channelConnections.length === 0" class="agents-hint">No channels yet — add a Telegram / Slack / Discord / email connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
       <div v-if="connectionSlice.hasSnapshot" class="agents-chan-editor" role="group" aria-labelledby="agent-channels-heading" :aria-describedby="channelError ? 'agent-channels-error' : undefined">
         <div v-for="row in channels" :key="row.key" class="agents-chan-row">
           <input class="k-input agents-chan-name" placeholder="primary" aria-label="Channel role name" :value="row.name || ''" :aria-invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'true' : undefined" :aria-describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'agent-channels-error' : undefined" @input="patchChannelRow(row.key, { name: ($event.target as HTMLInputElement).value })" />

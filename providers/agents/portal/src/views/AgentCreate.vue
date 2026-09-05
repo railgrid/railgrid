@@ -183,7 +183,7 @@ async function submit(): Promise<void> {
               <span id="agent-create-model-hint" class="agents-hint">The credential and model endpoint used for every turn.</span>
               <span v-if="credentialOptions.length === 0" class="agents-hint">
                 No model credentials yet —
-                <button type="button" class="k-btn k-btn--ghost agents-linkbtn" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
+                <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
                   add one under Models
                 </button>
                 first.

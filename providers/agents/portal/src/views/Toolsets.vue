@@ -217,7 +217,7 @@ function cancelCreate(): void {
         <button class="k-btn k-btn--ghost" type="button" :disabled="slice.loading" @click="store.load('toolsets')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-card agents-state agents-state-error" role="alert">Could not load optional tool connections. {{ connectionSlice.error }} <button class="k-btn k-btn--ghost secondary" @click="store.load('connections')">Retry</button></div>
-      <div v-else-if="!connectionSlice.hasSnapshot" class="k-card agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner" aria-hidden="true" /> Loading optional tool connections…</div>
+      <div v-else-if="!connectionSlice.hasSnapshot" class="k-card agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading optional tool connections…</div>
       <FirstRunGuide
         :title="hasToolConnections ? 'Bundle tools for reuse' : 'Create your first toolset'"
         :description="hasToolConnections ? 'Group available tool connections so the same capability bundle can be attached to multiple agents.' : connectionSlice.hasSnapshot ? 'Start with core and edge capabilities now. External tool connections are optional and can be added whenever the bundle needs them.' : 'Start with core and edge capabilities now. Available external tool connections will appear after they finish loading.'"

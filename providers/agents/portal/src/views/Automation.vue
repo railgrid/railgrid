@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Pause, Play, Plus } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
-import type { Route } from '../router'
+import { hashFor, type Route } from '../router'
 import type { AppStore } from '../store'
 import {
   fmtTime,
@@ -17,6 +17,7 @@ import {
 import { confirmDialog } from '../portalkit/confirm'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -89,8 +90,10 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   kind: AutomationKind
   agent: string
+  createRoute?: boolean
+  editName?: string
   authorityEpoch?: number
-}>(), { authorityEpoch: 0 })
+}>(), { createRoute: false, editName: '', authorityEpoch: 0 })
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
@@ -102,15 +105,17 @@ const formBusy = ref(false)
 const actionBusy = ref('')
 
 const meta = computed(() => META[props.kind])
+const formRoute = computed(() => props.createRoute || !!props.editName)
 const slice = computed(() => {
   void revision.value
-  return props.kind === 'schedule' ? props.store.schedules : props.store.triggers
+  return { ...(props.kind === 'schedule' ? props.store.schedules : props.store.triggers) }
 })
 const rows = computed<Automation[]>(() => {
   void revision.value
   const all = props.kind === 'schedule' ? props.store.schedules.data : props.store.triggers.data
   return all.filter(row => row.spec.agentRef === props.agent)
 })
+const currentEdit = computed(() => rows.value.find(row => row.metadata.name === props.editName))
 const tableRows = computed(() => rows.value.map(row => ({
   name: row.metadata.name,
   when: whenText(row),
@@ -177,12 +182,14 @@ function resetDraft(values: Draft = EMPTY): void {
 }
 
 function openCreate(): void {
-  resetDraft()
-  nameError.value = ''
-  editing.value = ''
+	emit('navigate', { kind: 'automation', resource: props.kind, agent: props.agent, action: 'create' })
 }
 
 function openEdit(row: Automation): void {
+	emit('navigate', { kind: 'automation', resource: props.kind, agent: props.agent, action: 'edit', name: row.metadata.name })
+}
+
+function hydrateEdit(row: Automation): void {
   const spec = automationSpec(row)
   resetDraft({
     name: row.metadata.name,
@@ -198,6 +205,10 @@ function openEdit(row: Automation): void {
   })
   nameError.value = ''
   editing.value = row.metadata.name
+}
+
+function returnToConfig(): void {
+	if (!formBusy.value) emit('navigate', { kind: 'agent', name: props.agent, tab: 'config' })
 }
 
 function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
@@ -254,7 +265,9 @@ async function save(): Promise<void> {
           failure: 'Create failed',
           reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
         })
-    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) editing.value = null
+    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
+      emit('navigate', { kind: 'agent', name: props.agent, tab: 'config' })
+    }
   } finally {
     formBusy.value = false
   }
@@ -331,69 +344,110 @@ watch(() => [props.kind, props.agent] as const, () => {
   resetDraft()
 })
 
+watch([() => props.createRoute, () => props.editName, () => revision.value], () => {
+	if (!formRoute.value) {
+		editing.value = null
+		return
+	}
+	if (props.createRoute) {
+		if (editing.value !== '') {
+			resetDraft()
+			nameError.value = ''
+			editing.value = ''
+		}
+		return
+	}
+	if (currentEdit.value && editing.value !== props.editName) hydrateEdit(currentEdit.value)
+}, { immediate: true })
+
 const cap = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1)
 </script>
 
 <template>
-  <ResourceSectionCard class="agents-config-sec" :heading-id="`agent-${kind}-heading`" :title="meta.title" :description="meta.blurb">
-    <template v-if="editing === null" #actions>
+  <ResourceSectionCard v-if="!formRoute" class="agents-config-sec" :heading-id="`agent-${kind}-heading`" :title="meta.title" :description="meta.blurb">
+    <template #actions>
       <button class="k-btn k-btn--ghost secondary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
     </template>
 
     <div class="agents-tablewrap">
-    <ResourceTable
-      :columns="columns"
-      :rows="tableRows"
-      :aria-label="meta.title"
-      variant="simple"
-      :interactive="false"
-      row-key="name"
-      :loaded="slice.hasSnapshot"
-      :loading="slice.loading"
-      :error="slice.error"
-      :stale="slice.hasSnapshot && !!slice.error"
-      retryable
-      :empty-text="meta.empty"
-      @retry="store.load(kind === 'schedule' ? 'schedules' : 'triggers')"
-    >
-      <template #name="{ row }"><strong>{{ row.name }}</strong></template>
-      <template #when="{ row }"><span class="mono">{{ row.when }}</span></template>
-      <template #status="{ row }">
-        <span class="muted">
-          <span v-if="automationStatus(row.resource as Automation)?.disabledReason" class="k-badge agents-badge k-badge--warning agents-badge-warn">{{ automationStatus(row.resource as Automation)?.disabledReason }}</span>
-          <span v-else-if="automationSpec(row.resource as Automation).suspend" class="k-badge agents-badge">paused</span>
-          <template v-else>{{ statusText(row.resource as Automation) }}</template>
-          <button v-if="automationStatus(row.resource as Automation)?.lastRunID" class="k-btn k-btn--ghost agents-linkbtn" type="button" @click="emit('navigate', { kind: 'run', id: automationStatus(row.resource as Automation)!.lastRunID! })">last run</button>
-        </span>
-      </template>
-      <template #actions="{ row }">
-        <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
-        <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
-        <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
-        <ResourceTableDeleteButton :label="`Delete ${row.name}`" :busy="actionBusy === `delete:${row.name}`" :disabled="!!actionBusy" @click="del(String(row.name))" />
-      </template>
-    </ResourceTable>
+      <ResourceTable
+        :columns="columns"
+        :rows="tableRows"
+        :aria-label="meta.title"
+        variant="simple"
+        :interactive="false"
+        row-key="name"
+        :loaded="slice.hasSnapshot"
+        :loading="slice.loading"
+        :error="slice.error"
+        :stale="slice.hasSnapshot && !!slice.error"
+        retryable
+        :empty-text="meta.empty"
+        @retry="store.load(kind === 'schedule' ? 'schedules' : 'triggers')"
+      >
+        <template #name="{ row }"><strong>{{ row.name }}</strong></template>
+        <template #when="{ row }"><span class="mono">{{ row.when }}</span></template>
+        <template #status="{ row }">
+          <span class="muted">
+            <span v-if="automationStatus(row.resource as Automation)?.disabledReason" class="k-badge agents-badge k-badge--warning agents-badge-warn">{{ automationStatus(row.resource as Automation)?.disabledReason }}</span>
+            <span v-else-if="automationSpec(row.resource as Automation).suspend" class="k-badge agents-badge">paused</span>
+            <template v-else>{{ statusText(row.resource as Automation) }}</template>
+            <button v-if="automationStatus(row.resource as Automation)?.lastRunID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: automationStatus(row.resource as Automation)!.lastRunID! })">last run</button>
+          </span>
+        </template>
+        <template #actions="{ row }">
+          <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
+          <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
+          <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
+          <ResourceTableDeleteButton :label="`Delete ${row.name}`" :busy="actionBusy === `delete:${row.name}`" :disabled="!!actionBusy" @click="del(String(row.name))" />
+        </template>
+      </ResourceTable>
+    </div>
+  </ResourceSectionCard>
+
+  <div v-else class="agents-create-page k-create-page">
+    <ResourceBackLink :href="hashFor({ kind: 'agent', name: agent, tab: 'config' })" :disabled="formBusy" @back="returnToConfig">Agent config</ResourceBackLink>
+    <header class="k-create-header">
+      <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
+      <p class="k-create-description">{{ meta.blurb }}</p>
+    </header>
+
+    <div v-if="!createRoute && slice.error && slice.hasSnapshot" class="k-stale" role="status">
+      Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}
+      <button class="k-dashboard-action" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
-    <form v-if="editing !== null" class="agents-obj-form k-card" @submit.prevent="save">
-      <h3>{{ editing ? `Edit ${meta.one} ${editing}` : `New ${meta.one}` }}</h3>
-      <label v-if="!editing">Name *<input v-model="draft.name" class="k-input" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" /><span v-if="nameError" :id="`automation-${kind}-name-error`" class="agents-fielderr" role="alert">{{ nameError }}</span></label>
-      <template v-if="kind === 'schedule'">
-        <div class="agents-grid2">
-          <label><span :id="`automation-${kind}-type-label`">Type</span><FormSelect v-model="draft.type" :options="typeOptions" :disabled="formBusy" :labelledby="`automation-${kind}-type-label`" /></label>
-          <label>Timezone<input v-model="draft.timeZone" class="k-input" placeholder="Europe/Vilnius" :disabled="formBusy" /></label>
+    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.hasSnapshot ? 'agents-state-empty' : slice.error ? 'agents-state-error' : 'k-loading-reveal'" :role="slice.error && !slice.hasSnapshot ? 'alert' : 'status'">
+      <p class="muted">{{ slice.hasSnapshot ? (slice.error ? `The last loaded data did not include ${meta.one} “${editName}”.` : `No ${meta.one} named “${editName}” belongs to this agent.`) : slice.error ? `Could not load this ${meta.one}. ${slice.error}` : `Loading ${meta.one}…` }}</p>
+      <button v-if="slice.error && !slice.hasSnapshot" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
+    </div>
+
+    <form v-else class="agents-obj-form agents-guided-form k-create-surface" :aria-busy="formBusy" @submit.prevent="save">
+      <div class="k-create-body">
+        <label v-if="!editing" :for="`automation-${kind}-name`">Name *
+          <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
+          <span v-if="nameError" :id="`automation-${kind}-name-error`" class="agents-fielderr" role="alert">{{ nameError }}</span>
+        </label>
+        <template v-if="kind === 'schedule'">
+          <div class="agents-grid2">
+            <label><span :id="`automation-${kind}-type-label`">Type</span><FormSelect v-model="draft.type" :options="typeOptions" :disabled="formBusy" :labelledby="`automation-${kind}-type-label`" /></label>
+            <label>Timezone<input v-model="draft.timeZone" class="k-input" name="timeZone" placeholder="Europe/Vilnius" :disabled="formBusy" /></label>
+          </div>
+          <label v-if="draft.type === 'wakeup'">Run at (RFC3339)<input v-model="draft.runAt" class="k-input mono" name="runAt" placeholder="2026-01-01T09:00:00Z" :disabled="formBusy" /></label>
+          <label v-else>Cron<input v-model="draft.schedule" class="k-input mono" name="schedule" placeholder="0 9 * * *" :disabled="formBusy" /><span class="agents-hint">5-field cron · crontab.guru</span></label>
+        </template>
+        <div v-else class="agents-grid2">
+          <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="draft.source" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" /></label>
+          <label><span :id="`automation-${kind}-connection-label`">Connection</span><FormSelect v-model="draft.connectionRef" :options="connectionOptions" :disabled="formBusy" :labelledby="`automation-${kind}-connection-label`" /></label>
         </div>
-        <label v-if="draft.type === 'wakeup'">Run at (RFC3339)<input v-model="draft.runAt" class="k-input mono" placeholder="2026-01-01T09:00:00Z" :disabled="formBusy" /></label>
-        <label v-else>Cron<input v-model="draft.schedule" class="k-input mono" placeholder="0 9 * * *" :disabled="formBusy" /><span class="agents-hint">5-field cron · crontab.guru</span></label>
-      </template>
-      <div v-else class="agents-grid2">
-        <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="draft.source" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" /></label>
-        <label><span :id="`automation-${kind}-connection-label`">Connection</span><FormSelect v-model="draft.connectionRef" :options="connectionOptions" :disabled="formBusy" :labelledby="`automation-${kind}-connection-label`" /></label>
+        <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
+        <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" /><span class="agents-hint">Where output is delivered</span></label>
+        <label class="agents-check"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
-      <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
-      <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" /><span class="agents-hint">Where output is delivered</span></label>
-      <label class="agents-check"><input v-model="draft.suspend" type="checkbox" :disabled="formBusy" /> Paused</label>
-      <div class="agents-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="formBusy">{{ formBusy ? 'Saving…' : editing ? 'Save' : `Create ${meta.one}` }}</button><button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="editing = null">Cancel</button></div>
+      <div class="k-create-actions">
+        <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToConfig">Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit" :disabled="formBusy">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
+      </div>
     </form>
-  </ResourceSectionCard>
+  </div>
 </template>

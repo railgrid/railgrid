@@ -3,6 +3,7 @@ import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
 import type { Agent, Connection, FarosContext, Toolset } from '../types'
+import { agentFixture } from './helpers'
 import { settleVue, text } from './vue-helper'
 
 if (!customElements.get('faros-provider-agents')) customElements.define('faros-provider-agents', AgentsElement)
@@ -246,6 +247,91 @@ describe('public Agents shell routing', () => {
     expect(location.hash).toBe('#/connections')
     expect(text(element)).toContain('Research tools')
     expect(document.activeElement).toBe(element.querySelector('[data-toolsets-heading]'))
+  })
+
+  it('opens automation forms on agent-owned routes and replaces back to Config', async () => {
+    const element = await mountShell('#/agents/scout/config')
+    const store = element.store!
+    store.agents.data = [agentFixture('scout')]
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.connections.loaded = store.connections.hasSnapshot = true
+    store.toolsets.loaded = store.toolsets.hasSnapshot = true
+    store.schedules.loaded = store.schedules.hasSnapshot = true
+    store.triggers.loaded = store.triggers.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue(5, 20)
+
+    const push = vi.spyOn(history, 'pushState')
+    const replace = vi.spyOn(history, 'replaceState')
+    push.mockClear()
+    replace.mockClear()
+
+    buttonWithText(element, 'New schedule').click()
+    await settleVue(4, 5)
+    expect(location.hash).toBe('#/agents/scout/schedules/create')
+    expect(push).toHaveBeenCalledWith(null, '', '#/agents/scout/schedules/create')
+    expect(text(element.querySelector('h1'))).toBe('New schedule')
+    expect(element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/config')
+    expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
+
+    buttonWithText(element, 'Cancel').click()
+    await settleVue(5, 5)
+    expect(location.hash).toBe('#/agents/scout/config')
+    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/config')
+    expect(text(element)).toContain('Schedules')
+    expect(text(element)).toContain('Triggers')
+    expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
+  })
+
+  it('deep-links an automation edit form and returns to Config after save', async () => {
+    const element = await mountShell('#/agents/scout/triggers/on%2Fissue/edit')
+    const store = element.store!
+    store.agents.data = [agentFixture('scout')]
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.connections.loaded = store.connections.hasSnapshot = true
+    store.toolsets.loaded = store.toolsets.hasSnapshot = true
+    store.schedules.loaded = store.schedules.hasSnapshot = true
+    store.triggers.data = [{ metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', source: 'webhook', task: 'old task' } }]
+    store.triggers.loaded = store.triggers.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    const updated = { metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', source: 'webhook', task: 'new task' } }
+    element.api!.patchTrigger = vi.fn().mockResolvedValue(updated)
+    element.api!.listTriggers = vi.fn().mockResolvedValue([updated])
+    const replace = vi.spyOn(history, 'replaceState')
+    replace.mockClear()
+    await settleVue(5, 20)
+
+    expect(text(element.querySelector('h1'))).toBe('Edit trigger on/issue')
+    const task = element.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!
+    task.value = 'new task'
+    task.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue(7, 120)
+
+    expect(element.api!.patchTrigger).toHaveBeenCalledWith('on/issue', expect.objectContaining({ task: 'new task' }))
+    expect(location.hash).toBe('#/agents/scout/config')
+    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/config')
+    expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
+  })
+
+  it('keeps an automation edit deep link useful while loading and when missing', async () => {
+    const element = await mountShell('#/agents/scout/schedules/missing/edit')
+    await settleVue(4, 5)
+
+    expect(text(element.querySelector('h1'))).toBe('Edit schedule missing')
+    expect(text(element.querySelector('[role="status"]'))).toContain('Loading schedule')
+    expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
+
+    const store = element.store!
+    element.api!.listSchedules = vi.fn().mockResolvedValue([])
+    await store.load('schedules')
+    await settleVue(4, 5)
+
+    expect(text(element.querySelector('[role="status"]'))).toContain('No schedule named “missing” belongs to this agent')
+    expect(element.querySelector('form')).toBeNull()
+    expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
   })
 })
 

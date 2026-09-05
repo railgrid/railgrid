@@ -150,7 +150,9 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('form')).not.toBeNull()
     expect(el.textContent).toContain('No model credentials yet')
     expect(el.querySelector<HTMLButtonElement>('button[type=submit]')?.disabled).toBe(true)
-    el.querySelector<HTMLButtonElement>('.agents-linkbtn')!.click()
+    const recovery = el.querySelector<HTMLButtonElement>('.k-dashboard-action')!
+    expect(recovery.textContent).toContain('add one under Models')
+    recovery.click()
     expect(routes).toEqual([{ kind: 'create', resource: 'model' }])
   })
 

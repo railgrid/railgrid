@@ -7,6 +7,7 @@
 //      liveness was only set when a parsed event arrived and the server sends
 //      nothing but comment frames until something happens.
 
+import { ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Models from '../views/Models.vue'
 import { ApiClient } from '../api'
@@ -53,6 +54,88 @@ describe('models view on an empty workspace', () => {
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
     expect(el.querySelector('.agents-panel.agents-route-panel')).toBeTruthy()
+  })
+
+  it('distinguishes initial usage and catalog failures from empty results', async () => {
+    const api = stubApi({
+      catalog: () => Promise.reject(new Error('catalog offline')),
+      usage: () => Promise.reject(new Error('usage offline')),
+    })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const { element: el } = await mountVue(Models, { store, api })
+    await settleVue()
+
+    expect(el.querySelectorAll('[role="alert"]')).toHaveLength(2)
+    expect(el.textContent).toContain('Usage unavailable: usage offline')
+    expect(el.textContent).toContain('Model catalog unavailable: catalog offline')
+    expect(el.textContent).toContain('catalog unavailable — pricing unknown')
+    expect(el.textContent).not.toContain('not in catalog — no pricing')
+  })
+
+  it('retains catalog and usage snapshots through same-authority refresh failures', async () => {
+    const usageSnapshot = {
+      ...usageWithNulls,
+      total: { ...usageWithNulls.total, runs: 3, usdMicros: 5_000_000 },
+      byAgent: [],
+      byModel: [],
+      series: [],
+    }
+    const catalog = vi.fn()
+      .mockResolvedValueOnce([{ id: 'gpt-5', label: 'GPT-5', inputPer1M: 2, outputPer1M: 8 }])
+      .mockRejectedValueOnce(new Error('catalog refresh failed'))
+    const usage = vi.fn()
+      .mockResolvedValueOnce(usageSnapshot)
+      .mockRejectedValueOnce(new Error('usage refresh failed'))
+    const exposed = ref<{ loadCatalog: () => Promise<void>; loadUsage: () => Promise<void> } | null>(null)
+    const api = stubApi({ catalog, usage })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const { element: el } = await mountVue(Models, { ref: exposed, store, api })
+    await settleVue()
+
+    expect(el.textContent).toContain('$5.00')
+    expect(el.textContent).toContain('$2/$8 per 1M')
+    await Promise.all([exposed.value!.loadCatalog(), exposed.value!.loadUsage()])
+    await settleVue()
+
+    expect(el.textContent).toContain('Could not refresh usage. Showing usage from the last successful read.')
+    expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
+    expect(el.textContent).toContain('$5.00')
+    expect(el.textContent).toContain('$2/$8 per 1M')
+  })
+
+  it('clears snapshots when the store and API authority change', async () => {
+    const first = stubApi({
+      catalog: () => Promise.resolve([{ id: 'gpt-5', inputPer1M: 2, outputPer1M: 8 }]),
+      usage: () => Promise.resolve({ ...usageWithNulls, total: { ...usageWithNulls.total, usdMicros: 5_000_000 } }),
+    })
+    const nextCatalog = deferred<never[]>()
+    const nextUsage = deferred<typeof usageWithNulls>()
+    const second = stubApi({ catalog: () => nextCatalog.promise, usage: () => nextUsage.promise })
+    const firstStore = makeStore(first)
+    firstStore.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    firstStore.credentials.loaded = firstStore.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store: firstStore, api: first })
+    await settleVue()
+    expect(view.element.textContent).toContain('$5.00')
+    expect(view.element.textContent).toContain('$2/$8 per 1M')
+
+    const secondStore = makeStore(second)
+    secondStore.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    secondStore.credentials.loaded = secondStore.credentials.hasSnapshot = true
+    await view.setProps({ store: secondStore, api: second })
+
+    expect(view.element.textContent).toContain('Loading usage…')
+    expect(view.element.textContent).toContain('Loading model catalog…')
+    expect(view.element.textContent).not.toContain('$5.00')
+    expect(view.element.textContent).not.toContain('$2/$8 per 1M')
+
+    nextCatalog.resolve([])
+    nextUsage.resolve(usageWithNulls)
+    await settleVue()
   })
 
   it('opens the create form when New model is clicked', async () => {

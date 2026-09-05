@@ -52,6 +52,24 @@ describe('edit routes', () => {
   })
 })
 
+describe('agent automation routes', () => {
+  it.each<[string, Route]>([
+    ['#/agents/team%2Fbot/schedules/create', { kind: 'automation', resource: 'schedule', agent: 'team/bot', action: 'create' }],
+    ['#/agents/team%2Fbot/schedules/daily%2Fdigest/edit', { kind: 'automation', resource: 'schedule', agent: 'team/bot', action: 'edit', name: 'daily/digest' }],
+    ['#/agents/team%2Fbot/triggers/create', { kind: 'automation', resource: 'trigger', agent: 'team/bot', action: 'create' }],
+    ['#/agents/team%2Fbot/triggers/on%2Fissue/edit', { kind: 'automation', resource: 'trigger', agent: 'team/bot', action: 'edit', name: 'on/issue' }],
+  ])('parses and formats %s', (hash, route) => {
+    expect(parseHash(hash)).toEqual(route)
+    expect(hashFor(route)).toBe(hash)
+    expect(activeMenu(route)).toBe('agents')
+  })
+
+  it('does not mistake malformed automation paths for a focused form', () => {
+    expect(parseHash('#/agents/scout/schedules/create/extra')).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+    expect(parseHash('#/agents/scout/triggers/edit')).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+  })
+})
+
 describe('hash history writes', () => {
   it('pushes ordinary navigation and replaces only an explicit terminal transition', () => {
     const push = vi.spyOn(history, 'pushState')

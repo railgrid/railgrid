@@ -11,7 +11,6 @@ async function source(path) {
 function expectSkeleton(name, text, { wide = false } = {}) {
   for (const className of [
     'k-create-page',
-    'k-back-action',
     'k-create-header',
     'k-create-title',
     'k-create-description',
@@ -20,6 +19,7 @@ function expectSkeleton(name, text, { wide = false } = {}) {
   ]) {
     assert.match(text, new RegExp(className), `${name} is missing ${className}`)
   }
+  assert.match(text, /k-back-action|ResourceBackLink/, `${name} is missing a canonical back action`)
   if (wide) assert.match(text, /k-create-surface--(?:wide|guided)/, `${name} should use a wide provisioning surface`)
   assert.match(text, /Cancel[\s\S]*k-btn--primary/, `${name} must order Cancel before its primary action`)
 }
@@ -124,6 +124,7 @@ test('Agents route-owned create flows use the shared skeleton without obsolete m
     ['assisted search', 'providers/agents/portal/src/views/AssistedSearch.vue'],
     ['model', 'providers/agents/portal/src/views/Models.vue'],
     ['toolset', 'providers/agents/portal/src/views/Toolsets.vue'],
+    ['automation', 'providers/agents/portal/src/views/Automation.vue'],
   ]
   for (const [name, path] of cases) {
     const text = await source(path)

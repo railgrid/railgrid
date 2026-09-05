@@ -1,6 +1,7 @@
 // Chat streaming: the delta → tool card → approval card → done lifecycle, plus
 // the Stop button's cancel call and scroll-pinning behaviour.
 
+import { ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
 import { resolveConfirm } from '../portalkit/confirm'
@@ -41,7 +42,7 @@ function deferred<T>() {
 const session = (id: string, preview = id) => ({ id, preview, messageCount: 1, createdAt: '', lastActivity: '' })
 
 async function mountChat(chatStream: unknown, extra: Record<string, unknown> = {}) {
-  const api = stubApi({ chatStream, ...extra })
+  const api = stubApi({ chatStream, listRuns: () => Promise.resolve({ items: [] }), ...extra })
   const store = makeStore(api)
   store.agents.data = [agentFixture('scout')]
   store.agents.loaded = true
@@ -117,6 +118,24 @@ describe('chat streaming', () => {
     expect(msgs[1].querySelector('strong')?.textContent).toBe('hi')
     // Per-turn usage footer.
     expect(text(msgs[1].querySelector('.agents-turn-usage'))).toContain('$0.0015')
+  })
+
+  it('keeps the last loaded chat list when its background refresh fails', async () => {
+    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    const listSessions = vi.fn()
+      .mockResolvedValueOnce([session('s1', 'First chat'), session('s2', 'Second chat')])
+      .mockRejectedValueOnce(new Error('session refresh failed'))
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'done', data: { runID: 'r1', content: 'done' } },
+    ]), { listSessions })
+
+    await send(el, 'hello')
+
+    expect(text(el)).toContain('Could not refresh chats. Showing the last loaded chats.')
+    expect(text(el)).toContain('session refresh failed')
+    await chooseSession(el, 'Second chat')
+    expect(text(el.querySelector('.agents-session-picker'))).toContain('Second chat')
   })
 
   it('announces only the actively streaming assistant message', async () => {
@@ -552,6 +571,58 @@ describe('chat streaming', () => {
 })
 
 describe('chat read ownership', () => {
+  it('does not present failed initial reads as an empty chat', async () => {
+    const api = stubApi({ listSessions: () => Promise.reject(new Error('sessions unavailable')) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const sessionFailure = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(sessionFailure)
+    await settle(4)
+
+    expect(text(sessionFailure.element.querySelector('[role="alert"]'))).toContain('Could not load chats')
+    expect(text(sessionFailure.element)).not.toContain('No messages yet')
+    expect(text(sessionFailure.element.querySelector('.agents-session-picker'))).not.toContain('New chat')
+
+    const messageAPI = stubApi({
+      listSessions: () => Promise.resolve([session('s1')]),
+      listMessages: () => Promise.reject(new Error('transcript unavailable')),
+    })
+    const messageStore = makeStore(messageAPI)
+    messageStore.agents.data = [agentFixture('scout')]
+    const messageFailure = await mountVue(AgentChat, { store: messageStore, api: messageAPI, name: 'scout' })
+    mounted.push(messageFailure)
+    await settle(4)
+
+    expect(text(messageFailure.element.querySelector('[role="alert"]'))).toContain('transcript unavailable')
+    expect(text(messageFailure.element)).not.toContain('No messages yet')
+  })
+
+  it('retains a loaded transcript when a background refresh fails', async () => {
+    let failMessages = false
+    const listMessages = vi.fn(() => failMessages
+      ? Promise.reject(new Error('transcript refresh unavailable'))
+      : Promise.resolve([{ id: 'm1', role: 'user', content: 'keep this message' }]))
+    const listRuns = vi.fn().mockResolvedValue({ items: [runRowForRead()] })
+    const api = stubApi({ listSessions: () => Promise.resolve([session('s1')]), listMessages, listRuns })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(4)
+    expect(text(view.element)).toContain('keep this message')
+
+    failMessages = true
+    store.dispatchEvent(new CustomEvent('server', {
+      detail: { type: 'run', data: { id: 'late-run', phase: 'Succeeded' } },
+    }))
+    await settle(4)
+
+    expect(text(view.element)).toContain('keep this message')
+    expect(text(view.element.querySelector('.k-stale'))).toContain('Showing the last loaded transcript')
+    expect(text(view.element.querySelector('.k-stale'))).toContain('transcript refresh unavailable')
+    expect(text(view.element)).not.toContain('No messages yet')
+  })
+
   it('does not let initial session discovery replace a new chat the user opened', async () => {
     const sessions = deferred<ReturnType<typeof session>[]>()
     localStorage.setItem('faros:agents:session:org:ws:scout', 'remembered-session')
@@ -909,5 +980,27 @@ describe('a run still working with nobody attached', () => {
     await settle(4)
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
     expect(text(el)).toContain('hi')
+    expect(text(el)).toContain('Could not check for an active run: unavailable')
+  })
+
+  it('keeps a live-run snapshot when a same-session refresh fails', async () => {
+    const listRuns = vi.fn()
+      .mockResolvedValueOnce({ items: [runRow()] })
+      .mockRejectedValueOnce(new Error('run refresh failed'))
+    const exposed = ref<{ refreshOrphan: () => Promise<void> } | null>(null)
+    const api = stubApi({ listMessages: () => Promise.resolve([]), listRuns })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentChat, { ref: exposed, store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(4)
+
+    expect(view.element.querySelector('.agents-orphan-banner')).toBeTruthy()
+    await exposed.value!.refreshOrphan()
+    await settle(4)
+
+    expect(view.element.querySelector('.agents-orphan-banner')).toBeTruthy()
+    expect(text(view.element)).toContain('Could not refresh run status. Showing the last loaded status.')
+    expect(text(view.element)).toContain('run refresh failed')
   })
 })

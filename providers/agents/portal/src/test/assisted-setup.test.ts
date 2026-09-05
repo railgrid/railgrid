@@ -23,6 +23,12 @@ async function mount<T>(tag: string, props: Record<string, unknown>): Promise<T>
 }
 async function settle(_element: Element, passes = 4): Promise<void> { await settleVue(passes, 250) }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(resolvePromise => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
 function connFixture(name: string, spec: Partial<Connection['spec']> = {}): Connection {
   return { metadata: { name }, spec: { type: 'websearch', ...spec } }
 }
@@ -127,6 +133,22 @@ describe('capability gating', () => {
     expect(el.querySelector('.agents-conn-form')).toBeNull()
     expect(text(el.querySelector('[role="alert"]'))).toContain('Could not verify existing connections')
     expect(text(el.querySelector('[role="alert"] button'))).toContain('Retry')
+  })
+
+  it('keeps the last connection snapshot usable when a background refresh fails', async () => {
+    const { el, store, mounted } = await mountConnections({ providers: ['infrastructure'] })
+    store.connections.error = 'refresh unavailable'
+    store.dispatchEvent(new Event('change'))
+    await settle(el, 2)
+
+    expect(el.querySelector('.agents-assist')).not.toBeNull()
+
+    await mounted.setProps({ createRoute: true, createType: 'assisted-search' })
+    await settle(el, 2)
+
+    expect(el.querySelector('.agents-conn-form')).not.toBeNull()
+    expect(text(el.querySelector('.agents-stale'))).toContain('Showing the last loaded connections')
+    expect(text(el.querySelector('.agents-stale button'))).toContain('Retry')
   })
 })
 
@@ -239,11 +261,25 @@ describe('assisted setup flow', () => {
     expect(el.querySelector('.agents-conn-form')).not.toBeNull()
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('[role="dialog"]')).toBeNull()
+    expect(el.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/connections')
+    expect(text(el.querySelector('fieldset legend'))).toBe('Size')
+    expect(el.querySelector('.agents-modeseg')?.getAttribute('role')).toBeNull()
     const sizes = [...el.querySelectorAll<HTMLButtonElement>('.agents-modebtn')]
     expect(sizes.map(button => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
     sizes[1].click()
     await settle(el, 2)
     expect(sizes.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false'])
+  })
+
+  it('keeps a real Connections href and emits the owned cancel transition', async () => {
+    const { el, mounted } = await mountAssistedPage({ providers: ['infrastructure'] })
+    const back = el.querySelector<HTMLAnchorElement>('.k-back-action')!
+
+    expect(back.getAttribute('href')).toBe('#/connections')
+    back.click()
+    await settle(el, 2)
+
+    expect(mounted.events['create-cancel']).toHaveLength(1)
   })
 
   it('labels the agent selector and links its validation error', async () => {
@@ -345,12 +381,50 @@ describe('assisted setup flow', () => {
     expect(connectionError?.getAttribute('role')).toBe('alert')
     expect(instanceError?.getAttribute('role')).toBe('alert')
     expect(input.getAttribute('aria-invalid')).toBe('true')
-    expect(input.getAttribute('aria-describedby')).toBe('assisted-search-connection-name-error')
+    expect(input.getAttribute('aria-describedby')).toBe('assisted-search-connection-name-hint assisted-search-connection-name-error')
     const instance = el.querySelector<HTMLInputElement>('input[name=instance]')!
     expect(instance.getAttribute('aria-invalid')).toBe('true')
-    expect(instance.getAttribute('aria-describedby')).toBe('assisted-search-instance-name-error')
+    expect(instance.getAttribute('aria-describedby')).toBe('assisted-search-instance-name-hint assisted-search-instance-name-error')
     expect(DNS_LABEL_RE.test('search')).toBe(true)
     expect(DNS_LABEL_RE.test('-search')).toBe(false)
+  })
+
+  it('clears associated validation feedback when the user corrects a field', async () => {
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')])
+    const input = el.querySelector<HTMLInputElement>('input[name=connName]')!
+
+    input.value = 'Search Me'
+    input.dispatchEvent(new Event('input'))
+    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 4)
+    expect(input.getAttribute('aria-describedby')).toContain('assisted-search-connection-name-error')
+
+    input.value = 'search-me'
+    input.dispatchEvent(new Event('input'))
+    await settle(el, 2)
+
+    expect(el.querySelector('#assisted-search-connection-name-error')).toBeNull()
+    expect(input.getAttribute('aria-invalid')).toBeNull()
+    expect(input.getAttribute('aria-describedby')).toBe('assisted-search-connection-name-hint')
+  })
+
+  it('marks the form busy and prevents duplicate handoff submissions', async () => {
+    const pending = deferred<Connection>()
+    const createConnection = vi.fn().mockImplementation(() => pending.promise)
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
+    const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
+
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 2)
+
+    expect(form.getAttribute('aria-busy')).toBe('true')
+    expect(text(form.querySelector('button[type=submit]'))).toContain('Creating and handing off')
+    expect(form.querySelector<HTMLButtonElement>('button[type=submit]')?.disabled).toBe(true)
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    expect(createConnection).toHaveBeenCalledTimes(1)
+
+    pending.resolve(connFixture('search', { config: { provider: 'searxng', instance: 'search' } }))
+    await settle(el, 6)
   })
 })
 

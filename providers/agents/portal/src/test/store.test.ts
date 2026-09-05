@@ -78,6 +78,21 @@ describe('AppStore slices', () => {
     expect(store.agents.error).toBe('temporarily unavailable')
   })
 
+  it('retains the Activity inbox snapshot when a background reload fails', async () => {
+    const item = inboxItem('i1')
+    const listInbox = vi.fn()
+      .mockResolvedValueOnce([item])
+      .mockRejectedValueOnce(new Error('inbox temporarily unavailable'))
+    const store = makeStore(stubApi({ listInbox }))
+
+    await store.load('inbox')
+    await store.load('inbox')
+
+    expect(store.inbox.data).toEqual([item])
+    expect(store.inbox.hasSnapshot).toBe(true)
+    expect(store.inbox.error).toBe('inbox temporarily unavailable')
+  })
+
   it('emits change on every settled load', async () => {
     const store = makeStore(stubApi())
     const seen = vi.fn()

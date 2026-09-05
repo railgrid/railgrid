@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   Circle,
+  LoaderCircle,
   RefreshCw,
   Wrench,
   X,
@@ -64,7 +65,7 @@ const marked = new Marked({ gfm: true, breaks: true })
 
 const phaseMeta: Record<RunPhase, { label: string; cls: string; tone: 'success' | 'warning' | 'danger' }> = {
   Pending: { label: 'Pending', cls: 'pending', tone: 'warning' },
-  Running: { label: 'Running', cls: 'running', tone: 'success' },
+  Running: { label: 'Running', cls: 'running', tone: 'warning' },
   PendingApproval: { label: 'Needs approval', cls: 'approval', tone: 'warning' },
   Succeeded: { label: 'Succeeded', cls: 'ok', tone: 'success' },
   Failed: { label: 'Failed', cls: 'failed', tone: 'danger' },
@@ -260,17 +261,19 @@ onMounted(() => {
   bindStore(props.store)
   void load()
 })
-watch(() => props.store, bindStore, { flush: 'sync' })
-watch(() => props.runId, () => {
+watch(() => [props.store, props.api, props.runId] as const, () => {
+  bindStore(props.store)
   requestGeneration += 1
   resolvingInboxID.value = ''
+  cancellingRuns.value = new Set()
   stopLive()
   run.value = null
   error.value = null
   loading.value = false
+  refreshMode.value = 'foreground'
   expanded.value = new Set()
   void load()
-})
+}, { flush: 'post' })
 onUpdated(() => { void nextTick(() => attachCodeCopy(root.value)) })
 onBeforeUnmount(() => {
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
@@ -300,21 +303,21 @@ onBeforeUnmount(() => {
       </template>
       <template v-if="run" #actions>
         <div class="agents-detail-actions" role="group" aria-label="Run actions">
-        <button v-if="LIVE_PHASES.has(run.phase)" class="k-btn k-btn--ghost secondary" type="button" :disabled="cancellingRuns.has(runId)" :aria-busy="cancellingRuns.has(runId) || undefined" @click="cancel"><X :stroke-width="1.75" aria-hidden="true" /> {{ cancellingRuns.has(runId) ? 'Cancelling…' : 'Cancel run' }}</button>
-        <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading" :aria-busy="loading || undefined" @click="load('foreground')"><RefreshCw :stroke-width="1.75" aria-hidden="true" /> {{ loading ? 'Refreshing…' : 'Refresh' }}</button>
+          <button v-if="LIVE_PHASES.has(run.phase)" class="k-btn k-btn--ghost secondary" type="button" :disabled="cancellingRuns.has(runId)" :aria-busy="cancellingRuns.has(runId) || undefined" @click="cancel"><X :stroke-width="1.75" aria-hidden="true" /> {{ cancellingRuns.has(runId) ? 'Cancelling…' : 'Cancel run' }}</button>
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading && refreshMode === 'foreground'" :aria-busy="loading && refreshMode === 'foreground' || undefined" @click="load('foreground')"><RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" /> {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}</button>
         </div>
       </template>
       <template v-if="run" #body>
       <ResourceSectionCard title="Run details">
         <div class="agents-runmeta">
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-btn k-btn--ghost agents-linkbtn" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'config' })">{{ run.agent }}</button></span></div>
+          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'config' })">{{ run.agent }}</button></span></div>
           <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
           <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
           <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><span class="agents-spinner" aria-hidden="true"></span>{{ elapsed(run) }}</span><template v-else>—</template></span></div>
+          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
           <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
           <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
-          <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-btn k-btn--ghost agents-linkbtn" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
+          <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
         </div>
         <div v-if="run.input" class="agents-runinput"><span class="agents-runmeta-k">input</span><pre>{{ run.input }}</pre></div>
       </ResourceSectionCard>
@@ -354,7 +357,7 @@ onBeforeUnmount(() => {
         <p class="agents-hint"><Circle :stroke-width="1.75" aria-hidden="true" /><template v-if="run.steps.some(step => step.tool === 'spawn')"> This run called <span class="mono">spawn</span> but no worker runs were recorded — check the steps above for the error it came back with.</template><template v-else> Research fan-out is enabled and the agent was told how to use it, but it answered this request directly rather than splitting it up. That is the right call for a narrow question — a fan-out you do not need is just slower. For a request with genuinely independent parts, phrasing them explicitly ("compare X, Y and Z") makes the split obvious.</template></p>
       </ResourceSectionCard>
       <ResourceSectionCard v-else-if="run.children?.length" :title="`Child runs (${run.children.length})`" :description="childSummary.workers ? `${childSummary.workers} spawned worker${childSummary.workers === 1 ? '' : 's'}` : ''">
-        <p class="agents-child-summary" :class="{ 'is-live': childSummary.live }"><span v-if="childSummary.live" class="agents-spinner" aria-hidden="true"></span>{{ childSummary.text }} <span v-if="childSummary.live" class="muted">— this updates as they finish</span></p>
+        <p class="agents-child-summary" :class="{ 'is-live': childSummary.live }"><LoaderCircle v-if="childSummary.live" class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ childSummary.text }} <span v-if="childSummary.live" class="muted">— this updates as they finish</span></p>
         <ResourceTable
           :columns="[{ key: 'agent', label: 'Agent', primary: true }, { key: 'kind', label: 'Kind' }, { key: 'input', label: 'Input' }, { key: 'phase', label: 'Phase' }, { key: 'duration', label: 'Duration' }, { key: 'usage', label: 'Usage' }]"
           :rows="childRows"

@@ -29,12 +29,19 @@ const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
 const messages = ref<ChatMessage[]>([])
+const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
+const sessionsError = ref<string | null>(null)
+const sessionsHasSnapshot = ref(false)
+const sessionsLoading = ref(false)
 const sessionID = ref('')
 const streaming = ref(false)
 const loadError = ref<string | null>(null)
 const draft = ref('')
 const orphanRun = ref<RunSummary | null>(null)
+const orphanError = ref<string | null>(null)
+const orphanHasSnapshot = ref(false)
+const orphanLoading = ref(false)
 const stopRequested = ref(false)
 const cancelingRunID = ref('')
 const approvalBusy = ref<Record<string, 'approve' | 'deny'>>({})
@@ -143,17 +150,30 @@ function claimChatOwnership(): void {
   initializedFor = props.name
 }
 
+function resetOrphanRead(): void {
+  orphanReadSerial += 1
+  orphanRun.value = null
+  orphanError.value = null
+  orphanHasSnapshot.value = false
+  orphanLoading.value = false
+}
+
 async function loadSessions(name = props.name, api = props.api): Promise<boolean> {
   const serial = ++sessionReadSerial
+  sessionsLoading.value = true
   try {
     const result = await api.listSessions(name)
     if (serial !== sessionReadSerial || !contextIsCurrent(name, api)) return false
     sessions.value = result
+    sessionsHasSnapshot.value = true
+    sessionsError.value = null
     return true
-  } catch {
+  } catch (error) {
     if (serial !== sessionReadSerial || !contextIsCurrent(name, api)) return false
-    sessions.value = []
-    return true
+    sessionsError.value = (error as Error).message
+    return false
+  } finally {
+    if (serial === sessionReadSerial && contextIsCurrent(name, api)) sessionsLoading.value = false
   }
 }
 
@@ -161,8 +181,11 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
   const serial = ++orphanReadSerial
   if (streaming.value) {
     orphanRun.value = null
+    orphanError.value = null
+    orphanHasSnapshot.value = true
     return
   }
+  orphanLoading.value = true
   try {
     const page = await api.listRuns({ agent: name, session, limit: 5 })
     if (
@@ -172,10 +195,14 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
       streaming.value
     ) return
     orphanRun.value = page.items.find(run => LIVE_RUN_PHASES.has(run.phase)) ?? null
-  } catch {
+    orphanHasSnapshot.value = true
+    orphanError.value = null
+  } catch (error) {
     if (serial === orphanReadSerial && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) {
-      orphanRun.value = null
+      orphanError.value = (error as Error).message
     }
+  } finally {
+    if (serial === orphanReadSerial && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) orphanLoading.value = false
   }
 }
 
@@ -191,11 +218,13 @@ async function loadMessages(session: string, name = props.name, api = props.api)
       streaming.value
     ) return false
     messages.value = rebuildTranscript(items.slice().reverse())
+    messagesHasSnapshot.value = true
     loadError.value = null
     atBottom = true
   } catch (error) {
     if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
     loadError.value = (error as Error).message
+    return false
   }
   if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
   void findOrphanRun(session, name, api)
@@ -210,11 +239,14 @@ async function openAgent(): Promise<void> {
   initializedFor = ''
   invalidateStream()
   messageReadSerial += 1
-  orphanReadSerial += 1
   messages.value = []
+  messagesHasSnapshot.value = false
   sessions.value = []
+  sessionsError.value = null
+  sessionsHasSnapshot.value = false
+  sessionsLoading.value = false
   sessionID.value = ''
-  orphanRun.value = null
+  resetOrphanRead()
   loadError.value = null
 
   if (!name) return
@@ -224,8 +256,12 @@ async function openAgent(): Promise<void> {
   } catch {
     wanted = ''
   }
-  await loadSessions(name, api)
+  const sessionsLoaded = await loadSessions(name, api)
   if (serial !== openSerial || ownership !== chatOwnershipSerial || !contextIsCurrent(name, api)) return
+  if (!sessionsLoaded) {
+    initializedFor = name
+    return
+  }
   if (!wanted || (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted))) {
     wanted = sessions.value[0]?.id || newSessionID()
   }
@@ -242,11 +278,11 @@ function maybeAutoSend(): void {
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
   messageReadSerial += 1
-  orphanReadSerial += 1
   sessionID.value = newSessionID()
   remember(sessionID.value)
   messages.value = []
-  orphanRun.value = null
+  messagesHasSnapshot.value = true
+  resetOrphanRead()
   draft.value = text
   void send()
 }
@@ -344,6 +380,9 @@ async function cancelLiveRun(
     if (!requestIsCurrent()) return
     orphanReadSerial += 1
     orphanRun.value = null
+    orphanError.value = null
+    orphanHasSnapshot.value = true
+    orphanLoading.value = false
     // Keep watching the successfully cancelled run until the server publishes
     // its terminal event. That event is what refreshes the transcript with the
     // authoritative final state.
@@ -353,6 +392,9 @@ async function cancelLiveRun(
     // Keep the run visible so the user can inspect it or retry cancellation.
     orphanReadSerial += 1
     orphanRun.value = recoverableRun(runID, session, name)
+    orphanError.value = null
+    orphanHasSnapshot.value = true
+    orphanLoading.value = false
     liveRunID = ''
     liveRunSessionID = ''
     toast('error', `Cancel failed: ${(error as Error).message}`)
@@ -384,8 +426,7 @@ async function send(): Promise<void> {
   abort = controller
   stopRequested.value = false
   cancelingRunID.value = ''
-  orphanReadSerial += 1
-  orphanRun.value = null
+  resetOrphanRead()
   draft.value = ''
   const userID = `u${++messageSequence}`
   const assistantID = `a${++messageSequence}`
@@ -395,6 +436,7 @@ async function send(): Promise<void> {
     { id: userID, role: 'user', content: text, tools: [] },
     { id: assistantID, role: 'assistant', content: '', tools: [], streaming: true },
   ]
+  messagesHasSnapshot.value = true
   streaming.value = true
   atBottom = true
   resizeComposer()
@@ -554,6 +596,9 @@ async function cancelOrphan(): Promise<void> {
     if (!requestIsCurrent()) return
     orphanReadSerial += 1
     orphanRun.value = null
+    orphanError.value = null
+    orphanHasSnapshot.value = true
+    orphanLoading.value = false
     toast('ok', 'Stopping the run…')
   } catch (error) {
     if (requestIsCurrent()) toast('error', `Could not stop it: ${(error as Error).message}`)
@@ -566,11 +611,11 @@ function switchSession(id: string): void {
   if (!id || id === sessionID.value || streaming.value) return
   claimChatOwnership()
   messageReadSerial += 1
-  orphanReadSerial += 1
   sessionID.value = id
   remember(id)
   messages.value = []
-  orphanRun.value = null
+  messagesHasSnapshot.value = false
+  resetOrphanRead()
   liveRunID = ''
   liveRunSessionID = ''
   void loadMessages(id)
@@ -580,11 +625,11 @@ function newChat(): void {
   if (streaming.value) return
   claimChatOwnership()
   messageReadSerial += 1
-  orphanReadSerial += 1
   sessionID.value = newSessionID()
   remember(sessionID.value)
   messages.value = []
-  orphanRun.value = null
+  messagesHasSnapshot.value = true
+  resetOrphanRead()
   liveRunID = ''
   liveRunSessionID = ''
   void nextTick(() => composer.value?.focus())
@@ -609,10 +654,10 @@ async function deleteSession(): Promise<void> {
     toast('ok', 'Chat deleted.')
     sessionReadSerial += 1
     messageReadSerial += 1
-    orphanReadSerial += 1
     sessions.value = sessions.value.filter(session => session.id !== id)
     messages.value = []
-    orphanRun.value = null
+    messagesHasSnapshot.value = false
+    resetOrphanRead()
     sessionID.value = sessions.value[0]?.id || newSessionID()
     remember(sessionID.value)
     await loadMessages(sessionID.value)
@@ -635,6 +680,9 @@ function onServerEvent(event: Event): void {
     liveRunSessionID = ''
   }
   if (detail.data.id === orphanRun.value?.id) orphanRun.value = null
+  orphanError.value = null
+  orphanHasSnapshot.value = true
+  orphanLoading.value = false
   if (streaming.value) {
     // A terminal event can beat the response from POST /cancel. Loading now
     // would be rejected by loadMessages' stream guard, so retain the refresh
@@ -705,6 +753,10 @@ onBeforeUnmount(() => {
   invalidateStream()
   bindServer(null)
 })
+
+defineExpose({
+  refreshOrphan: () => findOrphanRun(sessionID.value),
+})
 </script>
 
 <template>
@@ -731,10 +783,24 @@ onBeforeUnmount(() => {
         :disabled="streaming || !!deletingSessionID"
         @click="deleteSession"
       >
-        <LoaderCircle v-if="deletingSessionID" class="agents-spinner" aria-hidden="true" />
+        <LoaderCircle v-if="deletingSessionID" class="agents-spinner k-spin" aria-hidden="true" />
         <Trash2 v-else aria-hidden="true" />
       </button>
     </div>
+
+    <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+      <span><AlertCircle aria-hidden="true" /> Could not load chats: {{ sessionsError }}</span>
+      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
+        <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
+      </button>
+    </div>
+    <div v-else-if="sessionsError" class="k-stale" role="status">
+      Could not refresh chats. Showing the last loaded chats. {{ sessionsError }}
+      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
+        <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
+      </button>
+    </div>
+    <div v-else-if="sessionsLoading && !sessionsHasSnapshot" class="k-loading-reveal muted" role="status">Loading chats…</div>
 
     <div v-if="!hasModel" class="agents-warn-banner">
       No model assigned — pick a model credential in the Config pane to start chatting.
@@ -745,7 +811,7 @@ onBeforeUnmount(() => {
       <span class="agents-orphan-text">
         This chat has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
       </span>
-      <button class="k-btn k-btn--ghost agents-linkbtn" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
+      <button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
         View progress
       </button>
       <button
@@ -755,16 +821,33 @@ onBeforeUnmount(() => {
         :aria-busy="orphanCancelBusyID === orphanRun.id ? 'true' : undefined"
         @click="cancelOrphan"
       >
-        <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner" aria-hidden="true" />
+        <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner k-spin" aria-hidden="true" />
         {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop it' }}
       </button>
     </div>
 
-    <div v-if="loadError" class="k-card agents-state agents-state-error" role="alert">
-      <span><AlertCircle aria-hidden="true" /> {{ loadError }}</span>
+    <div v-if="orphanError && !orphanHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+      <span><AlertCircle aria-hidden="true" /> Could not check for an active run: {{ orphanError }}</span>
+      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+        <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
+      </button>
+    </div>
+    <div v-else-if="orphanError" class="k-stale" role="status">
+      Could not refresh run status. Showing the last loaded status. {{ orphanError }}
+      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+        <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
+      </button>
+    </div>
+
+    <div v-if="loadError && !messagesHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+      <span><AlertCircle aria-hidden="true" /> Could not load this chat: {{ loadError }}</span>
       <button class="k-btn k-btn--ghost secondary" type="button" @click="loadMessages(sessionID)">
         <RefreshCw aria-hidden="true" /> Retry
       </button>
+    </div>
+    <div v-else-if="loadError" class="k-stale" role="status">
+      Could not refresh this chat. Showing the last loaded transcript. {{ loadError }}
+      <button class="k-dashboard-action" type="button" @click="loadMessages(sessionID)">Retry</button>
     </div>
 
     <div ref="log" class="agents-log" :aria-busy="streaming" @scroll="onScroll">
@@ -776,7 +859,7 @@ onBeforeUnmount(() => {
         :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
         @approval="resolveApproval($event.inboxID, $event.decision)"
       />
-      <p v-if="messages.length === 0" class="muted">No messages yet. Say hi.</p>
+      <p v-if="messagesHasSnapshot && messages.length === 0" class="muted">No messages yet. Say hi.</p>
     </div>
 
     <form class="agents-composer" @submit.prevent="send">
@@ -796,7 +879,7 @@ onBeforeUnmount(() => {
         ></textarea>
         <button
           v-if="streaming"
-          class="agents-composer-primary agents-stop is-stop"
+          class="k-btn k-btn--primary agents-composer-primary agents-stop is-stop"
           type="button"
           :title="stopRequested ? 'Stopping generation…' : 'Stop generating'"
           :aria-label="stopRequested ? 'Stopping generation' : 'Stop generating'"
@@ -804,12 +887,12 @@ onBeforeUnmount(() => {
           :disabled="stopRequested"
           @click="stop"
         >
-          <LoaderCircle v-if="stopRequested" class="agents-spinner" aria-hidden="true" />
+          <LoaderCircle v-if="stopRequested" class="agents-spinner k-spin" aria-hidden="true" />
           <Square v-else aria-hidden="true" />
         </button>
         <button
           v-else
-          class="agents-composer-primary"
+          class="k-btn k-btn--primary agents-composer-primary"
           type="submit"
           title="Send"
           aria-label="Send"

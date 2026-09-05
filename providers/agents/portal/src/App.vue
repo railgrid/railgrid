@@ -31,6 +31,7 @@ import RunDetail from './views/RunDetail.vue'
 import Connections from './views/Connections.vue'
 import Toolsets from './views/Toolsets.vue'
 import Models from './views/Models.vue'
+import Automation from './views/Automation.vue'
 
 const props = defineProps<{ ctx: FarosContext | null; host: HTMLElement }>()
 
@@ -78,6 +79,7 @@ const routeSurfaceKey = computed(() => {
   if (current.kind === 'run') return `${authorityEpoch.value}:run:${current.id}`
   if (current.kind === 'create') return `${authorityEpoch.value}:create:${createSession.value}`
   if (current.kind === 'edit') return `${authorityEpoch.value}:edit:${current.name}`
+  if (current.kind === 'automation') return `${authorityEpoch.value}:automation:${current.agent}:${current.resource}:${current.action}:${current.action === 'edit' ? current.name : ''}`
   return `${authorityEpoch.value}:menu:${current.menu}`
 })
 
@@ -331,7 +333,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
     <div v-if="route.kind === 'menu'" class="agents-nav-wrap">
       <Tabs class="agents-nav" :tabs="tabs" :active="active" aria-label="Agents provider sections" @select="selectMenu" />
       <span v-if="!live" class="agents-offline" title="Live updates are reconnecting; falling back to polling.">
-        <RefreshCw aria-hidden="true" /> reconnecting
+        <RefreshCw class="k-spin" aria-hidden="true" /> reconnecting
       </span>
     </div>
 
@@ -474,6 +476,18 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @navigate="go"
         @edit-success="onEditSuccess"
         @edit-cancel="onEditCancel"
+      />
+      <Automation
+        v-else-if="route.kind === 'automation'"
+        :key="routeSurfaceKey"
+        :store="store"
+        :api="api"
+        :kind="route.resource"
+        :agent="route.agent"
+        :create-route="route.action === 'create'"
+        :edit-name="route.action === 'edit' ? route.name : ''"
+        :authority-epoch="authorityEpoch"
+        @navigate="go($event, 'replace')"
       />
     </div>
     <ConfirmDialog />

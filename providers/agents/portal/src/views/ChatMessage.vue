@@ -65,7 +65,7 @@ onBeforeUnmount(() => { mounted = false })
           @click="toggle(tool.id)"
         >
           <span class="agents-toolcard-ic">
-            <LoaderCircle v-if="tool.pending" class="agents-spinner" aria-hidden="true" />
+            <LoaderCircle v-if="tool.pending" class="agents-spinner k-spin" aria-hidden="true" />
             <X v-else-if="tool.error" aria-hidden="true" />
             <Check v-else aria-hidden="true" />
           </span>
@@ -106,7 +106,7 @@ onBeforeUnmount(() => { mounted = false })
           :aria-busy="approvalBusy ? 'true' : undefined"
           @click="emit('approval', { inboxID: message.approval!.inboxID, decision: 'approve' })"
         >
-          <LoaderCircle v-if="approvalBusy === 'approve'" class="agents-spinner" aria-hidden="true" />
+          <LoaderCircle v-if="approvalBusy === 'approve'" class="agents-spinner k-spin" aria-hidden="true" />
           <Check v-else aria-hidden="true" /> {{ approvalBusy === 'approve' ? 'Approving…' : 'Approve' }}
         </button>
         <button
@@ -116,7 +116,7 @@ onBeforeUnmount(() => { mounted = false })
           :aria-busy="approvalBusy ? 'true' : undefined"
           @click="emit('approval', { inboxID: message.approval!.inboxID, decision: 'deny' })"
         >
-          <LoaderCircle v-if="approvalBusy === 'deny'" class="agents-spinner" aria-hidden="true" />
+          <LoaderCircle v-if="approvalBusy === 'deny'" class="agents-spinner k-spin" aria-hidden="true" />
           <X v-else aria-hidden="true" /> {{ approvalBusy === 'deny' ? 'Denying…' : 'Deny' }}
         </button>
       </div>
