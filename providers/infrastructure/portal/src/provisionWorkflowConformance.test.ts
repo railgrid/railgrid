@@ -6,10 +6,12 @@ const provision = readFileSync(new URL('./views/ProvisionPage.vue', import.meta.
 const detail = readFileSync(new URL('./views/InstanceDetailPage.vue', import.meta.url), 'utf8')
 
 describe('Infrastructure primary provisioning workflow', () => {
-  it('keeps Templates and Instances navigation present across routed pages', () => {
-    expect(app).toContain("{ id: 'templates', label: 'Templates' }")
-    expect(app).toContain("{ id: 'instances', label: 'Instances' }")
-    expect(app).toMatch(/<Tabs[\s\S]*:active="activeSection"[\s\S]*@select="selectSection"/)
+  it('leaves primary section navigation to the manifest-owned shell', () => {
+    expect(app).not.toContain("import Tabs from './portalkit/Tabs.vue'")
+    expect(app).not.toContain('sectionTabs')
+    expect(app).not.toContain('activeSection')
+    expect(app).toContain("new CustomEvent('faros-navigate'")
+    expect(app).toContain('parseInfrastructureSubPath(props.ctx?.subPath)')
   })
 
   it('uses one bounded, authoritative instance name', () => {

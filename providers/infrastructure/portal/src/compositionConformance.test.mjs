@@ -9,9 +9,9 @@ const viewValue = readFileSync(new URL('./components/ViewValue.vue', import.meta
 const templateCard = readFileSync(new URL('./components/TemplateCard.vue', import.meta.url), 'utf8')
 
 describe('Infrastructure composition contracts', () => {
-  it('separates provider tabs from routed page content', () => {
-    expect(app).toContain('class="infra-tabs"')
-    expect(styles).toMatch(/\.infra-tabs \{[\s\S]*margin-bottom: 16px;/)
+  it('does not recreate manifest-owned navigation inside the provider', () => {
+    expect(app).not.toContain('class="infra-tabs"')
+    expect(styles).not.toContain('.infra-tabs')
   })
 
   it('adds deliberate columns for wide template catalogs', () => {

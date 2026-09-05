@@ -5,11 +5,11 @@ import ProvisionPage from './views/ProvisionPage.vue'
 import InstanceListPage from './views/InstanceListPage.vue'
 import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
-import Tabs from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { setBasePath, setTenant, setToken } from './api'
 import { createResourceTombstones } from './refresh'
+import { legacyInfrastructurePath, parseInfrastructureSubPath } from './routes'
 import type { FarosContext } from './types'
 import { useDelayedLoading } from './portalkit/useDelayedLoading'
 
@@ -32,38 +32,7 @@ import { useDelayedLoading } from './portalkit/useDelayedLoading'
 
 const props = defineProps<{ ctx: FarosContext | null }>()
 
-interface Route {
-  page: 'templates' | 'instances' | 'missing-credentials'
-  id?: string
-}
-
-function decodeSegment(value: string): string {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
-}
-
-function parseSubPath(sub: string | null | undefined): Route {
-  const s = (sub ?? '').replace(/^\/+|\/+$/g, '')
-  if (s === '' || s === 'templates') return { page: 'templates' }
-  if (s === 'instances') return { page: 'instances' }
-  if (s === 'missing-credentials') return { page: 'missing-credentials' }
-  const [head, ...rest] = s.split('/')
-  if (head === 'templates' && rest.length) return { page: 'templates', id: decodeSegment(rest.join('/')) }
-  if (head === 'instances' && rest.length) return { page: 'instances', id: decodeSegment(rest.join('/')) }
-  // Unknown sub-path: fall back to templates rather than 404'ing —
-  // the shell's URL might have stale segments from a prior provider.
-  return { page: 'templates' }
-}
-
-const route = computed<Route>(() => parseSubPath(props.ctx?.subPath))
-const sectionTabs = [
-  { id: 'templates', label: 'Templates' },
-  { id: 'instances', label: 'Instances' },
-] as const
-const activeSection = computed(() => route.value.page === 'instances' ? 'instances' : 'templates')
+const route = computed(() => parseInfrastructureSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
 const contextInitialized = computed(() => props.ctx !== null)
 const contextPending = computed(() => !contextInitialized.value)
@@ -110,31 +79,12 @@ function navigate(path: string) {
   el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 
-function selectSection(section: string) {
-  if (section === 'templates' || section === 'instances') navigate(section)
-}
-
 // Bridge legacy navigate('catalog' | 'provision' | 'instances' | 'detail' | 'missing-credentials')
 // emits from the existing view components — they were written before URL
 // routing existed. Maps each legacy verb to the new path scheme so we
 // don't have to edit every child to know about the new contract.
 function legacyNavigate(view: string) {
-  switch (view) {
-    case 'catalog':
-    case 'templates':
-      navigate('templates')
-      break
-    case 'instances':
-      navigate('instances')
-      break
-    case 'missing-credentials':
-      navigate('missing-credentials')
-      break
-    // 'provision' / 'detail' are reached by selectTemplate / selectInstance below
-    // — they always come with an ID, never as a bare view name.
-    default:
-      navigate(view)
-  }
+  navigate(legacyInfrastructurePath(view))
 }
 
 function selectTemplate(name: string) {
@@ -150,14 +100,6 @@ function provisioned(name: string) {
 
 <template>
   <div ref="rootRef" class="app">
-    <Tabs
-      v-if="contextInitialized && tenantPath"
-      class="infra-tabs"
-      :tabs="sectionTabs"
-      :active="activeSection"
-      aria-label="Infrastructure sections"
-      @select="selectSection"
-    />
     <!--
       Every routed page calls into api.ts on mount, which queries the
       /graphql/<tenant> gateway. Without a tenant the call
