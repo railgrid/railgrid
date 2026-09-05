@@ -218,9 +218,12 @@ APIExport, schemas) and registers routing/heartbeat state.
 >
 > Reachability: a `Service` on a `LinuxServer` edge hits the agent host loopback by
 > default; `spec.host` points it at another device on the edge's LAN (e.g. a UniFi
-> console) — the agent's svc proxy (`pkg/agent/tunnel/svc.go`) currently allows any
-> host (see `isAllowedSvcHost`, `TODO(security)`). A `Service` on a
-> `KubernetesCluster` edge uses `spec.targetRef` (a cluster-DNS Service) instead.
+> console) — the agent's svc proxy (`pkg/agent/tunnel/svc.go`) dials loopback
+> always, cluster DNS in kubernetes mode, and any other host only inside the
+> agent's `--svc-allow-cidr` ranges (link-local never), with `--svc-policy`
+> `warn` (this release's default: dial + log) or `enforce` (403) deciding what a
+> denial does. A `Service` on a `KubernetesCluster` edge uses `spec.targetRef`
+> (a cluster-DNS Service) instead.
 > The portal create form (`Services.vue`) branches on the selected edge's kind.
 
 ### 5.2 Hub-side provider integration (`pkg/hub/providers/`)

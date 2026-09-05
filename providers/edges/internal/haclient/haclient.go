@@ -30,13 +30,39 @@ import (
 )
 
 // SvcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
-// enforces that the target host is loopback. Exported so out-of-package callers
-// that build their own tunnel requests (e.g. the events WebSocket subscriber)
-// set the same header.
+// decides whether it will dial the host: loopback always, cluster DNS in
+// kubernetes mode, anything else only inside its --svc-allow-cidr ranges (see
+// SvcPolicyHeader for how it answers). Exported so out-of-package callers that
+// build their own tunnel requests (e.g. the events WebSocket subscriber) set
+// the same header — prefer Target.SetSvcHeaders.
 const SvcTargetHeader = "X-Faros-Svc-Target"
+
+// SvcTLSInsecureHeader mirrors the agent-side constant: "true" tells the agent
+// to skip TLS verification for a non-loopback https target. Set from
+// Service.spec.tlsInsecureSkipVerify.
+const SvcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
+
+// SvcPolicyHeader is the response header the agent stamps when its host policy
+// acted: SvcPolicyEnforce on a 403 refusing the target (never dialed),
+// SvcPolicyWarn when a target outside the allow list was dialed anyway under
+// --svc-policy=warn. Its presence on a 403 distinguishes an agent refusal from
+// a 403 the service itself returned.
+const (
+	SvcPolicyHeader  = "X-Faros-Svc-Policy"
+	SvcPolicyEnforce = "enforce"
+	SvcPolicyWarn    = "warn"
+)
 
 // svcTargetHeader is the internal spelling used throughout this package.
 const svcTargetHeader = SvcTargetHeader
+
+// IsHostNotAllowed reports whether resp is the agent refusing to dial the
+// target (403 with X-Faros-Svc-Policy: enforce), as opposed to a 403 from
+// the service. See pkg/agent/tunnel/svc.go.
+func IsHostNotAllowed(resp *http.Response) bool {
+	return resp != nil && resp.StatusCode == http.StatusForbidden &&
+		resp.Header.Get(SvcPolicyHeader) == SvcPolicyEnforce
+}
 
 // Dialer opens a fresh connection to the edge agent over the reverse tunnel.
 // *revdial.Dialer satisfies this.
@@ -46,23 +72,38 @@ type Dialer interface {
 
 // Target identifies the service to reach, plus its bearer token. Host is the
 // agent-side address: the loopback for LinuxServer edges (the default when
-// empty), or cluster DNS ({name}.{namespace}.svc) for KubernetesCluster edges.
+// empty), cluster DNS ({name}.{namespace}.svc) for KubernetesCluster edges,
+// or a spec.host the agent's --svc-allow-cidr policy permits.
 type Target struct {
 	Scheme string // "http" | "https"
 	Host   string // defaults to 127.0.0.1
 	Port   int32
 	Token  string // bearer token injected as Authorization; may be empty
+	// TLSInsecureSkipVerify mirrors Service.spec.tlsInsecureSkipVerify: ask the
+	// agent to skip certificate verification for a non-loopback https host.
+	TLSInsecureSkipVerify bool
 }
 
 // SvcTarget returns the value for the X-Faros-Svc-Target header. The agent
-// validates the host against what its mode permits (loopback always; cluster
-// DNS in kubernetes mode).
+// validates the host against its policy (loopback always; cluster DNS in
+// kubernetes mode; --svc-allow-cidr otherwise).
 func (t Target) SvcTarget() string {
 	host := t.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("%s://%s:%d", t.Scheme, host, t.Port)
+}
+
+// SetSvcHeaders stamps the agent control headers for this target on h: the
+// target itself and, when TLSInsecureSkipVerify, the TLS opt-out.
+func (t Target) SetSvcHeaders(h http.Header) {
+	h.Set(SvcTargetHeader, t.SvcTarget())
+	if t.TLSInsecureSkipVerify {
+		h.Set(SvcTLSInsecureHeader, "true")
+	} else {
+		h.Del(SvcTLSInsecureHeader)
+	}
 }
 
 // Do issues one request to the service behind (dialer, target), injecting the
@@ -94,7 +135,7 @@ func DoWith(ctx context.Context, dialer Dialer, target Target, method, path stri
 		conn.Close() //nolint:errcheck
 		return nil, err
 	}
-	req.Header.Set(svcTargetHeader, target.SvcTarget())
+	target.SetSvcHeaders(req.Header)
 	for k, vals := range header {
 		for _, v := range vals {
 			req.Header.Add(k, v)

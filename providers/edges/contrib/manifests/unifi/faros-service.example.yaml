@@ -28,9 +28,10 @@ spec:
   edgeRef:
     kind: LinuxServer
     name: minis-server
-  host: 192.168.1.1        # your UniFi OS console LAN IP
+  host: 192.168.1.1        # your UniFi OS console LAN IP; the agent must run with --svc-allow-cidr 192.168.1.0/24
   type: unifi-network
   scheme: https            # UniFi OS is https (self-signed)
+  tlsInsecureSkipVerify: true  # self-signed console cert: the agent verifies non-loopback https otherwise
   port: 443
   authSecretRef:
     namespace: faros-system
@@ -49,6 +50,7 @@ spec:
   host: 192.168.1.1        # same console
   type: unifi-protect
   scheme: https
+  tlsInsecureSkipVerify: true
   port: 443
   authSecretRef:
     namespace: faros-system

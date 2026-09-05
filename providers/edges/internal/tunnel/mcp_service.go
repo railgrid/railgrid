@@ -232,7 +232,7 @@ func (p *Server) haDo(ctx context.Context, cluster, kcpToken string, svc *servic
 	if token == "" {
 		return nil, fmt.Errorf("no auth token configured for this service (set spec.authSecretRef)")
 	}
-	target := haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port, Token: token}
+	target := haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port, Token: token, TLSInsecureSkipVerify: svc.Spec.TLSInsecureSkipVerify}
 	resp, err := haclient.Do(ctx, dialer, target, method, path, body)
 	if err != nil {
 		klog.FromContext(ctx).Error(err, "home assistant request failed", "method", method, "path", path)

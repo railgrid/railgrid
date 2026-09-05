@@ -34,13 +34,13 @@ import (
 
 // newRemoteServer creates the local HTTP server that is served on the revdial.Listener.
 // It handles requests from the hub that are tunneled back to the agent.
-func newRemoteServer(downstream *rest.Config, sshPort int) (*http.Server, error) {
-	router := setupRouter(downstream, sshPort)
+func newRemoteServer(downstream *rest.Config, sshPort int, svc SvcProxyOptions) (*http.Server, error) {
+	router := setupRouter(downstream, sshPort, svc)
 	return &http.Server{Handler: router}, nil
 }
 
 // setupRouter configures the mux router for the local server.
-func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
+func setupRouter(downstream *rest.Config, sshPort int, svc SvcProxyOptions) *mux.Router {
 	router := mux.NewRouter()
 
 	// SSH handler — proxies the revdial connection to the host sshd on sshPort.
@@ -51,10 +51,14 @@ func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
 	router.HandleFunc("/api/v1/services", newServicesHandler()).Methods("GET")
 
 	// Generic HTTP service proxy. The provider computes the target (from a
-	// Service CR) and sets X-Faros-Svc-Target per request. Server mode allows
-	// loopback only; kubernetes mode (downstream != nil) also allows cluster-DNS
-	// names, since Services on a KubernetesCluster edge live behind cluster DNS.
-	router.PathPrefix("/svc/").HandlerFunc(newSvcProxyHandler(downstream != nil))
+	// Service CR) and sets X-Faros-Svc-Target per request. Loopback and the
+	// --svc-allow-cidr ranges are dialable in either mode; kubernetes mode
+	// (downstream != nil) also allows cluster-DNS names, since Services on a
+	// KubernetesCluster edge live behind cluster DNS. See newSvcProxyHandler.
+	router.PathPrefix("/svc/").HandlerFunc(newSvcProxyHandler(svcProxyConfig{
+		SvcProxyOptions: svc,
+		allowCluster:    downstream != nil,
+	}))
 
 	// K8s proxy handler — only registered when a downstream k8s config is present.
 	// In server mode (downstream == nil) k8s proxying is not available.

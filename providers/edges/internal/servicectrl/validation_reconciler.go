@@ -215,9 +215,10 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// kinds (qBittorrent/Pi-hole) Apply performs the login, so a failure here is
 	// the credential being rejected rather than a transport error.
 	target := haclient.Target{
-		Scheme: schemeString(es.Spec.Scheme),
-		Host:   targetHost(es),
-		Port:   es.Spec.Port,
+		Scheme:                schemeString(es.Spec.Scheme),
+		Host:                  targetHost(es),
+		Port:                  es.Spec.Port,
+		TLSInsecureSkipVerify: es.Spec.TLSInsecureSkipVerify,
 	}
 	subTarget = target // captured for the subscriber defer
 	header := http.Header{}
@@ -245,6 +246,28 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		return r.commit(ctx, c, orig, es, validationResyncInterval)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+
+	// The agent refused to dial spec.host (403 + X-Faros-Svc-Policy: enforce):
+	// not a credential problem, and nothing was probed. Surface the agent's
+	// reason so the operator knows to add the host to --svc-allow-cidr.
+	if haclient.IsHostNotAllowed(resp) {
+		es.Status.Phase = "Unreachable"
+		reason := hostNotAllowedReason(resp.Body)
+		logger.Info("agent refused the service host", "type", es.Spec.Type, "host", target.Host, "reason", reason)
+		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionFalse, "HostNotAllowed", reason)
+		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "HostNotAllowed",
+			"the edge agent refused to dial spec.host: "+reason)
+		setNotProbed(es, "the edge agent refused to dial spec.host, so the service was never reached")
+		return r.commit(ctx, c, orig, es, validationResyncInterval)
+	}
+	if resp.Header.Get(haclient.SvcPolicyHeader) == haclient.SvcPolicyWarn {
+		// Dialed under --svc-policy=warn: works today, refused once the agent
+		// enforces. Say so on the object rather than only in the agent log.
+		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionTrue, "WarnOnly",
+			"spec.host is outside the edge agent's --svc-allow-cidr; it was dialed under --svc-policy=warn and will be refused under enforce")
+	} else {
+		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionTrue, "Allowed", "the edge agent accepts spec.host")
+	}
 
 	mode := def.ProbeMode
 	if mode == "" {
@@ -349,6 +372,23 @@ func unifiAuthHeader(ctx context.Context, dialer haclient.Dialer, target haclien
 // bodySnippet reads up to a small cap from an upstream response body and trims
 // it to max runes for inclusion in a status condition / log — enough to surface
 // an API's "why" message without dumping a whole page.
+// hostNotAllowedReason extracts the agent's reason from its 403 body
+// ({"error":"target host not allowed","reason":"..."}), falling back to the
+// raw snippet.
+func hostNotAllowedReason(body io.Reader) string {
+	raw := bodySnippet(body, 300)
+	var js struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(raw), &js); err == nil && js.Reason != "" {
+		return js.Reason
+	}
+	if raw == "" {
+		return "target host not allowed by the edge agent's --svc-allow-cidr policy"
+	}
+	return raw
+}
+
 func bodySnippet(body io.Reader, max int) string {
 	b, _ := io.ReadAll(io.LimitReader(body, 4<<10))
 	s := strings.TrimSpace(string(b))

@@ -21,12 +21,12 @@ spec:
       crd: {}
   - group: edges.faros.sh
     name: services
-    schema: v260820-ca9b3456.services.edges.faros.sh
+    schema: v260904-9ab06b67.services.edges.faros.sh
     storage:
       crd: {}
   - group: edges.faros.sh
     name: workloads
-    schema: v260718-e83a64f.workloads.edges.faros.sh
+    schema: v260904-9ab06b67.workloads.edges.faros.sh
     storage:
       crd: {}
 status: {}

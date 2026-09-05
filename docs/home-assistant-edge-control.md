@@ -97,7 +97,22 @@ is identical; only the address the agent dials differs.
 |---|---|---|
 | Declared by | discovery (auto) | the user (`targetRef`) |
 | Agent dials | `127.0.0.1:{port}` | `{targetRef.name}.{targetRef.namespace}.svc:{port}` |
-| Agent guard | loopback only | loopback + cluster DNS |
+| Agent guard | loopback + `--svc-allow-cidr` | loopback + cluster DNS + `--svc-allow-cidr` |
+
+**`spec.host` and the agent allow list.** A Service may name another device on
+the edge's LAN via `spec.host` (a UniFi console at `192.168.1.1`, say). The agent
+only dials such a host when it falls inside a range the operator passed with
+`--svc-allow-cidr` (repeatable; also `FAROS_AGENT_SVC_ALLOW_CIDR`, comma-separated),
+e.g. `faros agent run ... --svc-allow-cidr 192.168.1.0/24`. What happens to a host
+outside that set is `--svc-policy` (`FAROS_AGENT_SVC_POLICY`): `warn` — this
+release's default — still dials it but logs and stamps `X-Faros-Svc-Policy: warn`
+on the response (the Service shows `HostAllowed=True/WarnOnly`); `enforce` answers
+403 without dialing (`HostAllowed=False/HostNotAllowed`, `phase: Unreachable`);
+`allow-any` disables the list and says so loudly at startup. The next release
+flips the default to `enforce`, so add the CIDR now. Link-local (cloud metadata),
+unspecified and multicast addresses are refused under every policy. Non-loopback
+`https` hosts have their certificate verified unless the Service sets
+`spec.tlsInsecureSkipVerify: true` (needed for UniFi's self-signed console).
 
 **Why not the apiserver's `services/proxy` subresource?** It looks like the
 obvious route for kube edges — the agent SA already holds `resources: ["*"]` on
@@ -132,14 +147,19 @@ reconciler by construction: it only ever lists and prunes objects labelled
     service named by the provider-set `X-Faros-Svc-Target` header. WebSocket
     upgrades are hijacked and piped (HA uses `/api/websocket`).
 
-    This is the **SSRF boundary**, and it is mode-aware (`isAllowedSvcHost`).
-    Server mode permits loopback only. Kubernetes mode additionally permits
-    cluster-DNS Service names (`{name}.{namespace}.svc[.cluster.local]`), which
-    only resolve inside the cluster — so node IPs, the LAN and the internet stay
-    out of reach either way. IPs are parsed rather than string-matched
-    (`127.0.0.2` is loopback, `evil.svc.example.com` is not cluster DNS), and a
-    bare `.svc` with no `{name}.{namespace}` in front is rejected. See
-    `TestIsAllowedSvcHost` for the pinned cases.
+    This is the **SSRF boundary** (`vetSvcHost` / `isAllowedSvcHost`). Loopback
+    is always permitted. Kubernetes mode additionally permits cluster-DNS Service
+    names (`{name}.{namespace}.svc[.cluster.local]`), which only resolve inside
+    the cluster. Anything else — a LAN IP, or a hostname — is permitted only when
+    the address (every resolved A/AAAA record, for names) is inside
+    `--svc-allow-cidr`; link-local, unspecified and multicast are refused
+    unconditionally. The dial is pinned to the vetted addresses so DNS rebinding
+    cannot swap the target after the check. `--svc-policy` (`enforce` | `warn` |
+    `allow-any`) decides what a denial does; see §3. IPs are parsed rather than
+    string-matched (`127.0.0.2` is loopback, `evil.svc.example.com` is not
+    cluster DNS), and a bare `.svc` with no `{name}.{namespace}` in front is
+    rejected. See `TestIsAllowedSvcHost` / `TestVetSvcHostResolved` for the
+    pinned cases.
 
 Both routes work in server mode and kubernetes mode.
 
@@ -296,9 +316,11 @@ gates at 22:00" needs the follow-up in §9.
   scoped HA user for the token. The agents provider already audit-logs every
   tool call.
 - **SSRF posture** — the `/svc` proxy is agent-side host-restricted (loopback,
-  plus cluster DNS in kubernetes mode) and Service-allowlisted provider-side. It
-  must never become "reach any host on the LAN". If you touch
-  `isAllowedSvcHost`, `TestIsAllowedSvcHost` is the contract.
+  cluster DNS in kubernetes mode, plus the operator's `--svc-allow-cidr` ranges;
+  link-local never) and Service-allowlisted provider-side. It must never become
+  "reach any host on the LAN" by default. If you touch `vetSvcHost` /
+  `isAllowedSvcHost`, `TestIsAllowedSvcHost` and `TestVetSvcHostResolved` are
+  the contract.
 - **A kube Service with no `targetRef` must never fall back to loopback** — that
   would silently proxy to the agent pod itself. The CRD's CEL rule rejects it at
   admission, and the proxy, the MCP tool registration and the validation

@@ -85,6 +85,30 @@ func TestServiceViewTargetHTTPS(t *testing.T) {
 	}
 }
 
+// TestServiceViewSetSvcHeaders pins the agent control headers: the target is
+// always set, and the TLS opt-out only when spec.tlsInsecureSkipVerify is on
+// (and is cleared when it is off, so a caller-supplied value cannot linger).
+func TestServiceViewSetSvcHeaders(t *testing.T) {
+	v := newServiceView("LinuxServer", "minis", "", "", 443)
+	v.Spec.Host = "192.168.1.1"
+	v.Spec.Scheme = "https"
+
+	h := http.Header{svcTLSInsecureHeader: []string{"true"}}
+	v.setSvcHeaders(h)
+	if got, want := h.Get(svcTargetHeader), "https://192.168.1.1:443"; got != want {
+		t.Errorf("%s = %q, want %q", svcTargetHeader, got, want)
+	}
+	if got := h.Get(svcTLSInsecureHeader); got != "" {
+		t.Errorf("%s = %q, want unset when spec.tlsInsecureSkipVerify is false", svcTLSInsecureHeader, got)
+	}
+
+	v.Spec.TLSInsecureSkipVerify = true
+	v.setSvcHeaders(h)
+	if got := h.Get(svcTLSInsecureHeader); got != "true" {
+		t.Errorf("%s = %q, want \"true\"", svcTLSInsecureHeader, got)
+	}
+}
+
 func TestParseServicePath(t *testing.T) {
 	s := testServer("/services/providers/edges/edgeproxy")
 

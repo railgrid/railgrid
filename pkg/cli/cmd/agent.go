@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros/pkg/agent"
+	"github.com/faroshq/faros/pkg/agent/tunnel"
 	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
@@ -75,6 +76,51 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 	cmd.Flags().StringVar(&opts.SSHPassword, "ssh-password", "", "SSH password for password-based authentication (prefer --ssh-private-key for security)")
 	cmd.Flags().StringVar(&opts.SSHPrivateKeyPath, "ssh-private-key", "", "Path to SSH private key file for key-based authentication")
 	cmd.Flags().StringVar(&opts.DebugAddr, "debug-addr", "", "Bind address for the debug HTTP server exposing /healthz and /debug/pprof/* (e.g. \"127.0.0.1:6060\"). Empty disables the server.")
+	cmd.Flags().StringSliceVar(&opts.SvcAllowedCIDRs, "svc-allow-cidr", svcAllowCIDRDefault(),
+		"CIDR the Service proxy may dial besides loopback (and cluster DNS in kubernetes mode), e.g. 192.168.1.0/24. Repeatable. Link-local, unspecified and multicast addresses are never allowed. Env: "+svcAllowCIDREnv)
+	cmd.Flags().StringVar(&opts.SvcPolicy, "svc-policy", svcPolicyDefault(),
+		"What the Service proxy does with a target outside loopback/--svc-allow-cidr: enforce (403, never dialed), warn (dialed but logged; response carries X-Faros-Svc-Policy: warn) or allow-any (allow list disabled; logged at startup). The default flips to enforce in the next release. Env: "+svcPolicyEnv)
+}
+
+// Environment fallbacks for the Service proxy policy flags, so systemd units
+// and in-cluster Deployments can set the policy without editing args.
+const (
+	svcAllowCIDREnv = "FAROS_AGENT_SVC_ALLOW_CIDR"
+	svcPolicyEnv    = "FAROS_AGENT_SVC_POLICY"
+)
+
+// svcAllowCIDRDefault reads FAROS_AGENT_SVC_ALLOW_CIDR (comma-separated).
+func svcAllowCIDRDefault() []string {
+	var out []string
+	for _, s := range strings.Split(os.Getenv(svcAllowCIDREnv), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// svcPolicyDefault reads FAROS_AGENT_SVC_POLICY, else tunnel.DefaultSvcPolicy.
+func svcPolicyDefault() string {
+	if v := strings.TrimSpace(os.Getenv(svcPolicyEnv)); v != "" {
+		return v
+	}
+	return string(tunnel.DefaultSvcPolicy)
+}
+
+// svcPolicyArgs renders the Service proxy flags for an installed unit or
+// Deployment. The policy is only rendered when it differs from the built-in
+// default, so installs pick up the next release's default flip without a
+// reinstall; allow CIDRs are always rendered.
+func svcPolicyArgs(cidrs []string, policy string) []string {
+	var args []string
+	for _, c := range cidrs {
+		args = append(args, "--svc-allow-cidr="+c)
+	}
+	if policy != "" && policy != string(tunnel.DefaultSvcPolicy) {
+		args = append(args, "--svc-policy="+policy)
+	}
+	return args
 }
 
 // runAgentForeground contains the shared foreground-process logic used by both
@@ -475,6 +521,9 @@ roleRef:
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
 		}
+		for _, a := range svcPolicyArgs(opts.SvcAllowedCIDRs, opts.SvcPolicy) {
+			deployArgs += " " + a
+		}
 		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -539,6 +588,9 @@ stringData:
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
+		}
+		for _, a := range svcPolicyArgs(opts.SvcAllowedCIDRs, opts.SvcPolicy) {
+			deployArgs += " " + a
 		}
 		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
@@ -692,7 +744,9 @@ ExecStart={{.BinaryPath}} agent run \
   --ssh-user {{.SSHUser}}{{end}}{{if .SSHPrivateKey}} \
   --ssh-private-key {{.SSHPrivateKey}}{{end}}{{if .Cluster}} \
   --cluster {{.Cluster}}{{end}}{{if .InsecureSkipTLS}} \
-  --hub-insecure-skip-tls-verify{{end}}
+  --hub-insecure-skip-tls-verify{{end}}{{range .SvcAllowCIDRs}} \
+  --svc-allow-cidr {{.}}{{end}}{{if .SvcPolicy}} \
+  --svc-policy {{.SvcPolicy}}{{end}}
 Restart=always
 RestartSec=10
 Environment=HOME=/root
@@ -713,6 +767,10 @@ type systemdUnitData struct {
 	SSHPrivateKey   string
 	Cluster         string
 	InsecureSkipTLS bool
+	// SvcAllowCIDRs / SvcPolicy render --svc-allow-cidr / --svc-policy. SvcPolicy
+	// is left empty when it equals the built-in default (see svcPolicyArgs).
+	SvcAllowCIDRs []string
+	SvcPolicy     string
 }
 
 func newAgentInstallCommand() *cobra.Command {
@@ -726,6 +784,8 @@ func newAgentInstallCommand() *cobra.Command {
 		cluster         string
 		insecureSkipTLS bool
 		unitName        string
+		svcAllowCIDRs   []string
+		svcPolicy       string
 	)
 
 	cmd := &cobra.Command{
@@ -782,6 +842,16 @@ Example:
 				SSHPrivateKey:   sshPrivateKey,
 				Cluster:         cluster,
 				InsecureSkipTLS: insecureSkipTLS,
+				SvcAllowCIDRs:   svcAllowCIDRs,
+			}
+			if svcPolicy != "" && svcPolicy != string(tunnel.DefaultSvcPolicy) {
+				if _, err := tunnel.ParseSvcPolicy(svcPolicy); err != nil {
+					return err
+				}
+				data.SvcPolicy = svcPolicy
+			}
+			if _, err := tunnel.ParseSvcAllowedCIDRs(svcAllowCIDRs); err != nil {
+				return err
 			}
 
 			// Render systemd unit.
@@ -831,6 +901,8 @@ Example:
 	cmd.Flags().StringVar(&cluster, "cluster", "", "kcp logical cluster path")
 	cmd.Flags().BoolVar(&insecureSkipTLS, "hub-insecure-skip-tls-verify", false, "Skip TLS verification")
 	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: faros-agent-<edge-name>)")
+	cmd.Flags().StringSliceVar(&svcAllowCIDRs, "svc-allow-cidr", svcAllowCIDRDefault(), "CIDR the Service proxy may dial besides loopback, e.g. 192.168.1.0/24 (repeatable; rendered into the unit)")
+	cmd.Flags().StringVar(&svcPolicy, "svc-policy", svcPolicyDefault(), "Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default)")
 
 	return cmd
 }

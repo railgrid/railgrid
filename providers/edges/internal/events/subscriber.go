@@ -106,7 +106,7 @@ func (cfg SubscriberConfig) connectOnce(ctx context.Context) bool {
 		},
 	}
 	header := http.Header{}
-	header.Set(haclient.SvcTargetHeader, cfg.Target.SvcTarget())
+	cfg.Target.SetSvcHeaders(header)
 	for k, vals := range cfg.Header {
 		for _, v := range vals {
 			header.Add(k, v)

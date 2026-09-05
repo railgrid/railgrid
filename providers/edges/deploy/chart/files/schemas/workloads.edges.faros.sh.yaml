@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260718-e83a64f.workloads.edges.faros.sh
+  name: v260904-9ab06b67.workloads.edges.faros.sh
 spec:
   group: edges.faros.sh
   names:
@@ -80,8 +80,9 @@ spec:
                 repoURL:
                   description: |-
                     RepoURL is the chart repository base URL, e.g.
-                    "https://grafana.github.io/helm-charts". The provider fetches the chart
-                    archive as "<repoURL>/<chart>-<version>.tgz".
+                    "https://grafana.github.io/helm-charts". The provider resolves the
+                    archive through the repo's index.yaml (falling back to
+                    "<repoURL>/<chart>-<version>.tgz" for repos without a readable index).
                   minLength: 1
                   type: string
                 values:

@@ -166,7 +166,7 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 
 	// Auth (headers + query) is applied by the shared catalog, which also runs
 	// the session-login round-trips for qBittorrent/Pi-hole.
-	target := haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port}
+	target := haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port, TLSInsecureSkipVerify: svc.Spec.TLSInsecureSkipVerify}
 	header := http.Header{}
 	if err := svccatalog.Apply(ctx, dialer, target, def, token, header, q); err != nil {
 		return toolErr(err.Error()), nil, nil

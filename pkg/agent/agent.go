@@ -327,6 +327,19 @@ type Options struct {
 	// endpoints. Use "127.0.0.1:6060" for local-only access; bind to a
 	// non-loopback address only when port-forwarding is not an option.
 	DebugAddr string
+	// SvcAllowedCIDRs are the CIDRs (e.g. "192.168.1.0/24") the /svc proxy may
+	// dial besides loopback and, in kubernetes mode, cluster-DNS names. A
+	// Service's spec.host outside this set is refused (or warned about, per
+	// SvcPolicy). Link-local, unspecified and multicast addresses are never
+	// dialable even if listed. Flag: --svc-allow-cidr (repeatable); env:
+	// FAROS_AGENT_SVC_ALLOW_CIDR (comma-separated).
+	SvcAllowedCIDRs []string
+	// SvcPolicy is what the /svc proxy does with a target outside the allowed
+	// set: "enforce" (403, never dialed), "warn" (dialed, logged, response
+	// carries X-Faros-Svc-Policy: warn) or "allow-any" (allow list disabled,
+	// logged at startup). Defaults to "warn" in this release; the next release
+	// flips the default to "enforce". Flag: --svc-policy; env: FAROS_AGENT_SVC_POLICY.
+	SvcPolicy string
 }
 
 // NewOptions returns default agent options.
@@ -345,6 +358,9 @@ type Agent struct {
 	hubConfig        *rest.Config
 	hubTLSConfig     *tls.Config
 	downstreamConfig *rest.Config // nil in server mode
+	// svcProxy is the parsed /svc host policy (Options.SvcAllowedCIDRs +
+	// Options.SvcPolicy) handed to every tunnel connection.
+	svcProxy tunnel.SvcProxyOptions
 
 	// tunnelToken holds the bearer token used by the proxy tunnel goroutine on
 	// every (re)connect. It is seeded with the bootstrap token at startup and
@@ -413,6 +429,24 @@ func New(opts *Options) (*Agent, error) {
 	agentType, err := resolveType(rawType)
 	if err != nil {
 		return nil, err
+	}
+
+	svcCIDRs, err := tunnel.ParseSvcAllowedCIDRs(opts.SvcAllowedCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("--svc-allow-cidr: %w", err)
+	}
+	svcPolicy, err := tunnel.ParseSvcPolicy(opts.SvcPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("--svc-policy: %w", err)
+	}
+	switch svcPolicy {
+	case tunnel.SvcPolicyAllowAny:
+		klog.Warningf("--svc-policy=allow-any: the /svc proxy SSRF protection is DISABLED; " +
+			"any Service in a bound workspace can make this agent dial any host it can reach " +
+			"(link-local, unspecified and multicast targets stay blocked). Use --svc-allow-cidr instead.")
+	case tunnel.SvcPolicyWarn:
+		klog.Infof("--svc-policy=warn: /svc targets outside loopback/--svc-allow-cidr are still dialed but logged; "+
+			"the default becomes enforce in the next release (allowed CIDRs: %v)", svcCIDRs)
 	}
 
 	// Auto-discover or auto-generate an SSH private key for server-type edges
@@ -499,6 +533,7 @@ func New(opts *Options) (*Agent, error) {
 		agentType:    agentType,
 		hubConfig:    hubConfig,
 		hubTLSConfig: hubTLSConfig,
+		svcProxy:     tunnel.SvcProxyOptions{AllowedCIDRs: svcCIDRs, Policy: svcPolicy},
 	}
 
 	// In server mode there is no downstream Kubernetes cluster to connect to.
@@ -655,7 +690,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		deliverOnce.Do(func() { close(agentKubeconfigDelivered) })
 	}
 	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, clusterName, onAgentToken, nil)
 
 	// Out-of-cluster join-token mode: the in-memory hubClient was built from
 	// the bootstrap join token, which is not a valid kcp credential. Wait for
@@ -857,7 +892,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, serverClusterName, serverOnAgentToken, sshHeaders)
 
 	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
 	// starting the edge_reporter, otherwise its patch calls would all return

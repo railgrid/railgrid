@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260820-ca9b3456.services.edges.faros.sh
+  name: v260904-9ab06b67.services.edges.faros.sh
 spec:
   group: edges.faros.sh
   names:
@@ -118,7 +118,20 @@ spec:
                 Host is the address the agent dials directly: the agent-host loopback, or
                 another device on the edge's LAN (e.g. a UniFi console at 192.168.1.1).
                 Takes precedence over targetRef and works on either edge kind.
+
+                The agent decides whether it will dial the host: loopback always,
+                cluster DNS in kubernetes mode, anything else only when inside the
+                agent's --svc-allow-cidr ranges (see pkg/agent/tunnel/svc.go). The
+                rule below only rejects the obvious link-local literals (cloud metadata)
+                at admission; full validation, including resolved addresses, lives in
+                the agent.
+              maxLength: 253
               type: string
+              x-kubernetes-validations:
+              - message: spec.host must not be a link-local address (169.254.0.0/16,
+                  fe80::/10)
+                rule: '!self.startsWith(''169.254.'') && !self.lowerAscii().startsWith(''fe80:'')
+                  && !self.lowerAscii().startsWith(''[fe80:'')'
             instructions:
               description: |-
                 Instructions is free-form guidance surfaced to AI clients on the MCP
@@ -161,6 +174,14 @@ spec:
               - name
               - namespace
               type: object
+            tlsInsecureSkipVerify:
+              description: |-
+                TLSInsecureSkipVerify makes the agent skip TLS certificate verification
+                when dialing an https host that is not the agent's own loopback (the
+                loopback is always exempt). Needed for LAN devices with self-signed
+                certificates, such as a UniFi console. Default false: the agent verifies
+                the upstream certificate against the host's trust store.
+              type: boolean
             type:
               default: generic
               description: Type selects the detector and the MCP tool bundle. "generic"

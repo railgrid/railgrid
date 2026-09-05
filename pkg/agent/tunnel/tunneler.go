@@ -64,7 +64,10 @@ import (
 // bearer token. Callers should return the SA token from the saved kubeconfig
 // after token-exchange has succeeded, otherwise the join token is rejected on
 // reconnect once the hub has cleared edge.Status.JoinToken.
-func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) {
+//
+// svc is the /svc proxy host policy (--svc-allow-cidr / --svc-policy); see
+// SvcProxyOptions and newSvcProxyHandler.
+func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onAgentToken func(string), extraHeaders http.Header) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
@@ -83,7 +86,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, getToken, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster, onAgentToken, extraHeaders)
+		err := startTunneler(ctx, hubURL, getToken, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, svc, cluster, onAgentToken, extraHeaders)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -122,7 +125,7 @@ func sendTunnelState(c chan bool, v bool) {
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
+func startTunneler(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
 	logger := klog.FromContext(ctx)
 
 	// Resolve the current bearer token for this connect attempt. After
@@ -179,7 +182,7 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server
-	server, err := newRemoteServer(downstream, sshPort)
+	server, err := newRemoteServer(downstream, sshPort, svc)
 	if err != nil {
 		return fmt.Errorf("failed to create remote server: %w", err)
 	}

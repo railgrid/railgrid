@@ -168,8 +168,25 @@ type ServiceSpec struct {
 	// Host is the address the agent dials directly: the agent-host loopback, or
 	// another device on the edge's LAN (e.g. a UniFi console at 192.168.1.1).
 	// Takes precedence over targetRef and works on either edge kind.
+	//
+	// The agent decides whether it will dial the host: loopback always,
+	// cluster DNS in kubernetes mode, anything else only when inside the
+	// agent's --svc-allow-cidr ranges (see pkg/agent/tunnel/svc.go). The
+	// rule below only rejects the obvious link-local literals (cloud metadata)
+	// at admission; full validation, including resolved addresses, lives in
+	// the agent.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('169.254.') && !self.lowerAscii().startsWith('fe80:') && !self.lowerAscii().startsWith('[fe80:')",message="spec.host must not be a link-local address (169.254.0.0/16, fe80::/10)"
 	Host string `json:"host,omitempty"`
+
+	// TLSInsecureSkipVerify makes the agent skip TLS certificate verification
+	// when dialing an https host that is not the agent's own loopback (the
+	// loopback is always exempt). Needed for LAN devices with self-signed
+	// certificates, such as a UniFi console. Default false: the agent verifies
+	// the upstream certificate against the host's trust store.
+	// +optional
+	TLSInsecureSkipVerify bool `json:"tlsInsecureSkipVerify,omitempty"`
 
 	// Type selects the detector and the MCP tool bundle. "generic" = proxy-only.
 	// +kubebuilder:default=generic

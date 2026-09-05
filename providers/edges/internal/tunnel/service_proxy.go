@@ -44,8 +44,16 @@ import (
 const serviceResource = "services"
 
 // svcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
-// enforces that the target host is loopback.
+// decides whether it dials the host: loopback always, cluster DNS in kubernetes
+// mode, any other address only inside the agent's --svc-allow-cidr ranges
+// (link-local never). A refused target comes back as a 403 with
+// X-Faros-Svc-Policy: enforce, which this proxy passes through unchanged.
 const svcTargetHeader = "X-Faros-Svc-Target"
+
+// svcTLSInsecureHeader mirrors the agent-side constant: set to "true" from
+// spec.tlsInsecureSkipVerify so the agent skips certificate verification for
+// a non-loopback https host (e.g. a self-signed UniFi console).
+const svcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
 
 // serviceView is the projection of a Service CR the proxy needs. As
 // with sshEdgeView, every field must be exported and non-object fields tagged
@@ -61,13 +69,14 @@ type serviceView struct {
 			Namespace string `json:"namespace"`
 			Name      string `json:"name"`
 		} `json:"targetRef,omitempty"`
-		Host          string                  `json:"host,omitempty"`
-		Type          string                  `json:"type,omitempty"`
-		Scheme        string                  `json:"scheme,omitempty"`
-		Port          int32                   `json:"port"`
-		AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
-		Auth          string                  `json:"auth,omitempty"`
-		Instructions  string                  `json:"instructions,omitempty"`
+		Host                  string                  `json:"host,omitempty"`
+		TLSInsecureSkipVerify bool                    `json:"tlsInsecureSkipVerify,omitempty"`
+		Type                  string                  `json:"type,omitempty"`
+		Scheme                string                  `json:"scheme,omitempty"`
+		Port                  int32                   `json:"port"`
+		AuthSecretRef         *corev1.SecretReference `json:"authSecretRef,omitempty"`
+		Auth                  string                  `json:"auth,omitempty"`
+		Instructions          string                  `json:"instructions,omitempty"`
 	} `json:"spec"`
 }
 
@@ -132,6 +141,17 @@ func (v *serviceView) targetHost() string {
 // target is the full X-Faros-Svc-Target value.
 func (v *serviceView) target() string {
 	return fmt.Sprintf("%s://%s:%d", v.scheme(), v.targetHost(), v.Spec.Port)
+}
+
+// setSvcHeaders stamps the agent control headers for this Service on h: the
+// target, and the TLS opt-out when spec.tlsInsecureSkipVerify is set.
+func (v *serviceView) setSvcHeaders(h http.Header) {
+	h.Set(svcTargetHeader, v.target())
+	if v.Spec.TLSInsecureSkipVerify {
+		h.Set(svcTLSInsecureHeader, "true")
+	} else {
+		h.Del(svcTLSInsecureHeader)
+	}
 }
 
 // parseServicePath extracts {cluster}, {name}, {subresource}, and the
@@ -235,7 +255,6 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 		}
 	}
 
-	target := svc.target()
 	svcPath := "/svc" + rest
 
 	deviceConn, err := dialer.Dial(ctx)
@@ -246,7 +265,7 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 	}
 
 	if isUpgradeRequest(r) {
-		p.serviceHandleUpgrade(ctx, w, r, deviceConn, target, svcPath, mode, token)
+		p.serviceHandleUpgrade(ctx, w, r, deviceConn, svc, svcPath, mode, token)
 		return
 	}
 
@@ -264,9 +283,11 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 			req.URL.Scheme = "http"
 			req.URL.Host = "edge-agent"
 			req.URL.Path = svcPath
-			req.Header.Set(svcTargetHeader, target)
+			svc.setSvcHeaders(req.Header)
 			applyServiceAuth(req.Header, mode, token)
 		},
+		// The agent's answer is relayed as-is, including a 403 with
+		// X-Faros-Svc-Policy: enforce when it refuses to dial spec.host.
 		Transport: transport,
 		// Unbuffered, as on the hub's own backend proxy: this path carries
 		// log tails and other streams (a provider backend reached over an
@@ -297,7 +318,7 @@ func applyServiceAuth(h http.Header, mode, token string) {
 
 // serviceHandleUpgrade handles WebSocket/upgrade requests to a service by
 // hijacking and piping raw bytes through the tunnel (HA uses /api/websocket).
-func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn, target, svcPath, mode, token string) {
+func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn, svc *serviceView, svcPath, mode, token string) {
 	logger := klog.FromContext(ctx)
 
 	hijacker, ok := w.(http.Hijacker)
@@ -315,7 +336,7 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 
 	r.URL.Path = svcPath
 	r.RequestURI = r.URL.RequestURI()
-	r.Header.Set(svcTargetHeader, target)
+	svc.setSvcHeaders(r.Header)
 	applyServiceAuth(r.Header, mode, token)
 
 	if err := r.Write(deviceConn); err != nil {
