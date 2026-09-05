@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { Braces, Network, TableProperties } from 'lucide-vue-next'
 
 import type { ObjectResult } from './api'
 import type { FarosContext } from './element'
@@ -27,9 +28,9 @@ let edgesController: AbortController | null = null
 let edgesRequestID = 0
 
 const tabs = [
-  { id: 'topology', label: 'Topology' },
-  { id: 'inventory', label: 'Inventory' },
-  { id: 'playground', label: 'Playground' },
+  { id: 'topology', label: 'Topology', icon: Network },
+  { id: 'inventory', label: 'Inventory', icon: TableProperties },
+  { id: 'playground', label: 'Playground', icon: Braces },
 ]
 
 function selectTab(id: string): void {

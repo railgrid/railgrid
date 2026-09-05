@@ -21,7 +21,11 @@ test('the provider contract is a thin reactive light-DOM Vue mount', () => {
 })
 
 test('top-level navigation and inventory use PortalKit contracts', () => {
+  assert.match(app, /import \{ Braces, Network, TableProperties \} from 'lucide-vue-next'/u)
   assert.match(app, /import Tabs from '\.\/portalkit\/Tabs\.vue'/u)
+  assert.match(app, /\{ id: 'topology', label: 'Topology', icon: Network \}/u)
+  assert.match(app, /\{ id: 'inventory', label: 'Inventory', icon: TableProperties \}/u)
+  assert.match(app, /\{ id: 'playground', label: 'Playground', icon: Braces \}/u)
   assert.match(app, /<Tabs[^>]*:active="active"/u)
   assert.match(inventory, /import ResourceTable from '\.\.\/portalkit\/ResourceTable\.vue'/u)
   assert.match(inventory, /pageSize: request\.pageSize, cursor: request\.cursor, count: true, filters: request\.filters/u)
@@ -107,6 +111,7 @@ test('Kuery requests share one context-derived transport contract', () => {
 })
 
 test('dashboard tile fences post-await writes to mounted context and request', () => {
+  assert.match(tile, /dashboardTileSemanticClass/u)
   assert.match(tile, /private _contextGeneration = 0/u)
   assert.match(tile, /private _connected = false/u)
   assert.match(tile, /const generation = this\._contextGeneration/u)
@@ -117,5 +122,13 @@ test('dashboard tile fences post-await writes to mounted context and request', (
   assert.match(tile, /if \(!isCurrent\(\)\) return[\s\S]*this\._loading = false/u)
   assert.match(tile, /this\._contextGeneration \+= 1[\s\S]*this\._poller\?\.stop\(\)/u)
   assert.match(tile, /class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true"/u)
+  assert.match(tile, /dashboardTileSemanticClass\.root/u)
+  assert.match(tile, /dashboardTileSemanticClass\.row/u)
+  assert.match(tile, /dashboardTileSemanticClass\.empty/u)
+  assert.match(styles, /faros-dashboard-tile-kuery \{ display: block; font-size: 13px; \}/u)
+  assert.match(styles, /\.kuery-tile-dot--success \{ background: var\(--color-success\); \}/u)
+  assert.doesNotMatch(styles, /\.kuery-tile-(?:stats|stat|label|rows|name|chev|more|empty|msg|err)\b/u)
+  assert.match(tile, /data-edge="\$\{escapeHTML\(name\)\}"/u)
+  assert.match(tile, /el\.addEventListener\('click', \(\) => this\._navigate\(''\)\)/u)
   assert.match(tile, /if \(html === this\._lastHTML\) return false/u)
 })

@@ -112,3 +112,52 @@ test('narrow inventory filters reflow without clipping', async ({ page }, testIn
   await expect(page.locator('.CodeMirror')).toBeVisible()
   expect(await page.locator('.CodeMirror').evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgb(241, 241, 246)')
 })
+
+for (const viewport of [
+  { name: 'mobile', width: 390, height: 844 },
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: '4k', width: 3840, height: 2160 },
+] as const) {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${viewport.name} ${theme} tabs retain labels, icons, and viewport bounds`, async ({ page }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height })
+      await mountKuery(page, theme)
+
+      const tabs = page.getByRole('navigation', { name: 'Kuery views' })
+      await expect(tabs.getByRole('button')).toHaveCount(3)
+      await expect(tabs.locator('.k-tab__icon svg')).toHaveCount(3)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    })
+  }
+}
+
+test('dashboard tile uses shared semantics while preserving escaping and navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.route('**/api/edges', route => route.fulfill({ json: { edges: ['edge-<one>&'] } }))
+  await page.setContent(`<!doctype html><html class="light"><head><base href="https://kuery.test/"></head><body>
+    <faros-dashboard-tile-kuery id="tile"></faros-dashboard-tile-kuery>
+  </body></html>`)
+  await page.addScriptTag({ path: asset('main.js') })
+  await page.locator('#tile').evaluate(element => {
+    const target = element as HTMLElement & { farosContext: unknown }
+    ;(window as typeof window & { tileNavigation?: unknown }).tileNavigation = null
+    target.addEventListener('faros-navigate', event => {
+      ;(window as typeof window & { tileNavigation?: unknown }).tileNavigation = (event as CustomEvent).detail
+    })
+    target.farosContext = {
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: 'root:faros:tenant', orgUUID: 'org', workspaceUUID: 'workspace', theme: 'light',
+    }
+  })
+
+  const row = page.getByRole('button', { name: 'edge-<one>&' })
+  await expect(row).toBeVisible()
+  await expect(page.locator('.k-dashboard-tile')).toHaveCount(1)
+  await expect(row).toHaveClass(/k-dashboard-tile__row/)
+  await expect(row).toHaveAttribute('data-edge', 'edge-<one>&')
+  expect(await page.locator('.k-dashboard-tile__list').evaluate(element => {
+    const style = getComputedStyle(element)
+    return { listStyle: style.listStyleType, margin: style.margin, padding: style.padding }
+  })).toEqual({ listStyle: 'none', margin: '0px', padding: '0px' })
+  await row.click()
+  expect(await page.evaluate(() => (window as typeof window & { tileNavigation?: unknown }).tileNavigation)).toEqual({ path: '' })
+})
