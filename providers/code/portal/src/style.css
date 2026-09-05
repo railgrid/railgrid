@@ -118,21 +118,6 @@ faros-provider-code .code-row-actions {
   display: flex;
   justify-content: flex-end;
 }
-faros-provider-code .code-inline-action {
-  background: transparent;
-  border-color: transparent;
-  color: var(--color-accent, #8b6bff);
-  font-size: 12px;
-  font-weight: 400;
-  padding: 0;
-}
-faros-provider-code .code-inline-action:hover {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-}
-
 /* Repository detail composition: a readable header followed by stacked cards. */
 faros-provider-code .repo-detail {
   display: flex;

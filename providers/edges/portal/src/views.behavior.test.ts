@@ -1147,6 +1147,40 @@ describe('edge detail actions', () => {
       mounted.unmount()
     }
   })
+
+  it('names and locks a service deletion while it is pending, then recovers on failure', async () => {
+    api.getEdge.mockResolvedValue(edgeDetail)
+    api.listEdgeServices.mockResolvedValue([{ name: 'svc-a', serviceType: 'generic', port: 8080 }])
+    const pendingDelete = deferred<void>()
+    api.deleteEdgeService.mockImplementation(() => pendingDelete.promise)
+    confirm.confirmDialog.mockResolvedValue(true)
+    const mounted = await mount(Detail, {
+      name: edgeDetail.name,
+      type: edgeDetail.type,
+      cluster: null,
+      token: null,
+    })
+    try {
+      await flush()
+      await flush()
+      const state = mounted.instance.setupState
+      const deletePromise = state.removeService('svc-a')
+      await flush()
+      expect(state.deletingServiceName).toBe('svc-a')
+      expect(confirm.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Delete service "svc-a"?',
+        danger: true,
+        confirmLabel: 'Delete',
+      }))
+
+      pendingDelete.reject({ reason: 'HTTPError', message: 'service delete failed' })
+      await deletePromise
+      expect(state.deletingServiceName).toBeNull()
+      expect(state.svcError).toBe('service delete failed')
+    } finally {
+      mounted.unmount()
+    }
+  })
 })
 
 describe('edge onboarding controls', () => {

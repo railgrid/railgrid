@@ -206,7 +206,7 @@ onBeforeUnmount(() => {
                 v-if="attachment.status === 'error' && attachment.retryable"
                 type="button"
                 class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                :aria-label="attachment.retryAction === 'delete' ? 'Retry attachment removal' : 'Retry attachment upload'"
+                :aria-label="attachment.retryAction === 'delete' ? `Retry attachment removal ${attachmentLabel(attachment)}` : `Retry attachment upload ${attachmentLabel(attachment)}`"
                 :title="attachment.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
                 @click="emit('retry-attachment', attachment.clientID)"
               >
@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
                 v-if="attachment.status !== 'deleting'"
                 type="button"
                 class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                aria-label="Remove attachment"
+                :aria-label="`Remove attachment ${attachmentLabel(attachment)}`"
                 title="Remove attachment"
                 @click="emit('remove-attachment', attachment.clientID)"
               >

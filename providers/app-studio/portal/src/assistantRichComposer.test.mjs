@@ -94,7 +94,7 @@ test('rich composer renders image uploads through the lifecycle-safe thumbnail p
   assert.match(preview, /URL\.revokeObjectURL\(previewURL\.value\)/)
   assert.match(preview, /watch\(\(\) => props\.file, syncPreview, \{ immediate: true \}\)/)
   assert.match(preview, /onBeforeUnmount\(revokePreview\)/)
-  assert.match(preview, /absolute right-1 top-1[\s\S]*aria-label="Remove attachment"/)
+  assert.match(preview, /absolute right-1 top-1[\s\S]*`Remove attachment \$\{label\}`/)
 })
 
 test('Add flyouts dismiss on outside pointer/focus while preserving in-composer interactions', async () => {
@@ -150,11 +150,11 @@ test('rich attachment removal retries deletion without re-uploading the file', a
   assert.match(source, /:retry-action="chip\.retryAction"/)
   assert.match(source, /attachmentStatusLabel\(chip\)/)
   assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
-  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*aria-label="Remove attachment"/)
+  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*`Remove attachment \$\{attachmentLabel\(chip\)\}`/)
 
   const preProject = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
   assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
-  assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*aria-label="Remove attachment"/)
+  assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*`Remove attachment \$\{attachmentLabel\(attachment\)\}`/)
 })
 
 test('cancelled uploads retain a recoverable File and treat absent draft deletes as success', async () => {

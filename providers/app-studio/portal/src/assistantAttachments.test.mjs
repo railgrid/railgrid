@@ -84,10 +84,18 @@ test('text attachment previews stay bounded, use the first meaningful line, and 
 })
 
 test('attachment actions remain named and expose coarse-pointer hit targets', async () => {
-  const previewSource = await readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8')
+  const [previewSource, richSource, preProjectSource] = await Promise.all([
+    readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
+  ])
   assert.equal((previewSource.match(/app-studio-touch-target/g) ?? []).length, 2)
-  assert.match(previewSource, /aria-label="Remove attachment"/)
-  assert.match(previewSource, /Retry attachment (?:removal|upload)/)
+  assert.match(previewSource, /`Remove attachment \$\{label\}`/)
+  assert.match(previewSource, /`Retry attachment (?:removal|upload) \$\{label\}`/)
+  assert.match(richSource, /`Remove attachment \$\{attachmentLabel\(chip\)\}`/)
+  assert.match(richSource, /`Retry attachment (?:removal|upload) \$\{attachmentLabel\(chip\)\}`/)
+  assert.match(preProjectSource, /`Remove attachment \$\{attachmentLabel\(attachment\)\}`/)
+  assert.match(preProjectSource, /`Retry attachment (?:removal|upload) \$\{attachmentLabel\(attachment\)\}`/)
   assert.equal((previewSource.match(/aria-hidden="true"/g) ?? []).length >= 4, true)
 })
 

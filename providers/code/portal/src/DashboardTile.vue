@@ -124,10 +124,10 @@ watch(
 <template>
   <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
     <div v-if="loading && !loaded" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
-      <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load()">Retry</button></div>
+      <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
 
     <template v-else>
-      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load()">Retry</button></div>
+      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
       <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">

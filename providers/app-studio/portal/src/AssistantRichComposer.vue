@@ -1124,7 +1124,7 @@ defineExpose({
                 v-if="chip.status === 'error' && chip.retryAction"
                 type="button"
                 class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                :aria-label="chip.retryAction === 'delete' ? 'Retry attachment removal' : 'Retry attachment upload'"
+                :aria-label="chip.retryAction === 'delete' ? `Retry attachment removal ${attachmentLabel(chip)}` : `Retry attachment upload ${attachmentLabel(chip)}`"
                 :title="chip.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
                 @click="retryAttachment(chip)"
               >
@@ -1134,7 +1134,7 @@ defineExpose({
                 v-if="chip.status !== 'deleting'"
                 type="button"
                 class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                aria-label="Remove attachment"
+                :aria-label="`Remove attachment ${attachmentLabel(chip)}`"
                 title="Remove attachment"
                 @click="removeAttachment(chip)"
               >

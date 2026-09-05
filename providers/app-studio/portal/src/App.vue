@@ -8561,12 +8561,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               v-model="projectQuery"
               class="app-studio-touch-target h-9 w-full rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
               placeholder="Search"
+              aria-label="Search projects"
               :disabled="loading || !projectsLoaded"
               :aria-busy="loading || !projectsLoaded"
             />
             <button
               v-if="projectQuery"
+              type="button"
               class="app-studio-touch-target absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
+              aria-label="Clear project search"
               title="Clear search"
               @click="projectQuery = ''"
             >
