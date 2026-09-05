@@ -58,7 +58,7 @@ HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 # README.md documents the canonical kit but is not a distributable vendored
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
-TS_CANONICAL_ONLY=(README.md page-state.ts)
+TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs page-state.ts)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
 
 # Vue migrations no longer need the vanilla confirm/alert implementation;

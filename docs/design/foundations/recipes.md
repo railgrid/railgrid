@@ -16,7 +16,9 @@ before writing local CSS.
 | `.k-table` | 6px table wrapper; mono 9–10px uppercase headers, 13px rows, accent-tint hover through `.is-interactive` |
 | `.k-cell-mono` | Data-like names, IDs, and timestamps |
 | `.k-badge` (`--success/--warning/--danger/--muted`, `__dot`) | Square 3px mono tag, 10px/600 uppercase, `0.06em`, subtle semantic background and `color-mix` hairline |
-| `.k-btn` (`--primary/--ghost/--text/--danger`) | 4px control; primary is solid accent plus glow, ghost overlay plus hairline, text transparent, danger tinted and never glowing |
+| `.k-btn` (`--primary/--ghost/--text/--danger`) | 4px control; primary is solid accent plus glow, ghost overlay plus hairline, text transparent, danger tinted and never glowing; all variants reach 44×44px for coarse and hybrid pointers |
+| `.k-dashboard-action` | Compact text action inside a dashboard tile; remains visually quiet while reaching 44×44px for coarse and hybrid pointers |
+| `.k-spin` | Canonical 0.8s linear loading rotation; becomes static under reduced motion and never replaces status text or the affected region's busy state |
 | `.k-back-action` | Intrinsic-width, start-aligned borderless link; 12px/500 accent, 6px icon gap, hover underline, no control surface |
 | `.k-input` | 4px overlay input; focus is accent border, 3px subtle ring, and glow |
 | `.k-form-select` (`__trigger`, `__panel`, `__option`) | Accessible PortalKit single-select combobox using input/menu recipes |

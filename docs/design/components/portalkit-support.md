@@ -24,7 +24,13 @@ not render a standalone component:
   not replace content or disable actions.
 - `dashboardtile.ts` supplies the framework-neutral dashboard resource summary
   contract. It follows the same stale/read-state and semantic-token rules as
-  resource pages; provider facts remain provider-owned.
+  resource pages; provider facts remain provider-owned. Tailwind consumers use
+  `tileClass`, while plain-DOM consumers use the matching
+  `dashboardTileSemanticClass` hooks implemented in `faros-ui.css`. Both maps
+  describe the same slots; the semantic map is names only and therefore
+  requires the canonical stylesheet. Neither authorizes provider-local visual
+  variants. A change to either map or its CSS increments the matching
+  `FAROS_UI_VERSION` style-handoff contract before the assets are synced.
 
 See the [resource reads pattern](../patterns/resource-reads.md) and
 [provider integration foundation](../foundations/provider-integration.md) for

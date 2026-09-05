@@ -14,7 +14,7 @@ export const FAROS_UI_STYLE_ID = 'k-faros-ui'
 export const FAROS_UI_CANONICAL_MARKER = '--faros-ui-canonical'
 export const FAROS_UI_CANONICAL_VALUE = '1'
 export const FAROS_UI_VERSION_MARKER = '--faros-ui-version'
-export const FAROS_UI_VERSION = 5
+export const FAROS_UI_VERSION = 6
 
 function hasRequiredVersion(value: string): boolean {
   const version = Number(value.trim())

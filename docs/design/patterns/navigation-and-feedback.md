@@ -25,6 +25,12 @@ use `surface-overlay`, user bubbles `accent-subtle`, and neither glows. Empty
 states use restrained contour-grid texture, an eyebrow, one-line explanation,
 and one primary action.
 
+A settings page may contain one primary action for each independently
+persisted, visibly named form region. Each such region owns its own dirty,
+busy, success, and error state, so saving one region cannot imply that another
+region was saved. This is a persistence boundary, not permission to place
+multiple competing primary actions in one form or task.
+
 Native checkboxes and radios inherit `accent-color: var(--color-accent)` from
 `body`; do not restyle them with raw blue. Custom toggles use a sharp 3px track
 (`bg-accent` on, `bg-border-default` off) and 2px `bg-text-primary` knob, never

@@ -66,6 +66,34 @@ export const tileClass = {
   error: 'text-[11px] text-danger',
 } as const
 
+// Plain-DOM portals cannot rely on Tailwind's generated utilities. This map
+// exposes the same semantic slots as tileClass while keeping the visual recipe
+// in faros-ui.css. Existing Tailwind consumers remain on tileClass; string-
+// building portals use these names instead of maintaining a local facsimile.
+export const dashboardTileSemanticClass: Record<keyof typeof tileClass, string> = {
+  root: 'k-dashboard-tile',
+  stats: 'k-dashboard-tile__stats',
+  stat: 'k-dashboard-tile__stat',
+  statIcon: 'k-dashboard-tile__stat-icon',
+  statTotal: 'k-dashboard-tile__stat--total',
+  statOk: 'k-dashboard-tile__stat--ok',
+  statWarn: 'k-dashboard-tile__stat--warning',
+  statBad: 'k-dashboard-tile__stat--danger',
+  statMuted: 'k-dashboard-tile__stat--muted',
+  statNum: 'k-dashboard-tile__stat-number',
+  statLabel: 'k-dashboard-tile__stat-label',
+  sectionLabel: 'k-dashboard-tile__section-label',
+  list: 'k-dashboard-tile__list',
+  row: 'k-dashboard-tile__row',
+  rowPrimary: 'k-dashboard-tile__row-primary',
+  rowSecondary: 'k-dashboard-tile__row-secondary',
+  rowDot: 'k-dashboard-tile__row-dot',
+  chevron: 'k-dashboard-tile__chevron',
+  empty: 'k-dashboard-tile__empty',
+  message: 'k-dashboard-tile__message',
+  error: 'k-dashboard-tile__error',
+}
+
 // TileContext is the subset of farosContext a tile needs. The console pushes
 // the full object; tiles only ever read these.
 export interface TileContext {

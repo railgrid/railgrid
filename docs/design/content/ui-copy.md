@@ -37,10 +37,14 @@ in the [component entries](../components/); page composition stays in the
   marks technical values explicitly. Technical detail is useful for operators,
   but it must not make a user-facing action unreadable.
 - **Keep details secret-safe.** Never render credential, token, password, or
-  secret values in page content, state copy, errors, summaries, or clipboard
-  helpers. Explain whether a credential is needed and how to supply or rotate
-  it; expose a safe reference or non-secret status instead. Internal workloads
-  may be described by name precisely because their setup does not need a URL or
+  secret values in tables, toasts, errors, logs, summaries, or persistent UI
+  state. Explain whether a credential is needed and how to supply or rotate it;
+  expose a safe reference or non-secret status instead. The sole setup-handoff
+  exception is a newly generated, one-time secret that the user must transfer:
+  keep it masked, copy it only through an explicit action, and clear
+  it on dismissal, navigation, context change, or unmount. It never enters a
+  table, toast, error, log, or persisted browser state. Internal workloads may
+  be described by name precisely because their setup does not need a URL or
   token.
 
 ## Informative examples

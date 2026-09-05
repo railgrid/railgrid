@@ -29,7 +29,7 @@
   /* Bump this when a standalone primitive requires a newer stylesheet than
    * the generic canonical marker can describe. Provider bundles use it to
    * recover from a host stylesheet served from an older deployment. */
-  --faros-ui-version: 5;
+  --faros-ui-version: 6;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -161,6 +161,130 @@ html.light .k-card {
   background: currentColor;
 }
 
+/* ── Dashboard tile semantics ────────────────────────────────────────────
+ * Framework-neutral mirror of dashboardtile.ts's Tailwind vocabulary. Plain
+ * DOM providers use these hooks instead of carrying a provider-local copy. */
+.k-dashboard-tile > :not([hidden]) ~ :not([hidden]) { margin-block-start: 12px; }
+.k-dashboard-tile__stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 4px;
+  font-size: 11px;
+}
+.k-dashboard-tile__stat { display: inline-flex; align-items: center; gap: 4px; }
+.k-dashboard-tile__stat-icon { width: 12px; height: 12px; flex: none; }
+.k-dashboard-tile__stat--total { color: var(--color-text-primary, #e9e9f2); }
+.k-dashboard-tile__stat--ok { color: var(--color-success, #2fd6a0); }
+.k-dashboard-tile__stat--warning { color: var(--color-warning, #f0a63a); }
+.k-dashboard-tile__stat--danger { color: var(--color-danger, #ff5d5d); }
+.k-dashboard-tile__stat--muted { color: var(--color-text-muted, #8587a1); }
+.k-dashboard-tile__stat-number { font-weight: 600; font-variant-numeric: tabular-nums; }
+.k-dashboard-tile__stat-label { color: var(--color-text-muted, #8587a1); }
+.k-dashboard-tile__section-label {
+  margin-block-end: 8px;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.k-dashboard-tile__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.k-dashboard-tile__row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--color-surface-overlay, #171927) 40%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.k-dashboard-tile__row:hover {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent);
+}
+.k-dashboard-tile__row-primary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-dashboard-tile__row-secondary {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--color-text-muted, #8587a1) 70%, transparent);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-dashboard-tile__row-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 9999px;
+}
+.k-dashboard-tile__chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: color-mix(in srgb, var(--color-text-muted, #8587a1) 30%, transparent);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.k-dashboard-tile__row:hover .k-dashboard-tile__chevron {
+  color: color-mix(in srgb, var(--color-accent, #8b6bff) 60%, transparent);
+  transform: translateX(2px);
+}
+.k-dashboard-tile__empty {
+  border: 1px dashed var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  padding: 12px;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 11px;
+  text-align: center;
+}
+.k-dashboard-tile__message { color: var(--color-text-muted, #8587a1); font-size: 11px; }
+.k-dashboard-tile__error { color: var(--color-danger, #ff5d5d); font-size: 11px; }
+
+/* Canonical compact action used inside dashboard state copy. */
+.k-dashboard-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--color-accent, #8b6bff);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.k-dashboard-action:hover { color: var(--color-accent-hover, #a18aff); }
+.k-dashboard-action:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-dashboard-action:disabled { cursor: not-allowed; opacity: 0.4; }
+
 /* ── Buttons ──────────────────────────────────────────────────────────────*/
 .k-btn {
   display: inline-flex;
@@ -175,6 +299,12 @@ html.light .k-card {
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
+
+/* A single loading glyph recipe prevents each provider from inventing its own
+ * duration. It is decorative: callers still provide status text and mark the
+ * affected region busy, because a spinner alone never communicates progress. */
+.k-spin { animation: k-spin 0.8s linear infinite; }
+@keyframes k-spin { to { transform: rotate(360deg); } }
 .k-btn:disabled {
   pointer-events: none;
   opacity: 0.4;
@@ -2617,6 +2747,7 @@ faros-resource-table-filter { display: contents; }
 
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
+  .k-spin { animation: none; }
   .k-resource-technical__chevron { transition: none; }
   .k-action-menu__busy { animation: none; }
   .k-toast__action-spinner { animation: none; }
@@ -2648,6 +2779,12 @@ faros-resource-table-filter { display: contents; }
   .k-inline-notification__action { max-inline-size: 38%; overflow-wrap: anywhere; }
 }
 @media (pointer: coarse), (any-pointer: coarse) {
+  .k-btn,
+  .k-dashboard-action,
+  .k-dashboard-tile__row {
+    min-height: 44px;
+    min-width: 44px;
+  }
   .k-toast__action,
   .k-toast-host .k-toast__action,
   .k-toast-host .k-toast__dismiss,

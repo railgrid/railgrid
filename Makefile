@@ -366,6 +366,7 @@ sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 
 verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
 	@hack/sync-portalkit.sh --verify
+	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs
 
 test-portal-settings-conformance: ## Verify portal shell and organization/workspace source contracts
 	@node --test portal/src/theme-bootstrap.test.mjs portal/src/pages/OrganizationsWorkspace.conformance.test.mjs
