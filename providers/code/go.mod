@@ -1,6 +1,6 @@
 module github.com/faroshq/provider-code
 
-go 1.26.3
+go 1.26.8
 
 require (
 	github.com/faroshq/provider-sdk v0.1.0
@@ -8,7 +8,7 @@ require (
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
@@ -18,10 +18,7 @@ require (
 	sigs.k8s.io/multicluster-runtime v0.24.2-0.20260817130819-087d80cae466
 )
 
-require (
-	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
-	golang.org/x/tools v0.48.0 // indirect
-)
+require golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -79,7 +76,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect

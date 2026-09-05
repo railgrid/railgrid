@@ -1,0 +1,105 @@
+# govulncheck allowlist.
+#
+# Read by hack/govulncheck.sh (via hack/govulncheck/main.go) to suppress OSV IDs
+# that the CI gate must not fail on. govulncheck has no native suppression, so
+# this file is the only place a reachable vulnerability may be accepted.
+#
+# An entry belongs here ONLY when there is no upstream fix we can take. If a
+# fixed version exists, upgrade instead - `go get <module>@<fixed>` then
+# `go mod tidy` - even when the exposure looks harmless. Every entry needs:
+#
+#   id        the GO-YYYY-NNNN identifier (https://pkg.go.dev/vuln/<id>)
+#   module    the module it comes from; also drives the stale-entry warning
+#   reason    why it cannot be fixed
+#   exposure  why the residual risk is acceptable in faros specifically
+#   reviewBy  YYYY-MM-DD; re-check upstream by then
+#
+# The gate warns (never fails) when an allowlisted ID stops being reported while
+# its module is still linked, which is the signal to delete the entry.
+#
+# Baseline: 2026-09-05, after the go1.26.8 bump and the x/crypto, etcd, grpc,
+# oras, containerd, otel and pgx upgrades on the same branch. Everything with an
+# upstream fix was taken; what is left is the residue.
+
+allow:
+  # --- helm's chart-provenance path -----------------------------------------
+  - id: GO-2026-5932
+    module: golang.org/x/crypto
+    reason: >-
+      No fix will ever ship. golang.org/x/crypto/openpgp is deprecated and
+      unmaintained upstream; the advisory is the deprecation itself, so the OSV
+      record has no fixed version. It reaches our build only through
+      helm.sh/helm/v3/pkg/provenance, which helm still implements on openpgp.
+      Removing it means dropping helm, not upgrading a dependency.
+    exposure: >-
+      Reached from helm's downloader.VerifyChart via action.LocateChart, in the
+      `faros dev plugin` CLI path (pkg/cli/cmd/dev/plugin) and the edges
+      provider's chart renderer (internal/render). Neither passes --verify, so
+      no signature is ever parsed at runtime; govulncheck cannot see that
+      because LocateChart calls into provenance unconditionally in the call
+      graph. The parser only ever sees a .prov file the operator asked us to
+      check, never tenant-supplied input.
+    reviewBy: 2026-12-05
+
+  # --- moby daemon code linked in through the docker client -----------------
+  - id: GO-2026-4883
+    module: github.com/docker/docker
+    reason: >-
+      No upstream fix. Off-by-one in Moby's plugin privilege validation. The OSV
+      record carries no fixed version for the v28 line.
+    exposure: >-
+      Server-side defect: it lives in the moby daemon's plugin install handler.
+      faros links github.com/docker/docker only as a client, from
+      pkg/cli/cmd/dev/plugin, and the only traced frames are package init
+      functions of api/types/* that the client package pulls in. We never run
+      the daemon, never call the plugin privilege API, and the client talks to
+      the developer's own local Docker socket.
+    reviewBy: 2026-12-05
+
+  - id: GO-2026-4887
+    module: github.com/docker/docker
+    reason: >-
+      No upstream fix. AuthZ plugin bypass on oversized request bodies in Moby.
+    exposure: >-
+      Same shape as GO-2026-4883: a daemon-side defect in the AuthZ middleware,
+      reached in our build only through api/types init functions of the client
+      library used by `faros dev plugin`. faros ships no Docker daemon and
+      configures no AuthZ plugin.
+    reviewBy: 2026-12-05
+
+  # --- containerd CRI code linked in through helm's OCI registry client -----
+  - id: GO-2026-5338
+    module: github.com/containerd/containerd
+    reason: >-
+      No upstream fix for the v1.7 line. containerd is pinned transitively by
+      helm.sh/helm/v3/pkg/registry; we already run the newest v1.7 patch
+      (v1.7.33) and cannot move to v2 without helm doing so first.
+    exposure: >-
+      The defect is in containerd's CRI checkpoint import (local image tag
+      poisoning) - daemon-side code in the CRI plugin. faros uses containerd
+      only as an OCI content/remotes client library via helm's registry client;
+      the traced frames are package init functions of content, images and
+      remotes. No containerd daemon, no CRI service, no checkpoint import.
+    reviewBy: 2026-12-05
+
+  - id: GO-2026-5622
+    module: github.com/containerd/containerd
+    reason: >-
+      No upstream fix for the v1.7 line; pinned by helm.sh/helm/v3/pkg/registry
+      as above.
+    exposure: >-
+      Arbitrary host CRI log file read via symlink following in CRI checkpoint
+      restore - again daemon-side CRI code that faros never executes. Only
+      containerd/labels and containerd/remotes init frames are reachable here.
+    reviewBy: 2026-12-05
+
+  - id: GO-2026-5064
+    module: github.com/containerd/containerd
+    reason: >-
+      No upstream fix for the v1.7 line; pinned by helm.sh/helm/v3/pkg/registry
+      as above.
+    exposure: >-
+      CDI annotation smuggling in CRI checkpoint restore - daemon-side CRI code.
+      Reached only through archive/compression and content init functions that
+      helm's registry client links in.
+    reviewBy: 2026-12-05

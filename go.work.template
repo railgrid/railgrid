@@ -14,7 +14,7 @@
 // Add extra `use ./../some-sibling-module` lines locally as needed; keep them
 // out of the committed template since paths above the repo root aren't portable.
 
-go 1.26.3
+go 1.26.8
 
 use (
 	.

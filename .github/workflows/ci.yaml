@@ -21,18 +21,114 @@ jobs:
     - name: Build
       run: make build
 
-  test:
+  # Every Go module in the repo gets its own vet + race-test run. provider-sdk
+  # and each provider under providers/ are standalone modules (AGENTS.md §2), so
+  # the root `make test` never saw them — security fixes landing in
+  # providers/edges, providers/agents or pkg/agent need this gate.
+  #
+  # No go.work is needed: every provider go.mod carries
+  # `replace github.com/faroshq/provider-sdk => ../../provider-sdk`, so the
+  # in-tree SDK is what gets linked. When hack/provider-sdk-cutover.sh drops
+  # that replace, copy the "Set up Go workspace" step from e2e.yaml into this
+  # job, or it will silently test the published SDK instead of the diff.
+  test-modules:
+    name: Test (${{ matrix.module }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: ., race: -race }
+          - { module: provider-sdk, race: -race }
+          - { module: providers/agents, race: -race }
+          - { module: providers/app-studio, race: -race }
+          - { module: providers/code, race: -race }
+          - { module: providers/databricks, race: -race }
+          # edges: TestSSHSessionTeardown races on its own `serverConn`
+          # (internal/ssh/ssh_teardown_test.go:175 vs :191, a test-only bug).
+          # Re-enable -race once that test synchronises the handler write.
+          - { module: providers/edges, race: "" }
+          - { module: providers/infrastructure, race: -race }
+          - { module: providers/kuery, race: -race }
+          - { module: providers/quickstart, race: -race }
     steps:
     - uses: actions/checkout@v4
     - uses: ./.github/actions/free-disk-space
     - uses: actions/setup-go@v5
       with:
         go-version-file: go.mod
+        cache-dependency-path: '**/go.sum'
+
+    # Provider binaries `//go:embed all:portal/dist`. The portal is a separate
+    # npm project built by the provider-portals job and the image build, so
+    # give the embed a target here instead of building every portal twice —
+    # `all:` accepts a lone dotfile, an empty directory is a compile error.
+    - name: Stub portal/dist for go:embed
+      if: startsWith(matrix.module, 'providers/')
+      working-directory: ${{ matrix.module }}
+      run: mkdir -p portal/dist && touch portal/dist/.gitkeep
+
+    - name: Vet
+      working-directory: ${{ matrix.module }}
+      run: go vet ./...
+
     - name: Test
-      run: make test
-    - name: Test Infrastructure install package
-      run: cd providers/infrastructure && go test -count=1 ./install
+      working-directory: ${{ matrix.module }}
+      run: |
+        if [ "${{ matrix.module }}" = "." ]; then
+          # Same package set as `make test`: everything except test/e2e.
+          go test ${{ matrix.race }} -count=1 $(go list ./... | grep -v '/test/e2e')
+        else
+          go test ${{ matrix.race }} -count=1 ./...
+        fi
+
+  # govulncheck per module, blocking. hack/govulncheck.sh fails the job only on
+  # vulnerabilities govulncheck traced to a *called* symbol and that are not
+  # listed in hack/govulncheck-allow.yaml; module- and package-level findings
+  # are inventory, not exploitable paths, and plain `govulncheck ./...` cannot
+  # tell CI the difference because it exits 3 for both.
+  #
+  # The allowlist is the only way to accept a reachable finding, every entry
+  # carries a reason, an exposure argument and a review-by date, and it is
+  # reserved for advisories with no upstream fix. If this job goes red, read the
+  # output: it names the module, the fixed version and the `go get` line, or
+  # says there is no fix. Do not add continue-on-error back.
+  #
+  # govulncheck is installed at @latest, so a newly published advisory can turn
+  # this red on an unrelated PR. That is intended - it is how we hear about one.
+  govulncheck:
+    name: govulncheck (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - .
+          - provider-sdk
+          - providers/agents
+          - providers/app-studio
+          - providers/code
+          - providers/databricks
+          - providers/edges
+          - providers/infrastructure
+          - providers/kuery
+          - providers/quickstart
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/free-disk-space
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache-dependency-path: '**/go.sum'
+
+    - name: Install govulncheck
+      run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+    # The script stubs portal/dist for the go:embed itself and cleans up after.
+    - name: govulncheck
+      run: ./hack/govulncheck.sh ${{ matrix.module }}
 
   lint:
     runs-on: ubuntu-latest

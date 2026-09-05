@@ -341,6 +341,12 @@ fix-lint: $(GOLANGCI_LINT) ## Run golangci-lint with auto-fix
 vet:
 	go vet ./...
 
+# Vulnerability gate for every Go module. Fails only on findings govulncheck
+# traced to a called symbol that are not in hack/govulncheck-allow.yaml.
+# Pass module directories to narrow it, e.g. `make govulncheck ARGS=providers/edges`.
+govulncheck: ## Run the govulncheck gate over every Go module
+	./hack/govulncheck.sh $(ARGS)
+
 # --- Code generation ---
 
 boilerplate: ## Ensure license boilerplate on all Go files

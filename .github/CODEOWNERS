@@ -1,0 +1,25 @@
+# Code owners are auto-requested as reviewers on pull requests that touch
+# these paths. This only BLOCKS a merge once branch protection on `main`
+# enables "Require review from Code Owners" — until then it is advisory.
+# See docs/security-remediation-plan.md §0.4.
+#
+# Later rules take precedence over earlier ones for the same file, so the
+# security-sensitive globs are kept last.
+
+# CI, release and install plumbing.
+/.github/**                    @mjudeikis @cwilhit
+/hack/install/**               @mjudeikis @cwilhit
+
+# Hub control plane, edge agent, shared server, the provider SDK and the
+# edges provider (the tunnel / proxy data plane).
+/pkg/hub/**                    @mjudeikis @cwilhit
+/pkg/agent/**                  @mjudeikis @cwilhit
+/pkg/server/**                 @mjudeikis @cwilhit
+/provider-sdk/**               @mjudeikis @cwilhit
+/providers/edges/**            @mjudeikis @cwilhit
+
+# Anything named after auth, proxies or tokens, anywhere in the tree
+# (Go, TypeScript, charts, scripts alike).
+**/auth*                       @mjudeikis @cwilhit
+**/*proxy*                     @mjudeikis @cwilhit
+**/*token*                     @mjudeikis @cwilhit
