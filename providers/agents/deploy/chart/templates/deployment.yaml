@@ -102,13 +102,6 @@ spec:
             - name: AGENTS_IN_MEMORY_STORE
               value: "true"
             {{- end }}
-            {{- if .Values.store.messageEncryptionKeysSecretRef.name }}
-            - name: AGENTS_MESSAGE_ENCRYPTION_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.store.messageEncryptionKeysSecretRef.name }}
-                  key: {{ .Values.store.messageEncryptionKeysSecretRef.key }}
-            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: FAROS_HUB_INSECURE
               value: "true"

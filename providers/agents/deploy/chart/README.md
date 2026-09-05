@@ -52,14 +52,11 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `catalogEntry.backendURL` | `""` |  |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Consumed by both the init container and the serve container. Key must be "kubeconfig". |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
-| `store` |  | Durable store. Postgres is the agents provider's only hard dependency beyond the hub; inMemoryStore is an explicit non-durable fallback for dev only. |
+| `store` |  | Durable store. Postgres is the agents provider's only hard dependency beyond the hub; inMemoryStore is an explicit non-durable fallback for dev only. Message and memory content is stored in plaintext; encryption at rest is the database's responsibility. |
 | `store.databaseURL` | `""` |  |
 | `store.databaseURLSecretRef.name` | `""` |  |
 | `store.databaseURLSecretRef.key` | `database-url` |  |
 | `store.inMemoryStore` | `false` |  |
-| `store.messageEncryptionKeysSecretRef` |  | Optional at-rest encryption for message/transcript content. |
-| `store.messageEncryptionKeysSecretRef.name` | `""` |  |
-| `store.messageEncryptionKeysSecretRef.key` | `keys` |  |
 | `hub` |  |  |
 | `hub.url` | `"http://faros-hub.faros.svc.cluster.local:8080"` |  |
 | `hub.insecure` | `false` |  |

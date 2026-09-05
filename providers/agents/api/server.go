@@ -39,8 +39,6 @@ type Config struct {
 	DatabaseURL string
 	// InMemoryStore forces the in-memory store even when DatabaseURL is set.
 	InMemoryStore bool
-	// EncryptionKeys is the optional at-rest message encryption key set.
-	EncryptionKeys string
 	// ProviderKubeconfig is the provider service-account kubeconfig (targets
 	// the provider's kcp workspace). Enables the background executor:
 	// autonomous schedule firing + trigger webhooks via the APIExport virtual

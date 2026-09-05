@@ -338,8 +338,9 @@ by provider limits to keep a delegation tree from runaway spend.
 ## Storage (own, Postgres)
 
 Mirror the app-studio `store` shape (interface + `postgres.go` + `memory.go`
-dev backend + optional at-rest encryption), tables scoped by
-org/workspace/agent:
+dev backend), tables scoped by org/workspace/agent. Content is stored in
+plaintext; at-rest encryption is the database's responsibility today
+(application-level encryption is planned, see item 8 above):
 
 - `agents_messages` — chat transcript per session, cursor pagination.
 - `agents_runs` — durable runs: phase, trigger, usage/cost, and an **opaque

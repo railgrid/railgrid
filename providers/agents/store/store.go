@@ -49,7 +49,9 @@ func (s Scope) withAgent() error {
 	return nil
 }
 
-// Message is a persisted transcript record. Content may be encrypted at rest.
+// Message is a persisted transcript record. Content is stored in plaintext;
+// ContentEncrypted and ContentKeyID are reserved for a future application-level
+// encryption layer and are always false/empty today.
 type Message struct {
 	ID               string         `json:"id"`
 	AgentName        string         `json:"agentName,omitempty"`
@@ -152,7 +154,9 @@ type SessionSummary struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
-// Memory is a long-term note the agent writes and later recalls.
+// Memory is a long-term note the agent writes and later recalls. Body is
+// stored in plaintext; ContentEncrypted and ContentKeyID are reserved and
+// unused (see Message).
 type Memory struct {
 	ID               string    `json:"id"`
 	AgentName        string    `json:"agentName"`

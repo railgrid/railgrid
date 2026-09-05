@@ -58,6 +58,9 @@ var agentsSchema = []string{
 		run_id TEXT NOT NULL DEFAULT '',
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
+		-- content_encrypted / content_key_id are reserved for a future
+		-- application-level encryption layer. Nothing sets them today; content
+		-- is plaintext and at-rest encryption is the database's responsibility.
 		content_encrypted BOOLEAN NOT NULL DEFAULT FALSE,
 		content_key_id TEXT NOT NULL DEFAULT '',
 		metadata JSONB,
@@ -108,6 +111,7 @@ var agentsSchema = []string{
 		agent_name TEXT NOT NULL,
 		title TEXT NOT NULL,
 		body TEXT NOT NULL,
+		-- Reserved and unused; see agents_messages.
 		content_encrypted BOOLEAN NOT NULL DEFAULT FALSE,
 		content_key_id TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL,

@@ -40,10 +40,10 @@ store:
     name: ""
     key: database-url
   inMemoryStore: false
-  # Optional at-rest encryption for message/transcript content.
-  messageEncryptionKeysSecretRef:
-    name: ""
-    key: keys
+  # Message and memory content is stored in plaintext in Postgres. Encryption
+  # at rest is the database's responsibility (use encrypted volumes or a
+  # managed Postgres with encryption enabled). Application-level encryption is
+  # planned but not implemented.
 
 hub:
   url: "http://faros-hub.faros.svc.cluster.local:8080"

@@ -78,7 +78,6 @@ func runServe() {
 		HubInsecure:        os.Getenv("FAROS_HUB_INSECURE") == "true",
 		DatabaseURL:        os.Getenv("AGENTS_DATABASE_URL"),
 		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
-		EncryptionKeys:     os.Getenv("AGENTS_MESSAGE_ENCRYPTION_KEYS"),
 		ProviderKubeconfig: os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
