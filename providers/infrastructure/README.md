@@ -33,9 +33,12 @@ continuously:
 
 It is the same `infrastructure-provider` binary (`controller` subcommand); the
 runtime image bundles the `helm` CLI so the operator pod can drive kro. The
-chart binds the operator's ServiceAccount to `cluster-admin`
-(`operator.clusterAdmin`, default on) so it can helm-install kro (which creates
-ClusterRoles/CRDs) and manage runtime workloads.
+chart binds the operator's ServiceAccount to an enumerated ClusterRole that
+covers helm-installing kro (its CRDs, ClusterRole and binding, workload) and
+the serve rollout, and ships a second enumerated role the operator binds the
+serve ServiceAccount to for the in-cluster runtime. `operator.clusterAdmin`
+(default off) additionally binds `cluster-admin` for setups whose kro chart or
+Templates need kinds outside that set.
 
 ### Prerequisites
 

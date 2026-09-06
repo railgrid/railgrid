@@ -235,11 +235,17 @@ affinity: {}
 operator:
   enabled: false
 
-  # Bind the operator ServiceAccount to cluster-admin. Required for the operator
-  # to helm-install the kro chart (which creates ClusterRoles/CRDs) and to manage
-  # runtime workloads in its own cluster (in-cluster runtime). Set false to wire
-  # a narrower role yourself.
-  clusterAdmin: true
+  # Also bind the operator ServiceAccount to cluster-admin, and have it bind the
+  # serve ServiceAccount to cluster-admin as well (in-cluster runtime). Off, the
+  # chart's two enumerated ClusterRoles (<release>-operator, <release>-serve in
+  # templates/operator.yaml) cover the kro 0.9.x chart, the serve rollout, and
+  # everything serve does on the runtime cluster. Turn it on only when
+  # something needs kinds outside that set: a kro chart version or
+  # operator.kro.extraValues that renders new kinds (ServiceMonitor, a
+  # fullnameOverride that renames kro's ClusterRole), or a Template whose
+  # instance kind lives outside kro.run / infrastructure.faros.sh. A forbidden
+  # error in the InfrastructureProvider conditions names the missing rule.
+  clusterAdmin: false
 
   # Operator (controller) image. Defaults to the provider image above.
   image:

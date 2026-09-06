@@ -14,9 +14,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -194,6 +196,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // fail records a failure condition + Error phase and requeues.
 func (r *Reconciler) fail(ctx context.Context, cr *v1alpha1.InfrastructureProvider, condType, reason string, cause error) (ctrl.Result, error) {
+	cause = withRuntimeAccessHint(condType, cause)
 	klog.FromContext(ctx).Error(cause, "reconcile step failed", "condition", condType, "reason", reason)
 	setCond(cr, condType, metav1.ConditionFalse, reason, cause.Error())
 	cr.Status.Phase = "Error"
@@ -202,6 +205,29 @@ func (r *Reconciler) fail(ctx context.Context, cr *v1alpha1.InfrastructureProvid
 		klog.FromContext(ctx).Info("status update failed", "err", err.Error())
 	}
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+}
+
+// runtimeAccessHint is appended to forbidden errors from the runtime-cluster
+// steps so the condition points at the chart value that fixes them.
+const runtimeAccessHint = "the operator's runtime-cluster credentials lack this permission: " +
+	"for the in-cluster runtime extend the chart's <release>-operator ClusterRole " +
+	"(deploy/chart/templates/operator.yaml) for the resource named in the error, " +
+	"or set operator.clusterAdmin=true; for an explicit runtimeKubeconfig grant it to that credential"
+
+// withRuntimeAccessHint annotates a forbidden error from the kro release or
+// serve rollout steps — the only steps that act on the runtime cluster with
+// the operator's own credentials — with runtimeAccessHint. Typed apierrors and
+// helm CLI output ("... is forbidden: User ... cannot create ...") both count;
+// kcp-side steps (bootstrap, CatalogEntry) use the provider kubeconfig and are
+// left alone.
+func withRuntimeAccessHint(condType string, cause error) error {
+	if cause == nil || (condType != v1alpha1.ConditionKroReleased && condType != v1alpha1.ConditionProviderDeployed) {
+		return cause
+	}
+	if !apierrors.IsForbidden(cause) && !strings.Contains(strings.ToLower(cause.Error()), "forbidden") {
+		return cause
+	}
+	return fmt.Errorf("%w (%s)", cause, runtimeAccessHint)
 }
 
 func (r *Reconciler) secretValue(ctx context.Context, ns string, ref v1alpha1.SecretKeyRef) ([]byte, error) {

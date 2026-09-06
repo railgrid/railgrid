@@ -1,4 +1,14 @@
 {{- if .Values.operator.enabled -}}
+{{- /*
+kro's chart names its objects after `kro.fullname`: the release name when it
+contains the chart name ("kro"), otherwise "<release>-kro". The operator's
+escalate/bind grants below are pinned to those names, so a kro
+fullnameOverride/nameOverride in operator.kro.extraValues needs
+operator.clusterAdmin=true instead.
+*/ -}}
+{{- $kroRelease := .Values.operator.kro.releaseName | default "kro" -}}
+{{- $kroName := ternary $kroRelease (printf "%s-kro" $kroRelease) (contains "kro" $kroRelease) -}}
+{{- $serveRole := printf "%s-serve" (include "infrastructure.fullname" .) -}}
 # CRD-driven operator: a controller-manager that reconciles
 # InfrastructureProvider CRs — bootstraps the provider kcp workspace,
 # lifecycles the kro Helm release, and owns the provider serve Deployment.
@@ -11,6 +21,15 @@ metadata:
     {{- include "infrastructure.labels" . | nindent 4 }}
     app.kubernetes.io/component: operator
 ---
+# Everything the operator touches on its own cluster, enumerated. With the
+# in-cluster runtime (no operator.runtimeKubeconfig) this is also the
+# credential helm and the serve rollout run with, so the rules cover the kro
+# chart's objects (kro 0.9.x: ServiceAccount, Deployment, ClusterRole,
+# ClusterRoleBinding, crds/, optional metrics/pprof Services) and the serve
+# workload (namespace, Secrets, ServiceAccount, Deployment, Service). An
+# explicit runtimeKubeconfig replaces all of that with its own identity.
+# Anything outside this set (a kro chart that renders new kinds, an extraValues
+# ServiceMonitor, renamed kro objects) needs operator.clusterAdmin=true.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -25,10 +44,6 @@ rules:
   - apiGroups: ["infrastructure.faros.sh"]
     resources: ["infrastructureproviders/status"]
     verbs: ["get", "update", "patch"]
-  # Read the kubeconfig / hub-token Secrets the CR references.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
   # Leader election (controller-runtime Lease in the operator's namespace) plus
   # the events it records on leadership transitions.
   - apiGroups: ["coordination.k8s.io"]
@@ -37,6 +52,75 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # Secrets: read the kubeconfig / hub-token Secrets the CR references (the
+  # controller also watches Secrets it owns), replicate them into the serve
+  # namespace, and let helm keep its release records (sh.helm.release.v1.*)
+  # in the kro namespace. Cluster-wide because the operator creates those
+  # namespaces itself, so a namespaced Role cannot pre-exist them.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The kro namespace (helm --create-namespace) and the serve namespace are
+  # created if missing and never deleted.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create"]
+  # kro chart workload + the serve Deployment/Service/ServiceAccount. Delete is
+  # for `helm uninstall` when a wedged pending-install release is recovered.
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # kro's CRDs: helm installs the chart's crds/ on first install and the
+  # operator re-applies them on every reconcile (helm never upgrades them).
+  # RBAC cannot pin `create` to a name; the rest is pinned to kro's two CRDs.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["resourcegraphdefinitions.kro.run", "graphrevisions.internal.kro.run"]
+    verbs: ["get", "update", "patch"]
+  # kro's ClusterRole (unrestricted "*" in the chart default, or the
+  # aggregation pair with rbac.mode=aggregation) and its binding, plus the
+  # binding the operator creates for the serve ServiceAccount. Create cannot be
+  # name-pinned; get/update/delete are.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames:
+      - {{ $kroName }}-cluster-role
+      - {{ $kroName }}:controller
+      - {{ $kroName }}:controller:static
+    verbs: ["get", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    resourceNames:
+      - {{ $kroName }}-cluster-role-binding
+      - {{ $kroName }}:controller
+      - faros-infrastructure-serve-{{ include "infrastructure.fullname" . }}
+    verbs: ["get", "update", "patch", "delete"]
+  # Writing a ClusterRole with rules the writer does not hold itself needs
+  # `escalate` on that role; binding one needs `bind`. Both are pinned to the
+  # roles the operator has to grant: kro's own, and the serve role below.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames:
+      - {{ $kroName }}-cluster-role
+      - {{ $kroName }}:controller
+      - {{ $kroName }}:controller:static
+    verbs: ["escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames:
+      - {{ $kroName }}-cluster-role
+      - {{ $kroName }}:controller
+      - {{ $serveRole }}
+    verbs: ["bind"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -52,13 +136,64 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "infrastructure.fullname" . }}-operator
     namespace: {{ .Release.Namespace }}
+---
+# What the provider serve pod needs on the runtime cluster when that is the
+# operator's own cluster (in-cluster runtime): the operator binds the serve
+# ServiceAccount to this role instead of cluster-admin. kro's controller has
+# its own ClusterRole for the resources the Templates' graphs materialize;
+# serve only authors RGDs and instance CRs, bridges credentials, and reaches
+# component Services through the apiserver proxy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $serveRole }}
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+rules:
+  # kro's data model: the ResourceGraphDefinition per Template, and instances
+  # of any RGD that keeps kro's default group.
+  - apiGroups: ["kro.run"]
+    resources: ["*"]
+    verbs: ["*"]
+  # The instance kinds kro synthesizes from the seeded Templates
+  # (Template.spec.instanceCRD.group). The kinds are template-defined, so the
+  # grant is for the group, not a kind list.
+  - apiGroups: ["infrastructure.faros.sh"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Per-tenant runtime namespaces and their default LimitRange (create-only).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: [""]
+    resources: ["limitranges"]
+    verbs: ["get", "create"]
+  # Bridged tenant credentials, instance Secrets and the dev-sandbox control
+  # token; the tenant namespace's default ServiceAccount gets imagePullSecrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "update", "patch"]
+  # Dev-sandbox run cleanup: leftover run Pods and the control-token Job.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Data plane: component Services are reached through
+  # /api/v1/namespaces/<ns>/services/<svc>/proxy; the verb is the HTTP method.
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    verbs: ["get", "create", "update", "patch", "delete"]
 {{- if .Values.operator.clusterAdmin }}
 ---
-# The operator helm-installs the kro chart (which creates ClusterRoles, CRDs and
-# cluster-scoped objects) and, for the in-cluster runtime, manages namespaces,
-# Secrets, Deployments + the serve SA/binding on its own cluster — so its SA
-# needs cluster-admin. Set operator.clusterAdmin=false to bind a narrower role
-# yourself (e.g. when an explicit runtimeKubeconfig with its own creds is used).
+# Opt-in escape hatch: bind the operator ServiceAccount to cluster-admin on top
+# of the enumerated role, and (via the unset INFRASTRUCTURE_SERVE_CLUSTER_ROLE
+# below) let it bind the serve ServiceAccount to cluster-admin too. Needed only
+# when the kro chart or a Template requires kinds outside the two roles above.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -107,6 +242,13 @@ spec:
             # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
             - name: FAROS_PROVIDER_VERSION
               value: {{ .Chart.AppVersion | quote }}
+            {{- if not .Values.operator.clusterAdmin }}
+            # ClusterRole the operator binds the serve ServiceAccount to for the
+            # in-cluster runtime. Unset (clusterAdmin=true) falls back to
+            # cluster-admin.
+            - name: INFRASTRUCTURE_SERVE_CLUSTER_ROLE
+              value: {{ $serveRole | quote }}
+            {{- end }}
             {{- with .Values.development.previewBridge.verificationJWKS }}
             # Public verification keys are platform-global configuration. The
             # operator propagates them into each managed provider Deployment;

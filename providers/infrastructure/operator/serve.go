@@ -275,11 +275,25 @@ func EnsureProviderServe(
 	return ensureServeService(ctx, cs, name, labels, port)
 }
 
+// serveClusterRoleEnv names the ClusterRole the serve ServiceAccount is bound
+// to for the in-cluster runtime. The chart sets it to its enumerated
+// "<release>-serve" role; unset (operator.clusterAdmin=true, or an
+// out-of-chart run) falls back to cluster-admin.
+const serveClusterRoleEnv = "INFRASTRUCTURE_SERVE_CLUSTER_ROLE"
+
+func serveClusterRole() string {
+	if name := strings.TrimSpace(os.Getenv(serveClusterRoleEnv)); name != "" {
+		return name
+	}
+	return "cluster-admin"
+}
+
 // ensureServeRBAC creates the serve pod's ServiceAccount (in ServeNamespace)
-// and binds it to cluster-admin so its in-cluster kro backend can author
-// RGD-defined instances, namespaces, and secrets on the runtime cluster. Used
-// only for the in-cluster runtime (no runtime kubeconfig). Scope down for
-// least privilege in hardened environments.
+// and binds it to serveClusterRole so its in-cluster kro backend can author
+// RGDs and instances, namespaces, and secrets on the runtime cluster. Used
+// only for the in-cluster runtime (no runtime kubeconfig). A binding whose
+// roleRef differs (a clusterAdmin flip on the chart) is replaced, since RBAC
+// makes roleRef immutable.
 func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string) error {
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: ServeNamespace}}
 	if _, err := cs.CoreV1().ServiceAccounts(ServeNamespace).Get(ctx, saName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
@@ -293,15 +307,43 @@ func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string
 	crbName := "faros-infrastructure-serve-" + saName
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: crbName},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: serveClusterRole()},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: ServeNamespace}},
 	}
-	if _, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, crbName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, cerr := cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, crbName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return fmt.Errorf("get serve ClusterRoleBinding: %w", err)
+	case existing.RoleRef == crb.RoleRef:
+		return nil
+	default:
+		if derr := cs.RbacV1().ClusterRoleBindings().Delete(ctx, crbName, metav1.DeleteOptions{}); derr != nil && !apierrors.IsNotFound(derr) {
+			return fmt.Errorf("replace serve ClusterRoleBinding (roleRef %s -> %s): %w", existing.RoleRef.Name, crb.RoleRef.Name, derr)
+		}
+	}
+	if _, cerr := cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); cerr != nil {
+		if !apierrors.IsAlreadyExists(cerr) {
 			return fmt.Errorf("create serve ClusterRoleBinding: %w", cerr)
 		}
-	} else if err != nil {
-		return fmt.Errorf("get serve ClusterRoleBinding: %w", err)
+		// AlreadyExists here means something else owns the name right now: the
+		// binding we just deleted is still terminating, or another actor
+		// recreated it. roleRef is immutable, so the survivor cannot be
+		// patched into shape — if it still carries the old role, serve keeps
+		// the privileges this change exists to drop. Verify and fail, so the
+		// reconcile retries promptly instead of silently reporting success and
+		// waiting for the next periodic pass (or forever, if the recreating
+		// actor keeps winning).
+		current, gerr := cs.RbacV1().ClusterRoleBindings().Get(ctx, crbName, metav1.GetOptions{})
+		if gerr != nil {
+			return fmt.Errorf("get serve ClusterRoleBinding after create conflict: %w", gerr)
+		}
+		if current.RoleRef != crb.RoleRef {
+			return fmt.Errorf(
+				"serve ClusterRoleBinding %s still bound to ClusterRole %s, want %s: the replaced binding has not been removed yet",
+				crbName, current.RoleRef.Name, crb.RoleRef.Name,
+			)
+		}
 	}
 	return nil
 }
