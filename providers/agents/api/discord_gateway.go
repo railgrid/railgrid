@@ -191,6 +191,15 @@ func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.S
 			return
 		}
 
+		// The gateway session is authenticated by the bot token, so there is no
+		// signature to verify here (Discord only signs HTTP interaction
+		// callbacks, which this provider does not expose). A resumed session
+		// can replay MESSAGE_CREATE, so the message id is still de-duplicated.
+		key := inboundEventKey(cluster, connName, "discord:"+mc.ID)
+		if !m.bg.seen.claim(key) {
+			return
+		}
+
 		agent, err := m.bg.server.routeChannelAgent(ctx, dyn, conn)
 		if err != nil {
 			_, _ = sess.ChannelMessageSend(mc.ChannelID, "No agent is bound to this Discord connection yet — set it as an agent's notify channel in the portal.")
@@ -199,7 +208,7 @@ func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.S
 		_ = sess.ChannelTyping(mc.ChannelID) // "thinking…" while the run executes
 
 		if err := m.bg.exec.Submit(ctx, executor.Job{
-			ID:          fmt.Sprintf("discord/%s/%s/%d", cluster, connName, time.Now().UnixNano()),
+			ID:          fmt.Sprintf("discord/%s/%s/%s", cluster, connName, orNano(mc.ID)),
 			Kind:        executor.KindChannel,
 			ClusterID:   cluster,
 			SourceName:  connName,
@@ -209,6 +218,8 @@ func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.S
 			Trigger:     agentsv1alpha1.RunTriggerChannel,
 			SessionID:   "discord:" + connName + ":" + mc.ChannelID,
 		}); err != nil {
+			m.bg.seen.release(key)
+			log.Printf("discord: %s/%s: %v", cluster, connName, err)
 			_, _ = sess.ChannelMessageSend(mc.ChannelID, "⚠️ couldn't queue that right now — try again in a moment.")
 		}
 	}

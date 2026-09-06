@@ -73,7 +73,9 @@ type Handler func(ctx context.Context, job Job) error
 type Executor interface {
 	// Start begins accepting work; returns once the executor is running.
 	Start(ctx context.Context) error
-	// Submit enqueues a job. It must not block on job execution.
+	// Submit enqueues a job. It must not block on job execution; it may wait
+	// for queue space until ctx is done (or SubmitWait elapses), then returns
+	// an error wrapping ErrQueueFull so the caller can ask the sender to retry.
 	Submit(ctx context.Context, job Job) error
 	// Stop drains and shuts down.
 	Stop()
@@ -81,6 +83,22 @@ type Executor interface {
 
 // ErrStopped is returned by Submit after Stop (or before Start).
 var ErrStopped = errors.New("executor is not running")
+
+// ErrQueueFull is returned (wrapped) by Submit when no queue slot freed up
+// before the caller's context ended. Inbound webhook handlers map it to 503 +
+// Retry-After so the platform redelivers instead of the event being lost.
+var ErrQueueFull = errors.New("executor queue full")
+
+// SubmitWait is the hard upper bound Submit waits for a queue slot when the
+// caller's context carries no earlier deadline. Callers with a tighter budget
+// (Slack retries a webhook after 3s) pass a shorter deadline on ctx.
+const SubmitWait = 5 * time.Second
+
+// submitSlowWait is how long a job must sit waiting for a queue slot before
+// Submit says so. Below it the queue drained as fast as it filled and the job
+// was not meaningfully delayed; above it the pool is saturated, which is a
+// capacity signal an operator can act on.
+const submitSlowWait = 250 * time.Millisecond
 
 // InProcess is the small in-house implementation: a bounded worker pool with
 // per-job timeout and panic isolation. No durability — a restart drops queued
@@ -124,7 +142,13 @@ func (e *InProcess) Start(ctx context.Context) error {
 	return nil
 }
 
-func (e *InProcess) Submit(_ context.Context, job Job) error {
+// Submit enqueues the job, waiting for a free slot until ctx is done or
+// SubmitWait elapses, whichever comes first. A full queue used to drop the job
+// on the floor; an inbound message that is silently dropped is
+// indistinguishable from one that never arrived, so callers now get an
+// explicit ErrQueueFull to turn into a retryable response. Jobs are still not
+// durable across a restart — a persistent queue is a follow-up.
+func (e *InProcess) Submit(ctx context.Context, job Job) error {
 	if !e.running {
 		return ErrStopped
 	}
@@ -132,9 +156,33 @@ func (e *InProcess) Submit(_ context.Context, job Job) error {
 	case e.jobs <- job:
 		return nil
 	default:
-		return fmt.Errorf("executor queue full — job %s/%s dropped", job.Kind, job.SourceName)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	wait, cancel := context.WithTimeout(ctx, SubmitWait)
+	defer cancel()
+	// Log the wait, not the attempt. A momentarily full channel is ordinary
+	// under burst load — a worker frees a slot microseconds later and nothing
+	// was delayed — so a line per overflow is noise that buries the case worth
+	// seeing: a queue that stayed full long enough to hold the job up. The
+	// timeout path needs no line of its own; it returns ErrQueueFull, which the
+	// caller reports.
+	start := time.Now()
+	select {
+	case e.jobs <- job:
+		if waited := time.Since(start); waited >= submitSlowWait {
+			log.Printf("executor: queue full (%d/%d), job %s/%s waited %s for a slot",
+				len(e.jobs), cap(e.jobs), job.Kind, job.SourceName, waited.Round(time.Millisecond))
+		}
+		return nil
+	case <-wait.Done():
+		return fmt.Errorf("%w (%d/%d queued) — job %s/%s not accepted: %v", ErrQueueFull, len(e.jobs), cap(e.jobs), job.Kind, job.SourceName, wait.Err())
 	}
 }
+
+// Depth reports how many jobs are queued but not yet picked up by a worker.
+func (e *InProcess) Depth() int { return len(e.jobs) }
 
 func (e *InProcess) Stop() {
 	if e.cancel != nil {

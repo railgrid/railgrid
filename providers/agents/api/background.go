@@ -101,6 +101,14 @@ type background struct {
 	identities *identityCache
 
 	discord *discordManager // Discord gateway bots (inbound chat)
+
+	// seen de-duplicates inbound channel deliveries (Slack event_id, Telegram
+	// update_id, Discord message id) so a platform retry does not run twice.
+	seen *inboundDedup
+
+	// scopedFn, when set, replaces scoped() — tests inject a fake dynamic
+	// client per cluster instead of dialling a virtual workspace.
+	scopedFn func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 }
 
 // StartBackground wires and starts the background executor + scheduler loop.
@@ -120,7 +128,8 @@ func (s *Server) StartBackground(ctx context.Context) {
 	if s.cfg.SchedulerInterval > 0 {
 		interval = s.cfg.SchedulerInterval
 	}
-	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes(), identities: newIdentityCache()}
+	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes(), identities: newIdentityCache(),
+		seen: newInboundDedup(inboundDedupTTL, inboundDedupMax)}
 	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
 	bg.discord = newDiscordManager(bg)
 	_ = bg.exec.Start(ctx)
@@ -362,6 +371,9 @@ const apiExportNameForSlice = "agents.faros.sh"
 // scoped returns a dynamic client bound to one tenant logical cluster, on
 // whichever shard's VW actually serves it.
 func (b *background) scoped(ctx context.Context, clusterID string) (dynamic.Interface, error) {
+	if b.scopedFn != nil {
+		return b.scopedFn(ctx, clusterID)
+	}
 	url, err := b.shardFor(ctx, clusterID)
 	if err != nil {
 		return nil, err
@@ -405,6 +417,11 @@ func (b *background) loop(ctx context.Context) {
 	if b.ready() && b.discord != nil {
 		b.discord.reconcile(ctx)
 	}
+	// Inbound webhooks reject unverifiable deliveries, so before anything else
+	// make every messaging connection verifiable (or say why it is not).
+	if b.ready() {
+		b.reconcileChannelSecrets(ctx)
+	}
 	// Recover runs a previous process left in flight before doing anything else:
 	// a restarted deploy should pick its work back up, not sit on rows stuck in
 	// Running until someone notices.
@@ -431,6 +448,7 @@ func (b *background) loop(ctx context.Context) {
 			if b.discord != nil {
 				b.discord.reconcile(ctx)
 			}
+			b.reconcileChannelSecrets(ctx)
 		}
 	}
 }
@@ -975,7 +993,13 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	task := trig.Spec.Task
 	if len(strings.TrimSpace(string(body))) > 0 {
-		task += "\n\nEvent payload:\n" + string(body)
+		// The payload is whatever the sender chose to POST. It is evidence for
+		// the task, never part of it — quarantine it so an embedded "ignore your
+		// instructions and ..." reads as data to the model.
+		task += "\n\n" + quarantinePayload("webhook trigger "+name, map[string]string{
+			"eventType":   webhookEventType(r, body),
+			"contentType": r.Header.Get("Content-Type"),
+		}, string(body))
 	}
 	if strings.TrimSpace(task) == "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "trigger has no task")

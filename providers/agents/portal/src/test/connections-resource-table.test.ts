@@ -221,6 +221,42 @@ describe('Connections resource tables', () => {
     })
   })
 
+  it('lets a Slack chat connection add the signing secret inbound verification needs', async () => {
+    const original = { metadata: { name: 'slack' }, spec: { type: 'slack', displayName: 'Slack', channel: 'C012345' } } satisfies Connection
+    const patchConnection = vi.fn().mockResolvedValue(original)
+    const api = stubApi({ patchConnection, listConnections: () => Promise.resolve([original]) })
+    const store = makeStore(api)
+    store.connections.data = [original]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, editRoute: true, editName: original.metadata.name })
+    const form = el.querySelector<HTMLFormElement>('form')!
+    const signing = form.querySelector<HTMLInputElement>('input[name="signingSecret"]')!
+
+    expect(signing.type).toBe('password')
+    expect(signing.value).toBe('')
+    expect(text(form)).toContain('Basic Information')
+    signing.value = 'shhh'
+    signing.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(el, 6)
+
+    expect(patchConnection).toHaveBeenCalledWith('slack', { displayName: 'Slack', channel: 'C012345', signingSecret: 'shhh' })
+  })
+
+  it('omits the signing secret field from send-only Slack webhook connections', async () => {
+    const original = {
+      metadata: { name: 'slack-hook' },
+      spec: { type: 'slack', displayName: 'Slack hook', channel: 'https://hooks.slack.com/services/T/B/secret' },
+    } satisfies Connection
+    const api = stubApi({ listConnections: () => Promise.resolve([original]) })
+    const store = makeStore(api)
+    store.connections.data = [original]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+    const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, editRoute: true, editName: original.metadata.name })
+
+    expect(el.querySelector('input[name="signingSecret"]')).toBeNull()
+  })
+
   it('keeps a Slack request URL masked and copies it only from the explicit handoff action', async () => {
     const requestURL = 'https://faros.example.test/services/providers/agents/inbound/slack/secret'
     const item = { metadata: { name: 'slack' }, spec: { type: 'slack', displayName: 'Slack', channel: 'C012345' } } satisfies Connection

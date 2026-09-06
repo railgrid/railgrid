@@ -391,6 +391,9 @@ export interface ConnectionWrite {
   baseURL?: string
   channel?: string
   secret?: string
+  // signingSecret is the Slack app signing secret used to verify inbound
+  // Events API requests (write-only). Telegram secret tokens are generated.
+  signingSecret?: string
   auth?: string
   oauthProvider?: string
   clientID?: string

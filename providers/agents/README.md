@@ -7,6 +7,34 @@ Discord, SMTP, and the portal.
 APIExport: `agents.faros.sh`, in `root:faros:providers:agents` (or your own
 workspace when self-hosted).
 
+## Messaging channels
+
+Inbound chat (Slack, Telegram) arrives on a per-connection webhook URL. The URL
+carries an HMAC token, but that only proves the caller knows the URL, so every
+delivery is additionally verified with the platform's own secret before a
+message can run an agent:
+
+- **Slack** — paste the app **signing secret** (Slack app → Basic Information →
+  App Credentials → Signing Secret) when creating the connection (or add it to
+  an existing one via *Edit*). Requests are checked against
+  `X-Slack-Signature` / `X-Slack-Request-Timestamp` (5-minute window). A
+  Slack connection with inbound enabled and no signing secret shows
+  `Error: webhook verification secret required; update the connection` and its events are
+  rejected until one is added.
+- **Telegram** — nothing to paste: the provider generates a webhook
+  `secret_token` per connection and registers it with `setWebhook`; updates
+  without the matching `X-Telegram-Bot-Api-Secret-Token` are rejected.
+  Connections created before this existed are migrated automatically at
+  startup (the bot's registered webhook is re-registered with the token); if
+  that fails the connection says so and **Enable inbound** fixes it.
+- **Discord** — chat rides the bot's own gateway WebSocket (no public
+  endpoint); **SMTP** is outbound only.
+
+Duplicate deliveries (Slack retries, Telegram redelivery) are acknowledged
+without running the agent again, and a full executor queue answers `503` with
+`Retry-After` instead of dropping the message. See
+[docs/agents-multi-channel.md](../../docs/agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine).
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

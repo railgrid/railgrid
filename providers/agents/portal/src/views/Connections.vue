@@ -3,7 +3,7 @@ import { AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuff
 import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import type { ApiClient } from '../api'
 import SecretHandoff from '../components/SecretHandoff.vue'
-import { CATEGORY_META, CONN_DEFS, connCategory, connShape, isSecretBearingWebhook, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
+import { CATEGORY_META, CONN_DEFS, SLACK_SIGNING_SECRET_FIELD, connCategory, connShape, isSecretBearingWebhook, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
@@ -146,7 +146,14 @@ async function create(def: ConnTypeDef): Promise<void> {
 function hydrateEdit(item: Connection): void {
   const usesChannel = connCategory(item.spec.type) === 'channel' || Boolean(item.spec.channel)
   editValuesFor.value = item.metadata.name
-  editValues.value = { displayName: item.spec.displayName || '', endpoint: isSecretBearingWebhook(item) ? '' : (usesChannel ? item.spec.channel : item.spec.baseURL) || '', instance: item.spec.config?.instance || '', secret: '' }
+  editValues.value = { displayName: item.spec.displayName || '', endpoint: isSecretBearingWebhook(item) ? '' : (usesChannel ? item.spec.channel : item.spec.baseURL) || '', instance: item.spec.config?.instance || '', secret: '', signingSecret: '' }
+}
+// Slack signs Events API requests with the app signing secret and the provider
+// refuses inbound events it cannot verify, so an existing Slack chat connection
+// must be able to add or rotate it here. Incoming-webhook Slack connections are
+// send-only and never receive events, so they don't take one.
+function takesSigningSecret(item: Connection): boolean {
+  return item.spec.type === 'slack' && !isSecretBearingWebhook(item)
 }
 async function saveEdit(item: Connection): Promise<void> {
   if (editBusy.value) return
@@ -159,6 +166,7 @@ async function saveEdit(item: Connection): Promise<void> {
     if (get('endpoint')) patch.channel = get('endpoint')
   } else patch.baseURL = get('endpoint')
   if (get('secret')) patch.secret = get('secret')
+  if (takesSigningSecret(item) && get('signingSecret')) patch.signingSecret = get('signingSecret')
   editBusy.value = true
   try {
     const result = await mutate(authority.store, { run: () => authority.api.patchConnection(item.metadata.name, patch), success: 'Connection updated.', failure: 'Update failed', reload: ['connections'] })
@@ -300,6 +308,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
               <label v-else>{{ isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit) }}<input v-model="editValues.endpoint" class="k-input" name="endpoint" :placeholder="isSecretBearingWebhook(currentEdit) ? 'Configured — leave blank to keep it' : ''" :disabled="editBusy" /><span v-if="isSecretBearingWebhook(currentEdit)" class="agents-hint">Configured; leave blank to keep the current destination.</span></label>
               <p v-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook && currentEdit.spec.auth === 'oauth'" class="agents-hint">This is an OAuth connection — use the <Link :stroke-width="1.75" /> button in the table to re-authorize. Client credentials aren't edited here.</p>
               <label v-else-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook">New {{ connShape(currentEdit).discordBot ? 'bot token' : 'secret / token' }}<input v-model="editValues.secret" class="k-input" name="secret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span class="agents-hint">Only set this to rotate the credential.</span></label>
+              <label v-if="takesSigningSecret(currentEdit)">{{ SLACK_SIGNING_SECRET_FIELD.label }}<input v-model="editValues.signingSecret" class="k-input" name="signingSecret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span class="agents-hint">{{ SLACK_SIGNING_SECRET_FIELD.hint }}</span></label>
             </div>
             <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="editBusy" @click="cancelEdit">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="editBusy">{{ editBusy ? 'Saving…' : 'Save changes' }}</button></div>
           </form>

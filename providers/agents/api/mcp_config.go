@@ -163,6 +163,8 @@ type createConnectionInput struct {
 	Channel     string            `json:"channel,omitempty" jsonschema:"Delivery target for messaging connections (chat id, channel, address)"`
 	Config      map[string]string `json:"config,omitempty" jsonschema:"Type-specific settings"`
 	Secret      string            `json:"secret,omitempty" jsonschema:"The credential (bot token, PAT, API key). Write-only: stored in a Secret and never returned"`
+	// SigningSecret verifies inbound Slack events; Telegram secret tokens are generated.
+	SigningSecret string `json:"signingSecret,omitempty" jsonschema:"Slack only: the app signing secret (Basic Information → Signing Secret) used to verify inbound events. Write-only"`
 }
 
 type updateConnectionInput struct {
@@ -172,6 +174,8 @@ type updateConnectionInput struct {
 	Channel     *string            `json:"channel,omitempty" jsonschema:"New delivery target"`
 	Config      *map[string]string `json:"config,omitempty" jsonschema:"Replacement config map; replaces the whole map"`
 	Secret      *string            `json:"secret,omitempty" jsonschema:"Rotate the credential. Write-only; omit to keep the current one"`
+	// SigningSecret sets or rotates the Slack app signing secret.
+	SigningSecret *string `json:"signingSecret,omitempty" jsonschema:"Slack only: set or rotate the app signing secret used to verify inbound events. Write-only"`
 }
 
 type saveCredentialInput struct {
@@ -444,6 +448,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		req := createConnectionRequest{
 			Name: in.Name, Type: in.Type, DisplayName: in.DisplayName,
 			BaseURL: in.BaseURL, Channel: in.Channel, Config: in.Config, Secret: in.Secret,
+			SigningSecret: in.SigningSecret,
 		}
 		conn, err := s.applyConnectionCreate(ctx, c, &req)
 		if err != nil {
@@ -464,7 +469,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		}
 		req := updateConnectionRequest{
 			DisplayName: in.DisplayName, BaseURL: in.BaseURL, Channel: in.Channel,
-			Config: in.Config, Secret: in.Secret,
+			Config: in.Config, Secret: in.Secret, SigningSecret: in.SigningSecret,
 		}
 		conn, err := applyConnectionUpdate(ctx, c, in.Name, &req)
 		if err != nil {

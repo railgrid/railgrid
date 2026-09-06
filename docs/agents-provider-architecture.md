@@ -231,9 +231,12 @@ those outranks new features.**
 9. **Retry backoff.** Failed schedules count failures and disable at 5; the
    designed 30s/60s/5m escalating retry isn't implemented
    (`schedule.spec.retry.maxAttempts` is still unread).
-10. **Slack signing-secret verification** (URL token is the only webhook auth
-    today), **webhook idempotency** (duplicate deliveries double-fire —
-    filters now gate *which* events fire, not repeat deliveries), **inbound
+10. **Inbound hardening leftovers.** Slack signature verification, Telegram
+    secret tokens, per-event de-duplication, and payload quarantine are built
+    (see [`agents-multi-channel.md`](./agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine)).
+    Still open: the dedup set is per process (multi-replica durability via
+    the store's run idempotency index), **trigger webhook idempotency**
+    (`AgentTrigger` deliveries have no platform id to key on), **inbound
     email**, and **multi-chat routing** (one connection = one configured chat,
     with no per-user identity inside it).
 11. **Per-tool grant granularity.** Grants stop at family/connection: granting
@@ -242,8 +245,10 @@ those outranks new features.**
     also no cached tool inventory, so every run re-dials each MCP connection
     serially.
 12. **Executor durability + fairness.** The in-process pool is 4 workers
-    globally (not per-tenant) with drop-on-full submit and no persistence
-    across restarts.
+    globally (not per-tenant) and has no persistence across restarts. A full
+    queue no longer drops jobs — `Submit` waits on the caller's context and
+    returns `ErrQueueFull` (503 + `Retry-After` on webhooks) — but the queue
+    itself is still in memory.
 
 ### Milestone mapping
 

@@ -42,6 +42,17 @@ export interface ConnTypeDef {
   build: (v: Record<string, string>, mode: string) => ConnectionWrite
 }
 
+// Slack signs every Events API request with the app's signing secret; the
+// provider refuses inbound events it cannot verify, so a Slack connection
+// that should receive chat needs it. Shared by the bot-token and OAuth modes
+// and by the edit form (existing connections add it there).
+export const SLACK_SIGNING_SECRET_FIELD: ConnField = {
+  key: 'signingSecret',
+  label: 'Signing secret',
+  password: true,
+  hint: 'Slack app → Basic Information → App Credentials → Signing Secret. Required for inbound chat (Events API); the provider verifies every request with it.',
+}
+
 // Connections fall into three kinds so the UI can label what each one is FOR:
 //  - tool:       a capability agents call during a run (GitHub, MCP, web search)
 //  - channel:    where agents message you (Telegram, Slack, Discord, email)
@@ -290,6 +301,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
         fields: [
           { key: 'token', label: 'Bot token', password: true, required: true, hint: 'xoxb-… from your Slack app → OAuth & Permissions. Needs chat:write.' },
           { key: 'channel', label: 'Channel ID', required: true, hint: 'e.g. C0123ABC — channel → View details → bottom.' },
+          SLACK_SIGNING_SECRET_FIELD,
         ],
       },
       {
@@ -305,6 +317,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
           { key: 'clientSecret', label: 'Client secret', password: true, required: true },
           { key: 'scopes', label: 'Scopes', placeholder: 'chat:write channels:history' },
           { key: 'channel', label: 'Channel ID', required: true },
+          SLACK_SIGNING_SECRET_FIELD,
         ],
       },
     ],
@@ -318,9 +331,11 @@ export const CONN_DEFS: ConnTypeDef[] = [
         b.clientSecret = v.clientSecret
         b.channel = v.channel
         if (v.scopes) b.oauthScopes = v.scopes.trim().split(/\s+/)
+        if (v.signingSecret) b.signingSecret = v.signingSecret
       } else {
         b.secret = v.token
         b.channel = v.channel
+        if (v.signingSecret) b.signingSecret = v.signingSecret
       }
       return b
     },
