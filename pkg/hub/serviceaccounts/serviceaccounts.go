@@ -127,12 +127,26 @@ type WorkspaceConfigBuilder interface {
 // clientset targeting the requested (orgUUID, wsUUID).
 type Manager struct {
 	cfg WorkspaceConfigBuilder
+	// proofKeys yields the key the hub signs delegated user identities with.
+	// Nil disables delegation entirely — IssueDelegatedUserToken fails rather
+	// than minting an account whose identity nothing can later prove. See
+	// delegated_user_proof.go.
+	proofKeys ProofKeySource
+	// delegatedCache backs IssueDelegatedUserToken; see
+	// delegated_user_token.go.
+	delegatedCache
 }
 
-// NewManager constructs a Manager backed by the given workspace
-// config builder.
-func NewManager(cfg WorkspaceConfigBuilder) *Manager {
-	return &Manager{cfg: cfg}
+// NewManager constructs a Manager backed by the given workspace config
+// builder. Pass a ProofKeySource to enable delegated user tokens; without one
+// the delegated path fails closed and the rest of the SA surface is
+// unaffected.
+func NewManager(cfg WorkspaceConfigBuilder, proofKeys ...ProofKeySource) *Manager {
+	m := &Manager{cfg: cfg}
+	if len(proofKeys) > 0 {
+		m.proofKeys = proofKeys[0]
+	}
+	return m
 }
 
 // SA is the REST-layer projection of a faros ServiceAccount. The

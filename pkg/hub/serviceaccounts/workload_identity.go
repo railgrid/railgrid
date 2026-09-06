@@ -208,8 +208,10 @@ func (m *Manager) EnsureWorkloadIdentity(ctx context.Context, orgUUID, wsUUID st
 // selected child workspace and verifies that the reviewed ServiceAccount is a
 // hub-managed workload identity bound to expectedTenantPath. JWT signatures
 // and claims are intentionally never trusted offline.
+// It accepts workload identities only: a delegated user identity is rejected,
+// because this entry point has no proof key with which to establish one.
 func VerifyWorkloadServiceAccount(ctx context.Context, cfg *rest.Config, token, expectedTenantPath string) (string, error) {
-	username, _, err := VerifyWorkloadServiceAccountDetails(ctx, cfg, token, expectedTenantPath)
+	username, _, err := VerifyWorkloadServiceAccountDetails(ctx, cfg, token, expectedTenantPath, nil)
 	return username, err
 }
 
@@ -217,7 +219,12 @@ func VerifyWorkloadServiceAccount(ctx context.Context, cfg *rest.Config, token, 
 // verifier used by both tenant resolution and action-grant authorization. It
 // returns the reviewed ServiceAccount only after TokenReview, audience,
 // subject, label, tenant, and required identity annotations have all passed.
-func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, token, expectedTenantPath string) (string, *corev1.ServiceAccount, error) {
+//
+// proofKeys is consulted only for delegated user identities, whose annotations
+// are tenant-writable and therefore mean nothing without the hub's keyed proof
+// (see delegated_user_proof.go). A nil source rejects them outright; that is
+// the right answer for any caller that is not the delegated-token path.
+func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, token, expectedTenantPath string, proofKeys ProofKeySource) (string, *corev1.ServiceAccount, error) {
 	if cfg == nil || strings.TrimSpace(token) == "" || strings.TrimSpace(expectedTenantPath) == "" {
 		return "", nil, fmt.Errorf("workload token, tenant path, and workspace config are required")
 	}
@@ -243,7 +250,7 @@ func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, 
 	if err != nil {
 		return "", nil, fmt.Errorf("getting workload ServiceAccount: %w", err)
 	}
-	if err := verifyWorkloadServiceAccountAnnotations(sa, expectedTenantPath); err != nil {
+	if err := verifyWorkloadServiceAccountAnnotations(ctx, sa, expectedTenantPath, proofKeys); err != nil {
 		return "", nil, err
 	}
 	return review.Status.User.Username, sa, nil
@@ -334,9 +341,26 @@ func workloadIdentityAnnotations(scope WorkloadIdentityScope) map[string]string 
 	}
 }
 
-func verifyWorkloadServiceAccountAnnotations(sa *corev1.ServiceAccount, expectedTenantPath string) error {
+func verifyWorkloadServiceAccountAnnotations(ctx context.Context, sa *corev1.ServiceAccount, expectedTenantPath string, proofKeys ProofKeySource) error {
 	if sa == nil || sa.Labels[LabelWorkloadIdentity] != "true" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != expectedTenantPath {
 		return fmt.Errorf("workload ServiceAccount is not bound to selected tenant")
+	}
+	// A delegated user identity is hub-managed and tenant-bound like a
+	// workload identity, but carries a human user instead of a Project tuple.
+	// It never has a scope marker, so an action-grant check comparing markers
+	// fails closed on it — which is right: delegation reaches a provider's
+	// data plane as the user, not the action runtime.
+	//
+	// Note the label alone is tenant-writable, so this branch is reachable by
+	// anyone; it is also terminal, so a hand-made object cannot fall through
+	// to the workload-identity checks below and be read as some other
+	// identity. Without a valid hub proof it is rejected outright.
+	if IsDelegatedUserServiceAccount(sa) {
+		key, err := delegatedProofKey(ctx, proofKeys)
+		if err != nil {
+			return err
+		}
+		return verifyDelegatedUserAnnotations(key, sa)
 	}
 	for _, key := range []string{
 		AnnotationWorkloadIdentityScope,
@@ -449,29 +473,35 @@ func ensureWorkloadRBAC(ctx context.Context, cs kubernetes.Interface, serviceAcc
 		}
 	}
 
+	return ensureWorkloadClusterRoleBinding(ctx, cs, roleName, roleName, serviceAccount)
+}
+
+// ensureWorkloadClusterRoleBinding reconciles the hub-managed
+// ClusterRoleBinding bindingName so that exactly the default-namespace
+// ServiceAccount serviceAccount is bound to the ClusterRole roleName. Shared by
+// the workload identity (which binds its own narrow ClusterRole) and the
+// delegated user identity (which binds the role the workspace already grants
+// its members).
+func ensureWorkloadClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, bindingName, roleName, serviceAccount string) error {
 	bindings := cs.RbacV1().ClusterRoleBindings()
 	wantSubjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccount, Namespace: Namespace}}
-	binding, err := bindings.Get(ctx, roleName, metav1.GetOptions{})
+	wantRoleRef := rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: roleName}
+	binding, err := bindings.Get(ctx, bindingName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		binding, err = bindings.Create(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
-			Name:   roleName,
+			Name:   bindingName,
 			Labels: map[string]string{LabelWorkloadIdentity: "true"},
-		}, Subjects: wantSubjects, RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     roleName,
-		}}, metav1.CreateOptions{})
+		}, Subjects: wantSubjects, RoleRef: wantRoleRef}, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("creating workload ClusterRoleBinding: %w", err)
 		}
 		if err != nil {
-			binding, err = bindings.Get(ctx, roleName, metav1.GetOptions{})
+			binding, err = bindings.Get(ctx, bindingName, metav1.GetOptions{})
 		}
 	}
 	if err != nil {
 		return fmt.Errorf("getting workload ClusterRoleBinding: %w", err)
 	}
-	wantRoleRef := rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: roleName}
 	if !reflect.DeepEqual(binding.Subjects, wantSubjects) || !reflect.DeepEqual(binding.RoleRef, wantRoleRef) || binding.Labels[LabelWorkloadIdentity] != "true" {
 		updated := binding.DeepCopy()
 		updated.Subjects = wantSubjects
@@ -479,11 +509,11 @@ func ensureWorkloadRBAC(ctx context.Context, cs kubernetes.Interface, serviceAcc
 		// existing binding points at something else; normal reconciliation uses
 		// a metadata/subject update.
 		if !reflect.DeepEqual(updated.RoleRef, wantRoleRef) {
-			if err := bindings.Delete(ctx, roleName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := bindings.Delete(ctx, bindingName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("deleting stale workload ClusterRoleBinding: %w", err)
 			}
 			_, err := bindings.Create(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
-				Name: roleName, Labels: map[string]string{LabelWorkloadIdentity: "true"},
+				Name: bindingName, Labels: map[string]string{LabelWorkloadIdentity: "true"},
 			}, Subjects: wantSubjects, RoleRef: wantRoleRef}, metav1.CreateOptions{})
 			if err != nil && !apierrors.IsAlreadyExists(err) {
 				return fmt.Errorf("recreating workload ClusterRoleBinding: %w", err)

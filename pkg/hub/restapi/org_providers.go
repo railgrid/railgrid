@@ -210,8 +210,15 @@ type RegisterOrgProviderResponse struct {
 }
 
 // requireOrgProviderAccess resolves the caller's tenant context and enforces the
-// Org's catalogEntryCreation policy (decision O-7): "members" (the default) lets
-// any Org member register a provider, "admin" restricts it to Org admins.
+// Org's catalogEntryCreation policy (decision O-7): "admin" (the default)
+// restricts registration to Org admins, "members" opens it to any Org member.
+//
+// The default is admin because registration is not a catalog edit: it mints a
+// long-lived cluster-admin credential for a workspace the hub then routes
+// every org user's provider traffic to, under a name that may shadow a
+// platform provider. That is an admin decision. Organizations created before
+// the default flipped were stamped with an explicit "members" by the
+// organization controller's backfill, so nothing they relied on changed.
 //
 // It also fails closed when the org-provider dependencies were not wired, so a
 // hub built without them returns a clean 501 rather than a nil-pointer panic.
@@ -233,11 +240,11 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return tenant.TenantContext{}, false
 	}
-	// Unset means the default, "members". Anything else is treated as the
-	// restrictive setting rather than silently allowing: an unrecognized policy
-	// value must not widen access.
-	if org.Spec.CatalogEntryCreation == "" ||
-		org.Spec.CatalogEntryCreation == tenancyv1alpha1.CatalogEntryCreationMembers {
+	// Only an explicit "members" opens registration. Unset means the default,
+	// "admin", and anything unrecognized is likewise treated as the
+	// restrictive setting rather than silently allowing: a policy value the
+	// hub does not understand must not widen access.
+	if org.Spec.CatalogEntryCreation == tenancyv1alpha1.CatalogEntryCreationMembers {
 		return tc, true
 	}
 

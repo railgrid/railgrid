@@ -105,6 +105,10 @@ func newOrgProviderTestServer(t *testing.T, targets []kcp.EdgeInstallTarget) (*f
 
 // newOrgProviderTestServerAs is the same with an explicit caller and an
 // explicit set of team workspaces to create, for the membership-boundary tests.
+//
+// The Org is created with catalogEntryCreation=members so these tests
+// exercise the edge preflight and membership boundary, not the registration
+// policy; TestRegisterOrgProvider_DefaultsToAdminOnly covers the policy.
 func newOrgProviderTestServerAs(
 	t *testing.T,
 	targets []kcp.EdgeInstallTarget,
@@ -112,9 +116,24 @@ func newOrgProviderTestServerAs(
 	extra []runtime.Object,
 ) (*fakeOrgProviderOps, *fakeCredMinter, func() string) {
 	t.Helper()
+	return newOrgProviderTestServerWithPolicy(t, targets, tc, extra, tenancyv1alpha1.CatalogEntryCreationMembers, tc.Role)
+}
+
+// newOrgProviderTestServerWithPolicy builds the Org with the given
+// spec.catalogEntryCreation ("" leaves it unset) and records orgRole as the
+// caller's org-scope Membership, which is what the registration policy reads
+// — tc.Role is whatever scope the request headers name and may differ.
+func newOrgProviderTestServerWithPolicy(
+	t *testing.T,
+	targets []kcp.EdgeInstallTarget,
+	tc tenant.TenantContext,
+	extra []runtime.Object,
+	policy, orgRole string,
+) (*fakeOrgProviderOps, *fakeCredMinter, func() string) {
+	t.Helper()
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
-		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A", CatalogEntryCreation: policy},
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
@@ -131,12 +150,72 @@ func newOrgProviderTestServerAs(
 		seen[target.Workspace] = true
 		_ = wsOps.EnsureChildWorkspace(ctx, "org-a", target.Workspace)
 	}
+	if orgRole != "" {
+		_ = wsOps.EnsureOrgMembership(ctx, "org-a", tc.User, orgRole)
+	}
 	ops := &fakeOrgProviderOps{targets: targets}
 	creds := &fakeCredMinter{}
 	mgr.WithOrgProviders(ops, creds)
 	srv := newTestServer(t, mgr, tc)
 	t.Cleanup(srv.Close)
 	return ops, creds, func() string { return srv.URL }
+}
+
+// An Organization that never set catalogEntryCreation is admin-only: a member
+// cannot register a provider, which mints a cluster-admin credential and can
+// shadow a platform provider for the whole Org; an admin can. Only an explicit
+// "members" opens it, and an unrecognized value stays closed.
+func TestRegisterOrgProvider_DefaultsToAdminOnly(t *testing.T) {
+	edges := []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")}
+	body := RegisterOrgProviderRequest{Name: "vault", Edge: &EdgeTargetRef{Workspace: "ws-1", Name: "prod"}}
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{
+			Entries: []tenancyv1alpha1.MembershipIndexEntry{
+				{OrgUUID: "org-a", WorkspaceUUID: "ws-1", Role: tenancyv1alpha1.MembershipRoleMember},
+			},
+		},
+	}
+
+	for _, tc := range []struct {
+		name       string
+		policy     string
+		caller     tenant.TenantContext
+		wantStatus int
+	}{
+		{"unset refuses a member", "", memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
+		{"unset admits an org admin", "", adminTC("alice", "org-a", "ws-1"), http.StatusCreated},
+		{"explicit members admits a member", tenancyv1alpha1.CatalogEntryCreationMembers, memberTC("alice", "org-a", "ws-1"), http.StatusCreated},
+		{"explicit admin refuses a member", tenancyv1alpha1.CatalogEntryCreationAdmin, memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
+		{"unrecognized value refuses a member", "everyone", memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops, creds, url := newOrgProviderTestServerWithPolicy(t, edges, tc.caller, []runtime.Object{umi}, tc.policy, tc.caller.Role)
+			resp := postRegister(t, url(), body)
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status: got %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus != http.StatusCreated && (len(ops.registered) != 0 || creds.minted != 0) {
+				t.Fatalf("registered %v / minted %d despite refusal", ops.registered, creds.minted)
+			}
+		})
+	}
+
+	// A member who is admin of their own team workspace is still just a
+	// member of the Org: the gate reads the org-scope Membership, not the
+	// workspace-scope role the portal's X-Faros-Workspace header names.
+	t.Run("workspace admin who is only an org member is refused", func(t *testing.T) {
+		ops, creds, url := newOrgProviderTestServerWithPolicy(t, edges, adminTC("alice", "org-a", "ws-1"), []runtime.Object{umi}, "", tenancyv1alpha1.MembershipRoleMember)
+		resp := postRegister(t, url(), body)
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("status: got %d, want 403", resp.StatusCode)
+		}
+		if len(ops.registered) != 0 || creds.minted != 0 {
+			t.Fatalf("registered %v / minted %d despite refusal", ops.registered, creds.minted)
+		}
+	})
 }
 
 func postRegister(t *testing.T, base string, body any) *http.Response {

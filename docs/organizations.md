@@ -51,7 +51,7 @@ Don't re-litigate; the doc body assumes these.
 | O-4 | **Switcher disambiguation = always show secondary line** (`created {date} by {first admin}`) under every Org row in the portal switcher. Not just when ambiguous. | Unambiguous always, no client-side "is this name a duplicate?" logic. The `UserMembershipIndex` carries the extra fields. |
 | O-5 | **Org quota = soft cap, admin-overridable per User.** Default 10 Orgs per User. `User.spec.orgQuota` overrides. 4xx on 11th create with a clear message. | Avoids accidental tree bloat; admins handle real edge cases by hand. |
 | O-6 | **Workspace quota = soft cap, admin-overridable per Org.** Default 50 Workspaces per Org. `Organization.spec.workspaceQuota` overrides. | Symmetric with O-5. Tunable when a real team hits it. |
-| O-7 | **CatalogEntry creation gating = configurable per Org**, `Organization.spec.catalogEntryCreation: members\|admin`, default `members` (matches `workspaceCreation`). Enforced at the **hub REST endpoint** (`POST /api/orgs/{uuid}/catalog`), not via kcp RBAC — see O-10. | Lets cautious Orgs gate the catalog; default trusts members. |
+| O-7 | **CatalogEntry creation gating = configurable per Org**, `Organization.spec.catalogEntryCreation: members\|admin`, default `admin` (stricter than `workspaceCreation`; it was `members` until the September 2026 security review, and Organizations from before then were backfilled with an explicit `members`). Enforced at the **hub REST endpoint** (`POST /api/orgs/{uuid}/providers`), not via kcp RBAC — see O-10. | Registering a provider mints a cluster-admin credential and can shadow a platform provider for the whole Org; that is an admin decision. Orgs that trust members opt in. |
 | O-10 | **Org workspaces are hub-mediated only.** Tenants never receive a kubeconfig that targets `root:faros:orgs:{uuid}` directly. All Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) flow through hub REST endpoints. The faros kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths that resolve to a workspace of type `organization`. Child Workspaces (`root:faros:orgs:{org-uuid}:{ws-uuid}`) are user-facing as today. The companion `DefaultCluster` access gate this same proxy enforces — which today funnels user-token traffic to a single workspace and 403s the rest — is revisited in [hub-proxy-workspace-access.md](./hub-proxy-workspace-access.md). | Network-level enforcement of \"no APIBindings in Org workspace\" (see [provider-scoping.md](./provider-scoping.md) P-2). Removes the need for any kcp admission webhook or MaximalPermissionPolicy scoping. |
 | O-8 | **User delete = soft-delete with 30-day grace.** `User.status.deletionRequestedAt`; controller cascades personal Org + Memberships after the grace expires. Recoverable inside the window. | Protects against accidental delete; defers the "sole admin elsewhere" question until cascade time. |
 | O-9 | **Membership removal = block Org removal if user has child Workspace Memberships.** Admin must revoke (or transfer) each Workspace Membership first. UI offers a "remove from all" shortcut that does it as one call. | Explicit; avoids the "why does Bob still see acme/data?" surprise. |
@@ -259,10 +259,11 @@ type OrganizationSpec struct {
     // +kubebuilder:validation:Enum=members;admin
     WorkspaceCreation string `json:"workspaceCreation,omitempty"`
 
-    // CatalogEntryCreation controls who can publish Org-Private
-    // CatalogEntries (see provider-scoping.md). Same enum + default as
-    // WorkspaceCreation.
-    // +kubebuilder:default=members
+    // CatalogEntryCreation controls who can register an org-owned
+    // provider (see byo-providers.md). Same enum as WorkspaceCreation,
+    // but defaults to admin: registration mints a cluster-admin
+    // credential and can shadow a platform provider for the Org.
+    // +kubebuilder:default=admin
     // +kubebuilder:validation:Enum=members;admin
     CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
 
@@ -657,7 +658,7 @@ through ClusterRoles in the workspace).
 | Scope + Role | Hub-API capabilities (Org workspace, via REST) | Direct-kcp capabilities (child Workspace) |
 |---|---|---|
 | Org admin | create/delete child Workspaces, manage Org Memberships, manage Workspace Memberships in any child, publish Org-Private CatalogEntries, edit Organization.spec | implicit admin in all child Workspaces (see UX item 10) |
-| Org member | list child Workspaces visible to them, see catalog, create child Workspaces if `workspaceCreation=members`, publish CatalogEntries if `catalogEntryCreation=members` | nothing — must be added to each Workspace explicitly |
+| Org member | list child Workspaces visible to them, see catalog, create child Workspaces if `workspaceCreation=members`, register org-owned providers only if the Org opted in with `catalogEntryCreation=members` (default `admin`) | nothing — must be added to each Workspace explicitly |
 | Workspace admin | (none specific to Org workspace beyond what they have as Org member, if any) | full access, manage Workspace Memberships |
 | Workspace member | (none specific) | edit objects in the Workspace |
 

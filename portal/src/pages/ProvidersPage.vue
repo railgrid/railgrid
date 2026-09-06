@@ -838,6 +838,13 @@ function dependencyNotice(p: ProviderDTO): string {
             >
               Self-managed
             </span>
+            <span
+              v-if="providers.isSelfManaged(p) && p.shadowsPlatform"
+              class="rounded-md border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-warning"
+              title="A platform provider with this name exists; your organization's copy is the one your workspaces reach"
+            >
+              Overrides platform provider
+            </span>
             <span v-if="p.hasUI" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
             <span v-if="p.hasBackend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
             <span v-if="p.apiExportName" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>

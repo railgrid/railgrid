@@ -32,7 +32,7 @@ import (
 type CreateOrgRequest struct {
 	DisplayName          string `json:"displayName"`
 	WorkspaceCreation    string `json:"workspaceCreation,omitempty"`    // "members" | "admin"; default "members"
-	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // "members" | "admin"; default "members"
+	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // "members" | "admin"; default "admin"
 }
 
 // PatchOrgRequest is the PATCH /api/orgs/{org} body. Empty fields
@@ -112,9 +112,12 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	if wc == "" {
 		wc = tenancyv1alpha1.WorkspaceCreationMembers
 	}
+	// Provider registration mints a cluster-admin credential and can shadow a
+	// platform provider for the whole Org, so the default keeps it with
+	// admins; an Org opts members in explicitly.
 	cec := req.CatalogEntryCreation
 	if cec == "" {
-		cec = tenancyv1alpha1.CatalogEntryCreationMembers
+		cec = tenancyv1alpha1.CatalogEntryCreationAdmin
 	}
 
 	orgUUID := uuid.NewString()

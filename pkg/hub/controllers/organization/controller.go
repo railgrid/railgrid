@@ -161,6 +161,11 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 		provisioner: provisioner,
 	}
 	klog.Info("Registering organization bootstrap controller")
+	// One-time backfill for the catalogEntryCreation default flip; see
+	// catalog_entry_creation_migration.go.
+	if err := mgr.Add(catalogEntryCreationBackfill(mgr)); err != nil {
+		return fmt.Errorf("registering catalogEntryCreation backfill: %w", err)
+	}
 	return builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&tenancyv1alpha1.User{}).
@@ -305,10 +310,14 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 			},
 		},
 		Spec: tenancyv1alpha1.OrganizationSpec{
-			DisplayName:          displayName,
-			Personal:             true,
-			WorkspaceCreation:    tenancyv1alpha1.WorkspaceCreationMembers,
-			CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationMembers,
+			DisplayName:       displayName,
+			Personal:          true,
+			WorkspaceCreation: tenancyv1alpha1.WorkspaceCreationMembers,
+			// Admin-only, the platform default: registering a provider hands
+			// out a cluster-admin credential and routes the Org's traffic to
+			// it. The owner is the personal Org's admin, so this costs them
+			// nothing and keeps anyone they later invite from registering.
+			CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationAdmin,
 		},
 	}
 	if err := r.client.Create(ctx, org); err != nil {

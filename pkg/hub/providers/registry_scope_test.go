@@ -114,10 +114,26 @@ func TestRegistryListForOrgShadowsPlatformProvider(t *testing.T) {
 	if listed[0].DisplayName != "Org1 Edges" {
 		t.Errorf("ListForOrg(org1) = %q, want the Org's own provider to win", listed[0].DisplayName)
 	}
+	// The override is flagged, so the portal can show it rather than have the
+	// platform card silently disappear.
+	if !listed[0].ShadowsPlatform {
+		t.Error("ListForOrg(org1): the Org's edges copy is not flagged as shadowing the platform provider")
+	}
 	// Another Org still sees the platform one.
 	other := reg.ListForOrg("org2")
 	if len(other) != 1 || other[0].DisplayName != "Platform Edges" {
 		t.Errorf("ListForOrg(org2) = %+v, want only the platform provider", names(other))
+	}
+	if other[0].ShadowsPlatform {
+		t.Error("ListForOrg(org2): a platform provider must never be flagged as shadowing")
+	}
+
+	// An org provider with a name of its own shadows nothing.
+	reg.Upsert(Provider{Name: "vault", OrgUUID: "org1", EndpointsValid: true})
+	for _, p := range reg.ListForOrg("org1") {
+		if p.Name == "vault" && p.ShadowsPlatform {
+			t.Error("ListForOrg(org1): vault has no platform counterpart yet is flagged as shadowing")
+		}
 	}
 }
 

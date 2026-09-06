@@ -17,6 +17,8 @@ limitations under the License.
 package hub
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,7 +28,9 @@ import (
 	"testing"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
 	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
@@ -44,8 +48,57 @@ func (b *resolverConfigBuilder) ChildWorkspaceConfig(orgUUID, wsUUID string) *re
 	return b.cfg
 }
 
+// resolverProofKeys is the delegated-identity signing key the resolver tests
+// verify against. Production reads it from a Secret in a hub-internal kcp
+// workspace; a tenant never sees it, which is the whole point.
+var resolverProofKeys = serviceaccounts.StaticProofKeySource(bytes.Repeat([]byte{0x11}, 32))
+
 type workloadResolverRoundTripper struct {
 	token, serviceAccount, tenantPath string
+	// delegatedUser, when set, makes the ServiceAccount a delegated user
+	// identity standing in for that user instead of a workload identity.
+	delegatedUser string
+	// forged builds the delegated account exactly as a tenant member would:
+	// every field the hub writes except the one it cannot, the keyed proof.
+	forged bool
+}
+
+func (rt workloadResolverRoundTripper) serviceAccountObject() *corev1.ServiceAccount {
+	sa := &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: rt.serviceAccount, Namespace: serviceaccounts.Namespace,
+			UID:         "uid-" + types.UID(rt.serviceAccount),
+			Labels:      map[string]string{serviceaccounts.LabelWorkloadIdentity: "true"},
+			Annotations: map[string]string{serviceaccounts.AnnotationWorkloadIdentityTenantPath: rt.tenantPath},
+		},
+	}
+	if rt.delegatedUser != "" {
+		sa.Labels[serviceaccounts.LabelDelegatedUser] = "true"
+		rest := strings.TrimPrefix(rt.tenantPath, workspacePathRoot+":")
+		org, ws, _ := strings.Cut(rest, ":")
+		sa.Annotations[serviceaccounts.AnnotationDelegatedUser] = rt.delegatedUser
+		sa.Annotations[serviceaccounts.AnnotationDelegatedOrg] = org
+		sa.Annotations[serviceaccounts.AnnotationDelegatedWorkspace] = ws
+		sa.Annotations[serviceaccounts.AnnotationDelegatedProvider] = "infrastructure"
+		if !rt.forged {
+			key, err := resolverProofKeys.DelegatedProofKey(context.Background())
+			if err != nil {
+				panic(err)
+			}
+			if err := serviceaccounts.SignDelegatedUserServiceAccount(key, sa, rt.tenantPath,
+				serviceaccounts.Identity{User: rt.delegatedUser}, "infrastructure"); err != nil {
+				panic(err)
+			}
+		}
+	} else {
+		sa.Annotations[serviceaccounts.AnnotationWorkloadIdentityScope] = strings.Repeat("0", 64)
+		sa.Annotations[serviceaccounts.AnnotationWorkloadIdentityProject] = "project"
+		sa.Annotations[serviceaccounts.AnnotationWorkloadIdentityProjectUID] = "project-uid"
+		sa.Annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment] = "development"
+		sa.Annotations[serviceaccounts.AnnotationWorkloadIdentityInstance] = "project-dev"
+	}
+	return sa
 }
 
 func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -79,21 +132,7 @@ func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 			},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/default/serviceaccounts/"+rt.serviceAccount:
-		return response(http.StatusOK, map[string]any{
-			"apiVersion": "v1", "kind": "ServiceAccount",
-			"metadata": map[string]any{
-				"name": rt.serviceAccount, "namespace": serviceaccounts.Namespace,
-				"labels": map[string]string{serviceaccounts.LabelWorkloadIdentity: "true"},
-				"annotations": map[string]string{
-					serviceaccounts.AnnotationWorkloadIdentityTenantPath:  rt.tenantPath,
-					serviceaccounts.AnnotationWorkloadIdentityScope:       strings.Repeat("0", 64),
-					serviceaccounts.AnnotationWorkloadIdentityProject:     "project",
-					serviceaccounts.AnnotationWorkloadIdentityProjectUID:  "project-uid",
-					serviceaccounts.AnnotationWorkloadIdentityEnvironment: "development",
-					serviceaccounts.AnnotationWorkloadIdentityInstance:    "project-dev",
-				},
-			},
-		})
+		return response(http.StatusOK, rt.serviceAccountObject())
 	default:
 		return response(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -139,6 +178,110 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 				t.Fatalf("workspace config selected %q/%q", builder.gotOrg, builder.gotWS)
 			}
 		})
+	}
+}
+
+// A delegated user token — what the backend proxy hands an org-owned provider
+// in place of the caller's bearer — resolves to the HUMAN it stands in for,
+// so a provider calling back into the hub with it gets X-Faros-User=alice, not
+// the faros-du-* account name, and the same tenant binding every workload
+// token is held to.
+func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T) {
+	const token = "delegated-token"
+	const serviceAccount = "faros-du-test"
+	const tenantPath = "root:faros:tenants:org:workspace"
+	builder := &resolverConfigBuilder{cfg: &rest.Config{
+		Host: "https://workload.test",
+		Transport: workloadResolverRoundTripper{
+			token: token, serviceAccount: serviceAccount, tenantPath: tenantPath, delegatedUser: "alice",
+		},
+	}}
+	r := &kcpTenantResolver{
+		workloadConfig: builder,
+		proofKeys:      resolverProofKeys,
+		identifyUser: func(*http.Request) (string, error) {
+			return "system:serviceaccount:default:" + serviceAccount, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(headerFarosOrg, "org")
+	req.Header.Set(headerFarosWorkspace, "workspace")
+	user, gotPath, err := r.resolve(req)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if user != "alice" || gotPath != tenantPath {
+		t.Fatalf("resolved identity = %q/%q, want alice/%s", user, gotPath, tenantPath)
+	}
+	if builder.gotOrg != "org" || builder.gotWS != "workspace" {
+		t.Fatalf("workspace config selected %q/%q", builder.gotOrg, builder.gotWS)
+	}
+
+	// The token is bound to the workspace it was minted in; another
+	// selection is refused exactly as it is for a workload token.
+	other := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
+	other.Header.Set("Authorization", "Bearer "+token)
+	other.Header.Set(headerFarosOrg, "org")
+	other.Header.Set(headerFarosWorkspace, "other-workspace")
+	if _, _, err := r.resolve(other); err == nil {
+		t.Fatal("delegated token accepted for a workspace it was not minted in")
+	}
+}
+
+// A delegated ServiceAccount lives in namespace "default" of the tenant's own
+// team workspace, where the bootstrap binds every member — not just admins —
+// to cluster-admin. So an ordinary member can create the object themselves,
+// label it delegated, annotate it with a colleague's username, and mint a
+// token for it with TokenRequest. The resolver must refuse it: without the
+// hub's keyed proof, nothing on that object distinguishes it from one the hub
+// minted, and accepting it would send the provider X-Faros-User naming the
+// victim.
+func TestKCPTenantResolverRejectsTenantForgedDelegatedServiceAccount(t *testing.T) {
+	const token = "attacker-minted-token"
+	const serviceAccount = "faros-du-forged"
+	const tenantPath = "root:faros:tenants:org:workspace"
+	builder := &resolverConfigBuilder{cfg: &rest.Config{
+		Host: "https://workload.test",
+		Transport: workloadResolverRoundTripper{
+			token: token, serviceAccount: serviceAccount, tenantPath: tenantPath,
+			delegatedUser: "victim@example.com", forged: true,
+		},
+	}}
+	r := &kcpTenantResolver{
+		workloadConfig: builder,
+		proofKeys:      resolverProofKeys,
+		identifyUser: func(*http.Request) (string, error) {
+			return "system:serviceaccount:default:" + serviceAccount, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(headerFarosOrg, "org")
+	req.Header.Set(headerFarosWorkspace, "workspace")
+	user, gotPath, err := r.resolve(req)
+	if err == nil {
+		t.Fatalf("a tenant-forged delegated ServiceAccount resolved as %q in %q", user, gotPath)
+	}
+
+	// A hub with no proof key configured must also refuse rather than fall
+	// back to reading the annotations.
+	unkeyed := &kcpTenantResolver{
+		workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
+			Host: "https://workload.test",
+			Transport: workloadResolverRoundTripper{
+				token: token, serviceAccount: serviceAccount, tenantPath: tenantPath,
+				delegatedUser: "victim@example.com",
+			},
+		}},
+		identifyUser: func(*http.Request) (string, error) {
+			return "system:serviceaccount:default:" + serviceAccount, nil
+		},
+	}
+	if user, _, err := unkeyed.resolve(req); err == nil {
+		t.Fatalf("a delegated token resolved as %q with no proof key source", user)
 	}
 }
 

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260615-5246b68.organizations.tenants.faros.sh
+  name: v260904-9ab06b67.organizations.tenants.faros.sh
 spec:
   group: tenants.faros.sh
   names:
@@ -58,10 +58,21 @@ spec:
           description: OrganizationSpec defines the desired state of an Organization.
           properties:
             catalogEntryCreation:
-              default: members
+              default: admin
               description: |-
-                CatalogEntryCreation controls who can publish Org-Private CatalogEntries
-                (see docs/provider-scoping.md). Same enum + default as WorkspaceCreation.
+                CatalogEntryCreation controls who can register an org-owned provider
+                (POST /api/orgs/{org}/providers, see docs/byo-providers.md):
+                  admin   — only Org admins may register (default).
+                  members — any Org Membership may register.
+
+                The default is stricter than WorkspaceCreation's because registration
+                mints a long-lived cluster-admin credential for the provider workspace
+                and routes every org user's traffic for that provider name — possibly
+                shadowing a platform provider — into whichever cluster the registrant
+                chose. Unset is treated as admin by the hub. Organizations that predate
+                the admin default carry an explicit "members", written once by the
+                organization controller and recorded in the
+                tenants.faros.sh/catalog-entry-creation-migrated annotation.
               enum:
               - members
               - admin

@@ -17,6 +17,7 @@ limitations under the License.
 package serviceaccounts
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -27,6 +28,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -52,11 +55,46 @@ func (fakeConfigBuilder) ChildWorkspaceConfig(_, _ string) *rest.Config {
 // helper uses an internal alternate Manager constructor.
 func managerFor(_ *testing.T, objects ...runtime.Object) (*Manager, *fake.Clientset) {
 	cs := fake.NewSimpleClientset(objects...)
-	m := &Manager{cfg: fakeConfigBuilder{}}
+	assignServiceAccountUIDs(cs)
+	m := &Manager{cfg: fakeConfigBuilder{}, proofKeys: testProofKeySource}
 	// Override the clientset method via the testClientset variable
 	// hook in serviceaccounts.go (see below).
 	testClientset = func() (kubernetes.Interface, bool) { return cs, true }
 	return m, cs
+}
+
+// testProofKeySource is the delegated-identity signing key used across the
+// package's tests. Production reads it from a Secret in a hub-internal
+// workspace; the value only has to be stable and long enough.
+var testProofKeySource = StaticProofKeySource(bytes.Repeat([]byte{0x5a}, delegatedProofKeyLength))
+
+var serviceAccountGVR = schema.GroupVersionResource{Version: "v1", Resource: "serviceaccounts"}
+
+// assignServiceAccountUIDs makes the fake clientset behave like a real
+// apiserver in the one respect the delegated-identity proof depends on: a
+// created ServiceAccount comes back with a UID. The fake's object tracker
+// stores whatever it is handed, UID and all, so without this every account
+// would share the empty UID and the proof would not be object-bound.
+func assignServiceAccountUIDs(cs *fake.Clientset) {
+	cs.PrependReactor("create", "serviceaccounts", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "" {
+			return false, nil, nil
+		}
+		create, ok := action.(clienttesting.CreateAction)
+		if !ok {
+			return false, nil, nil
+		}
+		sa, ok := create.GetObject().(*corev1.ServiceAccount)
+		if !ok || sa.UID != "" {
+			return false, nil, nil
+		}
+		sa = sa.DeepCopy()
+		sa.UID = types.UID("uid-" + sa.Name)
+		if err := cs.Tracker().Create(serviceAccountGVR, sa, create.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		return true, sa, nil
+	})
 }
 
 func TestCreate_HappyPath(t *testing.T) {

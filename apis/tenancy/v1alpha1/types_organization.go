@@ -158,11 +158,22 @@ type OrganizationSpec struct {
 	// +kubebuilder:validation:Enum=members;admin
 	WorkspaceCreation string `json:"workspaceCreation,omitempty"`
 
-	// CatalogEntryCreation controls who can publish Org-Private CatalogEntries
-	// (see docs/provider-scoping.md). Same enum + default as WorkspaceCreation.
+	// CatalogEntryCreation controls who can register an org-owned provider
+	// (POST /api/orgs/{org}/providers, see docs/byo-providers.md):
+	//   admin   — only Org admins may register (default).
+	//   members — any Org Membership may register.
+	//
+	// The default is stricter than WorkspaceCreation's because registration
+	// mints a long-lived cluster-admin credential for the provider workspace
+	// and routes every org user's traffic for that provider name — possibly
+	// shadowing a platform provider — into whichever cluster the registrant
+	// chose. Unset is treated as admin by the hub. Organizations that predate
+	// the admin default carry an explicit "members", written once by the
+	// organization controller and recorded in the
+	// tenants.faros.sh/catalog-entry-creation-migrated annotation.
 	//
 	// +optional
-	// +kubebuilder:default=members
+	// +kubebuilder:default=admin
 	// +kubebuilder:validation:Enum=members;admin
 	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
 

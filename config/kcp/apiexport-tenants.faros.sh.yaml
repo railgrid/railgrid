@@ -11,7 +11,7 @@ spec:
       crd: {}
   - group: tenants.faros.sh
     name: organizations
-    schema: v260615-5246b68.organizations.tenants.faros.sh
+    schema: v260904-9ab06b67.organizations.tenants.faros.sh
     storage:
       crd: {}
   - group: tenants.faros.sh

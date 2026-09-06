@@ -89,8 +89,10 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 }
 
 // NewBackendProxy returns an http.Handler serving /services/providers/{name}/*
-// by reverse proxying to the provider's spec.backend.url. The user's
-// Authorization header is forwarded as-is. If a TenantResolver is
+// by reverse proxying to the provider's spec.backend.url. For a platform
+// provider the user's Authorization header is forwarded as-is; for an
+// org-owned provider it is replaced with a short-lived delegated token (see
+// serveOverEdge and SetDelegatedTokenIssuer). If a TenantResolver is
 // installed via SetTenantResolver, the proxy resolves the caller's
 // identity and injects X-Faros-User + X-Faros-Tenant so the provider can
 // scope work without re-parsing the bearer token. Incoming
@@ -123,7 +125,7 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Faros-* headers", "provider", name)
 			return
 		}
-		user, tenantPath, err := p.tenantResolver.Resolve(req)
+		user, tenantPath, err := p.resolveCaller(req)
 		if err != nil {
 			// Anonymous (no bearer) is common on /healthz probes
 			// and isn't worth screaming about — keep at V(2). Real
@@ -166,6 +168,42 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		}
 	}
 	return p
+}
+
+// resolvedCallerKey memoizes one tenant resolution per request in its context.
+// The backend proxy needs the caller's identity at three points on the
+// org-provider path — scope resolution, delegated-token issuance, and header
+// injection — and each resolution costs a token verify plus an apiserver
+// round-trip, so it is done once in ServeHTTP and read back here.
+type resolvedCallerKey struct{}
+
+type resolvedCaller struct {
+	user, tenantPath string
+	err              error
+}
+
+// resolveCaller returns the caller's identity for req, from the request
+// context when ServeHTTP already resolved it and from the tenant resolver
+// otherwise. httputil.ReverseProxy clones the outbound request with the
+// inbound context, so the Director sees the same memo.
+func (p *ProviderProxy) resolveCaller(req *http.Request) (string, string, error) {
+	if memo, ok := req.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
+		return memo.user, memo.tenantPath, memo.err
+	}
+	if p.tenantResolver == nil {
+		return "", "", errors.New("tenant resolver unavailable")
+	}
+	return p.tenantResolver.Resolve(req)
+}
+
+// withResolvedCaller resolves the caller once and stores the outcome — error
+// included, so a failed resolution is not retried per consumer — on r.
+func (p *ProviderProxy) withResolvedCaller(r *http.Request) *http.Request {
+	if p.tenantResolver == nil {
+		return r
+	}
+	user, tenantPath, err := p.tenantResolver.Resolve(r)
+	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{user: user, tenantPath: tenantPath, err: err}))
 }
 
 // SetTenantResolver installs the resolver used to populate
@@ -218,6 +256,12 @@ type ProviderProxy struct {
 	// per-cluster schema lookup only matches a cluster ID. See
 	// SetClusterResolver.
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
+
+	// delegatedIssuer mints the token that replaces the caller's bearer on
+	// requests to org-owned providers. Nil means the org-provider path fails
+	// closed: the hub never forwards a user's hub token into a tenant's
+	// cluster. See SetDelegatedTokenIssuer and serveOverEdge.
+	delegatedIssuer DelegatedTokenIssuer
 
 	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
 	// provider's backend origin. Provider action routes (/actions/*) are a
@@ -277,6 +321,12 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//
 	// UI proxy stays platform-scoped: it serves static assets, and an org's
 	// bundle is not something the hub hosts.
+	//
+	// Resolve the caller once here; resolveProvider, the delegated-token
+	// path, and setHeaders all read the memo (see resolveCaller).
+	if !p.fallbackForSPA {
+		r = p.withResolvedCaller(r)
+	}
 	prov, found := p.resolveProvider(r, name)
 	if !found {
 		http.Error(w, "provider not found: "+name, http.StatusNotFound)

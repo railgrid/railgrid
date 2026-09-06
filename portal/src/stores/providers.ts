@@ -16,6 +16,10 @@ export interface ProviderDTO {
   scope?: ProviderScope
   // UUID of the owning organization when scope === 'org'.
   ownerOrg?: string
+  // True when this org-owned provider has the same name as a platform
+  // provider: the organization's copy is what its users reach, and the
+  // platform one is hidden from this catalog.
+  shadowsPlatform?: boolean
   displayName: string
   // Short "what is this" blurb from CatalogEntry.spec.description. The
   // catalog cards and the first-run welcome flow render it; may be absent

@@ -53,8 +53,13 @@ type providerDTO struct {
 	// users can tell what their own organization operates from what faros does.
 	Scope string `json:"scope"`
 	// OwnerOrg is the owning Org's UUID for Scope=="org", empty for global.
-	OwnerOrg    string `json:"ownerOrg,omitempty"`
-	DisplayName string `json:"displayName"`
+	OwnerOrg string `json:"ownerOrg,omitempty"`
+	// ShadowsPlatform is true for an org-owned provider whose name matches a
+	// platform provider: the Org's copy is what its users reach, and the
+	// platform one is hidden from this catalog. The portal badges it so the
+	// override is visible rather than silent.
+	ShadowsPlatform bool   `json:"shadowsPlatform,omitempty"`
+	DisplayName     string `json:"displayName"`
 	// Description is CatalogEntry.spec.description — the one-line "what is
 	// this" the portal shows on catalog cards and in the first-run welcome
 	// flow. Empty for entries that declare none.
@@ -351,6 +356,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				Name:             p.Name,
 				Scope:            scope,
 				OwnerOrg:         p.OrgUUID,
+				ShadowsPlatform:  p.ShadowsPlatform,
 				DisplayName:      displayName,
 				Description:      p.Description,
 				Version:          p.Version,

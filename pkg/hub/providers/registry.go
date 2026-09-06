@@ -127,6 +127,13 @@ type Provider struct {
 	// the tenant's cluster, meaningful there and undialable from here.
 	EdgeRoute *EdgeRoute
 
+	// ShadowsPlatform is true on an org-owned record returned by ListForOrg
+	// when a platform provider of the same name exists: for that Org, this
+	// copy is what /services/providers/{name} reaches, and the platform one
+	// is hidden. Derived at listing time, never stored, so the portal can say
+	// "this overrides a platform provider" without a second lookup.
+	ShadowsPlatform bool
+
 	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
 	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
 	// Populated for first-party providers whose Vite-built portal/dist is
@@ -545,7 +552,9 @@ func (r *Registry) ListForOrg(orgUUID string) []Provider {
 			continue
 		}
 		shadowed[key.Name] = true
-		out = append(out, cloneProvider(*p))
+		own := cloneProvider(*p)
+		_, own.ShadowsPlatform = r.byKey[providerKey{Name: key.Name}]
+		out = append(out, own)
 	}
 	for key, p := range r.byKey {
 		if key.Org != "" || shadowed[key.Name] {

@@ -724,11 +724,26 @@ func (s *Server) Run(ctx context.Context) error {
 			// See pkg/hub/provider_tenant_resolver.go for the concrete
 			// resolver (lives here to avoid a providers→proxy→kcp→providers
 			// import cycle).
-			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper))
+			// The delegated-identity proof key. Both ends of delegation need
+			// it: the issuer signs the tuple onto the minted ServiceAccount,
+			// the resolver refuses any delegated account that cannot present
+			// the same MAC. It lives beside the hub's other cross-replica
+			// state in root:faros:system:controllers, so every replica
+			// verifies what any replica minted.
+			delegatedProofKeys, err := serviceaccounts.NewKCPProofKeySource(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+			if err != nil {
+				return fmt.Errorf("creating delegated-identity proof key source: %w", err)
+			}
+			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys))
 			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the GraphQL gateway at /graphql/clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
+			// Org-owned providers never see the caller's hub bearer: the
+			// proxy swaps it for a short-lived ServiceAccount token minted in
+			// the caller's workspace (pkg/hub/serviceaccounts
+			// delegated_user_token.go). Without this the org path refuses.
+			backendProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 
 			// Step 10: Org / Workspace / Membership / User REST
 			apiMgr := restapi.NewManager(userClient, bootstrapper)

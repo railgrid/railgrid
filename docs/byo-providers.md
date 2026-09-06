@@ -370,9 +370,17 @@ GET    /api/orgs/{org}/providers/{name}/kubeconfig    re-fetch the install kubec
 ```
 
 Mutating calls honour `Organization.spec.catalogEntryCreation` (decision O-7):
-`members` (the default) lets any Org member register a provider, `admin`
-restricts it to Org admins. An unrecognized policy value is treated as the
-restrictive setting rather than silently widening access.
+`admin` (the default) restricts registration to Org admins, `members` opens it
+to any Org member. An unset or unrecognized policy value is treated as the
+restrictive setting rather than silently widening access. The default is
+stricter than `workspaceCreation`'s on purpose: registration mints a
+cluster-admin credential and, under a platform provider's name, redirects every
+org user's traffic for that provider into the registrant's cluster. That is an
+admin's call. Organizations created before the default flipped were stamped
+with an explicit `members` by a one-time backfill in the organization
+controller (recorded in the `tenants.faros.sh/catalog-entry-creation-migrated`
+annotation), so their behaviour did not change; an admin can tighten them with
+`PATCH /api/orgs/{org}`.
 
 The kubeconfig endpoint counts as mutating — it hands out a credential.
 It re-mints from the ServiceAccount's existing token Secret, so it returns the
@@ -397,6 +405,28 @@ What an Org gets is deliberately narrow.
   the same consent gate platform providers pass.
 - **Enable is hub-mediated**, so it resolves through `GetForOrg` and an Org can
   only ever enable its own providers or platform ones.
+- **An org-owned provider never receives a user's hub token.** The backend
+  proxy strips the caller's `Authorization` before the request enters the edge
+  tunnel and replaces it with a *delegated user token*: a ServiceAccount token
+  minted in the caller's current team workspace (`faros-du-<hash>` in the
+  `default` namespace, one deterministic account per workspace, user, and
+  provider), audience-bound, valid for ten minutes, cached hub-side for five,
+  and annotated with the user it stands in for
+  (`faros.sh/delegated-user`, `-org`, `-workspace`, `-provider`). kcp scopes
+  it to that one workspace, so the worst a tenant-run provider can do with it
+  is what the user could already do in that workspace with `kubectl`. The
+  account is bound to the same ClusterRole workspace members hold today
+  (`cluster-admin` in the workspace, granted by the bootstrap); narrowing that
+  is the workspace RBAC's job, not the proxy's. `X-Faros-User` and
+  `X-Faros-Tenant` still name the human. When the provider calls back into the
+  hub with the token — `/clusters/{id}` or another provider's backend, with
+  `X-Faros-Org`/`X-Faros-Workspace` naming its workspace — the tenant resolver
+  verifies it online and resolves it to the human user again. A request the
+  hub cannot mint a token for (no resolvable caller, no workspace selection,
+  issuer unavailable) is refused; it never falls back to forwarding the bearer.
+  Anonymous probes carry no credential at all. Platform providers still receive
+  the caller's own bearer; moving them to delegated tokens is a separate
+  change (security remediation plan, item 3.3).
 
 What is **not** yet isolated is the raw kcp `bind` verb — see *Known gaps*.
 
@@ -457,7 +487,10 @@ Resolution prefers the Org's own provider, so the copy shadows the platform one
 **for that Org and no one else**. `Registry.Get` stays platform-only, so an org
 copy can never capture a platform provider's proxy or heartbeat route by name;
 only the tenant-scoped lookups (`GetForOrg`, `ListForOrg`) see it. Tests pin both
-halves.
+halves. `ListForOrg` flags such a copy with `shadowsPlatform: true` on the
+catalog DTO, and the portal shows an **Overrides platform provider** tag next
+to **Self-managed**, so the override is visible to the Org rather than being
+inferred from a card that quietly changed.
 
 Names must be RFC1123 labels: the name becomes a kcp workspace name and appears
 in URL paths.
