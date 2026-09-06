@@ -169,13 +169,17 @@ func TestSSHSessionTeardown(t *testing.T) {
 	// Create a WebSocket server/client pair (in-process).
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
-	var serverConn *websocket.Conn
+	// The handler runs on the httptest server's goroutine; hand the upgraded
+	// conn over a channel rather than a shared variable so the test is
+	// race-free under -race.
+	serverConnCh := make(chan *websocket.Conn, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		serverConn, err = upgrader.Upgrade(w, r, nil)
+		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrading: %v", err)
+			return
 		}
+		serverConnCh <- conn
 	}))
 	defer wsServer.Close()
 
@@ -187,8 +191,10 @@ func TestSSHSessionTeardown(t *testing.T) {
 	defer clientConn.Close() //nolint:errcheck
 
 	// Wait until the handler has upgraded.
-	time.Sleep(50 * time.Millisecond)
-	if serverConn == nil {
+	var serverConn *websocket.Conn
+	select {
+	case serverConn = <-serverConnCh:
+	case <-time.After(5 * time.Second):
 		t.Fatal("server WebSocket conn not set")
 	}
 

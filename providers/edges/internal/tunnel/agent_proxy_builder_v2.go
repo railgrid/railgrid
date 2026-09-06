@@ -119,10 +119,15 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		}
 		gvr, _, _ := p.gvrForResource(resource)
 
-		// 3. Authentication: static tokens bypass JWT SA requirement.
-		//    SA tokens go through kcp delegated authorization.
-		//    Bootstrap join tokens are accepted if they match edge.Status.JoinToken.
-		_, isStaticToken := p.staticTokens[token]
+		// 3. Authentication: SA tokens go through kcp delegated authorization;
+		//    bootstrap join tokens are accepted if they match edge.Status.JoinToken.
+		//    The test-only static-token set only stands in for an agent credential
+		//    when there is no kcp config at all (see Config.AllowStaticTokenBypass);
+		//    with kcp configured every token is validated by kcp.
+		isStaticToken := false
+		if p.kcpConfig == nil {
+			_, isStaticToken = p.staticTokens[token]
+		}
 		// authenticatedByJoinToken tracks whether the agent was authenticated via a
 		// bootstrap join token. When true, the hub echoes the token back in the
 		// X-Faros-Agent-Token upgrade response header so the agent can persist it

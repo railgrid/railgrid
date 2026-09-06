@@ -172,7 +172,6 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	FAROS_HUB_INSECURE=true \
 	FAROS_PROVIDER_NAME=edges \
 	FAROS_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	FAROS_STATIC_TOKENS=$(EDGES_TOKEN) \
 	FAROS_DEV_MODE=true \
 		$(BINDIR)/edges-provider serve
 

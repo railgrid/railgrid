@@ -119,6 +119,22 @@ func runServe() error {
 	kcpConfig := loadKCPConfig(log)
 	hubExternalURL := os.Getenv("FAROS_HUB_EXTERNAL_URL")
 
+	// FAROS_STATIC_TOKENS used to let listed bearers skip TokenReview/SAR on
+	// every data-plane path. The bypass is gone: kcp validates every token, and
+	// hub static-token users are ordinary kcp identities that pass that check.
+	// A set value with a kcp credential present is a misconfiguration that
+	// would silently expect the old behaviour, so refuse to start rather than
+	// run with a different security posture than the operator assumed.
+	if v := os.Getenv("FAROS_STATIC_TOKENS"); v != "" {
+		if kcpConfig != nil {
+			err := errors.New("FAROS_STATIC_TOKENS is set but the static-token authorization bypass has been removed; every token is validated by kcp, so unset the variable")
+			log.Error(err, "refusing to start")
+			return err
+		}
+		log.Info("static-token authorization bypass has been removed; the environment variable is ignored",
+			"envVar", "FAROS_STATIC_TOKENS", "ignored", true, "severity", "warning")
+	}
+
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
 	// reverse tunnels in-process; with replica routing enabled below, peer
 	// replicas relay to whichever replica holds a tunnel. Both prefixes sit
@@ -131,7 +147,6 @@ func runServe() error {
 		AgentPickupPath:     agentPickupPath,
 		EdgeProxyPublicPath: edgeProxyPublicPath,
 		KCPConfig:           kcpConfig,
-		StaticTokens:        splitEnv(os.Getenv("FAROS_STATIC_TOKENS")),
 		HubExternalURL:      hubExternalURL,
 		HubInternalURL:      os.Getenv("FAROS_HUB_INTERNAL_URL"),
 		Logger:              log,
@@ -290,7 +305,14 @@ func runServe() error {
 // kubeconfig) for token validation and Edge reads/writes. Best-effort: returns
 // nil (with a warning) when no kubeconfig is available, so the binary still
 // serves /healthz in environments where kcp isn't wired yet. Resolution order:
-// FAROS_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster.
+// FAROS_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster; note that a
+// FAROS_PROVIDER_KUBECONFIG that is set but unusable falls through the same
+// chain and can end in nil.
+//
+// A nil result does NOT unmount the data plane: the tunnel handlers are always
+// mounted and instead refuse every consumer-egress request with 503, because
+// there is no kcp credential to authorize bearers against (see
+// tunnel.Server.denyIfAuthorizationUnavailable).
 func loadKCPConfig(log logr.Logger) *rest.Config {
 	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		if c, err := clientcmd.BuildConfigFromFlags("", p); err == nil {
@@ -307,7 +329,7 @@ func loadKCPConfig(log logr.Logger) *rest.Config {
 	if c, err := rest.InClusterConfig(); err == nil {
 		return c
 	}
-	log.Info("no kcp kubeconfig available; tunnel token validation + Edge reads disabled (healthz only)")
+	log.Info("no kcp kubeconfig available; edge controllers are disabled and the tunnel data plane refuses every request with 503 (delegated authorization unavailable) - only /healthz and the static portal serve")
 	return nil
 }
 
@@ -327,21 +349,6 @@ func hubCAData(log logr.Logger) []byte {
 		return []byte(d)
 	}
 	return nil
-}
-
-// splitEnv splits a comma-separated env value into a trimmed, non-empty slice.
-func splitEnv(v string) []string {
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // envOrHostname returns the named env var (the chart sets POD_NAME via the

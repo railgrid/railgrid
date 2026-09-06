@@ -52,7 +52,6 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `hub.caData` | `""` | Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef. |
 | `hub.caSecretRef.name` | `""` |  |
 | `hub.caSecretRef.key` | `ca.crt` |  |
-| `staticTokens` | `""` | Comma-separated static bearer tokens accepted by the tunnel token validator (dev/testing only — real agents authenticate via join token + kcp SAR). |
 | `devMode` | `false` | Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA). |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and the serve container (token validation + cross-tenant controllers). Key must be "kubeconfig". |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |

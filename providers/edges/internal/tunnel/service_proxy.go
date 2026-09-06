@@ -185,9 +185,17 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 	ctx := r.Context()
 	logger := klog.FromContext(ctx).WithName("edgeservice-proxy")
 
-	// Delegated authorization (static tokens bypass, as in buildEdgesProxyHandler).
-	_, isStaticToken := p.staticTokens[token]
-	if !isStaticToken && p.kcpConfig != nil {
+	// Fail closed when kcp delegated authorization is unavailable, as in
+	// buildEdgesProxyHandler: without a kcp credential there is nothing to
+	// TokenReview the bearer against, so refuse instead of proceeding to the
+	// Service fetch and proxy.
+	if p.denyIfAuthorizationUnavailable(w, r) {
+		return
+	}
+
+	// Delegated authorization for every bearer, as in buildEdgesProxyHandler.
+	// A nil kcpConfig here only happens under the test-only bypass.
+	if p.kcpConfig != nil {
 		tenantCfg, err := p.tenantConfigFor(ctx, cluster)
 		if err != nil {
 			logger.Error(err, "edgeservice authorization: resolving tenant config failed", "cluster", cluster, "name", name)

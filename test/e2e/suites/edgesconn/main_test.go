@@ -231,7 +231,6 @@ func TestMain(m *testing.M) {
 		"FAROS_HUB_INSECURE=true",
 		"FAROS_PROVIDER_NAME=edges",
 		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
-		"FAROS_STATIC_TOKENS="+staticToken,
 		"FAROS_DEV_MODE=true",
 	)
 	provCmd.Stdout = provLog

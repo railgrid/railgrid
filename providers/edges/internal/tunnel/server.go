@@ -97,8 +97,21 @@ type Server struct {
 	// TenantConfigGetter.
 	tenantConfig TenantConfigGetter
 
-	// staticTokens bypass the SA/join-token requirement (dev / static-auth hubs).
+	// staticTokens is a TEST-ONLY set of bearer tokens the agent-ingress handler
+	// accepts in place of an agent credential when there is no kcp config to
+	// validate one against. It is only populated through
+	// Config.AllowStaticTokenBypass, which main.go never sets; consumer-egress
+	// authorization (edgeproxy / services) never consults it. Every caller of the
+	// data plane goes through authorizeFn (TokenReview + SubjectAccessReview),
+	// including hub static-token users, whose identity kcp resolves natively.
 	staticTokens map[string]struct{}
+
+	// allowStaticTokenBypass mirrors Config.AllowStaticTokenBypass. It is the
+	// ONLY thing that lets the consumer-egress data plane serve without a kcp
+	// credential: with it unset and kcpConfig nil the edgeproxy / service
+	// handlers refuse every request (503) rather than serving unauthorized
+	// bearers. main.go never sets it, so production always fails closed.
+	allowStaticTokenBypass bool
 
 	// hubExternalURL is embedded into agent kubeconfigs. hubInternalURL is used
 	// for internal MCP→edgeproxy calls to avoid CDN loops; falls back to
@@ -186,10 +199,16 @@ type Config struct {
 	// no URL to externalize).
 	EdgeProxyPublicPath string
 	KCPConfig           *rest.Config
-	StaticTokens        []string
-	HubExternalURL      string
-	HubInternalURL      string
-	Logger              klog.Logger
+	// StaticTokens are TEST-ONLY bearer tokens accepted as an agent credential
+	// on the agent-ingress path when KCPConfig is nil. They are rejected unless
+	// AllowStaticTokenBypass is set, and never combine with a KCPConfig: with a
+	// kcp credential present every token is validated by kcp. main.go never sets
+	// either field.
+	StaticTokens           []string
+	AllowStaticTokenBypass bool
+	HubExternalURL         string
+	HubInternalURL         string
+	Logger                 klog.Logger
 }
 
 // New constructs the tunnel Server for one or more connectable kinds.
@@ -208,23 +227,32 @@ func New(cfg Config) (*Server, error) {
 		}
 		kinds[k.GVR.Resource] = k
 	}
+	if len(cfg.StaticTokens) > 0 && !cfg.AllowStaticTokenBypass {
+		return nil, fmt.Errorf("tunnel: the StaticTokens field is test-only and requires AllowStaticTokenBypass")
+	}
+	if cfg.AllowStaticTokenBypass && cfg.KCPConfig != nil {
+		return nil, fmt.Errorf("tunnel: the AllowStaticTokenBypass field is only valid without a KCPConfig (kcp validates every token)")
+	}
 	tokenSet := make(map[string]struct{}, len(cfg.StaticTokens))
-	for _, t := range cfg.StaticTokens {
-		tokenSet[t] = struct{}{}
+	if cfg.AllowStaticTokenBypass {
+		for _, t := range cfg.StaticTokens {
+			tokenSet[t] = struct{}{}
+		}
 	}
 	return &Server{
-		kinds:               kinds,
-		group:               group,
-		version:             version,
-		edgeConnManager:     NewConnManager(),
-		kcpConfig:           cfg.KCPConfig,
-		staticTokens:        tokenSet,
-		hubExternalURL:      cfg.HubExternalURL,
-		hubInternalURL:      cfg.HubInternalURL,
-		agentPickupPath:     cfg.AgentPickupPath,
-		edgeProxyPublicPath: cfg.EdgeProxyPublicPath,
-		authorizeFn:         authorize,
-		logger:              cfg.Logger.WithName("edge-tunnel"),
+		kinds:                  kinds,
+		group:                  group,
+		version:                version,
+		edgeConnManager:        NewConnManager(),
+		kcpConfig:              cfg.KCPConfig,
+		staticTokens:           tokenSet,
+		allowStaticTokenBypass: cfg.AllowStaticTokenBypass,
+		hubExternalURL:         cfg.HubExternalURL,
+		hubInternalURL:         cfg.HubInternalURL,
+		agentPickupPath:        cfg.AgentPickupPath,
+		edgeProxyPublicPath:    cfg.EdgeProxyPublicPath,
+		authorizeFn:            authorize,
+		logger:                 cfg.Logger.WithName("edge-tunnel"),
 	}, nil
 }
 
@@ -249,6 +277,33 @@ func (p *Server) tenantConfigFor(ctx context.Context, cluster string) (*rest.Con
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
 	return cfg, nil
+}
+
+// denyIfAuthorizationUnavailable fails the consumer-egress data plane CLOSED
+// when there is no kcp credential to run the delegated TokenReview +
+// SubjectAccessReview against.
+//
+// Without it the edgeproxy / service handlers wrapped their authorization in
+// `if p.kcpConfig != nil`, so a provider that started without a usable kcp
+// kubeconfig — including one whose FAROS_PROVIDER_KUBECONFIG is set but
+// unreadable, which loadKCPConfig silently degrades to nil — served the data
+// plane to any non-empty bearer. The handlers are mounted unconditionally, so
+// "no kcp config" must mean "refuse traffic", not "skip the check".
+//
+// The single exception is the test-only AllowStaticTokenBypass, which main.go
+// never sets: unit tests exercise the tunnel plane with no kcp at all.
+//
+// Returns true when the request was answered and the caller must stop.
+func (p *Server) denyIfAuthorizationUnavailable(w http.ResponseWriter, r *http.Request) bool {
+	if p.kcpConfig != nil || p.allowStaticTokenBypass {
+		return false
+	}
+	// V(0): an operator needs to see this without raising verbosity — the data
+	// plane is up but rejecting everything.
+	p.logger.Info("refusing data-plane request: kcp delegated authorization is unavailable (no kcp credential)",
+		"method", r.Method, "path", r.URL.Path)
+	http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
+	return true
 }
 
 // gvrForResource resolves a URL resource segment to its GVR + Kind. ok is false

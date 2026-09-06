@@ -219,13 +219,20 @@ func TestKubectlThroughTunnel(t *testing.T) {
 
 func enableEdges(t *testing.T, tenant dynamic.Interface) {
 	t.Helper()
-	claim := func(group, resource string) map[string]any {
+	claimVerbs := func(group, resource string, verbs ...string) map[string]any {
+		vs := make([]any, 0, len(verbs))
+		for _, v := range verbs {
+			vs = append(vs, v)
+		}
 		return map[string]any{
 			"group": group, "resource": resource,
-			"verbs":    []any{"get", "list", "watch", "create", "update", "patch", "delete"},
+			"verbs":    vs,
 			"selector": map[string]any{"matchAll": true},
 			"state":    "Accepted",
 		}
+	}
+	claim := func(group, resource string) map[string]any {
+		return claimVerbs(group, resource, "get", "list", "watch", "create", "update", "patch", "delete")
 	}
 	binding := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
@@ -233,9 +240,21 @@ func enableEdges(t *testing.T, tenant dynamic.Interface) {
 		"metadata":   map[string]any{"name": "edges"},
 		"spec": map[string]any{
 			"reference": map[string]any{"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName}},
+			// Mirror the claim set the hub's Enable flow accepts for this
+			// provider (providers/edges/manifest.yaml). The two review claims
+			// are what let the provider run delegated TokenReview +
+			// SubjectAccessReview for a CALLER's token against this workspace
+			// through its APIExport virtual workspace — the consumer-egress
+			// authorization path (edgeproxy k8s/ssh and the service proxy).
+			// Without them every user-token request to the data plane is
+			// denied, while agents keep working because join-token
+			// registration never uses the review APIs. Built-in review APIs:
+			// verb create only, no identityHash.
 			"permissionClaims": []any{
 				claim("", "namespaces"), claim("", "serviceaccounts"), claim("", "secrets"),
 				claim("rbac.authorization.k8s.io", "clusterroles"), claim("rbac.authorization.k8s.io", "clusterrolebindings"),
+				claimVerbs("authentication.k8s.io", "tokenreviews", "create"),
+				claimVerbs("authorization.k8s.io", "subjectaccessreviews", "create"),
 			},
 		},
 	}}

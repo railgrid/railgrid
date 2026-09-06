@@ -105,10 +105,6 @@ spec:
             {{- end }}
             - name: FAROS_PROVIDER_KUBECONFIG
               value: /var/run/secrets/faros/kubeconfig
-            {{- if .Values.staticTokens }}
-            - name: FAROS_STATIC_TOKENS
-              value: {{ .Values.staticTokens | quote }}
-            {{- end }}
             {{- if .Values.devMode }}
             - name: FAROS_DEV_MODE
               value: "true"

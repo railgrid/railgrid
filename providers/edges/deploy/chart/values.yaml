@@ -52,10 +52,6 @@ hub:
     name: ""
     key: ca.crt
 
-# Comma-separated static bearer tokens accepted by the tunnel token validator
-# (dev/testing only — real agents authenticate via join token + kcp SAR).
-staticTokens: ""
-
 # Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA).
 devMode: false
 
