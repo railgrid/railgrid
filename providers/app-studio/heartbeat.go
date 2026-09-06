@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/faroshq/provider-sdk/hubclient"
 )
 
 const (
@@ -31,7 +33,6 @@ const (
 // nil/omitted health dependency remains compatible with REST-only callers.
 func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
 	hub := os.Getenv("FAROS_HUB_URL")
-	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "app-studio"
@@ -39,6 +40,14 @@ func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
 	if hub == "" {
 		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
+	}
+
+	// Resolved only once the beat is actually going to be sent: reading the
+	// provider kubeconfig for a heartbeat that is disabled is wasted work, and
+	// its failure logs a misleading token error in tests and local runs.
+	token, err := hubclient.ResolveHubToken()
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
 
 	url := hub + "/api/providers/" + name + "/heartbeat"

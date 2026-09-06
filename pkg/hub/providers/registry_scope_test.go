@@ -11,9 +11,13 @@ You may obtain a copy of the License at
 package providers
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
+
+	authnv1 "k8s.io/api/authentication/v1"
 )
 
 // newScopedRegistry builds a registry holding one platform provider and one
@@ -168,6 +172,45 @@ func TestRegistryHeartbeatIsGlobalOnly(t *testing.T) {
 	}
 	if !reg.Heartbeat("edges", "1.0.0", now) {
 		t.Error("Heartbeat(edges) rejected a beat for a platform provider")
+	}
+}
+
+// A heartbeat must be vouched for by the provider's own service account,
+// reviewed in the provider's own workspace. A token that the hub has verified
+// for one provider must not keep another one alive, and an org-owned provider
+// has no workspace the bare-name endpoint could review in at all.
+func TestHeartbeatRequiresOwnProviderSA(t *testing.T) {
+	reg := newScopedRegistry()
+	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
+		Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername},
+	}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("edges", "edges-token"), "edges"); err != nil {
+		t.Fatalf("edges' own token rejected: %v", err)
+	}
+	if len(f.clusters) != 1 || f.clusters[0] != "edges-cluster" {
+		t.Fatalf("reviewed in %v, want edges' own workspace", f.clusters)
+	}
+
+	// The same token presented for a different provider is reviewed afresh in
+	// THAT provider's workspace, where kcp would not know it; the cache entry
+	// earned for edges does not carry over.
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "edges-token"), "code"); err != nil {
+		t.Fatalf("Authenticate(code) = %v", err)
+	}
+	if len(f.clusters) != 2 || f.clusters[1] != "code-cluster" {
+		t.Fatalf("reviewed in %v, want a fresh review in code's workspace", f.clusters)
+	}
+
+	// Org-owned providers cannot beat here: the bare-name endpoint only
+	// resolves platform providers, so there is no workspace to review in.
+	err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("vault", "vault-token"), "vault")
+	if !errors.Is(err, ErrHeartbeatAuthUnavailable) {
+		t.Fatalf("Authenticate(vault) = %v, want ErrHeartbeatAuthUnavailable", err)
 	}
 }
 

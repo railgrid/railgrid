@@ -19,6 +19,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -54,16 +55,33 @@ type HeartbeatRecorder func(ctx context.Context, name, version string, at time.T
 const heartbeatPersistThreshold = HeartbeatTTL / 6
 
 // NewHeartbeatHandler returns an http.Handler serving
-// POST /api/providers/{name}/heartbeat. Auth is enforced by the faros auth
-// middleware mounted upstream of this handler — any bearer token faros
-// accepts will be accepted as a valid heartbeat sender in Phase 1C. Phase
-// 1D will tighten this to "must be the provider's own SA token" once SA
-// minting is in place.
+// POST /api/providers/{name}/heartbeat.
+//
+// The handler is mounted on the root router with no auth middleware in front
+// of it, so it authenticates the beat itself: authenticate must accept the
+// request as coming from provider {name}'s own service account (the one the
+// hub minted its kubeconfig for) before the beat counts. Without that check
+// anyone able to reach the hub could keep a dead provider Ready and forge its
+// reportedVersion. In HeartbeatAuthWarn mode a failed check is logged and the
+// beat is still recorded; in HeartbeatAuthEnforce it is rejected with 401
+// (no or unrecognised token), 403 (some other identity) or 503 (could not
+// verify). A nil authenticate means the hub cannot verify anything (no kcp)
+// and behaves like a check that always fails with ErrHeartbeatAuthUnavailable.
+//
+// A rejection says only which of those three classes it was: the reason goes to
+// the log, never to the caller. In enforce mode a beat for a name that is not
+// registered is refused with exactly the 401 a bad credential gets, so the
+// endpoint cannot be used to enumerate provider names.
 //
 // record may be nil (no kcp configured), in which case liveness stays local to
 // this process and the hub must not be scaled beyond one replica.
-func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, log logr.Logger) http.Handler {
+func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate HeartbeatAuthenticator, mode HeartbeatAuthMode, log logr.Logger) http.Handler {
 	logger := log.WithName("heartbeat")
+	if authenticate == nil {
+		authenticate = func(context.Context, *http.Request, string) error {
+			return fmt.Errorf("%w: no kcp configured", ErrHeartbeatAuthUnavailable)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -74,6 +92,63 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, log logr.Logge
 			http.NotFound(w, r)
 			return
 		}
+		// The registry lookup comes before authentication on purpose. Verifying
+		// a beat for a name the hub has never heard of costs a TokenReview round
+		// trip against kcp and, in warn mode, one log line per beat — work an
+		// unauthenticated caller can drive at will.
+		//
+		// Note that this is a different lookup from the authenticator's
+		// CatalogEntryCluster: a provider that is registered but whose
+		// CatalogEntry has not been observed yet is known here and unresolvable
+		// there. That transient startup state must stay a 503 the provider
+		// retries, so only a name absent from the registry short-circuits.
+		previous, known := reg.Get(name)
+		if !known {
+			if mode == HeartbeatAuthEnforce {
+				// Deliberately indistinguishable from a bad credential: same
+				// status, same body. This endpoint has no auth middleware in
+				// front of it, so answering 404 here — or letting the
+				// authenticator answer 503 because it cannot resolve a cluster
+				// for an unknown name — would let anyone who can reach the hub
+				// enumerate provider names by status code. The real reason is
+				// logged.
+				logger.V(1).Info("heartbeat rejected", "provider", name, "reason", "provider is not registered")
+				http.Error(w, heartbeatAuthFailureBody(http.StatusUnauthorized), http.StatusUnauthorized)
+				return
+			}
+			// Warn mode accepts unauthenticated beats by design, so a caller can
+			// tell known from unknown regardless of what this returns; there is
+			// no oracle left to close and 404 is the honest answer.
+			logger.V(1).Info("heartbeat for unknown provider", "provider", name)
+			http.Error(w, "provider not found", http.StatusNotFound)
+			return
+		}
+		if err := authenticate(r.Context(), r, name); err != nil {
+			if mode == HeartbeatAuthEnforce {
+				logger.V(1).Info("heartbeat rejected", "provider", name, "reason", err.Error())
+				// The body says only which class of failure it was. The
+				// authenticator's messages carry logical cluster IDs and the
+				// expected service account username, and this endpoint answers
+				// unauthenticated callers.
+				status := heartbeatAuthStatus(err)
+				http.Error(w, heartbeatAuthFailureBody(status), status)
+				return
+			}
+			// Warn mode exists so an operator can see which providers will
+			// break when enforce becomes the default, so a rejected identity
+			// is worth a line per beat. "Cannot verify" is not: it says
+			// nothing about this provider, repeats for every provider on
+			// every tick, and both ways it happens are already reported
+			// elsewhere — a hub with no kcp says so once at startup, and a
+			// hub whose kcp is unreachable fails the heartbeat recorder,
+			// which logs at error level.
+			warn := logger.V(0)
+			if heartbeatAuthStatus(err) == http.StatusServiceUnavailable {
+				warn = logger.V(1)
+			}
+			warn.Info("heartbeat failed authentication; accepting because --provider-heartbeat-auth=warn (enforce becomes the default next release)",
+				"provider", name, "reason", err.Error())
+		}
 		var body heartbeatRequest
 		if r.ContentLength > 0 {
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
@@ -83,13 +158,16 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, log logr.Logge
 		}
 		now := time.Now()
 		// Apply locally first so this replica routes to the provider without
-		// waiting for the watch to loop the status write back around.
-		previous, known := reg.Get(name)
+		// waiting for the watch to loop the status write back around. The
+		// provider was in the registry above, so this only fails if it was
+		// deleted in between.
 		if !reg.Heartbeat(name, body.Version, now) {
-			http.Error(w, "provider not found: "+name, http.StatusNotFound)
+			http.Error(w, "provider not found", http.StatusNotFound)
 			return
 		}
-		if record != nil && (!known || now.Sub(previous.LastHeartbeat) >= heartbeatPersistThreshold) {
+		// previous.LastHeartbeat is zero for a provider that has never beaten,
+		// which is far enough in the past to persist.
+		if record != nil && now.Sub(previous.LastHeartbeat) >= heartbeatPersistThreshold {
 			if err := record(r.Context(), name, body.Version, now); err != nil {
 				// Fail the beat rather than silently leaving other replicas to
 				// time the provider out; the provider retries on its next tick.

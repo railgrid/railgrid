@@ -37,6 +37,8 @@ import (
 	"github.com/faroshq/provider-databricks/queryapi"
 	databricksscheme "github.com/faroshq/provider-databricks/scheme"
 	"github.com/faroshq/provider-databricks/tenant"
+
+	"github.com/faroshq/provider-sdk/hubclient"
 )
 
 type statusResponse struct {
@@ -381,12 +383,20 @@ func heartbeatCanSend(health *controllerHealth) bool {
 
 func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
 	hub := os.Getenv("FAROS_HUB_URL")
-	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := envOr("FAROS_PROVIDER_NAME", "databricks")
 	if hub == "" {
 		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
+
+	// Resolved only once the beat is actually going to be sent: reading the
+	// provider kubeconfig for a heartbeat that is disabled is wasted work, and
+	// its failure logs a misleading token error in tests and local runs.
+	token, err := hubclient.ResolveHubToken()
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+
 	url := strings.TrimRight(hub, "/") + "/api/providers/" + name + "/heartbeat"
 	var health *controllerHealth
 	if len(healthStates) > 0 {

@@ -16,7 +16,10 @@ limitations under the License.
 
 package hub
 
-import "github.com/faroshq/faros/pkg/kcppaths"
+import (
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/kcppaths"
+)
 
 // Options holds configuration for the hub server.
 type Options struct {
@@ -86,6 +89,15 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
+	// ProviderHeartbeatAuth is what the hub does with a provider heartbeat
+	// whose bearer token does not verify as that provider's own service
+	// account: "warn" logs and records the beat, "enforce" rejects it. The
+	// default is "warn" for this release so providers installed from charts
+	// that predate the authenticated heartbeat keep reporting alive while
+	// they are rolled forward; the next release flips the default to
+	// "enforce". See providers.HeartbeatAuthMode.
+	ProviderHeartbeatAuth string
+
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
 	GraphQLAddr string
@@ -146,6 +158,8 @@ func NewOptions() *Options {
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
+
+		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 
 		GraphQLAPIExportSliceName:      "core.faros.sh",
 		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,

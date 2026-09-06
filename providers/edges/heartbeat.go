@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+
+	"github.com/faroshq/provider-sdk/hubclient"
 )
 
 const (
@@ -30,7 +32,6 @@ const (
 // FAROS_HUB_INSECURE.
 func runHeartbeat(ctx context.Context, log logr.Logger) {
 	hub := os.Getenv("FAROS_HUB_URL")
-	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "edges"
@@ -39,6 +40,15 @@ func runHeartbeat(ctx context.Context, log logr.Logger) {
 		log.Info("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
+
+	// Resolved only once the beat is actually going to be sent: reading the
+	// provider kubeconfig for a heartbeat that is disabled is wasted work, and
+	// its failure logs a misleading token error in tests and local runs.
+	token, err := hubclient.ResolveHubToken()
+	if err != nil {
+		log.Error(err, "resolving heartbeat token; beats will be unauthenticated")
+	}
+
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 

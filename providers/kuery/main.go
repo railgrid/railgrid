@@ -54,6 +54,8 @@ import (
 	"github.com/faroshq/provider-kuery/engagement"
 	"github.com/faroshq/provider-kuery/mcpserver"
 	"github.com/faroshq/provider-kuery/queryapi"
+
+	"github.com/faroshq/provider-sdk/hubclient"
 )
 
 // envOr returns the env value or a default.
@@ -275,7 +277,8 @@ func runServe() {
 	// Heartbeat goroutine — POSTs to the hub every 30s so the catalog
 	// controller's TTL doesn't flip us to NotReady. Configurable via env:
 	//   FAROS_HUB_URL   - base URL of the hub (e.g. http://localhost:19443)
-	//   FAROS_HUB_TOKEN - bearer token for the heartbeat request
+	//   FAROS_HUB_TOKEN - bearer token for the heartbeat request (default: the
+	//                   provider SA token in FAROS_PROVIDER_KUBECONFIG)
 	//   FAROS_PROVIDER_NAME - this provider's CatalogEntry name (default: kuery)
 	// All empty → heartbeats disabled (useful for tests / dry-run).
 	go runHeartbeat(ctx)
@@ -311,12 +314,12 @@ const (
 // Env:
 //
 //	FAROS_HUB_URL        - hub base URL (https://localhost:9443 in dev)
-//	FAROS_HUB_TOKEN      - bearer token for the heartbeat request
+//	FAROS_HUB_TOKEN      - bearer token for the heartbeat request (default: the
+//	                       provider SA token in FAROS_PROVIDER_KUBECONFIG)
 //	FAROS_PROVIDER_NAME  - this provider's CatalogEntry name (default: kuery)
 //	FAROS_HUB_INSECURE   - "true" → skip TLS verification (dev with self-signed certs)
 func runHeartbeat(ctx context.Context) {
 	hub := os.Getenv("FAROS_HUB_URL")
-	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "kuery"
@@ -325,6 +328,15 @@ func runHeartbeat(ctx context.Context) {
 		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
+
+	// Resolved only once the beat is actually going to be sent: reading the
+	// provider kubeconfig for a heartbeat that is disabled is wasted work, and
+	// its failure logs a misleading token error in tests and local runs.
+	token, err := hubclient.ResolveHubToken()
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 

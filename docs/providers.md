@@ -505,8 +505,36 @@ Content-Type: application/json
 { "version": "1.2.0", "buildTime": "...", "status": "healthy" }
 ```
 
-- Authenticates the bearer token against the SA in
-  `root:faros:providers:{name}`. Rejects any other identity.
+- **Platform providers only.** The endpoint addresses providers by bare name
+  with no org context, so it resolves `{name}` to the *platform* workspace
+  `root:faros:providers:{name}`. An org-owned (BYO) provider lives at
+  `root:faros:tenants:{orgUUID}:providers:{name}` and cannot beat here; that
+  is deliberate, since otherwise one org could keep a platform provider of the
+  same name looking alive. Org-owned providers never set `HeartbeatRequired`
+  and their readiness rests on endpoint validity alone
+  (`Registry.Heartbeat`). In `enforce` they receive the same generic 401 as
+  any unregistered name, so do not read that 401 as a credential problem.
+- Authenticates the bearer token as the provider's own service account
+  (`system:serviceaccount:default:provider`) by TokenReview in the provider's
+  platform workspace `root:faros:providers:{name}` — the same SA and token the
+  hub minted into the provider kubeconfig. Any other identity is rejected with
+  403, a missing or unrecognised token with 401. The endpoint has no auth
+  middleware in front of it; this check is the whole of its authentication.
+  `--provider-heartbeat-auth=warn` (this release's default) logs failures
+  and still records the beat so providers on older charts keep reporting
+  alive while they are rolled forward; `enforce` (next release's default)
+  rejects them, and such a provider goes stale after the TTL.
+- A rejection body says only which class of failure it was (`heartbeat not
+  authenticated` / `forbidden` / `heartbeat verification unavailable`); the
+  reason — logical cluster, expected service account, TokenReview error —
+  goes to the hub log only, because the endpoint answers anonymous callers.
+  For the same reason `enforce` answers a beat for an unregistered provider
+  with exactly that 401 rather than a 404, so the endpoint cannot be used to
+  enumerate provider names. In `warn` mode, which accepts unauthenticated
+  beats by design, an unknown name still gets 404.
+- Provider side: the bearer is `FAROS_HUB_TOKEN` if set, otherwise the token
+  in `FAROS_PROVIDER_KUBECONFIG` (`provider-sdk/hubclient.ResolveHubToken`).
+  Charts need no change.
 - Updates `CatalogEntry.status.lastHeartbeat` and
   `reportedVersion`.
 - TTL: 90 seconds. Catalog controller flips `Ready=false` if no heartbeat
@@ -939,8 +967,13 @@ Secret* differ.
 
 A provider's backend (if it declares one) MUST:
 
-- Heartbeat: `POST /api/providers/{name}/heartbeat` to the hub every 30s
-  (helper in the SDK).
+- Heartbeat, **platform providers only**: `POST /api/providers/{name}/heartbeat`
+  to the hub every 30s, authenticated as the provider's own service account
+  (token from `provider-sdk/hubclient.ResolveHubToken`: `FAROS_HUB_TOKEN`, else
+  the provider kubeconfig's bearer). An org-owned (BYO) provider MUST NOT beat:
+  the endpoint is keyed by bare name and resolves only platform providers, so
+  the beat is rejected and would in any case never mark it Ready. Its readiness
+  comes from endpoint validity instead — see the heartbeat endpoint section.
 - `GET /healthz` → 200 when ready (used by hub for `BackendHealthy`).
 
 A provider's controller (the kcp-talking part) MUST:
@@ -986,8 +1019,13 @@ A provider's UI MUST:
   platform-owned frame sources, such as App Studio preview hosts.
 - **Internal-only services**: providers should be `ClusterIP`. Hub is the
   only public ingress. Network policies recommended.
-- **Heartbeat token**: provider SA token is short-lived (24h); rotation
-  handled by the catalog controller.
+- **Heartbeat token**: the heartbeat is authenticated as the provider's own
+  service account, verified by TokenReview in the provider's workspace. The
+  token is the provider kubeconfig's long-lived legacy SA token (a
+  `kubernetes.io/service-account-token` Secret); it stays valid until the
+  Secret or SA is deleted, and the hub caches a successful verification for
+  less than the heartbeat TTL so revocation takes effect within one liveness
+  window.
 
 ---
 

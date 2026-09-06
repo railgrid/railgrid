@@ -235,9 +235,15 @@ APIExport, schemas) and registers routing/heartbeat state.
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
 | `pkg/hub/provider_tenant_resolver.go` | Resolves caller identity → tenant workspace path; injects `X-Faros-User` / `X-Faros-Tenant`, strips spoofed inbound copies |
 
-Heartbeat: standalone providers POST every ~30s with `FAROS_HUB_URL`,
-`FAROS_HUB_TOKEN`, `FAROS_PROVIDER_NAME`. A provider is "Ready" only when its
-endpoints are valid and (once heartbeats have started) not stale.
+Heartbeat: standalone providers POST every ~30s with `FAROS_HUB_URL` and
+`FAROS_PROVIDER_NAME`. The beat is authenticated as the provider's own
+service account: the bearer is `FAROS_HUB_TOKEN` if set, otherwise the token
+inside `FAROS_PROVIDER_KUBECONFIG` (`provider-sdk/hubclient.ResolveHubToken`),
+and the hub verifies it by TokenReview in the provider's workspace
+(`heartbeat_auth.go`). `--provider-heartbeat-auth=warn|enforce` picks whether
+a failed check is logged or rejected (default `warn` this release, `enforce`
+next). A provider is "Ready" only when its endpoints are valid and (once
+heartbeats have started) not stale.
 
 ### 5.3 Provider portal micro-frontends
 
