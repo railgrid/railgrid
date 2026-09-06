@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros/pkg/kcppaths"
@@ -88,21 +89,27 @@ func (b *Bootstrapper) RecordProviderEdgeBinding(ctx context.Context, orgUUID, p
 	if err != nil {
 		return fmt.Errorf("creating org providers workspace client: %w", err)
 	}
-	ws, err := parent.Resource(workspaceGVR).Get(ctx, providerName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("getting org provider workspace %s: %w", providerName, err)
-	}
-	annotations := ws.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	if annotations[EdgeRouteWorkspaceAnnotation] == wsUUID && annotations[EdgeRouteEdgeAnnotation] == edgeName {
-		return nil
-	}
-	annotations[EdgeRouteWorkspaceAnnotation] = wsUUID
-	annotations[EdgeRouteEdgeAnnotation] = edgeName
-	ws.SetAnnotations(annotations)
-	if _, err := parent.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err != nil {
+	// The workspace is usually seconds old here and its own controllers are
+	// still writing to it, so a read-modify-write races them. Re-read inside
+	// the retry: a stale object would only lose the race again.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ws, err := parent.Resource(workspaceGVR).Get(ctx, providerName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		annotations := ws.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		if annotations[EdgeRouteWorkspaceAnnotation] == wsUUID && annotations[EdgeRouteEdgeAnnotation] == edgeName {
+			return nil
+		}
+		annotations[EdgeRouteWorkspaceAnnotation] = wsUUID
+		annotations[EdgeRouteEdgeAnnotation] = edgeName
+		ws.SetAnnotations(annotations)
+		_, err = parent.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{})
+		return err
+	}); err != nil {
 		return fmt.Errorf("recording edge binding on org provider workspace %s: %w", providerName, err)
 	}
 	klog.FromContext(ctx).Info("Recorded provider edge binding",
