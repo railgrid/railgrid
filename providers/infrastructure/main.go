@@ -37,6 +37,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	"github.com/faroshq/provider-sdk/hubclient"
 	"github.com/faroshq/provider-sdk/vwhealth"
 
 	"github.com/faroshq/provider-infrastructure/install"
@@ -44,6 +45,9 @@ import (
 	"github.com/faroshq/provider-infrastructure/server"
 	"github.com/faroshq/provider-infrastructure/tenant"
 )
+
+// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+const heartbeatVersion = "0.1.0"
 
 // Subcommands:
 //
@@ -202,7 +206,11 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	// client-secret bridge). Opt-in via FAROS_APP_BASE_DOMAIN + KRO_KUBECONFIG.
 	startInstanceController(ctx, kcpConfig)
 
-	go runHeartbeat(ctx)
+	hb, err := hubclient.ConfigFromEnv("infrastructure", heartbeatVersion)
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()
 	log.Printf("shutting down")

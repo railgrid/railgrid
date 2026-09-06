@@ -12,9 +12,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,7 +124,15 @@ func runServe() {
 			log.Fatalf("server: %v", err)
 		}
 	}()
-	go runHeartbeat(ctx, controllerHealth)
+	// Beats are gated on serving readiness (heartbeatCanSend): the hub
+	// records any received beat as liveness, so an unready replica must go
+	// quiet and let the TTL mark the provider stale.
+	hb, err := hubclient.ConfigFromEnv("databricks", providerVersion())
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+	hb.CanSend = func() bool { return heartbeatCanSend(controllerHealth) }
+	go hubclient.RunHeartbeat(ctx, hb)
 	if controllerHealth.snapshot().Required {
 		go runLeaderElectedControllers(
 			ctx,
@@ -363,8 +369,6 @@ func logMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-const heartbeatInterval = 30 * time.Second
-
 // buildVersion is injected by the Makefile and provider-release workflow. A
 // chart may also set FAROS_PROVIDER_VERSION so a separately packaged binary
 // reports the same release version as its CatalogEntry/image.
@@ -379,76 +383,4 @@ func providerVersion() string {
 
 func heartbeatCanSend(health *controllerHealth) bool {
 	return health == nil || health.ready()
-}
-
-func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
-	hub := os.Getenv("FAROS_HUB_URL")
-	name := envOr("FAROS_PROVIDER_NAME", "databricks")
-	if hub == "" {
-		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
-		return
-	}
-
-	// Resolved only once the beat is actually going to be sent: reading the
-	// provider kubeconfig for a heartbeat that is disabled is wasted work, and
-	// its failure logs a misleading token error in tests and local runs.
-	token, err := hubclient.ResolveHubToken()
-	if err != nil {
-		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
-	}
-
-	url := strings.TrimRight(hub, "/") + "/api/providers/" + name + "/heartbeat"
-	var health *controllerHealth
-	if len(healthStates) > 0 {
-		health = healthStates[0]
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only opt-in
-		}
-	}
-	send := func() {
-		if !heartbeatCanSend(health) {
-			return
-		}
-		body, err := json.Marshal(map[string]string{"version": providerVersion(), "status": "healthy"})
-		if err != nil {
-			log.Printf("heartbeat encode: %v", err)
-			return
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			log.Printf("heartbeat build req: %v", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("heartbeat send: %v", err)
-			return
-		}
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				log.Printf("heartbeat response close: %v", err)
-			}
-		}()
-		if resp.StatusCode >= 300 {
-			log.Printf("heartbeat %s: %d %s", url, resp.StatusCode, resp.Status)
-		}
-	}
-	send()
-	t := time.NewTicker(heartbeatInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			send()
-		}
-	}
 }

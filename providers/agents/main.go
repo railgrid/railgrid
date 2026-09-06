@@ -35,7 +35,11 @@ import (
 	"time"
 
 	"github.com/faroshq/provider-agents/api"
+	"github.com/faroshq/provider-sdk/hubclient"
 )
+
+// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+const heartbeatVersion = "0.1.0"
 
 // Subcommands:
 //
@@ -110,7 +114,11 @@ func runServe() {
 		}
 	}()
 
-	go runHeartbeat(ctx)
+	hb, err := hubclient.ConfigFromEnv("agents", heartbeatVersion)
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()
 	log.Printf("shutting down")

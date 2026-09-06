@@ -532,8 +532,12 @@ Content-Type: application/json
   with exactly that 401 rather than a 404, so the endpoint cannot be used to
   enumerate provider names. In `warn` mode, which accepts unauthenticated
   beats by design, an unknown name still gets 404.
-- Provider side: the bearer is `FAROS_HUB_TOKEN` if set, otherwise the token
-  in `FAROS_PROVIDER_KUBECONFIG` (`provider-sdk/hubclient.ResolveHubToken`).
+- Provider side: every provider runs the one shared client,
+  `provider-sdk/hubclient.RunHeartbeat` (configured by `ConfigFromEnv` from
+  `FAROS_HUB_URL`, `FAROS_PROVIDER_NAME`, `FAROS_HUB_INSECURE`,
+  `FAROS_PROVIDER_VERSION`). The bearer is `FAROS_HUB_TOKEN` if set,
+  otherwise the token in `FAROS_PROVIDER_KUBECONFIG`
+  (`hubclient.ResolveHubToken`). A 401/403 is logged with what to fix.
   Charts need no change.
 - Updates `CatalogEntry.status.lastHeartbeat` and
   `reportedVersion`.
@@ -968,9 +972,10 @@ Secret* differ.
 A provider's backend (if it declares one) MUST:
 
 - Heartbeat, **platform providers only**: `POST /api/providers/{name}/heartbeat`
-  to the hub every 30s, authenticated as the provider's own service account
-  (token from `provider-sdk/hubclient.ResolveHubToken`: `FAROS_HUB_TOKEN`, else
-  the provider kubeconfig's bearer). An org-owned (BYO) provider MUST NOT beat:
+  to the hub every 30s via the shared `provider-sdk/hubclient.RunHeartbeat`
+  (not a local copy), authenticated as the provider's own service account
+  (token from `hubclient.ResolveHubToken`: `FAROS_HUB_TOKEN`, else the
+  provider kubeconfig's bearer). An org-owned (BYO) provider MUST NOT beat:
   the endpoint is keyed by bare name and resolves only platform providers, so
   the beat is rejected and would in any case never mark it Ready. Its readiness
   comes from endpoint validity instead — see the heartbeat endpoint section.

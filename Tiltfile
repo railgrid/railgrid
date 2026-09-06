@@ -218,7 +218,6 @@ local_resource(
     serve_cmd='make run-provider-code',
     deps=[
         'providers/code/main.go',
-        'providers/code/heartbeat.go',
         'providers/code/assets.go',
         'providers/code/controller_manager.go',
         'providers/code/init_cmd.go',
@@ -366,7 +365,6 @@ local_resource(
                'make run-provider-app-studio') % preview_hub_public_url,
     deps=[
         'providers/app-studio/main.go',
-        'providers/app-studio/heartbeat.go',
         'providers/app-studio/assets.go',
         'providers/app-studio/api',
         'providers/app-studio/apis',
@@ -451,7 +449,6 @@ local_resource(
     serve_cmd='make run-provider-agents',
     deps=[
         'providers/agents/main.go',
-        'providers/agents/heartbeat.go',
         'providers/agents/assets.go',
         'providers/agents/init_cmd.go',
         'providers/agents/api',
@@ -830,7 +827,6 @@ make run-provider-infrastructure
                ),
     deps=[
         'providers/infrastructure/main.go',
-        'providers/infrastructure/heartbeat.go',
         'providers/infrastructure/assets.go',
         'providers/infrastructure/server',
         'providers/infrastructure/kro',
@@ -1082,7 +1078,6 @@ local_resource(
         'providers/edges/main.go',
         'providers/edges/controller_manager.go',
         'providers/edges/init_cmd.go',
-        'providers/edges/heartbeat.go',
         'providers/edges/apis',
         'providers/edges/internal',
         'providers/edges/scheme',

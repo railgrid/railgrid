@@ -47,7 +47,11 @@ import (
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/faroshq/provider-sdk/hubclient"
 )
+
+// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+const heartbeatVersion = "0.1.0"
 
 // replicaIdentityFromEnv is the durable-claim identity: the pod name (chart
 // downward API) plus the pid, so a container restart inside the same pod gets
@@ -306,7 +310,16 @@ func runServe() {
 		}()
 	}
 
-	go runHeartbeat(ctx, controllerHealth)
+	// Beats are gated on controller readiness (heartbeatCanSend): the hub
+	// records any received beat as liveness, so a required controller that
+	// is starting, failed, or stopped must go quiet and let the TTL mark the
+	// provider stale.
+	hb, err := hubclient.ConfigFromEnv("app-studio", heartbeatVersion)
+	if err != nil {
+		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
+	}
+	hb.CanSend = func() bool { return heartbeatCanSend(controllerHealth) }
+	go hubclient.RunHeartbeat(ctx, hb)
 
 	// Deterministic lifecycle: the Project reconciler converges instances
 	// across every tenant workspace. Opt-in via FAROS_PROVIDER_KUBECONFIG.

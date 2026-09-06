@@ -71,19 +71,13 @@ func TokenFromKubeconfig(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving %s=%s: %w", EnvProviderKubeconfig, path, err)
 	}
-	// clientcmd reads a tokenFile into BearerToken verbatim, so trim the
-	// trailing newline a hand-written token file usually carries.
+	// clientcmd populates BearerToken from either the inline `token` or, when
+	// only `tokenFile` is set, the file's bytes — both verbatim, hence the
+	// trim for the trailing newline a hand-written token file carries. There
+	// is nothing else to fall back to: when both are set the inline token
+	// wins and clientcmd deliberately ignores the file.
 	if t := strings.TrimSpace(rc.BearerToken); t != "" {
 		return t, nil
-	}
-	if rc.BearerTokenFile != "" {
-		b, err := os.ReadFile(rc.BearerTokenFile)
-		if err != nil {
-			return "", fmt.Errorf("reading token file from %s=%s: %w", EnvProviderKubeconfig, path, err)
-		}
-		if t := strings.TrimSpace(string(b)); t != "" {
-			return t, nil
-		}
 	}
 	return "", fmt.Errorf("%s=%s carries no bearer token", EnvProviderKubeconfig, path)
 }

@@ -50,7 +50,11 @@ import (
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 	"github.com/faroshq/provider-edges/internal/svccatalog"
 	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
+	"github.com/faroshq/provider-sdk/hubclient"
 )
+
+// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+const heartbeatVersion = "0.1.0"
 
 // providerPublicBase is the path prefix (behind the hub backend proxy) this
 // provider is reachable at. Both the agent-ingress and consumer-egress mounts
@@ -264,7 +268,12 @@ func runServe() error {
 		}
 	}()
 
-	go runHeartbeat(ctx, log)
+	hb, err := hubclient.ConfigFromEnv("edges", heartbeatVersion)
+	if err != nil {
+		log.Error(err, "resolving heartbeat token; beats will be unauthenticated")
+	}
+	hb.Logger = log
+	go hubclient.RunHeartbeat(ctx, hb)
 
 	select {
 	case <-ctx.Done():

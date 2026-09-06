@@ -552,7 +552,6 @@ providers/agents/
   main.go            # init/serve subcommands (quickstart pattern)
   init_cmd.go        # provider-sdk/install bootstrap: schemas, APIExport,
                      # endpoint slice, bind grant, CatalogEntry
-  heartbeat.go
   provider.yaml      # admin Provider record
   manifest.yaml      # CatalogEntry (dev loopback URL, own port)
   apis/v1alpha1/     # Agent, Connection, AgentSchedule, AgentTrigger,

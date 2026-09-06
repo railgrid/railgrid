@@ -17,7 +17,7 @@ COPY providers/agents/go.mod providers/agents/go.sum ./
 # REPO ROOT: docker build -f providers/agents/Dockerfile .
 COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY providers/agents/main.go providers/agents/heartbeat.go providers/agents/assets.go providers/agents/init_cmd.go ./
+COPY providers/agents/main.go providers/agents/assets.go providers/agents/init_cmd.go ./
 COPY providers/agents/apis ./apis
 COPY providers/agents/api ./api
 COPY providers/agents/channels ./channels

@@ -184,6 +184,14 @@ func (h *controllerHealth) ready() bool {
 	return !snapshot.Required || snapshot.State == controllerStateReady
 }
 
+// heartbeatCanSend is intentionally stricter than the payload contract: the
+// hub records any received heartbeat as liveness and does not inspect its
+// status field. REST-only mode (or a legacy caller without a health dependency)
+// is always eligible; a required controller must already be running.
+func heartbeatCanSend(health *controllerHealth) bool {
+	return health == nil || health.ready()
+}
+
 func (h *controllerHealth) heartbeatStatus() string {
 	snapshot := h.snapshot()
 	if !snapshot.Required || snapshot.State == controllerStateReady {
