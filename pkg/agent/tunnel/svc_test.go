@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestIsLoopbackHost(t *testing.T) {
@@ -620,5 +621,146 @@ func TestSvcUpgradeStripsUpstreamPolicyHeader(t *testing.T) {
 	echo := make([]byte, 4)
 	if _, err := io.ReadFull(br, echo); err != nil || string(echo) != "ping" {
 		t.Fatalf("echo = %q, %v; want ping", echo, err)
+	}
+}
+
+// upgradeFront serves h behind a real listener, wraps it so the test can wait
+// for ServeHTTP to return, and sends an upgrade request for target over a raw
+// TCP connection so the hijacked path is exercised end to end. It returns the
+// client side of the connection, a reader over it, the request (for
+// http.ReadResponse) and the channel closed when the handler returns.
+func upgradeFront(t *testing.T, h http.Handler, target string) (net.Conn, *bufio.Reader, *http.Request, <-chan struct{}) {
+	t.Helper()
+	done := make(chan struct{})
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(front.Close)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	req, _ := http.NewRequest(http.MethodGet, "/svc/api/websocket", nil)
+	req.Host = "edge"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set(svcTargetHeader, target)
+	if err := req.Write(conn); err != nil {
+		t.Fatal(err)
+	}
+	return conn, bufio.NewReader(conn), req, done
+}
+
+// waitHandlerDone fails the test if the svc handler is still running after
+// the client has read the whole reply while keeping its side open: that is
+// the leaked upgrade, both copy goroutines parked on a keep-alive backend
+// that will never send another byte.
+func waitHandlerDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("svc upgrade handler still running after the backend refused the upgrade: connection leaked")
+	}
+}
+
+// TestSvcUpgradeRefusedIsNotPiped: a backend that answers an upgrade request
+// with anything but a 101 (here a keep-alive 403) has sent an ordinary HTTP
+// response, not the head of a raw stream. The agent must relay status, headers
+// and body, close the hijacked connection and return, instead of parking two
+// io.Copy goroutines on a backend that will never send more.
+func TestSvcUpgradeRefusedIsNotPiped(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isUpgradeRequest(r) {
+			t.Errorf("upstream got a non-upgrade request %s %s", r.Method, r.URL)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set(svcPolicyHeader, string(SvcPolicyEnforce)) // must still be stripped
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, "upgrade refused")
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: SvcPolicyEnforce}}
+	dialer := &countingDialer{}
+	cfg.dial = dialer.dial
+	conn, br, req, done := upgradeFront(t, newSvcProxyHandler(cfg), upstream.URL)
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want the upstream 403 relayed", resp.StatusCode)
+	}
+	if got := resp.Header.Get(svcPolicyHeader); got != "" {
+		t.Errorf("%s = %q leaked through the refused upgrade, want it stripped", svcPolicyHeader, got)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/plain" {
+		t.Errorf("Content-Type = %q, want the upstream's header kept", got)
+	}
+	if !resp.Close {
+		t.Errorf("Connection = %q, want close: the agent ends the connection after a refused upgrade", resp.Header.Get("Connection"))
+	}
+	if body := readBody(t, resp); body != "upgrade refused" {
+		t.Errorf("body = %q, want the upstream body relayed", body)
+	}
+
+	// The handler must finish on its own, with the client still connected.
+	waitHandlerDone(t, done)
+
+	// And the agent closed our side: nothing more arrives, no hang.
+	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("read after refused upgrade = %v, want EOF from the agent closing the connection", err)
+	}
+	if n := dialer.n.Load(); n != 1 {
+		t.Errorf("dialed %d times, want 1", n)
+	}
+}
+
+// TestSvcUpgradeBackendHangsUpBeforeHead: a backend that closes without a
+// complete response head must not hang the handler or leave the hijacked
+// client waiting; the client gets a 502 and the connection is closed.
+func TestSvcUpgradeBackendHangsUpBeforeHead(t *testing.T) {
+	for name, partial := range map[string]string{
+		"eof before any bytes": "",
+		"truncated head":       "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n",
+		"malformed head":       "this is not http\r\n\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("upstream hijack: %v", err)
+					return
+				}
+				_, _ = io.WriteString(c, partial)
+				_ = c.Close()
+			}))
+			t.Cleanup(upstream.Close)
+
+			cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: SvcPolicyEnforce}}
+			dialer := &countingDialer{}
+			cfg.dial = dialer.dial
+			conn, br, req, done := upgradeFront(t, newSvcProxyHandler(cfg), upstream.URL)
+
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			resp, err := http.ReadResponse(br, req)
+			if err != nil {
+				t.Fatalf("reading the agent's reply: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", resp.StatusCode)
+			}
+			_ = resp.Body.Close()
+			waitHandlerDone(t, done)
+			if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+				t.Errorf("read after 502 = %v, want EOF", err)
+			}
+		})
 	}
 }
