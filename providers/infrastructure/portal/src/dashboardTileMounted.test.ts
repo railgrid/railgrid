@@ -8,6 +8,7 @@ import { api } from './api'
 vi.mock('./api', () => ({
   api: { listInstances: vi.fn() },
   isContextChangedError: vi.fn(() => false),
+  setHostFetch: vi.fn(),
   setTenant: vi.fn(),
   setToken: vi.fn(),
 }))

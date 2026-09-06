@@ -81,7 +81,7 @@ refresh = createLatestRefreshController(async (requestID, _mode) => {
   try {
     // Both lists in parallel: the tile is worthless without the connection
     // health, and serialising doubles the time the card sits on "Loading".
-    const readContext = { token: ctx?.token ?? null, tenant: ctx?.tenant ?? null }
+    const readContext = { fetch: ctx?.fetch ?? null, token: ctx?.token ?? null, tenant: ctx?.tenant ?? null }
     const [repos, conns] = await Promise.all([api.listRepositories(readContext), api.listConnections(readContext)])
     if (!refresh.isCurrent(requestID)) return
     repositories.value = repos

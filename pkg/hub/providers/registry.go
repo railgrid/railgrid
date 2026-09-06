@@ -70,7 +70,12 @@ type Provider struct {
 	Category     string // optional grouping in the portal nav; empty = top-level
 	Dependencies []Dependency
 	UIURL        *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
-	BackendURL   *url.URL // proxy target for /services/providers/{name}/*; nil → 404
+	// MainJSIntegrity is the SRI pin ("sha384-<base64>") of the bundle the
+	// portal loads from /ui/providers/{name}/main.js, computed by the catalog
+	// reconciler from the same source the UI proxy serves. Empty when the hub
+	// could not (yet) hash the bundle; the portal then loads it unpinned.
+	MainJSIntegrity string
+	BackendURL      *url.URL // proxy target for /services/providers/{name}/*; nil → 404
 	// BackendHealthRequired is set only for platform-operated providers that
 	// declare a backend. BackendHealthy is the latest bounded healthPath probe
 	// result. Org-owned provider backends travel through an edge tunnel and are

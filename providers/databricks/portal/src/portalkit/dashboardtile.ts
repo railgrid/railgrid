@@ -16,6 +16,8 @@
 // Deliberately plain TypeScript, like the rest of portalkit: it is synced into
 // vanilla-TS and Vue portals alike, so it must not import a framework.
 
+import type { ProviderFetch } from './tenant'
+
 // tileClass is the ONE visual vocabulary every dashboard tile renders with.
 //
 // Tiles are cards sitting side by side in one grid, so a tile that invents its
@@ -97,6 +99,10 @@ export const dashboardTileSemanticClass: Record<keyof typeof tileClass, string> 
 // TileContext is the subset of farosContext a tile needs. The console pushes
 // the full object; tiles only ever read these.
 export interface TileContext {
+  // fetch is the host-owned transport (injects Authorization and the tenant
+  // headers). Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   tenant?: string | null
   // Hub-proxy providers need the persisted tenant selection as well as the

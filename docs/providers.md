@@ -27,7 +27,7 @@ the how):
 |---|---|---|
 | 0 | API group = **`providers.faros.sh`** (separate from `faros.sh`) | Catalog entries and bindings are platform-owner-only. Excluding them from the `core.faros.sh` merged APIExport keeps them out of tenant workspaces. Tenants interact via portal/hub mediation, not raw CR access |
 | 1 | Terminology = **provider** (not "addon") | `root:faros:providers` already exists; first-party faros `APIExport`s already live there |
-| 2 | UI embedding = **iframe via hub proxy** | Same-origin → no CORS. Any frontend stack. Module Federation rejected (Vue lock-in + build coupling) |
+| 2 | UI embedding = **custom element loaded from the hub proxy** (`<faros-provider-{name}>` from `/ui/providers/{name}/main.js`, SRI-pinned) | Same-origin → no CORS, shared stylesheet, no iframe seams. Any frontend stack that can register a custom element. The bundle runs as trusted code in the portal document; a sandboxed iframe + postMessage bridge is the (L) follow-up if untrusted third-party providers become a goal. Module Federation rejected (Vue lock-in + build coupling) |
 | 3 | Provider workspace = `root:faros:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
 | 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
@@ -637,7 +637,7 @@ Both become provider-aware.
 | `portal/src/router/providers.ts` | `registerProviderRoutes(bindings)` — idempotent `router.addRoute()` calls |
 | `portal/src/graphql/queries/providers.ts` | `LIST_PROVIDER_CATALOG_ENTRIES`, `LIST_PROVIDER_BINDINGS`, plus result types |
 | `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
-| `portal/src/pages/ProviderFrame.vue` | Per-provider iframe host; handles postMessage handshake, loading state, theme propagation |
+| `portal/src/pages/ProviderFrame.vue` | Per-provider custom-element host; loads the SRI-pinned bundle, mounts `<faros-provider-{name}>`, pushes `farosContext` (host fetch, tenant, theme, subPath), bubbles `faros-navigate` |
 | `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs an `APIBinding` directly to kcp in the user's workspace with the claims marked `Accepted` |
 | `portal/sdk/index.ts` (new package `@faros/provider-sdk`) | `useFaros()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
 | `portal/sdk/package.json`, `tsconfig.json`, `README.md` | SDK packaging — publish to npm or include as workspace |
@@ -651,7 +651,7 @@ Both become provider-aware.
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
 | [portal/src/graphql/mutations.ts](../portal/src/graphql/mutations.ts) | Add `CREATE_PROVIDER_BINDING`, `DELETE_PROVIDER_BINDING` |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
-| [pkg/hub/portal.go](../pkg/hub/portal.go) | Add `Content-Security-Policy` header to portal HTML responses: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'`. `frame-src 'self'` permits provider iframes (proxied = same-origin); configured platform frame sources permit owned surfaces such as App Studio preview hosts. |
+| [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | Sets the portal `Content-Security-Policy`: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:`. `script-src 'self'` (no `'unsafe-inline'`) admits provider bundles because they are hub-proxied and therefore same-origin; the portal ships no inline script (the theme pre-paint bootstrap is `portal/public/theme-bootstrap.js`). `frame-src` is for the portal's own iframes (App Studio preview hosts), not for providers. |
 
 ### Reactive providers store
 
@@ -698,114 +698,102 @@ export function registerProviderRoutes(names: string[]) {
 }
 ```
 
-### `ProviderFrame.vue` (concrete)
+### `ProviderFrame.vue` (custom-element host)
 
-```vue
-<script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
-import AppLayout from '@/components/AppLayout.vue'
-import { useProvidersStore } from '@/stores/providers'
-import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
-import { useRouter } from 'vue-router'
+The real implementation is
+[portal/src/pages/ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue);
+[portal/src/components/DashboardTile.vue](../portal/src/components/DashboardTile.vue)
+is the same lifecycle for the optional `<faros-dashboard-tile-{name}>`
+element. There is no iframe and no postMessage handshake. The shape:
 
-const props = defineProps<{ providerName: string; subPath: string }>()
-const providers = useProvidersStore()
-const auth = useAuthStore()
-const theme = useThemeStore()
-const router = useRouter()
-const iframe = ref<HTMLIFrameElement | null>(null)
-
-const entry = computed(() =>
-  providers.catalog.find(c => c.metadata.name === props.providerName)
-)
-
-// Cache-bust on version change so a provider chart upgrade doesn't show
-// stale assets.
-const src = computed(() => {
-  const v = entry.value?.status?.reportedVersion ?? '0'
-  return `/ui/providers/${props.providerName}/${props.subPath}?v=${v}`
-})
-
-// postMessage handshake. Only respond to messages whose source is OUR
-// iframe; only post back to that iframe's contentWindow.
-function onMessage(e: MessageEvent) {
-  if (e.source !== iframe.value?.contentWindow) return
-  if (e.data?.type === 'faros.ready') {
-    iframe.value?.contentWindow?.postMessage({
-      type: 'faros.context',
-      token: auth.token,
-      user: auth.user,
-      tenant: auth.clusterName,
-      theme: theme.mode,
-      basePath: `/ui/providers/${props.providerName}`,
-    }, window.location.origin)
-  } else if (e.data?.type === 'faros.navigate') {
-    // Provider wants to update browser URL (e.g. /providers/cost/foo)
-    router.push(`/providers/${props.providerName}/${e.data.path}`)
-  }
-}
-
-onMounted(() => window.addEventListener('message', onMessage))
-onUnmounted(() => window.removeEventListener('message', onMessage))
-</script>
-
-<template>
-  <AppLayout>
-    <div v-if="!entry?.status?.ready" class="loading-state">
-      Provider starting…
-    </div>
-    <iframe
-      v-else
-      ref="iframe"
-      :src="src"
-      class="w-full h-full border-0"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-      :title="entry.spec.displayName"
-    />
-  </AppLayout>
-</template>
-```
-
-### Provider SDK (`@faros/provider-sdk`) — concrete
+1. **Load the bundle, pinned.** `providerScriptLoader.ts` injects
+   `/ui/providers/{name}/main.js?v={version}` as a classic `<script>` into the
+   portal document. When the catalog entry carries `mainJSIntegrity` (the
+   `sha384-…` the hub computed at registration, see §"Security
+   considerations"), the loader sets `integrity` so the browser refuses a
+   bundle whose bytes differ. It deliberately sets no `crossorigin`
+   attribute: the bundle is a same-origin load (response type `basic`), for
+   which the browser enforces SRI without one, and `crossorigin` would turn
+   the load into a CORS-mode request that the hub's UI proxy does not
+   negotiate (it sends no `Access-Control-Allow-Origin`), so the script would
+   fail to load. Without a pin it loads anyway and logs a warning. The `?v=`
+   cache-buster does not interact with SRI, which hashes the response body.
+2. **Mount the element.** After `customElements.whenDefined('faros-provider-{name}')`
+   the host appends `<faros-provider-{name}>` into its own DOM. The provider
+   shares the portal stylesheet (CSS variables cascade in), so there is no
+   visible boundary.
+3. **Push context.** The host sets `element.farosContext` (a JS property, not
+   an attribute) and re-pushes it on every theme / workspace / route change:
 
 ```ts
-// portal/sdk/index.ts
-import { ref, onMounted, onUnmounted } from 'vue'
-
-export interface FarosContext {
-  token: string
-  user: { email: string; userId: string }
-  tenant: string         // logical cluster name
-  theme: 'light' | 'dark' | 'system'
-  basePath: string       // e.g. /ui/providers/cost
-}
-
-export function useFaros() {
-  const ctx = ref<FarosContext | null>(null)
-
-  function onMessage(e: MessageEvent) {
-    if (e.source !== window.parent) return
-    if (e.data?.type === 'faros.context') ctx.value = e.data
-  }
-
-  onMounted(() => {
-    window.addEventListener('message', onMessage)
-    // Tell the shell we're ready to receive context
-    window.parent.postMessage({ type: 'faros.ready' }, '*')
-  })
-  onUnmounted(() => window.removeEventListener('message', onMessage))
-
-  function navigate(path: string) {
-    window.parent.postMessage({ type: 'faros.navigate', path }, '*')
-  }
-
-  return { ctx, navigate }
+// What the host pushes (portal/src/providers/providerContext.ts).
+interface ProviderContext {
+  subPath?: string        // route after /providers/{name}/, host-router parsed
+  user: unknown
+  tenant: string | null   // kcp cluster name of the active workspace
+  orgUUID: string | null
+  workspaceUUID: string | null
+  theme: 'light' | 'dark' // RESOLVED, never 'system'
+  basePath: string        // /ui/providers/{name}
+  fetch: ProviderFetch    // host-owned transport, see below
+  /** @deprecated one release; read `fetch` instead */ token: string | null
 }
 ```
 
-Optional — a provider's UI works without the SDK; it just won't share
-state (no token, no theme, no synced URL).
+4. **Navigate.** The element dispatches a bubbling
+   `faros-navigate` CustomEvent (`{ path, replace? }`); the host translates it
+   into `router.push('/providers/{name}/' + path)`.
+
+**The host fetch.** `farosContext.fetch` is the only thing a bundle should use
+to reach the hub. It resolves relative URLs against the portal origin, injects
+`Authorization` and `X-Faros-Org` / `X-Faros-Workspace` from the host's own
+state (so the bundle never holds the user's id token), and refuses anything
+outside the provider's allow list
+([portal/src/providers/providerFetch.ts](../portal/src/providers/providerFetch.ts)):
+
+| Allowed (same-origin only) | Why |
+|---|---|
+| `/services/providers/{name}/` | the provider's own backend, via the hub proxy (hub-proxy auth model) |
+| `/ui/providers/{name}/` | its own static assets |
+| `/graphql/` | `/graphql/{cluster}` — the embedded GraphQL gateway (cluster-in-path model) |
+| `/clusters/` | `/clusters/{cluster}/apis/…` — kcp REST by cluster (cluster-in-path model) |
+| `/api/orgs/{orgUUID}/` | org-scoped hub REST, as the user |
+| `/api/providers` (GET/HEAD) | the catalog |
+
+Everything else — another provider's backend, `/api/admin`, `/apis/*`, other
+origins — throws `ProviderFetchDeniedError` before any request is made.
+`portalkit/tenant.ts` exposes `providerFetch(ctx)`, which returns
+`ctx.fetch` when the host provides it and falls back to the global `fetch`
+plus `ctx.token` against an older host; every in-repo provider portal calls
+it. `token` stays on the context for one release (reading it logs a one-time
+deprecation warning per provider) and is then removed.
+
+### Provider element contract (what a bundle implements)
+
+```ts
+// main.js — a classic script (not a module) registering the element.
+class MyProvider extends HTMLElement {
+  #ctx: ProviderContext | null = null
+  set farosContext(ctx: ProviderContext | null) { this.#ctx = ctx; this.render() }
+  get farosContext() { return this.#ctx }
+  connectedCallback() { this.render() }
+  async load() {
+    const fetch = providerFetch(this.#ctx)        // portalkit/tenant.ts
+    const base = serviceBase(this.#ctx?.basePath) // /services/providers/my-provider
+    const res = await fetch(base + '/api/things', { headers: tenantHeaders({}) })
+    // ...
+  }
+  navigate(path: string) {
+    this.dispatchEvent(new CustomEvent('faros-navigate', { bubbles: true, detail: { path } }))
+  }
+}
+customElements.define('faros-provider-my-provider', MyProvider)
+```
+
+Optional — a bundle that ignores `farosContext` still renders; it just has no
+tenant scope, no theme, and no synced URL. Vendor `provider-sdk/portalkit/`
+into the portal (`make sync-portalkit`) rather than re-implementing the tenant
+header contract; see AGENTS.md §5.7.
 
 ### Deep-link behavior
 
@@ -819,8 +807,9 @@ into a fresh browser. Sequence:
    store AND calls `registerProviderRoutes(...)` *before* the first
    `<router-view />` render.
 4. Vue Router resolves `/providers/cost/forecasts` → `ProviderFrame.vue`
-   with `providerName=cost`, `subPath=forecasts`. Iframe loads
-   `/ui/providers/cost/forecasts`.
+   with `providerName=cost`, `subPath=forecasts`. The host loads
+   `/ui/providers/cost/main.js`, mounts `<faros-provider-cost>`, and pushes
+   `subPath: 'forecasts'` in `farosContext`.
 
 The key is awaiting the store load in `App.vue` before rendering. Without
 that, the not-found route swallows the deep link.
@@ -1098,10 +1087,36 @@ workspace by hand.
   marked `tenantScoped`. An override exists
   (`faros.sh/accept-untrusted-claims=true`) but is admin-only
   (host-cluster RBAC on the `CatalogEntry` resource).
-- **iframe sandboxing**: `sandbox` attribute set; no
-  `allow-top-navigation`.
-- **CSP**: hub portal CSP allows `frame-src 'self'` plus explicitly configured
-  platform-owned frame sources, such as App Studio preview hosts.
+- **Provider bundles are fully trusted code.** A provider UI is a classic
+  script the portal loads into its own document (no iframe, no sandbox). Once
+  it runs it can read anything the portal can, including the DOM of other
+  mounted providers. Installing a provider is therefore the same trust
+  decision as installing a cluster operator. Two controls bound the default
+  exposure, neither is a sandbox:
+  - **SRI pin.** At registration (and again whenever `spec.version` or the
+    heartbeat's `status.reportedVersion` changes, plus a 10-minute resync) the
+    catalog reconciler fetches `<spec.ui.url>/main.js` — or reads it from the
+    embedded assets of a first-party provider — and records
+    `sha384-…` in `CatalogEntry.status.ui.mainJSIntegrity` and on the registry
+    record (`pkg/hub/providers/ui_integrity.go`). `/api/providers` exposes it
+    as `mainJSIntegrity`; the portal loads the script with `integrity` (and
+    no `crossorigin` attribute — the load is same-origin, so SRI applies
+    without one and CORS mode would be refused by the UI proxy), so a bundle
+    swapped behind the URL after registration is refused by the browser
+    until the hub re-admits it.
+    Org-owned providers are served over the edge tunnel and never dialled by
+    the hub, so they currently load unpinned (the loader logs a warning).
+  - **Host fetch, no raw token.** The host hands the bundle
+    `farosContext.fetch` (Authorization + tenant headers injected by the host,
+    same-origin allow list) instead of the user's id token. `token` is still
+    exposed, deprecated, for one release.
+- **CSP**: `script-src 'self'` with no `'unsafe-inline'` — the portal ships no
+  inline script and an injected one is refused. `frame-src 'self'` plus
+  explicitly configured platform-owned frame sources (App Studio preview
+  hosts) covers the portal's own iframes; providers do not use frames.
+- **Follow-up (L)**: a sandboxed iframe with a postMessage bridge and a
+  hub-minted per-provider token, if third-party providers written by parties
+  the operator does not trust become a product goal.
 - **Internal-only services**: providers should be `ClusterIP`. Hub is the
   only public ingress. Network policies recommended.
 - **Heartbeat token**: the heartbeat is authenticated as the provider's own
@@ -1119,7 +1134,7 @@ workspace by hand.
 | Phase | Scope | Verifiable outcome |
 |---|---|---|
 | 1 | `CatalogEntry` CRD + catalog controller (workspace + SA + Secret + schema apply) + registry + heartbeat endpoint + backend proxy | An example provider's chart installs, hub provisions everything, provider pod heartbeats, `/services/providers/example/*` reaches the backend |
-| 2 | UI proxy + `ProviderFrame.vue` + dynamic routes + providers store + AppLayout nav integration + CSP + dev proxy | A static "hello" provider UI loads inside the portal at `/providers/hello`, side nav shows it, theme + token propagate via postMessage |
+| 2 | UI proxy + `ProviderFrame.vue` + dynamic routes + providers store + AppLayout nav integration + CSP + dev proxy | A static "hello" provider UI loads inside the portal at `/providers/hello`, side nav shows it, theme + tenant context arrive on `farosContext` |
 | 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + direct `APIBinding` create against kcp + nav filter to user's APIBindings + GraphQL validation of bound CRs. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND queryable via embedded GraphQL gateway. |
 | 4 | Provider SDK + example chart in `examples/provider-hello/` | Third party can copy the example and ship a working provider end-to-end |
 | 5 | Hardening: RBAC fuzz, cache-bust verification, e2e tests, optional `virtualWorkspace` opt-in, claim re-acceptance flow on chart upgrade | Ready to declare stable |
@@ -1176,7 +1191,7 @@ place. The list below is descriptive, not prescriptive.
 | [portal/src/stores/providers.ts](../portal/src/stores/providers.ts) | Pinia store fetching `/api/providers` |
 | [portal/src/router/providers.ts](../portal/src/router/providers.ts) | Dynamic `/providers/:name/:rest(.*)*` route registration |
 | [portal/src/pages/ProvidersPage.vue](../portal/src/pages/ProvidersPage.vue) | Catalog grid |
-| [portal/src/pages/ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue) | Iframe host + postMessage handshake |
+| [portal/src/pages/ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue) | Custom-element host: SRI-pinned bundle load, `farosContext` push (host fetch), `faros-navigate` |
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | `navItems` computed, merges static + provider entries; renders icon URLs |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Dev proxy entries for `/api/providers`, `/services/providers`, `/ui/providers` |
 
@@ -1253,14 +1268,15 @@ place. The list below is descriptive, not prescriptive.
 ## Phase 2 implementation plan (portal)
 
 Phase 2 = the full portal wiring. Verifiable by serving a static "hello"
-provider UI and seeing it load inside the portal frame.
+provider UI and seeing its custom element mount inside the portal.
 
 See §"Portal changes" above for the file create/edit lists. Order of
 operations:
 
-1. **CSP first** ([pkg/hub/portal.go](../pkg/hub/portal.go)) — without an
-   explicit `frame-src` entry the iframe is blocked. Add a small middleware
-   that sets the header on portal HTML responses only.
+1. **CSP first** ([pkg/hub/portal_security.go](../pkg/hub/portal_security.go))
+   — `script-src 'self'` admits the hub-proxied bundle; there is no
+   `'unsafe-inline'`, so the portal itself must ship no inline script. A
+   small middleware sets the header on portal responses only.
 2. **UI proxy** — `pkg/hub/providers/proxy.go` (already created in phase
    1) gets the `NewUIProxy` handler wired into the router. Existing
    backend proxy stays.
@@ -1279,22 +1295,33 @@ operations:
 ### Phase 2 verification recipe
 
 1. With phase 1 deployed, install a stub `CatalogEntry` with a
-   simple HTTP server behind `spec.ui.url` that serves an
-   `index.html` containing `<h1>hello provider</h1>` and a small script
-   that calls `useFaros()` (or just `postMessage({ type: 'faros.ready' })`
-   directly).
+   simple HTTP server behind `spec.ui.url` that serves a `main.js`
+   registering `<faros-provider-hello>` (see §"Provider element contract")
+   and rendering `<h1>hello provider</h1>` plus whatever `farosContext`
+   it received.
 2. Open the portal in a browser. Side nav and `/providers` show the new
    provider immediately — Phase 1A/2 do not gate visibility per tenant.
    Phase 3 adds the Enable/Disable flow and the nav filter.
-4. Click it. URL becomes `/providers/hello`. Iframe loads.
+3. `kubectl get catalogentry hello -o jsonpath='{.status.ui.mainJSIntegrity}'`
+   prints a `sha384-…` value and `GET /api/providers` carries it as
+   `mainJSIntegrity`.
+4. Click it. URL becomes `/providers/hello`. The element mounts; the
+   injected `<script id="faros-provider-script-hello">` carries
+   `integrity` and no `crossorigin` attribute.
 5. Open browser devtools → confirm:
-   - `POST` request from iframe arrived with auth token (visible in
-     iframe's console if the stub echoes it).
+   - A request the stub makes through `farosContext.fetch` to
+     `/services/providers/hello/…` arrives at the backend with
+     `Authorization` and `X-Faros-Tenant` (visible in the backend log);
+     one to `/services/providers/other/…` rejects client-side with
+     `ProviderFetchDeniedError`.
    - No CSP violations.
    - No CORS errors.
-6. Toggle theme in the shell — if the stub iframe handles `faros.context`
-   re-broadcasts, its background flips. (Optional check.)
-7. Reload the deep link `https://faros.example.com/ui/#/providers/hello`
+6. Toggle theme in the shell — the host re-pushes `farosContext` and the
+   stub's background flips. (Optional check.)
+7. Replace the stub's `main.js` without changing its version → the browser
+   refuses the bundle with an integrity error until the hub re-hashes
+   (a version change or the 10-minute resync).
+8. Reload the deep link `https://faros.example.com/ui/#/providers/hello`
    in a fresh tab → still works (proves the store loads before route
    resolution).
 

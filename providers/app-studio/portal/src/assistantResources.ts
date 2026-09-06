@@ -4,6 +4,7 @@ import type {
   ProviderActionBoundResource,
   ProviderItem,
 } from './types'
+import { providerFetch } from './portalkit/tenant'
 
 const DNS_LABEL = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/
 const VERSION = /^[a-z][a-z0-9]*$/
@@ -107,15 +108,17 @@ function graphqlEndpoint(tenant: string): string {
   return `/graphql/${encodeURIComponent(tenant)}`
 }
 
-async function queryResourceType(ctx: FarosContext, type: AssistantResourceType, fetcher: typeof fetch): Promise<AssistantResourceGroup> {
+async function queryResourceType(ctx: FarosContext, type: AssistantResourceType, fetcher: typeof fetch | undefined): Promise<AssistantResourceGroup> {
   const tenant = ctx.tenant?.trim() ?? ''
-  const token = ctx.token?.trim() ?? ''
-  if (!tenant || !token) throw new Error('tenant context unavailable')
+  if (!tenant || !(typeof ctx.fetch === 'function' || ctx.token?.trim())) throw new Error('tenant context unavailable')
   const built = buildAssistantResourceQuery(type)
-  const response = await fetcher(graphqlEndpoint(tenant), {
+  // An injected fetcher (tests) is used as-is; otherwise the host-owned
+  // transport injects Authorization so this module never handles the token.
+  const transport = fetcher ?? providerFetch(ctx)
+  const response = await transport(graphqlEndpoint(tenant), {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: built.query }),
   })
   if (!response.ok) throw new Error(`request failed (${response.status})`)
@@ -147,7 +150,7 @@ async function queryResourceType(ctx: FarosContext, type: AssistantResourceType,
 export async function discoverAssistantResources(
   ctx: FarosContext | null,
   types: AssistantResourceType[],
-  fetcher: typeof fetch = fetch,
+  fetcher?: typeof fetch,
 ): Promise<AssistantResourceDiscoveryResult> {
   if (!ctx) return { groups: [], warnings: ['Tenant context is unavailable.'] }
   const settled = await Promise.allSettled(types.map((type) => queryResourceType(ctx, type, fetcher)))

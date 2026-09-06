@@ -7,6 +7,7 @@
 // caller's bearer token (from FarosContext); the workspace is the path segment.
 
 import type { Edge, EdgeDetail, EdgeType, ErrorResponse } from './types'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 
 // Kubernetes list options are deliberately small: GraphQL treats continue
 // values as opaque strings and the portal only needs bounded cursor pages.
@@ -88,6 +89,16 @@ export function setToken(token?: string | null) {
   if (next !== bearerToken) contextGeneration += 1
   bearerToken = next
 }
+// setHostFetch installs the host-owned transport from farosContext.fetch. The
+// host injects Authorization itself; bearerToken then only fences in-flight
+// requests, and providerFetch falls back to it on older hosts without fetch.
+let hostFetch: ProviderFetch | null = null
+export function setHostFetch(fetchImpl?: ProviderFetch | null) {
+  hostFetch = fetchImpl ?? null
+}
+function hubFetch(): ProviderFetch {
+  return providerFetch({ fetch: hostFetch, token: bearerToken })
+}
 export function setTenant(name?: string | null) {
   const next = name || null
   if (next !== clusterName) contextGeneration += 1
@@ -104,10 +115,9 @@ async function graphql<T>(
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  if (context.token) headers['Authorization'] = 'Bearer ' + context.token
   let res: Response
   try {
-    res = await fetch('/graphql/' + context.tenant, {
+    res = await hubFetch()('/graphql/' + context.tenant, {
       method: 'POST',
       credentials: 'same-origin',
       headers,
@@ -434,8 +444,7 @@ export interface CatalogEntry {
 // provider backend rather than through the GraphQL gateway.
 export async function fetchServiceCatalog(): Promise<CatalogEntry[]> {
   const headers: Record<string, string> = { Accept: 'application/json' }
-  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-  const res = await fetch('/services/providers/edges/catalog', { credentials: 'same-origin', headers })
+  const res = await hubFetch()('/services/providers/edges/catalog', { credentials: 'same-origin', headers })
   if (!res.ok) {
     throw <ErrorResponse>{ reason: 'HTTPError', message: (await res.text()) || res.statusText }
   }

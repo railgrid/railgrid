@@ -75,7 +75,7 @@ watch(
     if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
     deletionAuthority = nextDeletionAuthority
     setBasePath(basePath)
-    setAPIContext({ token, tenant, user: userSub })
+    setAPIContext({ fetch: props.ctx?.fetch, token, tenant, user: userSub })
   },
   { immediate: true, flush: 'sync' },
 )

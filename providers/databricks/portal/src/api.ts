@@ -9,6 +9,7 @@ import type {
 } from './types.js'
 import { formatDatabricksRegistrationMessage, graphqlResponseError, providerRequestError } from './errors.js'
 import { resourceNameError } from './resourceName.js'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant.js'
 import type { RegistrationItem, RegistrationResult, RemoteCatalog, RemotePage, RemoteSchema, RemoteTable, RemoteWarehouse } from './registrationTypes.js'
 
 const GROUP = 'databricks.faros.sh'
@@ -100,6 +101,16 @@ export function setToken(token?: string | null) {
     contextGeneration += 1
   }
 }
+// setHostFetch installs the host-owned transport from farosContext.fetch. The
+// host injects Authorization itself; bearerToken then only fences in-flight
+// requests, and providerFetch falls back to it on older hosts without fetch.
+let hostFetch: ProviderFetch | null = null
+export function setHostFetch(fetchImpl?: ProviderFetch | null) {
+  hostFetch = fetchImpl ?? null
+}
+function hubFetch(): ProviderFetch {
+  return providerFetch({ fetch: hostFetch, token: bearerToken })
+}
 
 export function setTenant(name?: string | null) {
   const nextClusterName = name || null
@@ -135,7 +146,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function serviceHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json', ...(extra ?? {}) }
-  if (bearerToken) headers.Authorization = 'Bearer ' + bearerToken
   if (orgUUID) headers['X-Faros-Org'] = orgUUID
   if (workspaceUUID) headers['X-Faros-Workspace'] = workspaceUUID
   return headers
@@ -143,7 +153,7 @@ function serviceHeaders(extra?: Record<string, string>): Record<string, string> 
 
 async function providerJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const generation = contextGeneration
-  const response = await fetch(`${serviceBasePath}${path}`, { ...init, credentials: 'same-origin', headers: { ...serviceHeaders(init?.body ? { 'Content-Type': 'application/json' } : undefined), ...(init?.headers ?? {}) } })
+  const response = await hubFetch()(`${serviceBasePath}${path}`, { ...init, credentials: 'same-origin', headers: { ...serviceHeaders(init?.body ? { 'Content-Type': 'application/json' } : undefined), ...(init?.headers ?? {}) } })
   const text = await response.text()
   let body: unknown = {}
   if (text) { try { body = JSON.parse(text) } catch { body = text } }
@@ -354,8 +364,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
   }
   const generation = contextGeneration
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  if (bearerToken) headers.Authorization = 'Bearer ' + bearerToken
-  const res = await fetch('/graphql/' + clusterName, {
+  const res = await hubFetch()('/graphql/' + clusterName, {
     method: 'POST',
     credentials: 'same-origin',
     headers,

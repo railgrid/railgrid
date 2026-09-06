@@ -253,9 +253,22 @@ have started) not stale.
 
 Provider UIs are independent Vite/TS bundles in `providers/{name}/portal/`,
 built to `dist/` and embedded via `//go:embed` in the provider's `assets.go`. The
-portal renders them as **custom elements** (`<faros-provider-{name}>`) that
-receive a `faros-context` (user, tenant, theme, basePath) via the
-`postMessage` `faros.ready` → `faros.context` handshake.
+portal loads each `/ui/providers/{name}/main.js` as a classic script into its
+own document — pinned with the SRI hash the hub computed at registration
+(`CatalogEntry.status.ui.mainJSIntegrity`, exposed as `mainJSIntegrity` on
+`/api/providers`) — and renders the **custom element** it registers
+(`<faros-provider-{name}>`). The host sets `element.farosContext` (user, tenant,
+orgUUID/workspaceUUID, resolved theme, basePath, subPath, and a host-owned
+`fetch`) as a JS property and re-pushes it on every change; there is no iframe
+and no postMessage handshake. **A provider bundle executes as fully trusted code
+in the portal document.** Bundles must reach the hub through
+`farosContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
+`Authorization` + tenant headers and allows only the provider's own
+`/services/providers/{name}/` and `/ui/providers/{name}/`, `/graphql/`,
+`/clusters/`, `/api/orgs/{org}/`, and GET `/api/providers`. `farosContext.token`
+is deprecated (one-release fallback) and will be removed. See
+[`docs/providers.md`](docs/providers.md) §"Portal changes" and §"Security
+considerations".
 
 Build chain (Makefile):
 - `make build-{name}-provider-portal` — `vite build` only.
@@ -298,11 +311,14 @@ newer host stylesheet always wins.
 
 **`tenant.ts` is security-critical** and shared by BOTH kinds (plain TS). It owns
 the ONE copy of the hub-proxy contract — `readTenant()` (localStorage
-`faros:portal:tenant`), `tenantHeaders({token, json})` (`Authorization` +
-`X-Faros-Org` + `X-Faros-Workspace`), and `serviceBase()` (`/ui/providers/*` →
-`/services/providers/*`). The wrong header/key means 401/403, so **do not
-re-inline this** — call the helper. Two auth models coexist and this only covers
-the first:
+`faros:portal:tenant`), `tenantHeaders({json})` (`X-Faros-Org` +
+`X-Faros-Workspace`; `token` is a deprecated fallback), `providerFetch(ctx)`
+(the host-owned `farosContext.fetch` that injects `Authorization` + the tenant
+scope, falling back to `fetch` + `ctx.token` on older hosts), and
+`serviceBase()` (`/ui/providers/*` → `/services/providers/*`). The wrong
+header/key means 401/403, so **do not re-inline this** — call the helpers and
+never call the global `fetch` for a hub request. Two auth models coexist;
+`providerFetch` serves both, `tenantHeaders` only the first:
 - **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
   `kuery`/`quickstart` read the tenant off `faros-context` instead, so they only
   use `serviceBase`.

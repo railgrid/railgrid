@@ -13,6 +13,7 @@ import {
   invalidateProviderScript,
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
+import { createProviderContext } from '@/providers/providerContext'
 import type { ProviderDTO } from '@/stores/providers'
 import { CircleAlert, Puzzle, ChevronRight, RefreshCw, X } from 'lucide-vue-next'
 
@@ -109,7 +110,9 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // Pass the catalog version even when the element is already defined. App
     // Studio uses the bootstrap reload to refresh its lazy-loader registry;
     // page and dashboard callers coalesce through the shared loader.
-    await loadProviderScript(name, version)
+    await loadProviderScript(name, version, document, undefined, {
+      integrity: props.provider.mainJSIntegrity,
+    })
   } catch {
     if (isCurrentLoad(generation, name, version)) loadState.value = 'error'
     return
@@ -161,20 +164,28 @@ function onProviderBootstrapRetry(event: Event) {
 function pushContext() {
   const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el) return
-  el.farosContext = {
-    token: auth.token,
-    user: auth.user,
-    tenant: auth.clusterName,
-    // The sidebar's org/workspace, same as ProviderFrame pushes. Without it a
-    // provider client that scopes on X-Faros-Org / X-Faros-Workspace queries
-    // the wrong workspace (or none) and the tile renders a convincing empty
-    // state instead of the user's actual resources.
-    orgUUID: tenant.orgUUID,
-    workspaceUUID: tenant.workspaceUUID,
-    // Resolved, not the raw mode — see ProviderFrame.pushContext.
-    theme: theme.resolved,
-    basePath: `/ui/providers/${props.provider.name}`,
-  }
+  const providerName = props.provider.name
+  // Same shape and same host-owned fetch as ProviderFrame.pushContext; the
+  // tile is just a second element from the same bundle.
+  el.farosContext = createProviderContext(
+    {
+      user: auth.user,
+      tenant: auth.clusterName,
+      // The sidebar's org/workspace, same as ProviderFrame pushes. Without it a
+      // provider client that scopes on X-Faros-Org / X-Faros-Workspace queries
+      // the wrong workspace (or none) and the tile renders a convincing empty
+      // state instead of the user's actual resources.
+      orgUUID: tenant.orgUUID,
+      workspaceUUID: tenant.workspaceUUID,
+      // Resolved, not the raw mode — see ProviderFrame.pushContext.
+      theme: theme.resolved,
+      basePath: `/ui/providers/${providerName}`,
+    },
+    {
+      providerName,
+      scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+    },
+  )
 }
 
 function onNavigate(e: Event) {

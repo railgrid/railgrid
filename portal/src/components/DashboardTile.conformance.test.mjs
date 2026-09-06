@@ -15,7 +15,7 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   assert.match(tile, /canReloadProviderScriptInDocument,[\s\S]*invalidateProviderScript,[\s\S]*loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
   assert.match(tile, /props\.provider\.name, props\.provider\.version, props\.provider\.ready/)
   assert.match(tile, /const generation = loadGeneration\.begin\(\)/)
-  assert.match(tile, /await loadProviderScript\(name, version\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
+  assert.match(tile, /await loadProviderScript\(name, version, document, undefined, \{\s*integrity: props\.provider\.mainJSIntegrity,\s*\}\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
   assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\) \|\| !mountRef\.value\) return/)
   assert.match(tile, /function retryLoad\(\)[\s\S]*if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
   assert.match(tile, /addEventListener\('faros-provider-bootstrap-retry', onProviderBootstrapRetry\)/)

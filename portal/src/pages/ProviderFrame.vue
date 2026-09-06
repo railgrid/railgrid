@@ -11,6 +11,7 @@ import {
   invalidateProviderScript,
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
+import { createProviderContext } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 
@@ -19,6 +20,14 @@ import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 // and render that element directly in the portal's DOM tree. The provider
 // shares our stylesheet — CSS variables from :root cascade in — so there's
 // no visible boundary, no scrollbars, and no postMessage shuttle.
+//
+// Trust statement: a provider bundle therefore executes as fully trusted code
+// in this document. Two things bound what a bundle gets by default: the
+// script is pinned with the SRI hash the hub computed at registration
+// (catalog mainJSIntegrity), and the bundle talks to the hub through the
+// host-owned `farosContext.fetch` (providerFetch.ts) rather than holding the
+// user's raw id token. A sandboxed iframe with a postMessage bridge is the
+// larger follow-up for untrusted third-party providers.
 
 const props = defineProps<{ providerName: string; subPath: string }>()
 
@@ -312,7 +321,9 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
   const ready = customElements.whenDefined(tag)
 
   try {
-    await loadProviderScript(name, version)
+    await loadProviderScript(name, version, document, undefined, {
+      integrity: entry.value?.mainJSIntegrity,
+    })
 
     // 5s timeout so a script that loaded but never called customElements.define
     // doesn't hang the loader forever.
@@ -352,31 +363,39 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
 function pushContext() {
   const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
-  el.farosContext = {
-    // subPath is what the shell's vue-router parsed from
-    // /providers/{name}/<rest> — empty for the bare provider URL,
-    // 'instances' for /providers/{name}/instances, etc. Providers
-    // use this to drive their own page-routing without taking a
-    // dependency on the shell's router. Watch on props.subPath
-    // upstream guarantees this object is re-pushed when the URL
-    // changes (browser back / forward / refresh).
-    subPath: props.subPath,
-    token: auth.token,
-    user: auth.user,
-    tenant: auth.clusterName,
-    // Sidebar-selected org/workspace. Providers that call their backend
-    // through /services/providers/* forward these as X-Faros-Org /
-    // X-Faros-Workspace so the hub's tenant resolver can inject
-    // X-Faros-Tenant (the backend proxy honours the same headers the
-    // console's own /api/orgs/* calls send).
-    orgUUID: tenant.orgUUID,
-    workspaceUUID: tenant.workspaceUUID,
-    // The RESOLVED theme, never the raw mode. Providers render with it
-    // (`ctx.theme === 'dark'`), and 'system' is not something to render — a
-    // provider handed it renders its light branch on a dark desktop.
-    theme: theme.resolved,
-    basePath: `/ui/providers/${entry.value.name}`,
-  }
+  const providerName = entry.value.name
+  el.farosContext = createProviderContext(
+    {
+      // subPath is what the shell's vue-router parsed from
+      // /providers/{name}/<rest> — empty for the bare provider URL,
+      // 'instances' for /providers/{name}/instances, etc. Providers
+      // use this to drive their own page-routing without taking a
+      // dependency on the shell's router. Watch on props.subPath
+      // upstream guarantees this object is re-pushed when the URL
+      // changes (browser back / forward / refresh).
+      subPath: props.subPath,
+      user: auth.user,
+      tenant: auth.clusterName,
+      // Sidebar-selected org/workspace. The host fetch forwards these as
+      // X-Faros-Org / X-Faros-Workspace so the hub's tenant resolver can
+      // inject X-Faros-Tenant (the backend proxy honours the same headers
+      // the console's own /api/orgs/* calls send). They are also exposed so
+      // a provider can key its own caches on the active scope.
+      orgUUID: tenant.orgUUID,
+      workspaceUUID: tenant.workspaceUUID,
+      // The RESOLVED theme, never the raw mode. Providers render with it
+      // (`ctx.theme === 'dark'`), and 'system' is not something to render — a
+      // provider handed it renders its light branch on a dark desktop.
+      theme: theme.resolved,
+      basePath: `/ui/providers/${providerName}`,
+    },
+    {
+      providerName,
+      // Read lazily per request so token rotation and a workspace switch
+      // apply without waiting for the next context push.
+      scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+    },
+  )
 }
 
 // Bubble faros-navigate CustomEvents up into Vue Router.

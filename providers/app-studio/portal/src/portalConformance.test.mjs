@@ -99,7 +99,11 @@ test('replaces the stable project-card fallback with authenticated commit screen
   assert.match(app, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) \{[\s\S]*createdURLs[\s\S]*URL\.revokeObjectURL/)
   assert.match(app, /api\.listProjects\(guard\.ctx\)/)
   assert.match(app, /api\.getProjectThumbnail\(guard\.ctx, project\.name, revision\)/)
-  assert.match(api, /headers: tenantHeaders\(\{ token: ctx\?\.token \}\)/)
+  assert.match(api, /headers: tenantHeaders\(\{\}\)/)
+  // The bundle never handles the raw token: every request goes through the
+  // host-owned fetch (portalkit providerFetch), which injects credentials.
+  assert.match(api, /providerFetch\(ctx\)\(path, \{/)
+  assert.doesNotMatch(api, /tenantHeaders\(\{ token: /)
   assert.match(api, /getProjectThumbnail[\s\S]*\/thumbnail/)
 })
 

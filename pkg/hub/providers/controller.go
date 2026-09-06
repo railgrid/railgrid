@@ -76,6 +76,15 @@ type CatalogReconciler struct {
 	// healthClient performs bounded, same-authority readiness probes for
 	// platform-provider backends. Org-owned backends are never sent here.
 	healthClient httpDoer
+	// uiClient fetches platform-provider /main.js bundles for the SRI pin the
+	// portal loads them with (see ui_integrity.go). Nil means the default
+	// bounded client. Org-owned UIs are never dialled.
+	uiClient httpDoer
+	// uiIntegrity caches the pin per provider so the reconciles a heartbeat
+	// status write triggers do not re-fetch the bundle every 30s; a version
+	// change or UIIntegrityResync forces a re-hash.
+	uiIntegrityMu sync.Mutex
+	uiIntegrity   map[providerKey]uiIntegrityRecord
 
 	// clusterPaths caches logical-cluster-ID → canonical workspace path. The
 	// path is what tells a platform provider apart from an org-owned one and
@@ -159,6 +168,8 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		hubInternalURL: opts.HubInternalURL,
 		edgeRoutes:     opts.EdgeRoutes,
 		healthClient:   defaultBackendHealthClient(),
+		uiClient:       defaultUIAssetClient(),
+		uiIntegrity:    map[providerKey]uiIntegrityRecord{},
 		clusterPaths:   map[string]string{},
 	}
 	if kcpConfig != nil {
@@ -548,6 +559,15 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		prov.LocalUIAssets = spec.LocalUIAssets
 	}
 
+	// Pin the bundle the portal will execute in its own document. The pin is
+	// keyed on the running version so a chart upgrade or a heartbeat that
+	// reports a new version re-hashes on this reconcile; otherwise a cached
+	// pin is reused until UIIntegrityResync.
+	uiVersion := uiIntegrityVersion(entry.Spec.Version, entry.Status.ReportedVersion)
+	if integrity, ok := r.pinUIIntegrity(ctx, logger, prov, uiVersion); ok {
+		prov.MainJSIntegrity = integrity
+	}
+
 	// EndpointsValid covers spec parse health and "the provider offers
 	// something": a URL endpoint OR a builtin Vue route OR a backend proxy
 	// target OR embedded UI assets OR an APIExport. Heartbeat-driven readiness
@@ -628,6 +648,13 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if prov.BackendURL != nil {
 		entry.Status.Endpoints.Backend = prov.BackendURL.String()
 	}
+	entry.Status.UI = nil
+	if prov.MainJSIntegrity != "" {
+		entry.Status.UI = &providersv1alpha1.ProviderUIStatus{
+			MainJSIntegrity:        prov.MainJSIntegrity,
+			MainJSIntegrityVersion: uiVersion,
+		}
+	}
 	if !prov.BackendHealthRequired {
 		removeCondition(&entry.Status.Conditions, "BackendHealthy")
 	} else {
@@ -689,6 +716,11 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil || credentialExpiryPending {
 		return ctrl.Result{RequeueAfter: SweepInterval}, nil
+	}
+	if prov.MainJSIntegrity != "" || prov.LocalUIAssets != nil || (prov.UIURL != nil && prov.OrgUUID == "") {
+		// Nothing else drives a periodic reconcile for this entry, so schedule
+		// the SRI resync (and the retry after a failed hash fetch) here.
+		return ctrl.Result{RequeueAfter: UIIntegrityResync}, nil
 	}
 	return ctrl.Result{}, nil
 }

@@ -658,6 +658,40 @@ type CatalogEntryStatus struct {
 	// Conditions describe the current state of the provider.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// UI is set only when the hub holds an integrity pin for this entry's
+	// bundle. Nil therefore means "no pin", which is NOT the same as "no
+	// bundle": it covers both entries the hub serves no /main.js for (UI-less
+	// providers, builtinRoute providers, and org-owned providers whose bundle
+	// travels the edge tunnel and is never dialled by the hub) and served
+	// bundles that are simply unpinned right now — a hash fetch that failed
+	// transiently, a version change whose re-hash has not landed yet, or a hub
+	// too old to compute pins at all. Clients must not read nil as "this
+	// provider has no UI"; the portal treats it as "load the bundle unpinned".
+	// +optional
+	UI *ProviderUIStatus `json:"ui,omitempty"`
+}
+
+// ProviderUIStatus records the Subresource Integrity pin the hub computed for
+// a provider's portal bundle. Provider bundles execute as fully trusted code in
+// the portal document, so the pin is what ties the code the browser runs to
+// the code the hub admitted at registration.
+type ProviderUIStatus struct {
+	// MainJSIntegrity is the SRI metadata ("sha384-<base64>") of the
+	// provider's /main.js as fetched by the hub from spec.ui.url, or read from
+	// the embedded assets of a first-party provider. The portal sets it as the
+	// integrity attribute of the <script> that loads the bundle, so a bundle
+	// that changes after registration without a version change is refused by
+	// the browser instead of executing in the host document. The hub recomputes
+	// it whenever spec.version or status.reportedVersion changes and on a
+	// periodic resync.
+	// +optional
+	MainJSIntegrity string `json:"mainJSIntegrity,omitempty"`
+
+	// MainJSIntegrityVersion is the provider version (status.reportedVersion,
+	// falling back to spec.version) MainJSIntegrity was computed for.
+	// +optional
+	MainJSIntegrityVersion string `json:"mainJSIntegrityVersion,omitempty"`
 }
 
 // ProviderEndpoints holds resolved endpoint URLs for status reporting.

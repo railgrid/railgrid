@@ -43,6 +43,38 @@ func TestWithPortalSecurityHeadersAllowsConfiguredFrameSources(t *testing.T) {
 	}
 }
 
+// The CSP is what stops an injected inline script from running in the portal
+// document, where every provider bundle already executes as trusted code. Pin
+// the exact header so 'unsafe-inline' (or any other widening) cannot creep back
+// into script-src unnoticed.
+func TestWithPortalSecurityHeadersSetsExactContentSecurityPolicy(t *testing.T) {
+	t.Parallel()
+
+	handler := WithPortalSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ui/", nil))
+
+	const want = "default-src 'self'; " +
+		"frame-src 'self'; " +
+		"img-src 'self' data: blob:; " +
+		"script-src 'self'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"connect-src 'self'; " +
+		"font-src 'self' data:"
+	if got := rec.Result().Header.Get("Content-Security-Policy"); got != want {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, want)
+	}
+	if got := rec.Result().Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Result().Header.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Fatalf("Referrer-Policy = %q, want strict-origin-when-cross-origin", got)
+	}
+}
+
 func TestPortalFrameSourcesNormalizesConfiguredSources(t *testing.T) {
 	t.Parallel()
 

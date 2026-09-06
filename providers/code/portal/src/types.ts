@@ -1,7 +1,14 @@
+import type { ProviderFetch } from './portalkit/tenant'
+
 // FarosContext is the shell→element contract: the portal sets element
 // .farosContext after auth and on every workspace/token change. subPath is the
 // trailing segment of /providers/code/<subPath> the shell's router pushes.
 export interface FarosContext {
+  // fetch is the host-owned transport: it injects Authorization and the
+  // tenant headers and refuses paths outside this provider's allow list.
+  // Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null

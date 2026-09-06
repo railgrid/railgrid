@@ -54,6 +54,11 @@ export function serviceBase(basePath: string): string {
 // optional Content-Type for bodies, the bearer token, and the X-Faros-Org /
 // X-Faros-Workspace tenant scope. Header names and precedence must match the
 // hub's tenant middleware.
+//
+// Prefer sending requests through providerFetch(ctx) and leaving `token`
+// unset: the host then injects Authorization and the tenant scope itself and
+// the bundle never handles the user's raw id token. `token` remains for the
+// deprecation window in which the host still exposes farosContext.token.
 export function tenantHeaders(opts: { token?: string | null; json?: boolean } = {}): Record<string, string> {
   const t = readTenant()
   const h: Record<string, string> = { Accept: 'application/json' }
@@ -62,4 +67,39 @@ export function tenantHeaders(opts: { token?: string | null; json?: boolean } = 
   if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
   if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
   return h
+}
+
+// ProviderFetch is the fetch-compatible transport the host portal hands every
+// provider bundle as farosContext.fetch. It resolves relative URLs against the
+// portal origin, injects Authorization and the X-Faros-* tenant headers from
+// the host's own state, and refuses same-origin paths outside the provider's
+// allow list (its own /services/providers/<name>/ and /ui/providers/<name>/,
+// /graphql/, /clusters/, /api/orgs/<org>/, and GET /api/providers).
+export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+// ProviderFetchContext is the slice of farosContext providerFetch reads.
+export interface ProviderFetchContext {
+  fetch?: ProviderFetch | null
+  /** @deprecated Fallback only; hosts stop exposing the raw token after the deprecation window. */
+  token?: string | null
+}
+
+// providerFetch returns the transport a provider should use for every hub
+// request. It prefers the host-owned ctx.fetch; against an older host that
+// only exposes ctx.token it falls back to the global fetch and sets the
+// bearer itself so the bundle keeps working through the upgrade. Tenant
+// headers from tenantHeaders({json}) still apply in both modes — the host
+// overrides them with its own authoritative values when ctx.fetch is used.
+export function providerFetch(ctx: ProviderFetchContext | null | undefined): ProviderFetch {
+  const hostFetch = ctx?.fetch
+  if (typeof hostFetch === 'function') return hostFetch
+  const token = ctx?.token || null
+  return (input, init) => {
+    if (!token) return fetch(input, init)
+    const headers = new Headers(init?.headers ?? (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined))
+    if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
+    // Same rule as the host wrapper: what this transport enforces goes after
+    // the caller's init so it cannot be overridden.
+    return fetch(input, { ...init, credentials: 'same-origin', headers })
+  }
 }

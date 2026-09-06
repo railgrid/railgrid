@@ -101,7 +101,10 @@ test('4K geometry stays useful while mobile inventory filters reflow', () => {
 test('Kuery requests share one context-derived transport contract', () => {
   assert.match(requestContext, /export interface KueryRequestContext/u)
   assert.match(requestContext, /providerServiceBase\(context\?\.basePath \|\| ''\)/u)
-  assert.match(requestContext, /headers\.Authorization = `Bearer \$\{token\}`/u)
+  // Authorization is injected by the host-owned transport (portalkit
+  // providerFetch), never assembled here from the raw token.
+  assert.match(requestContext, /fetch: providerFetch\(context\)/u)
+  assert.doesNotMatch(requestContext, /headers\.Authorization/u)
   assert.match(requestContext, /headers\['X-Faros-Org'\] = orgUUID/u)
   assert.match(requestContext, /headers\['X-Faros-Workspace'\] = workspaceUUID/u)
   assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID\]\)/u)

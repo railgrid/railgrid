@@ -45,7 +45,7 @@ import type {
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
-import { readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
+import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 
 interface TenantSelection {
@@ -125,7 +125,7 @@ export interface ProjectAssistantThreadItemPage {
 }
 
 async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
-  const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
+  const headers = tenantHeaders({ json: body !== undefined })
   const controller = options.timeoutMS ? new AbortController() : null
   let timedOut = false
   const timeout = controller ? window.setTimeout(() => {
@@ -135,7 +135,7 @@ async function request<T>(ctx: FarosContext | null, method: string, path: string
   let res: Response
   let text: string
   try {
-    res = await fetch(path, {
+    res = await providerFetch(ctx)(path, {
       method,
       credentials: 'same-origin',
       headers,
@@ -169,10 +169,10 @@ async function request<T>(ctx: FarosContext | null, method: string, path: string
 }
 
 async function requestBlob(ctx: FarosContext | null, path: string, signal?: AbortSignal): Promise<Blob> {
-  const res = await fetch(path, {
+  const res = await providerFetch(ctx)(path, {
     method: 'GET',
     credentials: 'same-origin',
-    headers: tenantHeaders({ token: ctx?.token }),
+    headers: tenantHeaders({}),
     cache: 'no-cache',
     signal,
   })
@@ -192,11 +192,11 @@ async function requestAssistantAttachmentUpload(
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
   if (clientAttachmentID?.trim()) form.append('clientAttachmentID', clientAttachmentID.trim())
-  const headers = tenantHeaders({ token: ctx?.token })
+  const headers = tenantHeaders({})
   // The server promotes this provisional receipt atomically when the turn is
   // accepted; abandoned drafts are bounded by the provider retention policy.
   headers['X-Faros-Attachment-Draft'] = 'true'
-  const res = await fetch(path, {
+  const res = await providerFetch(ctx)(path, {
     method: 'POST',
     credentials: 'same-origin',
     headers,
@@ -259,10 +259,10 @@ async function requestAssistantThreadEventStream(
   onEvent: (event: ProjectAssistantThreadEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const headers = tenantHeaders({ token: ctx?.token })
+  const headers = tenantHeaders({})
   headers.Accept = 'text/event-stream'
   headers['Last-Event-ID'] = String(afterSequence)
-  const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/events?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
+  const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/events?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
     credentials: 'same-origin', headers, signal,
   })
   if (!res.ok) throw new Error(`assistant thread stream failed: ${res.status} ${res.statusText}`)
@@ -483,10 +483,10 @@ export const api = {
     onStatus: (message: string) => void,
     signal?: AbortSignal,
   ): Promise<Project> {
-    const headers = tenantHeaders({ token: ctx?.token })
+    const headers = tenantHeaders({})
     headers.Accept = 'text/event-stream'
     headers['Content-Type'] = 'application/json'
-    const res = await fetch(`${baseURL(ctx)}/stream`, {
+    const res = await providerFetch(ctx)(`${baseURL(ctx)}/stream`, {
       method: 'POST',
       credentials: 'same-origin',
       headers,
@@ -1170,8 +1170,8 @@ export const api = {
   },
 
   async getActiveAssistantTurn(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
-    const headers = tenantHeaders({ token: ctx?.token })
-    const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
+    const headers = tenantHeaders({})
+    const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
     if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
     return res.json() as Promise<ProjectAssistantTurn>

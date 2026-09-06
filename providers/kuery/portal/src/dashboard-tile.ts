@@ -82,7 +82,7 @@ export class KueryDashboardTile extends HTMLElement {
       return
     }
     try {
-      const res = await fetch(request.basePath + '/api/edges', { credentials: 'same-origin', headers: request.headers })
+      const res = await request.fetch(request.basePath + '/api/edges', { credentials: 'same-origin', headers: request.headers })
       if (!isCurrent()) return
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
       const out = (await res.json()) as { edges?: string[] }

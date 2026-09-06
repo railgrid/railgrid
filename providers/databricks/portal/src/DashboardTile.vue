@@ -9,7 +9,7 @@
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Check, ChevronRight, Link2, Package } from 'lucide-vue-next'
-import { api, setTenant, setTenantSelection, setToken } from './api'
+import { api, setHostFetch, setTenant, setTenantSelection, setToken } from './api'
 import { formatDatabricksError } from './errors'
 import type { Connection, Warehouse } from './types'
 import {
@@ -67,6 +67,7 @@ async function load() {
     return
   }
   loading.value = true
+  setHostFetch(ctx?.fetch)
   setToken(ctx?.token ?? null)
   setTenant(ctx?.tenant ?? null)
   setTenantSelection(ctx?.orgUUID ?? null, ctx?.workspaceUUID ?? null)

@@ -1,3 +1,5 @@
+import type { ProviderFetch } from './portalkit/tenant'
+
 // Shared types for the agents micro-frontend.
 //
 // Read models (Agent, Connection, …) mirror the backend's K8s-shaped CR
@@ -12,6 +14,11 @@
 // ---- host contract ---------------------------------------------------------
 
 export interface FarosContext {
+  // fetch is the host-owned transport: it injects Authorization and the
+  // tenant headers and refuses paths outside this provider's allow list.
+  // Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { email?: string; sub?: string; userId?: string } | null
   // tenant is the kcp cluster name of the active workspace (host-side id).

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260905-a2d6321c.catalogentries.providers.faros.sh
+  name: v260906-7ea86cf9.catalogentries.providers.faros.sh
 spec:
   group: providers.faros.sh
   names:
@@ -760,6 +760,35 @@ spec:
                 ReportedVersion is the version the provider pod reports via heartbeat.
                 Differs from spec.version when a chart upgrade is in flight.
               type: string
+            ui:
+              description: |-
+                UI is set only when the hub holds an integrity pin for this entry's
+                bundle. Nil therefore means "no pin", which is NOT the same as "no
+                bundle": it covers both entries the hub serves no /main.js for (UI-less
+                providers, builtinRoute providers, and org-owned providers whose bundle
+                travels the edge tunnel and is never dialled by the hub) and served
+                bundles that are simply unpinned right now — a hash fetch that failed
+                transiently, a version change whose re-hash has not landed yet, or a hub
+                too old to compute pins at all. Clients must not read nil as "this
+                provider has no UI"; the portal treats it as "load the bundle unpinned".
+              properties:
+                mainJSIntegrity:
+                  description: |-
+                    MainJSIntegrity is the SRI metadata ("sha384-<base64>") of the
+                    provider's /main.js as fetched by the hub from spec.ui.url, or read from
+                    the embedded assets of a first-party provider. The portal sets it as the
+                    integrity attribute of the <script> that loads the bundle, so a bundle
+                    that changes after registration without a version change is refused by
+                    the browser instead of executing in the host document. The hub recomputes
+                    it whenever spec.version or status.reportedVersion changes and on a
+                    periodic resync.
+                  type: string
+                mainJSIntegrityVersion:
+                  description: |-
+                    MainJSIntegrityVersion is the provider version (status.reportedVersion,
+                    falling back to spec.version) MainJSIntegrity was computed for.
+                  type: string
+              type: object
             workspace:
               description: |-
                 Workspace is the kcp workspace path the catalog controller created for

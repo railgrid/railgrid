@@ -58,7 +58,7 @@ async function loadEdges(): Promise<void> {
   edgesLoading.value = true
   edgesError.value = ''
   try {
-    const response = await fetch(`${request.basePath}/api/edges`, {
+    const response = await request.fetch(`${request.basePath}/api/edges`, {
       credentials: 'same-origin', headers: request.headers, signal: controller.signal,
     })
     const body = await response.text()

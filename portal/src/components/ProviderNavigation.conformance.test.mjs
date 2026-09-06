@@ -17,7 +17,7 @@ test('provider host consumers honor replace navigation while preserving push by 
 test('provider page and dashboard consumers coordinate versioned bootstrap reloads', () => {
   for (const source of [frame, tile]) {
     assert.match(source, /loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
-    assert.match(source, /await loadProviderScript\(name, version\)/)
+    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*integrity: (?:entry\.value\?|props\.provider)\.mainJSIntegrity,\s*\}\)/)
     assert.doesNotMatch(source, /document\.createElement\('script'\)/)
   }
   assert.match(frame, /invalidateProviderScript\(name, version\)/)

@@ -14,6 +14,7 @@
 
 import { load as yamlLoad } from 'js-yaml'
 import type { ErrorResponse, Instance, InstanceChild, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { columnsNeedInstanceData } from './view'
 
 const GROUP = 'infrastructure.faros.sh'
@@ -58,6 +59,16 @@ function assertCurrentContext(expected: RequestContext): void {
 export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
 }
+// setHostFetch installs the host-owned transport from farosContext.fetch. The
+// host injects Authorization itself; bearerToken then only fences in-flight
+// requests, and providerFetch falls back to it on older hosts without fetch.
+let hostFetch: ProviderFetch | null = null
+export function setHostFetch(fetchImpl?: ProviderFetch | null) {
+  hostFetch = fetchImpl ?? null
+}
+function hubFetch(): ProviderFetch {
+  return providerFetch({ fetch: hostFetch, token: bearerToken })
+}
 export function setToken(token?: string | null) {
   const next = token || null
   if (next !== bearerToken) {
@@ -95,8 +106,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-  const res = await fetch('/graphql/' + clusterName, {
+  const res = await hubFetch()('/graphql/' + clusterName, {
     method: 'POST',
     credentials: 'same-origin',
     headers,

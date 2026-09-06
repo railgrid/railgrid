@@ -11,7 +11,7 @@
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, ChevronRight } from 'lucide-vue-next'
-import { listEdges, setTenant, setToken } from './api'
+import { listEdges, setHostFetch, setTenant, setToken } from './api'
 import type { Edge } from './types'
 import {
   TILE_ROWS,
@@ -74,6 +74,7 @@ async function load() {
     loading.value = false
     return
   }
+  setHostFetch(ctx?.fetch)
   setToken(ctx?.token ?? null)
   setTenant(ctx?.tenant ?? null)
   try {

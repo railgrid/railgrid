@@ -20,6 +20,7 @@ import type {
   Repository,
   RepositoryDetail,
 } from './types'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 
 export type { KubernetesListOptions, KubernetesListPage } from './types'
 
@@ -28,14 +29,20 @@ const VERSION = 'v1alpha1'
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
 
+
 let bearerToken: string | null = null
 let clusterName: string | null = null
 let providerBasePath: string | null = null
 let callerUser: string | null = null
+// hostFetch is the host-owned transport from farosContext.fetch. When set, the
+// host injects Authorization itself and bearerToken is only a change signal;
+// providerFetch falls back to the global fetch + bearerToken on older hosts.
+let hostFetch: ProviderFetch | null = null
 let apiContextGeneration = 0
 
 interface APIRequestContext {
   bearerToken: string | null
+  fetch: ProviderFetch
   clusterName: string | null
   // Page-owned requests participate in singleton authority invalidation. An
   // explicit immutable context (used by the separate dashboard element) is
@@ -44,17 +51,28 @@ interface APIRequestContext {
 }
 
 export interface APIReadContext {
+  fetch?: ProviderFetch | null
   token?: string | null
   tenant?: string | null
   user?: string | null
 }
 
 function captureRequestContext(): APIRequestContext {
-  return { bearerToken, clusterName, generation: apiContextGeneration }
+  return {
+    bearerToken,
+    fetch: providerFetch({ fetch: hostFetch, token: bearerToken }),
+    clusterName,
+    generation: apiContextGeneration,
+  }
 }
 
 function explicitRequestContext(context: APIReadContext): APIRequestContext {
-  return { bearerToken: context.token || null, clusterName: context.tenant || null, generation: null }
+  return {
+    bearerToken: context.token || null,
+    fetch: providerFetch(context),
+    clusterName: context.tenant || null,
+    generation: null,
+  }
 }
 
 function assertRequestContext(context: APIRequestContext): void {
@@ -76,6 +94,7 @@ export function setAPIContext(context: APIReadContext): void {
   const nextToken = context.token || null
   const nextTenant = context.tenant || null
   const nextUser = context.user || null
+  hostFetch = context.fetch ?? null
   if (nextToken === bearerToken && nextTenant === clusterName && nextUser === callerUser) return
   bearerToken = nextToken
   clusterName = nextTenant
@@ -307,8 +326,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  if (context.bearerToken) headers['Authorization'] = 'Bearer ' + context.bearerToken
-  const res = await fetch('/graphql/' + context.clusterName, {
+  const res = await context.fetch('/graphql/' + context.clusterName, {
     method: 'POST',
     credentials: 'same-origin',
     headers,
@@ -889,8 +907,7 @@ export const api = {
     const context = captureRequestContext()
     assertRequestContext(context)
     const headers: Record<string, string> = { Accept: 'application/json' }
-    if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-    const res = await fetch('/services/providers/code/oauth/github/config', { headers, credentials: 'same-origin' })
+    const res = await context.fetch('/services/providers/code/oauth/github/config', { headers, credentials: 'same-origin' })
     if (!res.ok) {
       const text = await res.text()
       assertRequestContext(context)

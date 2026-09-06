@@ -4,7 +4,7 @@ import { Play } from 'lucide-vue-next'
 
 import type { FarosContext } from '../element'
 import type { QuerySpec } from '../api'
-import { errorMessage, serviceBase, tenantHeaders, useKueryApi } from '../kuery'
+import { createKueryRequestContext, errorMessage, serviceBase, useKueryApi } from '../kuery'
 import { collectSchemaWords, createEditor, EXAMPLES, loadCodeMirror, type EditorHandle } from '../playground'
 import FormSelect from '../portalkit/FormSelect.vue'
 
@@ -33,7 +33,10 @@ async function mountEditor(): Promise<void> {
   schemaController?.abort(); schemaController = new AbortController()
   try {
     let words: string[] = []
-    try { const response = await fetch(`${serviceBase(context.value)}/api/query-schema`, { credentials: 'same-origin', headers: tenantHeaders(context.value), signal: schemaController.signal }); if (response.ok) words = collectSchemaWords(await response.json()) } catch { words = [] }
+    // Schema hints are a hub request like any other: go through the
+    // context-owned transport so the host injects Authorization.
+    const request = createKueryRequestContext(context.value)
+    try { const response = await request.fetch(`${request.basePath}/api/query-schema`, { credentials: 'same-origin', headers: request.headers, signal: schemaController.signal }); if (response.ok) words = collectSchemaWords(await response.json()) } catch { words = [] }
     const factory = await loadCodeMirror(`${uiBase}codemirror.bundle.js`, `${uiBase}codemirror.bundle.css`)
     if (current !== generation || !editorHost.value) return
     editor = createEditor(factory, editorHost.value, documentText.value, words); editor.refresh()

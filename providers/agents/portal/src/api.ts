@@ -34,7 +34,7 @@ import type {
   TriggerPatch,
   UsageResponse,
 } from './types'
-import { readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
+import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
 
 export type { Tenant }
 
@@ -141,8 +141,16 @@ export class ApiClient {
     }
   }
 
+  // Every request goes through the host-owned fetch (portalkit providerFetch):
+  // the host injects Authorization and the tenant scope, so this client never
+  // handles the user's raw token. Older hosts without ctx.fetch fall back to
+  // the global fetch plus ctx.token inside the helper.
+  private fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    return providerFetch(this.ctx)(input, init)
+  }
+
   private headers(hasBody: boolean): Record<string, string> {
-    const h = tenantHeaders({ token: this.ctx?.token, json: hasBody })
+    const h = tenantHeaders({ json: hasBody })
     // Host context wins over the localStorage copy portalkit read.
     const t = this.tenant()
     if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
@@ -158,13 +166,13 @@ export class ApiClient {
   }
 
   async get<T>(path: string): Promise<T> {
-    const r = await fetch(this.url(path), { credentials: 'same-origin', headers: this.headers(false) })
+    const r = await this.fetch(this.url(path), { credentials: 'same-origin', headers: this.headers(false) })
     if (!r.ok) throw await this.fail(r)
     return r.json() as Promise<T>
   }
 
   async send<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const r = await fetch(this.url(path), {
+    const r = await this.fetch(this.url(path), {
       method,
       credentials: 'same-origin',
       headers: this.headers(body !== undefined),
@@ -268,7 +276,7 @@ export class ApiClient {
   // caller drives the loop and applies deltas/tool events/errors. `signal`
   // aborts the fetch so a Stop button can drop the stream immediately.
   async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
-    const r = await fetch(this.url(`/api/agents/${enc(agent)}/chat`), {
+    const r = await this.fetch(this.url(`/api/agents/${enc(agent)}/chat`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: this.headers(true),
@@ -285,7 +293,7 @@ export class ApiClient {
   // the response headers are in, which is the real liveness signal — the server
   // may legitimately send no parsable event for minutes.
   async *eventStream(signal: AbortSignal, onOpen?: () => void): AsyncGenerator<SSEEvent> {
-    const r = await fetch(this.url('/api/events'), {
+    const r = await this.fetch(this.url('/api/events'), {
       credentials: 'same-origin',
       headers: this.headers(false),
       signal,

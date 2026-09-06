@@ -22,8 +22,10 @@ try {
   const page = await api.discoverWarehouses('sales prod', 'page/1')
   assert(page.items[0]?.id === 'wh-1', 'discovery response')
   assert(requests[0]?.url === '/services/providers/databricks/api/v1/discovery/warehouses?connectionRef=sales+prod&pageToken=page%2F1', 'encoded discovery URL')
-  const headers = requests[0]?.init?.headers as Record<string, string>
-  assert(headers.Authorization === 'Bearer token-1' && headers['X-Faros-Org'] === 'org-1' && headers['X-Faros-Workspace'] === 'workspace-1', 'identity headers')
+  // Without a host fetch on the context, portalkit providerFetch falls back
+  // to the global fetch and sets the bearer itself (as a Headers instance).
+  const headers = new Headers(requests[0]?.init?.headers)
+  assert(headers.get('Authorization') === 'Bearer token-1' && headers.get('X-Faros-Org') === 'org-1' && headers.get('X-Faros-Workspace') === 'workspace-1', 'identity headers')
   const result = await api.registerResources({ kind: 'warehouse', connectionRef: 'sales', items: [{ name: 'orders', warehouseID: 'wh-1' }] })
   assert(result.results[0]?.state === 'created' && requests[1]?.init?.method === 'POST', 'registration contract')
 

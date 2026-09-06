@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from 'vue'
 import { Plug, Table2, Warehouse } from 'lucide-vue-next'
-import { setBasePath, setTenant, setTenantSelection, setToken } from './api'
+import { setBasePath, setHostFetch, setTenant, setTenantSelection, setToken } from './api'
 import { contextGenerationKey } from './context'
 import { navigationDetail } from './navigation'
 import { setOperationContext } from './refresh'
@@ -64,6 +64,7 @@ const tabs = [
 ] as const
 
 watch(() => props.ctx?.basePath, v => setBasePath(v), { immediate: true })
+watch(() => props.ctx?.fetch, v => setHostFetch(v), { immediate: true })
 watch(() => props.ctx?.token, v => setToken(v), { immediate: true })
 watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
 watch(

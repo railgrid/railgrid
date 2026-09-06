@@ -20,8 +20,14 @@ export function useKueryApi(context: Ref<FarosContext | null>): { api: Readonly<
   const requestContext = computed(() => createKueryRequestContext(context.value))
   const api = computed(() => {
     const request = requestContext.value
-    return request.basePath && request.token
-      ? createKueryApi({ basePath: request.basePath, headers: request.headers })
+    // The host-owned fetch injects Authorization itself, so it is sufficient
+    // auth on its own. Requiring the token as well would strand Kuery in
+    // "waiting for workspace context" once hosts stop exposing the deprecated
+    // farosContext.token; the token gate applies only to older hosts that
+    // expose no fetch.
+    const authenticated = request.hasHostFetch || !!request.token
+    return request.basePath && authenticated
+      ? createKueryApi({ basePath: request.basePath, headers: request.headers, fetch: request.fetch })
       : null
   })
   return {

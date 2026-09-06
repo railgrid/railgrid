@@ -244,3 +244,45 @@ func TestUIProxyLocalAssets(t *testing.T) {
 		}
 	})
 }
+
+// The portal loads /ui/providers/<name>/main.js as a same-origin classic
+// script and pins it with Subresource Integrity, deliberately WITHOUT a
+// crossorigin attribute: a same-origin response is type "basic", which the
+// browser integrity-checks on its own. This test locks in the server-side
+// premise for that decision — the UI proxy negotiates no CORS, so marking the
+// script crossorigin would turn the load into a CORS-mode request that this
+// route does not answer, and every provider bundle would stop loading.
+//
+// If a future change starts emitting CORS headers here, revisit
+// portal/src/providers/providerScriptLoader.ts before adding the attribute.
+func TestUIProxyServesBundleWithoutCORSNegotiation(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name:           "mcp",
+		LocalUIAssets:  fstest.MapFS{"main.js": &fstest.MapFile{Data: []byte("/* mcp bundle */")}},
+		EndpointsValid: true,
+	})
+	proxy := NewUIProxy(reg, logr.Discard())
+	proxy.SetFallback(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("SPA fallback was hit for the bundle request")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ui/providers/mcp/main.js", nil)
+	req.Header.Set("Origin", "https://portal.example.com")
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	for _, header := range []string{
+		"Access-Control-Allow-Origin",
+		"Access-Control-Allow-Credentials",
+		"Timing-Allow-Origin",
+	} {
+		if got := rec.Header().Get(header); got != "" {
+			t.Errorf("%s = %q, want it unset: the bundle is served same-origin and the portal loads it without crossorigin", header, got)
+		}
+	}
+}

@@ -1,3 +1,5 @@
+import type { ProviderFetch } from './portalkit/tenant'
+
 // TypeScript mirrors of the kro Go package's portal-facing types.
 // Keep these aligned with providers/infrastructure/kro/types.go —
 // the REST API is the contract, this file is just the typed lens
@@ -125,6 +127,11 @@ export interface InstanceChild {
 }
 
 export interface FarosContext {
+  // fetch is the host-owned transport: it injects Authorization and the
+  // tenant headers and refuses paths outside this provider's allow list.
+  // Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null

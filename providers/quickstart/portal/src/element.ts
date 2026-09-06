@@ -1,3 +1,5 @@
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
+
 // QuickstartElement is the custom element the faros portal renders for
 // this provider. The portal:
 //   1. Loads main.js via a one-shot <script> tag (this module's side effect
@@ -15,6 +17,11 @@
 // once mounted. Fields are optional because the portal may push partial
 // updates (theme toggle, token rotation) and our render must cope.
 export interface FarosContext {
+  // fetch is the host-owned transport: it injects Authorization and the
+  // tenant headers and refuses paths outside this provider's allow list.
+  // Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
@@ -111,7 +118,9 @@ export class QuickstartElement extends HTMLElement {
         return
       }
       const url = this._apiURL()
-      fetch(url, { credentials: 'same-origin' })
+      // Reference pattern: hub requests go through the host-owned transport,
+      // never the global fetch — the host injects credentials for us.
+      providerFetch(this._ctx)(url, { credentials: 'same-origin' })
         .then((r) => r.json().then((j) => ({ ok: r.ok, code: r.status, j })))
         .then(({ ok, code, j }) => {
           this._apiState = ok

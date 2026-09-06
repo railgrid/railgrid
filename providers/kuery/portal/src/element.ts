@@ -1,8 +1,15 @@
+import type { ProviderFetch } from './portalkit/tenant'
+
 import { createApp, reactive, type App as VueApp } from 'vue'
 
 import App from './App.vue'
 
 export interface FarosContext {
+  // fetch is the host-owned transport: it injects Authorization and the
+  // tenant headers and refuses paths outside this provider's allow list.
+  // Send every hub request through portalkit providerFetch(ctx).
+  fetch?: ProviderFetch | null
+  /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null

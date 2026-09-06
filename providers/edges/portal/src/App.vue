@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { Server, Boxes, Plug } from 'lucide-vue-next'
-import { setToken, setTenant, listEdges, deleteEdge } from './api'
+import { setHostFetch, setToken, setTenant, listEdges, deleteEdge } from './api'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import EdgeCollection from './EdgeCollection.vue'
@@ -185,6 +185,7 @@ watch(
   () => [props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub] as const,
   ([token, tenant, userSub], previous) => {
     const authorityChanged = !previous || tenant !== previous[1] || userSub !== previous[2]
+    setHostFetch(props.ctx?.fetch)
     setToken(token ?? null)
     setTenant(tenant ?? null)
     if (authorityChanged) {

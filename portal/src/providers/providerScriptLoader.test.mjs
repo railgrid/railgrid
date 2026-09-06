@@ -213,6 +213,45 @@ test('invalidation reinjects a loaded bootstrap at the same catalog version', as
   await retry
 })
 
+test('pins the bundle with subresource integrity when the catalog carries a hash', async () => {
+  const doc = providerDocument()
+  const integrity = 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+  const load = loadProviderScript('quickstart', '7', doc, 15_000, { integrity })
+  await Promise.resolve()
+  assert.equal(doc.appended.length, 1)
+  const script = doc.appended[0]
+  // SRI hashes the response body, so the ?v= cache-buster in the URL does not
+  // disturb the check.
+  assert.equal(script.src, '/ui/providers/quickstart/main.js?v=7')
+  assert.equal(script.integrity, integrity)
+  // No crossorigin: the bundle is same-origin, so the response type is "basic"
+  // and integrity is enforced without the attribute. Setting it would make the
+  // load a CORS-mode request, and the hub's UI proxy sends no CORS headers.
+  assert.equal(script.crossOrigin, undefined)
+  script.onload()
+  await load
+})
+
+test('loads an unpinned bundle with a warning when the catalog carries no hash', async () => {
+  const doc = providerDocument()
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    const load = loadProviderScript('quickstart', '8', doc)
+    await Promise.resolve()
+    const script = doc.appended[0]
+    assert.equal(script.integrity, undefined)
+    assert.equal(script.crossOrigin, undefined)
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /provider "quickstart" bundle without an integrity pin/)
+    script.onload()
+    await load
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
 test('generation fence rejects a stale tile completion after newer props win', async () => {
   const fence = createProviderLoadGeneration()
   const commits = []
