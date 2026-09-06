@@ -311,11 +311,15 @@ func (g *projectEinoAssistantOrgSpendGuard) Record(ctx context.Context, usage *s
 	}
 	inputTokens := int64(max(usage.PromptTokens, 0))
 	outputTokens := int64(max(usage.CompletionTokens, 0))
-	delta := store.OrganizationSpendDelta{
+	return g.record(ctx, store.OrganizationSpendDelta{
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		USDMicros:    projectAssistantModelCostMicros(g.model, inputTokens, outputTokens),
-	}
+	})
+}
+
+// record adds one priced delta to the organization's ledger.
+func (g *projectEinoAssistantOrgSpendGuard) record(ctx context.Context, delta store.OrganizationSpendDelta) error {
 	now := g.now()
 	// The provider has already billed this response, so the ledger write must
 	// outlive the client. On the request context a caller could cancel in the
@@ -343,19 +347,38 @@ func (g *projectEinoAssistantOrgSpendGuard) Record(ctx context.Context, usage *s
 // tokens; recording nothing would let the cap be evaded by cancelling every
 // call before its last chunk. The estimate is the same one the compaction
 // planner uses, charged at the model's input rate; it is a floor, not a bill.
+//
+// A prompt the estimator cannot price — empty, or one it fails to marshal —
+// is still a call the provider billed, so it is charged
+// projectAssistantSpendFloorInputTokens at the model's rate and never less
+// than projectAssistantSpendFloorUSDMicros. The ledger never records zero for
+// a billed call: a zero is exactly what a caller bypassing the cap would
+// arrange, by cancelling every stream early and shaping the prompt so the
+// estimate comes out empty.
 func (g *projectEinoAssistantOrgSpendGuard) RecordAtLeastPrompt(ctx context.Context, input []*schema.Message, usage *schema.TokenUsage) error {
 	if g == nil {
 		return nil
 	}
-	if usage == nil {
-		estimate := projectEinoAssistantMessagesTokenEstimate(input)
-		if estimate <= 0 {
-			return nil
-		}
-		usage = &schema.TokenUsage{PromptTokens: estimate}
+	if usage != nil {
+		return g.Record(ctx, usage)
 	}
-	return g.Record(ctx, usage)
+	inputTokens := max(int64(projectEinoAssistantMessagesTokenEstimate(input)), projectAssistantSpendFloorInputTokens)
+	return g.record(ctx, store.OrganizationSpendDelta{
+		InputTokens: inputTokens,
+		USDMicros:   max(projectAssistantModelCostMicros(g.model, inputTokens, 0), projectAssistantSpendFloorUSDMicros),
+	})
 }
+
+// projectAssistantSpendFloorInputTokens and projectAssistantSpendFloorUSDMicros
+// are the least RecordAtLeastPrompt charges for a call that ended without a
+// usage report and whose prompt could not be estimated: one input token at the
+// model's rate, and never less than one micro-USD, the smallest amount the
+// ledger can express. Without the second floor a model priced under one
+// micro-USD per input token would round the floor token back to zero.
+const (
+	projectAssistantSpendFloorInputTokens int64 = 1
+	projectAssistantSpendFloorUSDMicros   int64 = 1
+)
 
 // reportCapReached appends the run's one durable cap notice. It is detached
 // for the same reason the ledger write is: the notice explains why the run

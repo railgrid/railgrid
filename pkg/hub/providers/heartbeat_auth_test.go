@@ -18,6 +18,7 @@ package providers
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -529,6 +530,191 @@ func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
 	reg.Upsert(Provider{Name: "late", EndpointsValid: true, CatalogEntryCluster: "late-cluster"})
 	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("late", "tok"), "late"); err != nil {
 		t.Fatalf("once the cluster is known: %v", err)
+	}
+}
+
+// The negative cache is filled by whoever sends distinct bad tokens, so it has
+// a hard cap: at capacity the oldest rejection (the one expiring first) makes
+// room, the newest is still cached, and the map never exceeds the cap. A
+// caller flooding it therefore only ever evicts its own garbage, and a token
+// evicted early costs kcp one review again — the pre-cache cost, not more.
+func TestTokenReviewAuthenticatorNegativeCacheIsBounded(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+	a.negativeMax = 8
+	beat := func(token string) {
+		t.Helper()
+		if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", token), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+			t.Fatalf("beat with %q: err = %v, want ErrHeartbeatTokenRejected", token, err)
+		}
+	}
+	key := func(token string) heartbeatAuthCacheKey {
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+	}
+
+	for i := range a.negativeMax {
+		beat(fmt.Sprintf("garbage-%d", i))
+	}
+	if len(a.negative) != a.negativeMax {
+		t.Fatalf("len(negative) = %d, want %d", len(a.negative), a.negativeMax)
+	}
+
+	// One past capacity: still cached (the repeat costs no review), the map
+	// does not grow, and the oldest entry is what made room.
+	beat("garbage-8")
+	beat("garbage-8")
+	if f.reviews != a.negativeMax+1 {
+		t.Fatalf("reviews = %d, want %d (a rejection at capacity is still cached)", f.reviews, a.negativeMax+1)
+	}
+	if len(a.negative) > a.negativeMax {
+		t.Fatalf("len(negative) = %d, exceeds the cap %d", len(a.negative), a.negativeMax)
+	}
+	if _, ok := a.negative[key("garbage-8")]; !ok {
+		t.Fatal("the newest rejection is not in the cache")
+	}
+	if _, ok := a.negative[key("garbage-0")]; ok {
+		t.Fatal("the oldest rejection is still in the cache; it should have been evicted")
+	}
+	if _, ok := a.negative[key("garbage-1")]; !ok {
+		t.Fatal("only the oldest rejection should have been evicted")
+	}
+	beat("garbage-0")
+	if f.reviews != a.negativeMax+2 {
+		t.Fatalf("reviews = %d, want %d (an evicted token is reviewed once more)", f.reviews, a.negativeMax+2)
+	}
+
+	// A flood of distinct tokens never grows either the map or its order
+	// queue past the cap.
+	for i := range 1000 {
+		beat(fmt.Sprintf("flood-%d", i))
+	}
+	if len(a.negative) > a.negativeMax || len(a.negativeOrder) > a.negativeMax {
+		t.Fatalf("after a flood: len(negative) = %d, len(negativeOrder) = %d, cap %d", len(a.negative), len(a.negativeOrder), a.negativeMax)
+	}
+	if heartbeatAuthNegativeCacheMax <= 0 {
+		t.Fatalf("heartbeatAuthNegativeCacheMax = %d, want a positive default cap", heartbeatAuthNegativeCacheMax)
+	}
+}
+
+// Two beats with the same bad token can both miss the negative cache while
+// the first TokenReview is in flight, and both then record the rejection. The
+// second must not take a second order slot: the slice is the bound, and a
+// flood of one token at high concurrency must not grow it by the in-flight
+// count every TTL.
+func TestTokenReviewAuthenticatorNegativeCacheRepeatRejectionKeepsOneSlot(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+	a.negativeMax = 8
+	key := func(token string) heartbeatAuthCacheKey {
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+	}
+	garbage := key("garbage")
+
+	// A hundred beats that all saw no cached rejection and all came back
+	// from kcp with the same answer.
+	for range 100 {
+		if err := a.reject(garbage, now, ErrHeartbeatTokenRejected); !errors.Is(err, ErrHeartbeatTokenRejected) {
+			t.Fatalf("reject: err = %v, want ErrHeartbeatTokenRejected", err)
+		}
+	}
+	if len(a.negative) != 1 || len(a.negativeOrder) != 1 {
+		t.Fatalf("after 100 in-flight rejections of one token: len(negative) = %d, len(negativeOrder) = %d, want 1 each", len(a.negative), len(a.negativeOrder))
+	}
+	first := a.negative[garbage].until
+
+	// A repeat does not extend how long the token is remembered.
+	_ = a.reject(garbage, now.Add(a.negativeTTL/2), ErrHeartbeatTokenRejected)
+	if got := a.negative[garbage].until; !got.Equal(first) {
+		t.Fatalf("a repeat rejection moved the expiry from %v to %v", first, got)
+	}
+	if len(a.negativeOrder) != 1 {
+		t.Fatalf("a repeat rejection took a slot: len(negativeOrder) = %d, want 1", len(a.negativeOrder))
+	}
+
+	// Once the entry lapses the token is recorded anew, again in one slot.
+	lapsed := first.Add(time.Nanosecond)
+	_ = a.reject(garbage, lapsed, ErrHeartbeatTokenRejected)
+	if len(a.negative) != 1 || len(a.negativeOrder) != 1 {
+		t.Fatalf("after the entry lapsed: len(negative) = %d, len(negativeOrder) = %d, want 1 each", len(a.negative), len(a.negativeOrder))
+	}
+	if got := a.negative[garbage].until; !got.After(first) {
+		t.Fatalf("a rejection after the entry lapsed kept the old expiry %v", got)
+	}
+
+	// Interleaved with a flood of distinct tokens, the repeats still cost no
+	// slots and the queue never exceeds the cap.
+	for i := range 1000 {
+		_ = a.reject(key(fmt.Sprintf("flood-%d", i)), lapsed, ErrHeartbeatTokenRejected)
+		_ = a.reject(garbage, lapsed, ErrHeartbeatTokenRejected)
+	}
+	if len(a.negative) > a.negativeMax || len(a.negativeOrder) > a.negativeMax {
+		t.Fatalf("after a flood with repeats: len(negative) = %d, len(negativeOrder) = %d, cap %d", len(a.negative), len(a.negativeOrder), a.negativeMax)
+	}
+}
+
+// A lookup must not pay for the cache's size: after a flood of distinct
+// rejections, a beat must be a map lookup, not a sweep of the flood. Expired
+// entries are dropped when a rejection is recorded, off the front of the
+// order queue, never by scanning the map on a lookup.
+func TestTokenReviewAuthenticatorNegativeCacheLookupDoesNotSweep(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+	// One clientset for the whole test: building one per beat is what would
+	// dominate ten thousand beats, not the cache.
+	cs, err := f.newClient("code-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.newClient = func(string) (kubernetes.Interface, error) { return cs, nil }
+	beat := func(token string) {
+		t.Helper()
+		if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", token), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+			t.Fatalf("beat with %q: err = %v, want ErrHeartbeatTokenRejected", token, err)
+		}
+	}
+
+	const flood = 10_000
+	a.negativeMax = flood
+	for i := range flood {
+		beat(fmt.Sprintf("flood-%d", i))
+	}
+	if f.reviews != flood || len(a.negative) != flood {
+		t.Fatalf("reviews = %d, len(negative) = %d, want %d each", f.reviews, len(a.negative), flood)
+	}
+
+	visited := a.negativeVisited
+	for i := range flood {
+		beat(fmt.Sprintf("flood-%d", i))
+	}
+	if f.reviews != flood {
+		t.Fatalf("reviews = %d after repeating the flood, want %d (every repeat is a cache hit)", f.reviews, flood)
+	}
+	if a.negativeVisited != visited {
+		t.Fatalf("%d cache hits examined %d queue entries, want 0: a lookup must not sweep the cache", flood, a.negativeVisited-visited)
+	}
+
+	// Once the flood has expired a repeat is a miss, still without a sweep;
+	// the review it triggers records a rejection, and that is what prunes
+	// the expired flood — every expired entry once, off the front.
+	now = now.Add(heartbeatAuthNegativeCacheTTL + time.Second)
+	beat("flood-0")
+	if f.reviews != flood+1 {
+		t.Fatalf("reviews = %d after the flood expired, want %d", f.reviews, flood+1)
+	}
+	if len(a.negative) != 1 || len(a.negativeOrder) != 1 {
+		t.Fatalf("after pruning: len(negative) = %d, len(negativeOrder) = %d, want 1 each", len(a.negative), len(a.negativeOrder))
+	}
+	if examined := a.negativeVisited - visited; examined != flood {
+		t.Fatalf("pruning examined %d queue entries, want %d (each expired entry exactly once)", examined, flood)
 	}
 }
 

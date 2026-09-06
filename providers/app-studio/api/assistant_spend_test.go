@@ -519,6 +519,80 @@ func TestProjectEinoAssistantOrgSpendRecordsPromptWhenStreamEndsWithoutUsage(t *
 	}
 }
 
+// A billed call whose prompt cannot be estimated — empty, or one the estimator
+// fails to marshal — must still land in the ledger. A zero there is exactly
+// what a caller bypassing the cap would arrange: cancel every stream before its
+// usage chunk and hand the provider a prompt the estimator gives up on.
+func TestProjectEinoAssistantOrgSpendRecordsFloorForUnestimatablePrompt(t *testing.T) {
+	memory := store.NewMemoryStore()
+	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	guard := newProjectEinoAssistantOrgSpendGuard(memory, "org-a", "gpt-4o", 10_000_000, nil)
+	guard.now = func() time.Time { return now }
+	model := projectEinoAssistantOrgSpendModelWithGuard(projectAssistantSpendCancellableStreamModel{}, guard)
+
+	var prompt []*schema.Message
+	if estimate := projectEinoAssistantMessagesTokenEstimate(prompt); estimate != 0 {
+		t.Fatalf("precondition: an empty prompt estimates to %d tokens, want 0", estimate)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	reader, err := model.Stream(ctx, prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message, err := reader.Recv(); err != nil || message == nil || message.Content != "partial" {
+		t.Fatalf("first chunk = %#v, %v", message, err)
+	}
+	cancel()
+	for {
+		if _, err := reader.Recv(); err != nil {
+			break
+		}
+	}
+	reader.Close()
+
+	spend, err := memory.GetOrganizationSpend(context.Background(), "org-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend.InputTokens <= 0 || spend.USDMicros <= 0 {
+		t.Fatalf("ledger after a cancelled stream with an un-estimatable prompt = %#v, want spend > 0 (the provider billed the call)", spend)
+	}
+
+	// The floor holds in micro-USD as well as tokens: a model priced under one
+	// micro-USD per input token must not round the floor token back to zero.
+	if cost := projectAssistantModelCostMicros("gpt-5-nano", 1, 0); cost != 0 {
+		t.Fatalf("precondition: one gpt-5-nano input token prices to %d micro-USD, want 0 (this case is what the micro-USD floor is for)", cost)
+	}
+	cheap := newProjectEinoAssistantOrgSpendGuard(memory, "org-b", "gpt-5-nano", 10_000_000, nil)
+	cheap.now = func() time.Time { return now }
+	if err := cheap.RecordAtLeastPrompt(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	spend, err = memory.GetOrganizationSpend(context.Background(), "org-b", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend.InputTokens < 1 || spend.USDMicros < 1 {
+		t.Fatalf("ledger for a sub-micro model with an un-estimatable prompt = %#v, want at least one token and one micro-USD", spend)
+	}
+
+	// A prompt the estimator can price is still charged at its estimate, not
+	// the floor.
+	priced := newProjectEinoAssistantOrgSpendGuard(memory, "org-c", "gpt-4o", 10_000_000, nil)
+	priced.now = func() time.Time { return now }
+	long := []*schema.Message{schema.UserMessage(strings.Repeat("build me a dashboard ", 200))}
+	if err := priced.RecordAtLeastPrompt(context.Background(), long, nil); err != nil {
+		t.Fatal(err)
+	}
+	spend, err = memory.GetOrganizationSpend(context.Background(), "org-c", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(projectEinoAssistantMessagesTokenEstimate(long)); spend.InputTokens != want || want <= 1 {
+		t.Fatalf("ledger for an estimatable prompt = %#v, want its estimate of %d input tokens", spend, want)
+	}
+}
+
 // The spend guard is installed for runs that have no event ledger. Reaching
 // the cap on such a run must report through the guard without faulting.
 func TestProjectEinoAssistantOrgSpendModelForToleratesNilEventLedger(t *testing.T) {

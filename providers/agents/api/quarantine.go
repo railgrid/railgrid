@@ -81,7 +81,7 @@ func quarantineMetaValue(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.Map(func(r rune) rune {
 		switch r {
-		case '\n', '\r', '\v', '\f', '', ' ', ' ':
+		case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
 			return ' '
 		}
 		return r

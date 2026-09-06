@@ -100,6 +100,17 @@ const heartbeatAuthCacheTTL = HeartbeatTTL / 2
 // (ErrHeartbeatAuthUnavailable) are never cached: the provider retries those.
 const heartbeatAuthNegativeCacheTTL = 30 * time.Second
 
+// heartbeatAuthNegativeCacheMax bounds how many rejections are remembered at
+// once. The endpoint is unauthenticated, so the negative cache is filled by
+// whoever sends distinct bad tokens; without a cap a flood of them would grow
+// it without bound and the cache built to shield kcp would become the hub's
+// own memory amplifier. At capacity the oldest entry — the one expiring first
+// — makes room, so a flooding caller only ever evicts its own garbage, and a
+// token evicted early costs kcp one review again: the pre-cache cost, not an
+// amplification of it. Ten thousand entries is a few megabytes and far more
+// than the distinct bad tokens a legitimate deployment produces in a TTL.
+const heartbeatAuthNegativeCacheMax = 10_000
+
 // ProviderSAUsername is the username kcp reports for the provider's own
 // service account: the one MintProviderKubeconfigAtPath issues the provider
 // kubeconfig for. Every provider's heartbeat must authenticate as exactly it.
@@ -125,12 +136,33 @@ type tokenReviewAuthenticator struct {
 	now         func() time.Time
 	cacheTTL    time.Duration
 	negativeTTL time.Duration
+	// negativeMax caps len(negativeOrder) and, through it, len(negative);
+	// zero means heartbeatAuthNegativeCacheMax.
+	negativeMax int
 
 	mu    sync.Mutex
 	cache map[heartbeatAuthCacheKey]time.Time
 	// negative remembers rejected (token, provider) pairs with the error to
 	// repeat, until the recorded time.
 	negative map[heartbeatAuthCacheKey]heartbeatAuthRejection
+	// negativeOrder lists negative's entries oldest first. The TTL is a
+	// constant, so insertion order is expiry order: pruning pops expired
+	// entries off the front and eviction at capacity pops the oldest, and
+	// neither visits an entry that is still live. A key rejected again while
+	// its entry is live keeps the slot it has; one rejected again after its
+	// entry lapsed is appended anew, and the stale front entry is skipped
+	// when its recorded expiry no longer matches the map's.
+	negativeOrder []heartbeatAuthNegativeEntry
+	// negativeVisited counts the queue entries pruning and eviction examined.
+	// Tests read it to show that a lookup examines none.
+	negativeVisited int
+}
+
+// heartbeatAuthNegativeEntry is one negativeOrder slot: the key and the expiry
+// it was recorded with.
+type heartbeatAuthNegativeEntry struct {
+	key   heartbeatAuthCacheKey
+	until time.Time
 }
 
 // heartbeatAuthRejection is one negatively cached outcome.
@@ -151,7 +183,8 @@ type heartbeatAuthCacheKey struct {
 // accepts a beat for provider N only when its bearer token authenticates, via
 // TokenReview in N's own workspace, as that workspace's provider service
 // account. Successful verifications are cached for heartbeatAuthCacheTTL and
-// rejections for heartbeatAuthNegativeCacheTTL.
+// rejections for heartbeatAuthNegativeCacheTTL, at most
+// heartbeatAuthNegativeCacheMax of them at once.
 func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters ClusterResolver) (HeartbeatAuthenticator, error) {
 	if kcpConfig == nil {
 		return nil, fmt.Errorf("kcp config is required")
@@ -169,6 +202,7 @@ func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters Clust
 		now:         time.Now,
 		cacheTTL:    heartbeatAuthCacheTTL,
 		negativeTTL: heartbeatAuthNegativeCacheTTL,
+		negativeMax: heartbeatAuthNegativeCacheMax,
 		cache:       map[heartbeatAuthCacheKey]time.Time{},
 		negative:    map[heartbeatAuthCacheKey]heartbeatAuthRejection{},
 	}
@@ -231,37 +265,79 @@ func (a *tokenReviewAuthenticator) cached(key heartbeatAuthCacheKey, now time.Ti
 	return ok && now.Before(until)
 }
 
-// rejected returns the remembered rejection for key if one is still live (nil
-// otherwise), dropping expired entries as it goes. Only what kcp answered is
-// cached, so a caller cycling through guessed tokens still costs one review
-// per distinct token; what it can no longer do is turn one bad token into a
-// review per beat.
+// rejected returns the remembered rejection for key if one is still live, nil
+// otherwise. Only what kcp answered is cached, so a caller cycling through
+// guessed tokens still costs one review per distinct token; what it can no
+// longer do is turn one bad token into a review per beat.
+//
+// This is one map lookup and nothing else. The negative cache is filled by
+// whoever sends distinct bad tokens, so a sweep here would cost every beat —
+// including every legitimate one — time proportional to the flood, and the
+// cache meant to shield kcp would be the hub's own CPU amplifier. Expired
+// entries are dropped in reject, off the front of negativeOrder.
 func (a *tokenReviewAuthenticator) rejected(key heartbeatAuthCacheKey, now time.Time) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for k, r := range a.negative {
-		if !now.Before(r.until) {
-			delete(a.negative, k)
-		}
-	}
 	if r, ok := a.negative[key]; ok && now.Before(r.until) {
 		return r.err
 	}
 	return nil
 }
 
-// reject records a definitive rejection for key and returns err.
+// reject records a definitive rejection for key and returns err. It is only
+// reached after a TokenReview, so kcp's round trip already paces it. Before
+// inserting it drops the entries that have expired and, if negativeOrder is
+// still at heartbeatAuthNegativeCacheMax, the oldest live ones; both come off
+// the front, so each entry is examined once in its lifetime and the cost is
+// amortised O(1) per rejection. The slice is the bound: every map key has a
+// slot in it, so capping the slice caps the map.
 func (a *tokenReviewAuthenticator) reject(key heartbeatAuthCacheKey, now time.Time, err error) error {
 	if a.negativeTTL <= 0 {
 		return err
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.negative == nil {
 		a.negative = map[heartbeatAuthCacheKey]heartbeatAuthRejection{}
 	}
-	a.negative[key] = heartbeatAuthRejection{err: err, until: now.Add(a.negativeTTL)}
-	a.mu.Unlock()
+	// Two beats with the same bad token can both miss the negative cache and
+	// both go to kcp before either records the answer. The one that arrives
+	// here second finds a live entry and must not take a second slot for it;
+	// otherwise a flood of one token, at high enough concurrency, would grow
+	// negativeOrder by its in-flight count every TTL. The earlier expiry is
+	// kept: a repeat rejection does not extend how long the token is remembered.
+	if r, ok := a.negative[key]; ok && now.Before(r.until) {
+		return err
+	}
+	for len(a.negativeOrder) > 0 && !now.Before(a.negativeOrder[0].until) {
+		a.popNegativeLocked()
+	}
+	limit := a.negativeMax
+	if limit <= 0 {
+		limit = heartbeatAuthNegativeCacheMax
+	}
+	for len(a.negativeOrder) >= limit {
+		a.popNegativeLocked()
+	}
+	until := now.Add(a.negativeTTL)
+	a.negative[key] = heartbeatAuthRejection{err: err, until: until}
+	a.negativeOrder = append(a.negativeOrder, heartbeatAuthNegativeEntry{key: key, until: until})
 	return err
+}
+
+// popNegativeLocked drops the oldest negativeOrder entry, and the map entry it
+// stands for unless that has since been re-recorded with a later expiry. The
+// front slot is zeroed so the backing array does not keep the key alive; the
+// array itself is bounded because append copies only the live tail when it
+// reallocates.
+func (a *tokenReviewAuthenticator) popNegativeLocked() {
+	e := a.negativeOrder[0]
+	a.negativeOrder[0] = heartbeatAuthNegativeEntry{}
+	a.negativeOrder = a.negativeOrder[1:]
+	a.negativeVisited++
+	if r, ok := a.negative[e.key]; ok && r.until.Equal(e.until) {
+		delete(a.negative, e.key)
+	}
 }
 
 // bearerToken extracts the token from an Authorization: Bearer header.
