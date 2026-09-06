@@ -245,6 +245,86 @@ no permission-claim dialog, one-click — but never an auto-bind.
 
 ---
 
+## Delegated tokens — what credential a provider receives
+
+**Implemented.** Separate from *which* copy of a provider a request reaches
+(above), there is the question of *what credential* crosses when it gets there.
+
+The backend proxy used to forward the caller's own `Authorization` header to
+every provider. That header is a full hub credential: it reaches every workspace
+the user is a member of and every REST endpoint they can call. A provider needs
+far less — it acts in one workspace, on the caller's behalf.
+
+A **delegated user token** replaces it: a ServiceAccount token minted by the hub
+in the caller's *current* workspace (`faros-du-<hash>` in `default`,
+`pkg/hub/serviceaccounts/delegated_user_token.go`), audience-bound, ten minutes
+long, bound to the same role the caller holds there, and annotated with the human
+it stands in for. `X-Faros-User` / `X-Faros-Tenant` / `X-Faros-Cluster` are
+unchanged, so a provider still attributes work to the person. A provider calling
+back into the hub with it resolves to that person
+(`pkg/hub/provider_tenant_resolver.go`).
+
+Who gets one:
+
+| Provider scope | Credential |
+|---|---|
+| Org-owned (`root:faros:tenants:{org}:providers:{name}`) | **Always** the delegated token. Its backend runs in a tenant's own cluster; the caller's hub bearer must never cross that line. |
+| Platform (`root:faros:providers`) | Per `--provider-delegated-tokens`. |
+
+`--provider-delegated-tokens=off|platform|all` (hub flag, `pkg/hub/options.go`):
+
+- `off` — platform providers receive the caller's bearer, as they always have.
+  **The default for this release.**
+- `platform` — platform providers receive the delegated token, except those
+  named in `--provider-delegated-tokens-exclude` (default: `edges`). **The
+  default from the next release**; run it now to confirm your providers need
+  nothing beyond `/clusters/{id}` access.
+- `all` — every platform provider, exclusion list ignored.
+
+Fail-closed on every path, same as the org-owned one: an unresolvable caller or
+a caller with no workspace selection is refused (403), a missing issuer or a mint
+error is a 503. Nothing falls back to forwarding the bearer. Anonymous requests
+(health probes) carry no credential and are forwarded as-is.
+
+**Requests need a workspace.** The delegated account lives in a team workspace,
+so a request made in the portal's organization-only mode (no `X-Faros-Workspace`)
+has nowhere to mint one and is refused. Org workspaces are hub-mediated only
+(P-2 / O-10) and kcp will not honour an SA token bound there, so minting in the
+org workspace is not an option. In practice the portal's provider frames require
+a selected workspace before they mount, and `portalkit`'s `tenantHeaders()` sends
+both headers.
+
+### Per-provider audit
+
+Every consumer of the forwarded bearer, and whether a workspace-scoped SA token
+serves it. The recurring answer is yes, because no provider parses the bearer as
+a JWT — a repo-wide search for `ParseUnverified` / `jwt.Parse` / `ParseSigned`
+under `providers/` and `provider-sdk/` finds nothing that inspects the *caller's*
+token — and every provider takes identity from `X-Faros-User` / `X-Faros-Tenant`
+instead.
+
+| Consumer | What it does with the bearer | Verdict |
+|---|---|---|
+| `provider-sdk/tenantaccess` `NewClient` | `rest.Config{Host: {hub}/clusters/{id}, BearerToken: …}` | **Works.** Also never fed a caller bearer today — its four callers pass a reconciler-minted SA token. |
+| `providers/infrastructure/dataplane/identity.go`, `authorizer.go` | `SelfSubjectAccessReview` on `<resource>/exec`, plus a caller-scoped instance GET | **Works.** SSAR asks "what can *this* credential do", so the delegated SA's workspace role is evaluated, matching the user's. No username or groups are supplied. |
+| `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Faros-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
+| `providers/edges` — tunnel, k8s subresource, `services/{name}/proxy` | TokenReview then SAR (`verb: proxy`) through the APIExport VW for the addressed cluster | **Works.** A delegated token authenticates in the workspace that minted it — the same one being addressed — keeps its groups, and its `cluster-admin` binding passes the SAR. Already exercised: the org-provider tunnel carries delegated tokens today. |
+| `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:faros-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Faros-User`. |
+| `providers/app-studio` | GraphQL as the caller; one raw `{hub}/clusters/{id}` DELETE; forwards the bearer to the hub MCP aggregate, to provider action routes, and to the infrastructure data plane | **Works.** All hops are hub surfaces that accept an SA token; each re-forwards `X-Faros-*` alongside. |
+| `providers/agents` (`tenant/graphql.go`) | `{hub}/graphql/{cluster}` as the caller; forwards it to the edges MCP endpoint and the infrastructure data plane | **Works.** Its own TokenReview/SAR path is the *s2s* endpoint, which is not hub-proxied and is unaffected. |
+| `providers/databricks` | `{hub}/clusters/{id}` client + SSAR per action | **Works.** The Databricks-facing PAT is a workspace Secret, unrelated to the caller's bearer. |
+| `providers/kuery`, `providers/quickstart` | Echo the token's length/fingerprint only | **Works.** Neither uses it as a credential. |
+| Hub GraphQL gateway (`/graphql/{cluster}`, `pkg/hub/graphql.go`) | Passes the token to the gateway, which dials `{front-proxy}/clusters/{cluster}` as the caller | **Works.** kcp pins an SA token to its own cluster claim, which is the workspace the delegated account was minted in. |
+
+Two consequences worth stating. First, a delegated token is **pinned to one
+workspace** by kcp, so a provider that (today) could follow the caller's bearer
+into another of their workspaces no longer can — that is the point of the change,
+but it will surface as a 403 in any provider that was relying on it. Second,
+several providers hold the caller's credential past the request (`agents` for the
+lifetime of a detached run, `app-studio` for a sandbox's lifetime, `databricks`
+in a 10-minute client cache); with delegation on, what they hold expires in ten
+minutes and is scoped to one workspace instead of being a live hub credential.
+
 ## Proxy gating
 
 `/services/providers/{slug}` and `/ui/providers/{slug}` need the active

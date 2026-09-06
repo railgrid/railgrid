@@ -267,9 +267,11 @@ func TestBackendProxyOrgProviderNeverSeesUserBearer(t *testing.T) {
 	})
 }
 
-// Step C of the remediation plan is deliberate future work: a platform
-// provider still receives the caller's own bearer. Pinning it keeps the
-// change to org-owned providers from silently widening.
+// A platform provider receives the caller's own bearer unless the delegation
+// policy says otherwise, which it does not by default (step C ships behind
+// --provider-delegated-tokens, default off; see proxy_delegation_test.go).
+// Pinning it here keeps an issuer being wired from silently widening what the
+// default configuration does.
 func TestBackendProxyPlatformProviderStillReceivesCallerBearer(t *testing.T) {
 	var gotAuthorization string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

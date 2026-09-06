@@ -98,20 +98,30 @@ func splitTenantPath(tenantPath string) (orgUUID, wsUUID string) {
 	return orgUUID, wsUUID
 }
 
-// delegatedAuthorization decides what Authorization an org-owned provider
-// receives for r, writing the response itself when the request must not go
-// on. It returns the delegated bearer, or "" for an anonymous caller (whose
-// request carried nothing to substitute), and whether to proceed.
+// delegatedAuthorization decides what Authorization a provider receives for r
+// when the caller's bearer must not reach it, writing the response itself when
+// the request must not go on. It returns the delegated bearer, or "" for an
+// anonymous caller (whose request carried nothing to substitute), and whether
+// to proceed.
 //
-// This is the boundary the whole file exists to hold: the far end of the
-// tunnel is a workload in a tenant's cluster, installed by whichever member
-// registered it, so the caller's own hub token — good for every workspace and
-// every REST endpoint they can reach — must never cross it. What crosses
-// instead is a ServiceAccount token scoped by kcp to the caller's current
-// workspace, carrying the caller's name in annotations for the provider to
-// attribute the call. Every failure here is closed: no identity, no
-// workspace, no issuer, or a mint error all refuse rather than fall back to
-// forwarding the bearer.
+// For an org-owned provider this is the boundary the whole file exists to
+// hold: the far end of the tunnel is a workload in a tenant's cluster,
+// installed by whichever member registered it, so the caller's own hub token —
+// good for every workspace and every REST endpoint they can reach — must never
+// cross it. A platform provider under a delegating policy (proxy_delegation.go)
+// gets the same treatment for the same reason in weaker form: it is trusted
+// code, but a bug in it should be able to act in one workspace, not as the
+// user everywhere. What crosses instead is a ServiceAccount token scoped by
+// kcp to the caller's current workspace, carrying the caller's name in
+// annotations for the provider to attribute the call. Every failure here is
+// closed: no identity, no workspace, no issuer, or a mint error all refuse
+// rather than fall back to forwarding the bearer.
+//
+// The delegated account is minted in the workspace the caller selected
+// (X-Faros-Workspace, verified against their membership by the resolver). An
+// org-scope selection has nowhere to mint it — org workspaces are sealed
+// (O-10) and the hub's SA proxy path refuses tokens bound there — so it is
+// refused for platform providers exactly as for org-owned ones.
 func (p *ProviderProxy) delegatedAuthorization(w http.ResponseWriter, r *http.Request, prov Provider) (string, bool) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		// Anonymous probe (health checks). There is no credential to
@@ -120,27 +130,34 @@ func (p *ProviderProxy) delegatedAuthorization(w http.ResponseWriter, r *http.Re
 	}
 	user, tenantPath, err := p.resolveCaller(r)
 	if err != nil || user == "" {
-		p.log.Info("refusing org-owned provider request: caller identity unresolved",
+		p.log.Info("refusing provider request: caller identity unresolved",
 			"provider", prov.Name, "org", prov.OrgUUID, "err", errString(err))
 		http.Error(w, "caller identity could not be established for provider: "+prov.Name, http.StatusForbidden)
 		return "", false
 	}
 	orgUUID, wsUUID := splitTenantPath(tenantPath)
-	if orgUUID == "" || orgUUID != prov.OrgUUID {
+	if orgUUID == "" {
+		http.Error(w, "caller has no tenant workspace to act from for provider: "+prov.Name, http.StatusForbidden)
+		return "", false
+	}
+	if prov.OrgUUID != "" && orgUUID != prov.OrgUUID {
 		// resolveProvider picked this provider from the same resolution, so a
-		// mismatch means the memo is not what routed us. Refuse.
+		// mismatch means the memo is not what routed us. Refuse. A platform
+		// provider has no owning org; the caller's own is where the token
+		// is minted.
 		http.Error(w, "caller is not in the organization that owns provider: "+prov.Name, http.StatusForbidden)
 		return "", false
 	}
 	if wsUUID == "" {
 		// The delegated account lives in a team workspace; an org-scope
 		// resolution (no X-Faros-Workspace) has nowhere to mint it. The portal
-		// always sends the workspace header on provider calls.
+		// sends the workspace header on provider calls whenever a workspace
+		// is selected.
 		http.Error(w, "a workspace selection (X-Faros-Workspace) is required to reach provider: "+prov.Name, http.StatusForbidden)
 		return "", false
 	}
 	if p.delegatedIssuer == nil {
-		p.log.Info("refusing org-owned provider request: no delegated token issuer wired",
+		p.log.Info("refusing provider request: no delegated token issuer wired",
 			"provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "delegated identity unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
 		return "", false

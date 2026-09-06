@@ -119,6 +119,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
 		return err
 	}
+	delegationMode, err := providers.ParseDelegationMode(s.opts.ProviderDelegatedTokens)
+	if err != nil {
+		return err
+	}
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
@@ -744,6 +748,14 @@ func (s *Server) Run(ctx context.Context) error {
 			// the caller's workspace (pkg/hub/serviceaccounts
 			// delegated_user_token.go). Without this the org path refuses.
 			backendProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
+			// Platform providers follow --provider-delegated-tokens: off keeps
+			// forwarding the caller's bearer, platform/all swap it for the
+			// same delegated token (pkg/hub/providers/proxy_delegation.go).
+			backendProxy.SetDelegationPolicy(providers.DelegationPolicy{
+				Mode:    delegationMode,
+				Exclude: s.opts.ProviderDelegatedTokensExclude,
+			})
+			logger.Info("provider delegated tokens", "mode", delegationMode, "exclude", s.opts.ProviderDelegatedTokensExclude)
 
 			// Step 10: Org / Workspace / Membership / User REST
 			apiMgr := restapi.NewManager(userClient, bootstrapper)

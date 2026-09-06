@@ -75,6 +75,28 @@ type Options struct {
 	DevMode          bool
 	StaticAuthTokens []string
 
+	// ProviderDelegatedTokens selects which providers receive a short-lived,
+	// workspace-scoped ServiceAccount token in place of the caller's own hub
+	// bearer on the backend proxy (/services/providers/{name}/*). Org-owned
+	// providers always receive the delegated token regardless of this
+	// setting; it governs platform providers only:
+	//
+	//   off      — platform providers receive the caller's bearer as-is
+	//              (the historical behaviour).
+	//   platform — platform providers receive the delegated token, except
+	//              the names in ProviderDelegatedTokensExclude.
+	//   all      — every platform provider receives the delegated token;
+	//              the exclusion list is ignored.
+	//
+	// Default "off" for this release. The next release defaults to
+	// "platform"; deployments should run "platform" ahead of that to
+	// confirm their providers need nothing beyond /clusters/{id} access.
+	ProviderDelegatedTokens string
+	// ProviderDelegatedTokensExclude names platform providers that keep
+	// receiving the caller's bearer under ProviderDelegatedTokens=platform.
+	// Defaults to providers.DefaultDelegationExclude.
+	ProviderDelegatedTokensExclude []string
+
 	// AdminUsers is the allowlist of platform-admin identities permitted to
 	// reach the /api/admin/* surface and the portal's /bonkers area. Each entry
 	// matches a User CR by name, email, or rbacIdentity (case-insensitive).
@@ -173,7 +195,9 @@ func NewOptions() *Options {
 
 		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 		// Wide for this release; the next one defaults to false. See the field.
-		ProviderWorkspaceClusterAdmin: true,
+		ProviderWorkspaceClusterAdmin:  true,
+		ProviderDelegatedTokens:        string(providers.DelegationOff),
+		ProviderDelegatedTokensExclude: append([]string(nil), providers.DefaultDelegationExclude...),
 
 		GraphQLAPIExportSliceName:      "core.faros.sh",
 		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,

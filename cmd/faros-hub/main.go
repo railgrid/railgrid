@@ -76,6 +76,13 @@ func main() {
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
+	cmd.Flags().StringVar(&opts.ProviderDelegatedTokens, "provider-delegated-tokens", opts.ProviderDelegatedTokens,
+		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on /services/providers/*: "+
+			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+
+			"platform (also platform providers, except --provider-delegated-tokens-exclude), or all (every platform provider). "+
+			"Default off for this release; the next release defaults to platform.")
+	cmd.Flags().StringSliceVar(&opts.ProviderDelegatedTokensExclude, "provider-delegated-tokens-exclude", opts.ProviderDelegatedTokensExclude,
+		"Platform providers that keep receiving the caller's bearer under --provider-delegated-tokens=platform (comma-separated or repeat).")
 
 	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
 	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,

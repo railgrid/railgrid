@@ -89,10 +89,12 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 }
 
 // NewBackendProxy returns an http.Handler serving /services/providers/{name}/*
-// by reverse proxying to the provider's spec.backend.url. For a platform
-// provider the user's Authorization header is forwarded as-is; for an
-// org-owned provider it is replaced with a short-lived delegated token (see
-// serveOverEdge and SetDelegatedTokenIssuer). If a TenantResolver is
+// by reverse proxying to the provider's spec.backend.url. An org-owned
+// provider always has the user's Authorization header replaced with a
+// short-lived delegated token (see serveOverEdge and SetDelegatedTokenIssuer);
+// a platform provider gets the same treatment when the DelegationPolicy
+// selects it (SetDelegationPolicy) and the caller's bearer as-is otherwise.
+// If a TenantResolver is
 // installed via SetTenantResolver, the proxy resolves the caller's
 // identity and injects X-Faros-User + X-Faros-Tenant so the provider can
 // scope work without re-parsing the bearer token. Incoming
@@ -258,10 +260,16 @@ type ProviderProxy struct {
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
 
 	// delegatedIssuer mints the token that replaces the caller's bearer on
-	// requests to org-owned providers. Nil means the org-provider path fails
-	// closed: the hub never forwards a user's hub token into a tenant's
-	// cluster. See SetDelegatedTokenIssuer and serveOverEdge.
+	// requests to org-owned providers, and to platform providers when
+	// delegation selects them. Nil means those paths fail closed: the hub
+	// never forwards a user's hub token where a delegated one was required.
+	// See SetDelegatedTokenIssuer, serveOverEdge, and delegatedAuthorization.
 	delegatedIssuer DelegatedTokenIssuer
+
+	// delegation decides which platform providers have the caller's bearer
+	// swapped for a delegated token. Zero value is DelegationOff. See
+	// SetDelegationPolicy.
+	delegation DelegationPolicy
 
 	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
 	// provider's backend origin. Provider action routes (/actions/*) are a
@@ -363,6 +371,22 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A platform provider is dialled directly, and historically received the
+	// caller's own bearer. Under a delegating policy it gets the same
+	// workspace-scoped token an org-owned provider does; the decision to
+	// substitute is made here, before the proxy is built, so every failure
+	// refuses the request rather than falling back to the bearer. The UI
+	// proxy never enters this branch: it serves assets, and its requests
+	// carry no credential to protect.
+	substitute := !p.fallbackForSPA && p.delegation.DelegatesPlatform(prov.Name)
+	delegated := ""
+	if substitute {
+		var ok bool
+		if delegated, ok = p.delegatedAuthorization(w, r, prov); !ok {
+			return
+		}
+	}
+
 	basePath := p.pathPrefix + "/" + name
 
 	rp := &httputil.ReverseProxy{
@@ -384,6 +408,15 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.RawPath = "" // let net/url re-encode from Path
 			req.Host = target.Host
 			p.setHeaders(req, name, basePath)
+			if substitute {
+				// Same boundary as serveOverEdge: the caller's hub token
+				// stops here. The provider receives the delegated token,
+				// or nothing for an anonymous probe.
+				req.Header.Del("Authorization")
+				if delegated != "" {
+					req.Header.Set("Authorization", "Bearer "+delegated)
+				}
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "upstream error", "provider", name, "target", target.String())

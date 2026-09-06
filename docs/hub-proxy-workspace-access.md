@@ -293,6 +293,40 @@ the hub REST handlers.
   faros terms as `{id}:{edgeName}`, authorized by the parent workspace's
   membership (A-3).
 
+## Delegated tokens on the provider backend proxy
+
+**Implemented**, and worth reading alongside A-6 because it is the same
+mechanism pointed the other way.
+
+A-6 says a ServiceAccount token is authorized only in the cluster its own claim
+names — the token *is* the scope. The provider backend proxy now uses that
+property deliberately: instead of forwarding the caller's hub bearer (which A-1
+lets reach *every* workspace they are a member of), it mints a ServiceAccount in
+the caller's **current** workspace and sends that
+(`pkg/hub/serviceaccounts/delegated_user_token.go`,
+`pkg/hub/providers/proxy.go`, `proxy_edge.go`). A provider that calls back into
+the hub with it lands on the SA path in A-6, pinned to that one workspace, and
+the tenant resolver maps the account back to the human for `X-Faros-User`
+(`pkg/hub/provider_tenant_resolver.go`).
+
+So the two halves compose: A-1 widens what a **user's own** token may address to
+the workspaces they belong to; delegation narrows what a **provider acting for
+them** may address to the one workspace the request was made in. The blast radius
+of a compromised or buggy provider stops being "everything this user can reach".
+
+- Org-owned providers always receive the delegated token.
+- Platform providers follow `--provider-delegated-tokens=off|platform|all`
+  (default `off` this release, `platform` next), with
+  `--provider-delegated-tokens-exclude` for backends that cannot use one.
+- Every failure is closed — no path falls back to forwarding the bearer.
+- A request with no workspace selection (`X-Faros-Workspace`) cannot be
+  delegated and is refused. This follows A-1's "no bare-path default": with no
+  workspace selector there is nothing to authorize against, so the answer is a
+  refusal rather than a guess.
+
+Per-provider verdicts and the flag's semantics are in
+[provider-scoping.md](./provider-scoping.md#delegated-tokens--what-credential-a-provider-receives).
+
 ## Open questions
 
 None outstanding — the design decisions above cover the proposal. Remaining work
