@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"time"
 
+	kcpclientset "github.com/kcp-dev/sdk/client/clientset/versioned"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -70,6 +71,10 @@ type Reconciler struct {
 	kcpConfig      *rest.Config
 	hubExternalURL string
 	enumerate      ProviderEnumerator
+	// actionGrants lists the provider-action RBAC coordinates declared in the
+	// platform catalog (see rbac.go). Defaults to reading CatalogEntries from
+	// the system providers workspace; tests inject a stub.
+	actionGrants ActionGrantSource
 }
 
 // SetupWithManager registers the MCPServer controller with the core.faros.sh
@@ -80,6 +85,7 @@ type Reconciler struct {
 // Ready MCP-exposing providers each server discovers its tools from.
 func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternalURL string, enumerate ProviderEnumerator) error {
 	r := &Reconciler{mgr: mgr, kcpConfig: kcpConfig, hubExternalURL: hubExternalURL, enumerate: enumerate}
+	r.actionGrants = catalogActionGrants(kcpConfig)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
 		For(&farosv1alpha1.MCPServer{}).
@@ -115,12 +121,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Direct typed client to the tenant workspace — the proven path for legacy
 	// SA-token provisioning (mirrors pkg/hub/providers ensureLegacySAToken).
-	kube, err := kubernetes.NewForConfig(r.tenantConfig(string(req.ClusterName)))
+	tenantCfg := r.tenantConfig(string(req.ClusterName))
+	kube, err := kubernetes.NewForConfig(tenantCfg)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("building tenant client for %s: %w", req.ClusterName, err)
 	}
+	kcp, err := kcpclientset.NewForConfig(tenantCfg)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("building tenant kcp client for %s: %w", req.ClusterName, err)
+	}
 
-	ref, token, tokenReady, provErr := ensureMCPIdentity(ctx, kube, &srv)
+	// The role is regenerated on every reconcile (including the periodic tools
+	// refresh), so a provider enabled after the server was created gets its
+	// rules within one refresh interval.
+	rules, provErr := r.desiredRules(ctx, kcp, &srv)
+	var (
+		ref        *corev1.SecretReference
+		token      string
+		tokenReady bool
+	)
+	if provErr == nil {
+		ref, token, tokenReady, provErr = ensureMCPIdentity(ctx, kube, &srv, rules)
+	}
 	switch {
 	case provErr != nil:
 		srv.Status.Phase = farosv1alpha1.MCPServerPhaseError
@@ -194,12 +216,35 @@ func (r *Reconciler) tenantConfig(clusterName string) *rest.Config {
 	return cfg
 }
 
+// desiredRules computes the ClusterRole rules for one server from the tenant's
+// APIBindings and the platform action catalog (see rbac.go).
+func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interface, srv *farosv1alpha1.MCPServer) ([]rbacv1.PolicyRule, error) {
+	bound, err := listBoundResources(ctx, kcp)
+	if err != nil {
+		return nil, fmt.Errorf("listing bound resources: %w", err)
+	}
+	var actions []ActionGrant
+	if r.actionGrants != nil {
+		actions, err = r.actionGrants(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing provider action grants: %w", err)
+		}
+	}
+	return buildRules(bound, actions, srv.Spec.ReadOnly), nil
+}
+
 // ensureMCPIdentity provisions, idempotently, the per-MCPServer ServiceAccount,
-// its long-lived (legacy) token Secret, and a ClusterRoleBinding — all owned by
-// the MCPServer for GC. It returns a reference to the token Secret and whether
-// kcp's token controller has populated it yet (a short poll; if still empty the
-// caller requeues rather than blocking).
-func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer) (*corev1.SecretReference, string, bool, error) {
+// its long-lived (legacy) token Secret, and a generated ClusterRole plus the
+// ClusterRoleBinding to it — all owned by the MCPServer for GC. It returns a
+// reference to the token Secret and whether kcp's token controller has
+// populated it yet (a short poll; if still empty the caller requeues rather
+// than blocking).
+//
+// TODO(security-remediation-plan 2.1 follow-up): replace the non-expiring
+// token Secret with a TokenRequest issued through EnsureWorkloadIdentity once
+// the portal has a rotation flow — the token is user-held, so it cannot be
+// rotated silently.
+func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer, rules []rbacv1.PolicyRule) (*corev1.SecretReference, string, bool, error) {
 	saName := mcpaggregate.ServiceAccountName(srv.Name)
 	secretName := saName + "-token"
 
@@ -230,16 +275,8 @@ func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv
 		return nil, "", false, fmt.Errorf("ensuring token Secret %s/%s: %w", mcpIdentityNamespace, secretName, err)
 	}
 
-	// TODO(scope-down): cluster-admin is a placeholder so the endpoint works
-	// end-to-end. Replace with a narrowly-scoped role once the federated tools'
-	// exact needs are pinned, so a leaked token can't act as admin.
-	crb := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: saName, OwnerReferences: []metav1.OwnerReference{owner}},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: mcpIdentityNamespace}},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
-	}
-	if _, err := cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return nil, "", false, fmt.Errorf("ensuring ClusterRoleBinding %s: %w", saName, err)
+	if err := ensureMCPRBAC(ctx, cs, srv, owner, saName, rules); err != nil {
+		return nil, "", false, err
 	}
 
 	ref := &corev1.SecretReference{Namespace: mcpIdentityNamespace, Name: secretName}

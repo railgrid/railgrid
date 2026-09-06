@@ -181,7 +181,23 @@ Two consequences:
   `MCPServer.status.tokenSecretRef` (the token itself never lands in the CR; the
   portal reads the Secret to render the connect command). A user OIDC token
   would expire and silently break a long-lived MCP connection — see the
-  `MCPServer` controller in [`providers/mcp/controllers/`](https://github.com/faroshq/faros/blob/main/providers/mcp/controllers/).
+  `MCPServer` controller in [`pkg/hub/controllers/mcpserver/`](https://github.com/faroshq/faros/blob/main/pkg/hub/controllers/mcpserver/).
+- **Scoped token permissions.** The ServiceAccount is bound to a generated
+  ClusterRole `faros:mcpserver:<name>` in the tenant workspace, never to
+  `cluster-admin`. The controller regenerates the role on every reconcile
+  (including the 60s tools refresh) from the tenant's `APIBindings`: each
+  `status.boundResources[]` group/resource gets `get,list,watch` plus
+  `create,update,patch,delete`; `spec.readOnly` drops the write verbs. On top
+  of that it grants the RBAC coordinates provider data planes check via
+  SubjectAccessReview as the caller — verb `proxy` on `edges.faros.sh` objects
+  (tunnel `k8s`/`ssh`/`mcp` subresources, kept for readOnly servers because
+  read-only tools cannot reach an edge without it), `create` on
+  `infrastructure.faros.sh` `<instance>/exec` (dropped for readOnly), and
+  `create` on `<resource>/<action>` for every action declared in the platform
+  provider catalog whose resource is bound (read-only actions survive
+  readOnly) — plus read-only `core.kcp.io/logicalclusters` and
+  `selfsubjectaccessreviews` create. Nothing grants secrets, service accounts,
+  RBAC, or APIBinding access, so a leaked token cannot escalate.
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace from
   `X-Faros-Tenant`. The infrastructure provider does this in
@@ -272,4 +288,4 @@ each provider separately.
 | Backend proxy (header/token forwarding) | `pkg/hub/providers/proxy.go` |
 | Example out-of-process provider MCP | `providers/infrastructure/mcpserver/` |
 | Caller-scoped tenant client | `providers/infrastructure/tenant/client.go` |
-| Per-MCPServer SA token | `providers/mcp/controllers/`, `apis/faros/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |
+| Per-MCPServer SA token + scoped role | `pkg/hub/controllers/mcpserver/` (`rbac.go`), `apis/faros/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |
