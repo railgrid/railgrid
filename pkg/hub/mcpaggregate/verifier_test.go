@@ -19,14 +19,17 @@ package mcpaggregate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -226,6 +229,33 @@ func TestVerifierUnknownUserFallsThroughToServiceAccount(t *testing.T) {
 	)
 	if err := v.Verify(request(t, "sa-other-a"), "sa-other-a", "tenant-a", "default"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("SA-shaped user identity: %v, want ErrForbidden", err)
+	}
+}
+
+// TestVerifierUnknownClusterIsForbiddenNotUnavailable: a hub user addressing
+// a cluster ID that has no LogicalCluster (a typo, a deleted tenant) is 403.
+// Only NotFound is mapped; any other lookup failure stays an infrastructure
+// error so the handler keeps failing closed with 503.
+func TestVerifierUnknownClusterIsForbiddenNotUnavailable(t *testing.T) {
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "core.kcp.io", Resource: "logicalclusters"}, "cluster")
+	v, kcp := newTestVerifier(t, WithClusterPathResolver(func(_ context.Context, cluster string) (string, error) {
+		if cluster == "no-such-cluster" {
+			return "", fmt.Errorf("getting LogicalCluster for cluster %q: %w", cluster, notFound)
+		}
+		return "", errors.New("kcp unreachable")
+	}))
+	v.SetUserIdentity(
+		func(*http.Request) (string, error) { return "alice", nil },
+		func(context.Context, string) (*tenancyv1alpha1.UserMembershipIndex, error) { return nil, nil },
+	)
+	if err := v.Verify(request(t, "u"), "u", "no-such-cluster", "default"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("nonexistent cluster: Verify() = %v, want ErrForbidden", err)
+	}
+	if err := v.Verify(request(t, "u"), "u", "lc-outage", "default"); err == nil || errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("lookup outage: Verify() = %v, want an infrastructure error", err)
+	}
+	if kcp.reviews != 0 {
+		t.Fatalf("a hub user bearer was sent to TokenReview %d times, want 0", kcp.reviews)
 	}
 }
 

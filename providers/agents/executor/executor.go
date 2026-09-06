@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 )
 
@@ -110,7 +111,10 @@ type InProcess struct {
 	timeout time.Duration
 	workers int
 	cancel  context.CancelFunc
-	running bool
+	// stopped is closed by Stop (via the worker context) so a Submit parked
+	// on a full queue returns ErrStopped instead of waiting out SubmitWait.
+	stopped <-chan struct{}
+	running atomic.Bool
 }
 
 // NewInProcess builds the in-house executor. workers bounds concurrency;
@@ -131,14 +135,15 @@ func NewInProcess(h Handler, workers int, defaultTimeout time.Duration) *InProce
 }
 
 func (e *InProcess) Start(ctx context.Context) error {
-	if e.running {
+	if e.running.Load() {
 		return nil
 	}
 	ctx, e.cancel = context.WithCancel(ctx)
+	e.stopped = ctx.Done()
 	for i := 0; i < e.workers; i++ {
 		go e.worker(ctx)
 	}
-	e.running = true
+	e.running.Store(true)
 	return nil
 }
 
@@ -149,7 +154,7 @@ func (e *InProcess) Start(ctx context.Context) error {
 // explicit ErrQueueFull to turn into a retryable response. Jobs are still not
 // durable across a restart — a persistent queue is a follow-up.
 func (e *InProcess) Submit(ctx context.Context, job Job) error {
-	if !e.running {
+	if !e.running.Load() {
 		return ErrStopped
 	}
 	select {
@@ -176,6 +181,11 @@ func (e *InProcess) Submit(ctx context.Context, job Job) error {
 				len(e.jobs), cap(e.jobs), job.Kind, job.SourceName, waited.Round(time.Millisecond))
 		}
 		return nil
+	case <-e.stopped:
+		// Stop ran while we waited: the workers are gone, so no slot will
+		// free. ErrQueueFull would tell the caller to retry against an
+		// executor that no longer exists.
+		return fmt.Errorf("%w — job %s/%s not accepted", ErrStopped, job.Kind, job.SourceName)
 	case <-wait.Done():
 		return fmt.Errorf("%w (%d/%d queued) — job %s/%s not accepted: %v", ErrQueueFull, len(e.jobs), cap(e.jobs), job.Kind, job.SourceName, wait.Err())
 	}
@@ -185,10 +195,10 @@ func (e *InProcess) Submit(ctx context.Context, job Job) error {
 func (e *InProcess) Depth() int { return len(e.jobs) }
 
 func (e *InProcess) Stop() {
+	e.running.Store(false)
 	if e.cancel != nil {
 		e.cancel()
 	}
-	e.running = false
 }
 
 func (e *InProcess) worker(ctx context.Context) {

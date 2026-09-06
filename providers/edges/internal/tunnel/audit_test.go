@@ -132,6 +132,26 @@ func TestSanitizeAuditValueCannotForgeALogLine(t *testing.T) {
 	}
 }
 
+// TestAuditSSHUserCannotForgeALogLine: the SSH username in the "SSH session
+// opened" audit line comes from the agent-reported sshCredentials, and klog
+// renders a string carrying "\n" as an unquoted multi-line block.
+func TestAuditSSHUserCannotForgeALogLine(t *testing.T) {
+	forged := "root\n\"SSH session opened\" caller=\"eve\" edge=\"other\""
+	got := auditSSHUser(&SSHClientCredentials{Username: forged})
+	if strings.ContainsAny(got, "\n\r") {
+		t.Fatalf("audit username still carries a line break: %q", got)
+	}
+	if !strings.Contains(got, `\u000a`) || !strings.Contains(got, "root") {
+		t.Fatalf("audit username is not a faithful escaped rendering: %q", got)
+	}
+	if got := auditSSHUser(&SSHClientCredentials{Username: "deploy"}); got != "deploy" {
+		t.Fatalf("ordinary username changed: %q", got)
+	}
+	if got := auditSSHUser(nil); got != "root" {
+		t.Fatalf("nil credentials: %q, want the default user", got)
+	}
+}
+
 func TestSanitizeAuditValueTruncatesAndMarksIt(t *testing.T) {
 	long := strings.Repeat("a", maxAuditValueLen*3)
 	got := sanitizeAuditValue(long)

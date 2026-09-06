@@ -307,18 +307,9 @@ func agentJoinServer(opts *agent.Options) error {
 	}
 
 	unitName := "faros-agent-" + opts.EdgeName
-	data := systemdUnitData{
-		BinaryPath:      binaryPath,
-		HubKubeconfig:   absKubeconfig,
-		HubURL:          opts.HubURL,
-		Token:           opts.Token,
-		EdgeName:        opts.EdgeName,
-		Type:            string(opts.Type),
-		SSHProxyPort:    opts.SSHProxyPort,
-		SSHUser:         opts.SSHUser,
-		SSHPrivateKey:   opts.SSHPrivateKeyPath,
-		Cluster:         opts.Cluster,
-		InsecureSkipTLS: opts.InsecureSkipTLSVerify,
+	data, err := joinServerUnitData(opts, binaryPath, absKubeconfig)
+	if err != nil {
+		return err
 	}
 
 	tmpl, err := template.New("unit").Parse(systemdUnitTemplate)
@@ -355,6 +346,39 @@ func agentJoinServer(opts *agent.Options) error {
 	fmt.Printf("  View logs:     journalctl -u %s -f\n", unitName)
 	fmt.Printf("  Uninstall:     faros agent uninstall --edge-name %s\n", opts.EdgeName)
 	return nil
+}
+
+// joinServerUnitData builds the systemd unit data for `faros agent join
+// --type server` from the run flags. The Service proxy policy flags are
+// carried into the unit exactly as `agent install` does: the allow list
+// always, the policy only when it differs from the built-in default. Leaving
+// them out would silently run the installed agent at the default policy with
+// no allow list while the operator believes they configured enforce.
+func joinServerUnitData(opts *agent.Options, binaryPath, absKubeconfig string) (systemdUnitData, error) {
+	data := systemdUnitData{
+		BinaryPath:      binaryPath,
+		HubKubeconfig:   absKubeconfig,
+		HubURL:          opts.HubURL,
+		Token:           opts.Token,
+		EdgeName:        opts.EdgeName,
+		Type:            string(opts.Type),
+		SSHProxyPort:    opts.SSHProxyPort,
+		SSHUser:         opts.SSHUser,
+		SSHPrivateKey:   opts.SSHPrivateKeyPath,
+		Cluster:         opts.Cluster,
+		InsecureSkipTLS: opts.InsecureSkipTLSVerify,
+		SvcAllowCIDRs:   opts.SvcAllowedCIDRs,
+	}
+	if opts.SvcPolicy != "" && opts.SvcPolicy != string(tunnel.DefaultSvcPolicy) {
+		if _, err := tunnel.ParseSvcPolicy(opts.SvcPolicy); err != nil {
+			return systemdUnitData{}, err
+		}
+		data.SvcPolicy = opts.SvcPolicy
+	}
+	if _, err := tunnel.ParseSvcAllowedCIDRs(opts.SvcAllowedCIDRs); err != nil {
+		return systemdUnitData{}, err
+	}
+	return data, nil
 }
 
 // agentJoinKubernetes applies a Deployment + RBAC to the target cluster so the
@@ -794,7 +818,7 @@ func newAgentInstallCommand() *cobra.Command {
 		Long: `Install the faros agent as a systemd service on the current host.
 
 This creates a systemd unit file, reloads the daemon, enables and starts the
-service. The systemd unit runs "faros agent join" so you get both the agent
+service. The systemd unit runs "faros agent run" so you get both the agent
 and the full faros CLI on the server.
 
 Requires root privileges.

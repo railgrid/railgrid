@@ -17,6 +17,7 @@ limitations under the License.
 package tunnel
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -494,5 +495,130 @@ func TestSvcProxyHandlerBadTarget(t *testing.T) {
 	}
 	if n := dialer.n.Load(); n != 0 {
 		t.Errorf("dialed %d times, want 0", n)
+	}
+}
+
+// hostileUpstream is a loopback service that stamps X-Faros-Svc-Policy on its
+// own responses, both on plain HTTP and on a WebSocket upgrade (which it
+// answers with a 101 and then echoes bytes). The header is the agent's to set,
+// so nothing an upstream puts there may reach the provider.
+func hostileUpstream(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isUpgradeRequest(r) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("upstream hijack: %v", err)
+				return
+			}
+			defer conn.Close() //nolint:errcheck
+			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\n"+
+				"Upgrade: websocket\r\nConnection: Upgrade\r\n"+
+				svcPolicyHeader+": "+string(SvcPolicyEnforce)+"\r\n\r\n")
+			_, _ = io.Copy(conn, conn) // echo
+			return
+		}
+		w.Header().Set(svcPolicyHeader, string(SvcPolicyEnforce))
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, "from upstream")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSvcProxyHandlerStripsUpstreamPolicyHeader: a proxied service cannot
+// forge the agent's policy verdict. An upstream 403 carrying "enforce" must
+// arrive as a plain 403 (otherwise the provider marks the tenant's own
+// EdgeService HostNotAllowed), and under warn the agent's own "warn" wins
+// over whatever the upstream sent.
+func TestSvcProxyHandlerStripsUpstreamPolicyHeader(t *testing.T) {
+	t.Run("allowed target", func(t *testing.T) {
+		cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: SvcPolicyEnforce}}
+		upstream := hostileUpstream(t, http.StatusForbidden)
+		dialer := &countingDialer{}
+		cfg.dial = dialer.dial
+		h := newSvcProxyHandler(cfg)
+
+		req := httptest.NewRequest(http.MethodGet, "/svc/api/ping", nil)
+		req.Header.Set(svcTargetHeader, upstream.URL)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		resp := rec.Result()
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusForbidden || body != "from upstream" {
+			t.Fatalf("status = %d body = %q, want the upstream 403 passed through", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get(svcPolicyHeader); got != "" {
+			t.Errorf("%s = %q leaked from upstream, want it stripped", svcPolicyHeader, got)
+		}
+	})
+	t.Run("warned target", func(t *testing.T) {
+		cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: SvcPolicyWarn},
+			resolve: fixedResolver(map[string][]string{"printer.lan": {"192.0.2.1", "127.0.0.1"}})}
+		upstream := hostileUpstream(t, http.StatusOK)
+		dialer := &countingDialer{fail: func(addr string) bool { return strings.HasPrefix(addr, "192.0.2.1:") }}
+		cfg.dial = dialer.dial
+		h := newSvcProxyHandler(cfg)
+
+		req := httptest.NewRequest(http.MethodGet, "/svc/api/ping", nil)
+		req.Header.Set(svcTargetHeader, "http://printer.lan:"+upstreamPort(t, upstream))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		resp := rec.Result()
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if got := resp.Header.Get(svcPolicyHeader); got != string(SvcPolicyWarn) {
+			t.Errorf("%s = %q, want the agent's own %q", svcPolicyHeader, got, SvcPolicyWarn)
+		}
+	})
+}
+
+// TestSvcUpgradeStripsUpstreamPolicyHeader covers the hijacked WebSocket path,
+// which pipes raw bytes: the 101 headers are rewritten so the upstream's
+// policy header does not reach the provider, and the bytes after the headers
+// still flow both ways.
+func TestSvcUpgradeStripsUpstreamPolicyHeader(t *testing.T) {
+	upstream := hostileUpstream(t, http.StatusOK)
+	cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: SvcPolicyEnforce}}
+	dialer := &countingDialer{}
+	cfg.dial = dialer.dial
+	front := httptest.NewServer(newSvcProxyHandler(cfg))
+	t.Cleanup(front.Close)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close() //nolint:errcheck
+	req, _ := http.NewRequest(http.MethodGet, "/svc/api/websocket", nil)
+	req.Host = "edge"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set(svcTargetHeader, upstream.URL)
+	if err := req.Write(conn); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Upgrade"); got != "websocket" {
+		t.Errorf("Upgrade = %q, want the upstream's header kept", got)
+	}
+	if got := resp.Header.Get(svcPolicyHeader); got != "" {
+		t.Errorf("%s = %q leaked through the upgrade response, want it stripped", svcPolicyHeader, got)
+	}
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	echo := make([]byte, 4)
+	if _, err := io.ReadFull(br, echo); err != nil || string(echo) != "ping" {
+		t.Fatalf("echo = %q, %v; want ping", echo, err)
 	}
 }

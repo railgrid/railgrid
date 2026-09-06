@@ -313,6 +313,8 @@ func loadAllowlist(path string) (map[string]allowEntry, []string, error) {
 			return nil, nil, fmt.Errorf("%s: entry %s is missing `module`", path, e.ID)
 		case e.Reason == "":
 			return nil, nil, fmt.Errorf("%s: entry %s is missing `reason`", path, e.ID)
+		case e.Exposure == "":
+			return nil, nil, fmt.Errorf("%s: entry %s is missing `exposure`", path, e.ID)
 		case e.ReviewBy == "":
 			return nil, nil, fmt.Errorf("%s: entry %s is missing `reviewBy`", path, e.ID)
 		}

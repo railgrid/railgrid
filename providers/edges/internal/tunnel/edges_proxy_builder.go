@@ -290,7 +290,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 	defer sshClient.Close() //nolint:errcheck
 	opened = true
-	audit.Info("SSH session opened", "sshUser", sshUsername(creds),
+	audit.Info("SSH session opened", "sshUser", auditSSHUser(creds),
 		"hostKeyFingerprint", sshHostKeyFingerprint(firstNonEmpty(learnedKey, hk.Key)))
 
 	// tofu: persist the key this first session trusted so every later session
@@ -404,6 +404,14 @@ func sanitizeAuditValue(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// auditSSHUser renders the SSH username for the audit line. The name is not
+// operator-typed on the hub: it is what the agent reported in sshCredentials
+// (edge_status.go), so a compromised or misbehaving edge could put a newline
+// in it and forge audit records exactly like the exec command could.
+func auditSSHUser(creds *SSHClientCredentials) string {
+	return sanitizeAuditValue(sshUsername(creds))
 }
 
 func firstNonEmpty(values ...string) string {

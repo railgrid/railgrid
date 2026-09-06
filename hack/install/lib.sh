@@ -98,8 +98,10 @@ if [[ -z "${FAROS_STATIC_TOKEN:-}" ]]; then
   else
     FAROS_STATIC_TOKEN="$(random_token)"
     (umask 077 && printf '%s\n' "${FAROS_STATIC_TOKEN}" > "${FAROS_STATIC_TOKEN_FILE}")
-    echo "Generated a new static auth token for this install:" >&2
-    echo "  ${FAROS_STATIC_TOKEN}" >&2
+    # The value itself is deliberately not printed: it lives in the 0600 file,
+    # and the login line below reads it from there, so echoing it would only
+    # copy the token into terminal scrollback and CI logs.
+    echo "Generated a new static auth token for this install." >&2
     echo "Saved to ${FAROS_STATIC_TOKEN_FILE} (mode 0600);" >&2
     echo "every hack/install script reuses it from there. To log in later:" >&2
     echo "  faros login --hub-url ${HUB_EXTERNAL_URL} --token \"\$(cat ${FAROS_STATIC_TOKEN_FILE})\" --insecure-skip-tls-verify" >&2

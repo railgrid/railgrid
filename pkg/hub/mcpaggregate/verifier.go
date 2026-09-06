@@ -26,6 +26,7 @@ import (
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -229,6 +230,13 @@ func (v *Verifier) verifyMember(ctx context.Context, user, cluster string) error
 
 	path, err := v.resolvePath(ctx, cluster)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// A cluster ID with no LogicalCluster behind it is not a
+			// verification outage: the bearer is a real hub user asking for
+			// a tenant that does not exist. 403, not 503, so a typo in a
+			// client config does not show up as an availability incident.
+			return fmt.Errorf("%w: cluster %q does not exist", ErrForbidden, cluster)
+		}
 		return err
 	}
 	orgUUID, wsUUID, ok := tenantFromPath(path)

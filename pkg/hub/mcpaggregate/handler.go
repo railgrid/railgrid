@@ -195,22 +195,32 @@ func (h *handler) cached(key string) bool {
 }
 
 // maxVerifiedEntries bounds the cache; expired entries are swept once it is
-// exceeded so a flood of distinct bearers cannot grow it without limit.
+// reached, and if that frees nothing the entry nearest expiry is evicted so
+// a flood of distinct bearers can neither grow it without limit nor lock a
+// newly verified client out of the cache (which would push every request of
+// that client through online verification and the per-IP budget).
 const maxVerifiedEntries = 4096
 
 func (h *handler) remember(key string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
-	if len(h.verified) >= maxVerifiedEntries {
+	if _, ok := h.verified[key]; !ok && len(h.verified) >= maxVerifiedEntries {
 		for k, exp := range h.verified {
 			if now.After(exp) {
 				delete(h.verified, k)
 			}
 		}
 	}
-	if len(h.verified) >= maxVerifiedEntries {
-		return
+	if _, ok := h.verified[key]; !ok && len(h.verified) >= maxVerifiedEntries {
+		var victim string
+		var soonest time.Time
+		for k, exp := range h.verified {
+			if victim == "" || exp.Before(soonest) {
+				victim, soonest = k, exp
+			}
+		}
+		delete(h.verified, victim)
 	}
 	h.verified[key] = now.Add(h.opts.VerifyCacheTTL)
 }

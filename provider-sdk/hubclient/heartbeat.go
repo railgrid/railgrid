@@ -52,6 +52,9 @@ const (
 
 	// maxHeartbeatErrorBody bounds how much of a rejection body is logged.
 	maxHeartbeatErrorBody = 512
+	// maxHeartbeatDrainBody bounds how much of a 2xx body is read to free the
+	// connection for reuse; the hub answers with a few bytes of JSON.
+	maxHeartbeatDrainBody = 64 << 10
 )
 
 // HeartbeatConfig describes one provider's heartbeat to the hub.
@@ -184,6 +187,11 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 				"url", url, "status", resp.StatusCode, "provider", cfg.ProviderName, "tokenConfigured", cfg.Token != "", "reason", strings.TrimSpace(string(reason)))
 		case resp.StatusCode >= 300:
 			log.Info("heartbeat non-2xx", "url", url, "status", resp.StatusCode)
+		default:
+			// Drain the (small) 2xx body so the transport can reuse the
+			// connection; an unread body makes every beat pay for a fresh
+			// TCP + TLS handshake.
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHeartbeatDrainBody))
 		}
 	}
 

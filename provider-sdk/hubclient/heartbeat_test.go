@@ -19,10 +19,13 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,6 +155,53 @@ func TestRunHeartbeatPostsVersionWithBearerAndStopsOnCancel(t *testing.T) {
 	}
 	if logs := rec.joined(); strings.Contains(logs, "rejected") || strings.Contains(logs, "non-2xx") {
 		t.Fatalf("unexpected failure logs on a healthy hub:\n%s", logs)
+	}
+}
+
+// TestRunHeartbeatReusesTheConnection: the hub answers 2xx with a small JSON
+// body. Unless that body is drained before Close, the transport cannot reuse
+// the connection and every beat opens a new one (TCP + TLS in production).
+func TestRunHeartbeatReusesTheConnection(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	var beats atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunHeartbeat(ctx, HeartbeatConfig{
+			HubURL:       srv.URL,
+			ProviderName: "quickstart",
+			Version:      "1.2.3",
+			Token:        "sa-token",
+			Interval:     10 * time.Millisecond,
+			Logger:       (&recordingLogger{}).logger(),
+			CanSend:      func() bool { beats.Add(1); return true },
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for beats.Load() < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if n := beats.Load(); n < 5 {
+		t.Fatalf("only %d beats were sent", n)
+	}
+	if n := conns.Load(); n != 1 {
+		t.Fatalf("%d connections opened for %d beats, want 1 (2xx body not drained before Close)", n, beats.Load())
 	}
 }
 

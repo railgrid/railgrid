@@ -19,6 +19,7 @@ package mcpaggregate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -191,6 +192,32 @@ func TestVerificationCacheExpires(t *testing.T) {
 	}
 	if got := v.calls.Load(); got != 2 {
 		t.Fatalf("verifier calls with expired cache = %d, want 2", got)
+	}
+}
+
+// TestVerificationCacheEvictsAtCapacity: with maxVerifiedEntries live
+// bearers cached, a newly verified bearer is still admitted (one existing
+// entry is evicted) rather than dropped, so a client that verified a moment
+// ago is not pushed back through online verification on every request.
+func TestVerificationCacheEvictsAtCapacity(t *testing.T) {
+	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll}).(*handler)
+	for i := 0; i < maxVerifiedEntries; i++ {
+		h.remember(fmt.Sprintf("bearer-%d|c|n", i))
+	}
+	if n := len(h.verified); n != maxVerifiedEntries {
+		t.Fatalf("cache holds %d entries, want %d", n, maxVerifiedEntries)
+	}
+	h.remember("fresh|c|n")
+	if !h.cached("fresh|c|n") {
+		t.Fatal("a bearer verified at capacity was not cached")
+	}
+	if n := len(h.verified); n != maxVerifiedEntries {
+		t.Fatalf("cache holds %d entries after eviction, want %d", n, maxVerifiedEntries)
+	}
+	// Refreshing a key already present evicts nothing.
+	h.remember("fresh|c|n")
+	if n := len(h.verified); n != maxVerifiedEntries {
+		t.Fatalf("cache holds %d entries after a refresh, want %d", n, maxVerifiedEntries)
 	}
 }
 

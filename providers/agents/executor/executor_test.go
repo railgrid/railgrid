@@ -124,6 +124,42 @@ func TestSubmitCancelledContextFailsFast(t *testing.T) {
 	}
 }
 
+// TestSubmitReturnsErrStoppedWhenStoppedMidWait: a Submit parked on a full
+// queue must notice Stop at once and say the executor is gone, rather than
+// wait out SubmitWait and report ErrQueueFull, which reads as "retry later".
+func TestSubmitReturnsErrStoppedWhenStoppedMidWait(t *testing.T) {
+	e, release := blockedExecutor(t)
+	defer release()
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		done <- e.Submit(ctx, Job{ID: "late", Kind: KindChannel, SourceName: "slack-1"})
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Submit returned before Stop: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	begin := time.Now()
+	e.Stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStopped) {
+			t.Fatalf("want ErrStopped after Stop, got %v", err)
+		}
+		if errors.Is(err, ErrQueueFull) {
+			t.Fatalf("a stopped executor must not report a retryable queue-full: %v", err)
+		}
+		if waited := time.Since(begin); waited > time.Second {
+			t.Fatalf("Submit took %s to notice Stop", waited)
+		}
+	case <-time.After(SubmitWait + 5*time.Second):
+		t.Fatal("Submit never returned after Stop")
+	}
+}
+
 func TestSubmitBeforeStart(t *testing.T) {
 	e := NewInProcess(func(context.Context, Job) error { return nil }, 1, time.Minute)
 	if err := e.Submit(context.Background(), Job{}); !errors.Is(err, ErrStopped) {
