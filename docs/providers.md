@@ -997,6 +997,86 @@ A provider's UI MUST:
 
 ---
 
+## Credentials and rotation
+
+Every provider gets one credential from the hub: a kubeconfig for the `provider`
+ServiceAccount in its own workspace (`FAROS_PROVIDER_KUBECONFIG`). Its bearer is
+a legacy `kubernetes.io/service-account-token` Secret, so it does not expire —
+it is valid until the Secret or the ServiceAccount is deleted.
+
+### What the credential is allowed to do
+
+The ServiceAccount is bound to a role **inside its own provider workspace and
+nowhere else**; cross-workspace reach only ever comes from the APIExport's
+permission claims, which each consuming workspace accepts at Enable time.
+
+Which role is a hub flag:
+
+| `--provider-workspace-cluster-admin` | Bound to | |
+|---|---|---|
+| `true` (default this release) | `cluster-admin` | The historical behaviour. |
+| `false` (default next release) | generated `faros:provider` | Explicit allow-list. |
+
+`faros:provider` is generated from what providers actually do with this
+kubeconfig (`providerClusterRoleRules` in `pkg/hub/providers/provision.go`):
+`apis.kcp.io` APIResourceSchemas / APIExports / APIExportEndpointSlices /
+APIBindings, `apiexports/content` with all verbs (the APIExport
+virtual-workspace authorizer SARs the in-flight request's own verb, discovery
+included), `bind` on `apiexports` so `init` can write the tenant bind grant,
+`cache.kcp.io` CachedResources and their endpoint slices, `core.kcp.io`
+LogicalClusters (read), `providers.faros.sh` CatalogEntries and their status,
+ClusterRoles and ClusterRoleBindings, CustomResourceDefinitions, core
+ServiceAccounts / Secrets / ConfigMaps / Namespaces / Events,
+`coordination.k8s.io` Leases for leader election, `create` on TokenReviews and
+SubjectAccessReviews for providers that authenticate their own callers, and the
+discovery non-resource URLs.
+
+It deliberately withholds `escalate` on ClusterRoles (so RBAC's
+escalation-prevention holds the provider to rights it already has, and it cannot
+promote itself back), `impersonate`, and any write to `tenancy.kcp.io`.
+
+Stage the change rather than flipping it blind: a provider that defines its own
+CRDs in this workspace *and* writes objects of them — the `infrastructure`
+provider seeding Templates — needs more than the allow-list grants, and must
+stay on `true` until it declares what it needs. Flipping either way replaces the
+existing binding (RoleRef is immutable, so the hub deletes and recreates it).
+
+### Rotating
+
+```
+POST /api/admin/providers/{name}/credentials/rotate          platform admin
+POST /api/orgs/{org}/providers/{name}/credentials/rotate     org admin
+```
+
+Both return a fresh `kubeconfig` plus `rotatedAt` and `previousValidUntil`. The
+hub issues a **second** token Secret for the same ServiceAccount, points itself
+at it (`providers.faros.sh/active-token-secret` on the ServiceAccount), and
+stamps the previous Secret with `providers.faros.sh/delete-after` — 24 hours by
+default. The catalog controller deletes retired Secrets once that lapses. The
+platform endpoint additionally rewrites the kubeconfig Secret in
+`root:faros:system:providers`, so in-cluster readers move with it.
+
+During the grace period **both credentials work**: they are tokens for the same
+ServiceAccount, so kcp authenticates either as
+`system:serviceaccount:default:provider`, and every hub-side check — the
+heartbeat's TokenReview included — keys on that identity rather than on which
+Secret the token came from. Reinstall the chart with the new kubeconfig before
+`previousValidUntil`.
+
+`status.credentialsRotatedAt` on the `CatalogEntry` records the last rotation;
+the credential itself is shown once and stored nowhere the hub reads back. There
+is no `faros` CLI subcommand — use curl:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $FAROS_TOKEN" \
+  "$FAROS_HUB_URL/api/admin/providers/$NAME/credentials/rotate" \
+  | jq -r .kubeconfig > provider-kubeconfig.yaml
+```
+
+Rotation is not revocation: it schedules the old credential's death, it does not
+hasten it. For a leaked credential, delete the retired Secret in the provider
+workspace by hand.
+
 ## Security considerations
 
 - **Auth token forwarding** (backend proxy): the user's bearer token is

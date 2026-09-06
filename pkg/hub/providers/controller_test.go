@@ -525,3 +525,76 @@ func conditionByType(conditions []metav1.Condition, conditionType string) *metav
 	}
 	return nil
 }
+
+// Rotation only writes an expiry onto the retired credential; the catalog
+// reconciler is what actually deletes it, in whichever workspace the provider's
+// CatalogEntry lives — which is the same workspace holding its Secrets. A
+// pending expiry has to bring the reconciler back, or the credential outlives
+// its grace period until something unrelated happens to requeue the entry.
+func TestCatalogReconcilerSweepsRotatedProviderCredentials(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.faros.sh"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	var swept []string
+	next := time.Now().Add(time.Hour)
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		sweepCredentials: func(_ context.Context, cluster string) (int, time.Time, error) {
+			swept = append(swept, cluster)
+			return 1, next, nil
+		},
+	}
+	res, err := r.Reconcile(context.Background(), testfakes.NewRequest("cost-cluster", "", "cost"))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(swept) != 1 || swept[0] != "cost-cluster" {
+		t.Fatalf("swept %v, want the provider's own workspace cluster", swept)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("a pending credential expiry did not schedule a requeue; the retired token would outlive its grace period")
+	}
+}
+
+// A sweep that cannot run must not take the provider out of the registry with
+// it: routing is the reconciler's real job, and an un-deleted Secret is the
+// lesser failure.
+func TestCatalogReconcilerSurvivesASweepFailure(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			APIExport: &providersv1alpha1.ProviderAPIExport{Name: "cost.providers.faros.sh"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{
+		mgr: testfakes.NewManager(c), reg: reg, noKCP: true,
+		sweepCredentials: func(context.Context, string) (int, time.Time, error) {
+			return 0, time.Time{}, fmt.Errorf("kcp unavailable")
+		},
+	}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cost-cluster", "", "cost")); err != nil {
+		t.Fatalf("reconcile failed on a sweep error: %v", err)
+	}
+	if _, ok := reg.Get("cost"); !ok {
+		t.Fatal("provider dropped out of the registry because a credential sweep failed")
+	}
+}

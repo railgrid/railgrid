@@ -15,7 +15,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,7 +64,16 @@ func (f *fakeOrgProviderOps) ListOrgProviderWorkspaces(context.Context, string) 
 	return f.workspaces, nil
 }
 
-func (f *fakeOrgProviderOps) GetOrgProviderWorkspace(context.Context, string, string) (*kcp.OrgProviderWorkspace, error) {
+// GetOrgProviderWorkspace answers from the same list ListOrgProviderWorkspaces
+// serves, so "registered" means the same thing to every endpoint. A name the
+// Org never registered returns (nil, nil) — the not-found signal the handlers
+// turn into a 404.
+func (f *fakeOrgProviderOps) GetOrgProviderWorkspace(_ context.Context, _, name string) (*kcp.OrgProviderWorkspace, error) {
+	for i := range f.workspaces {
+		if f.workspaces[i].Name == name {
+			return &f.workspaces[i], nil
+		}
+	}
 	return nil, nil
 }
 
@@ -85,13 +96,51 @@ func (f *fakeOrgProviderOps) GetEdgeInstallTarget(_ context.Context, _, wsUUID, 
 
 // fakeCredMinter is the credential half of the org-provider wiring. It records
 // whether it was ever asked for a credential.
-type fakeCredMinter struct{ minted int }
+type fakeCredMinter struct {
+	minted  int
+	rotated []string
+}
 
 func (f *fakeCredMinter) EnsureProviderSAAtPath(context.Context, string) error { return nil }
 
 func (f *fakeCredMinter) MintProviderKubeconfigAtPath(context.Context, string, string) ([]byte, error) {
 	f.minted++
-	return []byte("apiVersion: v1\nkind: Config\n"), nil
+	return []byte(fakeKubeconfig("minted-token")), nil
+}
+
+func (f *fakeCredMinter) RotateProviderCredentialAtPath(_ context.Context, workspacePath, providerName, _ string) (*providers.RotatedCredential, error) {
+	f.rotated = append(f.rotated, workspacePath)
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	return &providers.RotatedCredential{
+		Kubeconfig:         []byte(fakeKubeconfig("rotated-token-for-" + providerName)),
+		SecretName:         "provider-token-20260905120000",
+		PreviousSecretName: "provider-token",
+		PreviousValidUntil: at.Add(24 * time.Hour),
+		RotatedAt:          at,
+	}, nil
+}
+
+// fakeKubeconfig is the shape MintProviderKubeconfigAtPath produces, so the
+// tests can assert the rotate endpoint returns a real kubeconfig rather than
+// some other blob.
+func fakeKubeconfig(token string) string {
+	return `apiVersion: v1
+kind: Config
+clusters:
+- name: faros
+  cluster:
+    server: https://hub.test/clusters/abcd1234
+    insecure-skip-tls-verify: true
+contexts:
+- name: faros
+  context:
+    cluster: faros
+    user: faros
+current-context: faros
+users:
+- name: faros
+  user:
+    token: ` + token + "\n"
 }
 
 // newOrgProviderTestServer wires the org-provider surface as an ORG ADMIN, with
@@ -604,5 +653,142 @@ func TestOrgProviders_NotWiredReturns501(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("status: got %d, want 501", resp.StatusCode)
+	}
+}
+
+// ===== credential rotation =====
+
+// postRotate calls the org rotate endpoint for a provider.
+func postRotate(t *testing.T, base, provider string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(base+"/api/orgs/org-a/providers/"+provider+"/credentials/rotate", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST rotate: %v", err)
+	}
+	return resp
+}
+
+// registeredOrgProvider wires a server whose Org already has one registered
+// provider, with the caller's org-scope role and the Org's registration policy
+// under test.
+func registeredOrgProvider(t *testing.T, tc tenant.TenantContext, policy, orgRole string) (*fakeOrgProviderOps, *fakeCredMinter, func() string) {
+	t.Helper()
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: tc.User},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{
+			Entries: []tenancyv1alpha1.MembershipIndexEntry{
+				{OrgUUID: "org-a", WorkspaceUUID: "ws-1", Role: tenancyv1alpha1.MembershipRoleMember},
+			},
+		},
+	}
+	ops, creds, url := newOrgProviderTestServerWithPolicy(t,
+		[]kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")}, tc, []runtime.Object{umi}, policy, orgRole)
+	ops.workspaces = []kcp.OrgProviderWorkspace{{Name: "vault", Cluster: "cluster-vault", Phase: "Ready"}}
+	return ops, creds, url
+}
+
+// Rotation hands out a live cluster credential and puts the running one on a
+// deletion clock, so it is admin-only in EVERY Org — including one that opened
+// registration to members. A member registering a provider they will run is a
+// different act from re-issuing the credential of a provider someone else runs.
+func TestRotateOrgProviderCredential_IsAdminOnlyWhateverThePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		policy     string
+		caller     tenant.TenantContext
+		orgRole    string
+		wantStatus int
+	}{
+		{"org admin may rotate", "", adminTC("alice", "org-a", "ws-1"), tenancyv1alpha1.MembershipRoleAdmin, http.StatusOK},
+		{"member may not, on the default policy", "", memberTC("alice", "org-a", "ws-1"), tenancyv1alpha1.MembershipRoleMember, http.StatusForbidden},
+		{
+			"member may not, even where members may register",
+			tenancyv1alpha1.CatalogEntryCreationMembers,
+			memberTC("alice", "org-a", "ws-1"),
+			tenancyv1alpha1.MembershipRoleMember,
+			http.StatusForbidden,
+		},
+		{
+			// The portal attaches X-Faros-Workspace to every request, so a
+			// workspace admin who is merely an org member must not slip through
+			// on the role the headers name.
+			"workspace admin who is only an org member may not",
+			tenancyv1alpha1.CatalogEntryCreationMembers,
+			adminTC("alice", "org-a", "ws-1"),
+			tenancyv1alpha1.MembershipRoleMember,
+			http.StatusForbidden,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, creds, url := registeredOrgProvider(t, tc.caller, tc.policy, tc.orgRole)
+			resp := postRotate(t, url(), "vault")
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus != http.StatusOK && len(creds.rotated) != 0 {
+				t.Fatalf("rotated %v despite a %d", creds.rotated, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// The response is the only place the new credential is ever shown, so it has to
+// be a usable kubeconfig — the same shape registration returns — and it has to
+// say when the credential it replaced stops working, which is the operator's
+// deadline for the rollout.
+func TestRotateOrgProviderCredential_ReturnsAKubeconfigAndTheGraceDeadline(t *testing.T) {
+	ops, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	resp := postRotate(t, url(), "vault")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got RotateOrgProviderCredentialResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Provider.Name != "vault" || got.Provider.WorkspacePath != kcppaths.OrgProviderPath("org-a", "vault") {
+		t.Fatalf("provider = %+v, want the org's vault workspace", got.Provider)
+	}
+	for _, want := range []string{"apiVersion: v1", "kind: Config", "token: rotated-token-for-vault"} {
+		if !strings.Contains(got.Kubeconfig, want) {
+			t.Fatalf("kubeconfig missing %q:\n%s", want, got.Kubeconfig)
+		}
+	}
+	if got.Kubeconfig == fakeKubeconfig("minted-token") {
+		t.Fatal("rotation returned the OLD credential")
+	}
+	rotatedAt, err := time.Parse(time.RFC3339, got.RotatedAt)
+	if err != nil {
+		t.Fatalf("rotatedAt %q: %v", got.RotatedAt, err)
+	}
+	validUntil, err := time.Parse(time.RFC3339, got.PreviousValidUntil)
+	if err != nil {
+		t.Fatalf("previousValidUntil %q: %v", got.PreviousValidUntil, err)
+	}
+	if !validUntil.After(rotatedAt) {
+		t.Fatalf("previousValidUntil %s is not after rotatedAt %s; there would be no window to roll the provider forward", validUntil, rotatedAt)
+	}
+	if len(creds.rotated) != 1 || creds.rotated[0] != kcppaths.OrgProviderPath("org-a", "vault") {
+		t.Fatalf("rotated %v, want exactly the org's own provider workspace", creds.rotated)
+	}
+	if len(ops.registered) != 0 {
+		t.Fatalf("rotation created workspaces: %v", ops.registered)
+	}
+}
+
+// Rotating a provider this Org never registered must not reach kcp at all:
+// otherwise the workspace path is caller-chosen, and a name belonging to
+// another Org would be minted against.
+func TestRotateOrgProviderCredential_UnknownProviderIs404(t *testing.T) {
+	_, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	resp := postRotate(t, url(), "someone-elses")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if len(creds.rotated) != 0 {
+		t.Fatalf("rotated %v for a provider the org never registered", creds.rotated)
 	}
 }

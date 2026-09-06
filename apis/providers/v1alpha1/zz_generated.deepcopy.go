@@ -139,6 +139,10 @@ func (in *CatalogEntryStatus) DeepCopyInto(out *CatalogEntryStatus) {
 		in, out := &in.LastHeartbeat, &out.LastHeartbeat
 		*out = (*in).DeepCopy()
 	}
+	if in.CredentialsRotatedAt != nil {
+		in, out := &in.CredentialsRotatedAt, &out.CredentialsRotatedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

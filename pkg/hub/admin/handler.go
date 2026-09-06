@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	farosclient "github.com/faroshq/faros/pkg/client"
@@ -61,6 +62,11 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/providers", h.createProvider).Methods(http.MethodPost)
 	r.HandleFunc("/providers/{name}", h.deleteProvider).Methods(http.MethodDelete)
 	r.HandleFunc("/providers/{name}/kubeconfig", h.providerKubeconfig).Methods(http.MethodGet)
+	// Rotation is a POST, not another GET on the kubeconfig route: the
+	// kubeconfig endpoint deliberately returns the SAME credential every time
+	// (re-fetching must not multiply live tokens), so "give me a different one"
+	// has to be a separate, explicit, non-idempotent call.
+	r.HandleFunc("/providers/{name}/credentials/rotate", h.rotateProviderCredential).Methods(http.MethodPost)
 }
 
 type userDTO struct {
@@ -326,6 +332,59 @@ func (h *Handler) providerKubeconfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	_, _ = w.Write(kc)
+}
+
+// rotateProviderCredentialDTO is the body of
+// POST /api/admin/providers/{name}/credentials/rotate.
+type rotateProviderCredentialDTO struct {
+	Name       string `json:"name"`
+	Kubeconfig string `json:"kubeconfig"`
+	// PreviousValidUntil is when the credential this call replaced stops
+	// working, RFC3339. Empty when there was nothing to retire. It is the
+	// deadline for rolling the provider onto the new kubeconfig — until then
+	// both authenticate as the same ServiceAccount, so the provider keeps
+	// working (its heartbeat included) on either.
+	PreviousValidUntil string `json:"previousValidUntil,omitempty"`
+	RotatedAt          string `json:"rotatedAt"`
+}
+
+// rotateProviderCredential mints a second ServiceAccount token for a platform
+// provider, makes it the credential the hub hands out, and puts the previous
+// one on a deletion clock. Returns the new kubeconfig in the response body —
+// the only time it is shown, exactly like registration.
+func (h *Handler) rotateProviderCredential(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["name"]
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "provider name is required")
+		return
+	}
+	mode, err := ParseKubeconfigServerMode(r.URL.Query().Get("server"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	kc, rotated, err := h.svc.RotateProviderCredential(r.Context(), name, mode)
+	if err != nil {
+		if errors.Is(err, ErrServerModeUnavailable) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dto := rotateProviderCredentialDTO{
+		Name:       name,
+		Kubeconfig: string(kc),
+		RotatedAt:  rotated.RotatedAt.UTC().Format(time.RFC3339),
+	}
+	if !rotated.PreviousValidUntil.IsZero() {
+		dto.PreviousValidUntil = rotated.PreviousValidUntil.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, dto)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

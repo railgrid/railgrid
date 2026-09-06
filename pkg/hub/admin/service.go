@@ -264,6 +264,72 @@ func (s *Service) GetProviderKubeconfig(ctx context.Context, name string, mode K
 	return rewriteKubeconfigServer(kc, base)
 }
 
+// RotateProviderCredential issues a NEW workspace credential for a platform
+// provider's ServiceAccount, rewrites the kubeconfig Secret the Provider
+// controller keeps in root:faros:system:providers, and returns the fresh
+// kubeconfig in the same shape the download endpoint serves.
+//
+// The Secret is rewritten rather than left alone because that Secret is where
+// in-cluster consumers read the credential from: a rotation the Secret did not
+// see would hand the operator a kubeconfig while every automated reader kept
+// the retired one, and the retired one is on a deletion clock.
+//
+// mode re-points the server URL on the way out, exactly as GetProviderKubeconfig
+// does; the stored Secret always keeps the address the hub minted.
+func (s *Service) RotateProviderCredential(ctx context.Context, name string, mode KubeconfigServerMode) ([]byte, *providers.RotatedCredential, error) {
+	cfg := rest.CopyConfig(s.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dynamic client for %s: %w", kcppaths.SystemProviders, err)
+	}
+	prov, err := dyn.Resource(providerGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting Provider %q: %w", name, err)
+	}
+
+	serverURL := s.hubInternalURL
+	if serverURL == "" {
+		serverURL = s.hubExternalURL
+	}
+	if override, _, _ := unstructured.NestedString(prov.Object, "spec", "serverURLOverride"); override != "" {
+		serverURL = override
+	}
+	rotated, err := s.prov.RotateProviderCredential(ctx, name, serverURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	secretNS, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "namespace")
+	secretName, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "name")
+	secretKey, _, _ := unstructured.NestedString(prov.Object, "status", "secretRef", "key")
+	if secretNS == "" {
+		secretNS = "default"
+	}
+	if secretName == "" {
+		secretName = name + "-kubeconfig"
+	}
+	if secretKey == "" {
+		secretKey = providers.ProviderKubeconfigSecretKey
+	}
+	if err := s.prov.WriteKubeconfigSecret(ctx, secretNS, secretName, secretKey, rotated.Kubeconfig, name); err != nil {
+		return nil, nil, fmt.Errorf("writing rotated kubeconfig Secret %s/%s: %w", secretNS, secretName, err)
+	}
+
+	if mode == ServerModeAsMinted {
+		return rotated.Kubeconfig, rotated, nil
+	}
+	base, err := s.serverBaseFor(mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err := rewriteKubeconfigServer(rotated.Kubeconfig, base)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, rotated, nil
+}
+
 // DeleteProvider removes a Provider object from root:faros:system:providers.
 // The reconciler's finalizer then tears down the sub-workspace. Idempotent.
 func (s *Service) DeleteProvider(ctx context.Context, name string) error {
@@ -302,9 +368,9 @@ type Service struct {
 // kubeconfig download offer either address regardless of which one the Provider
 // reconciler baked into the Secret. hubInternalURL may be empty, in which
 // case only the external mode is offered.
-func NewService(kcpConfig *rest.Config, hubExternalURL, hubInternalURL string) *Service {
+func NewService(kcpConfig *rest.Config, hubExternalURL, hubInternalURL string, provOpts ...providers.ProvisionerOption) *Service {
 	return &Service{
-		prov:           providers.NewProvisioner(kcpConfig),
+		prov:           providers.NewProvisioner(kcpConfig, provOpts...),
 		kcpConfig:      kcpConfig,
 		bootstrapper:   kcp.NewBootstrapper(kcpConfig),
 		hubExternalURL: hubExternalURL,

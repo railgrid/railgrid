@@ -754,7 +754,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// the Org's provider workspaces, the Provisioner mints the
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
-			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig))
+			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (faros get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
@@ -832,7 +832,7 @@ func (s *Server) Run(ctx context.Context) error {
 					}
 					return false
 				})
-				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.HubInternalURL)
+				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.HubInternalURL, s.providerProvisionerOptions()...)
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
 				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
@@ -894,6 +894,10 @@ func (s *Server) Run(ctx context.Context) error {
 			// pkg/hub/providers, so the two EdgeRoute types are mirrored rather
 			// than shared, exactly as ProviderClaim is.
 			EdgeRoutes: edgeRouteResolver{bootstrapper},
+			// The catalog reconciler sweeps rotated-out provider credentials
+			// once their grace period lapses, so it needs the same Provisioner
+			// configuration as the paths that mint them.
+			Provisioner: s.providerProvisionerOptions(),
 		}); err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
@@ -962,6 +966,7 @@ func (s *Server) Run(ctx context.Context) error {
 			if err := providers.SetupProviderWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
 				HubExternalURL: s.opts.HubExternalURL,
 				HubInternalURL: s.opts.HubInternalURL,
+				Provisioner:    s.providerProvisionerOptions(),
 			}); err != nil {
 				logger.Error(err, "Setting up provider provisioning controller failed")
 				return
@@ -1163,6 +1168,17 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// providerProvisionerOptions is the one place the hub's provider-credential
+// policy is turned into Provisioner options. Every path that creates a provider
+// ServiceAccount — admin onboarding, the Provider reconciler, org-owned
+// registration — and the catalog reconciler that sweeps rotated credentials go
+// through it, so they cannot disagree about which role a provider is bound to.
+func (s *Server) providerProvisionerOptions() []providers.ProvisionerOption {
+	return []providers.ProvisionerOption{
+		providers.WithWorkspaceClusterAdmin(s.opts.ProviderWorkspaceClusterAdmin),
+	}
 }
 
 func (s *Server) buildRestConfig() (*rest.Config, error) {

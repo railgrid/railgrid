@@ -641,6 +641,20 @@ type CatalogEntryStatus struct {
 	// +optional
 	ReportedVersion string `json:"reportedVersion,omitempty"`
 
+	// CredentialsRotatedAt is when the hub last issued a NEW workspace
+	// credential for this provider's ServiceAccount
+	// (POST .../providers/{name}/credentials/rotate). Empty means the provider
+	// still holds the credential minted at registration.
+	//
+	// It is recorded here, on the object an operator already looks at, because
+	// the credential itself is returned once and never stored: without this
+	// there is nothing anywhere that says how old the token in a provider's
+	// Secret is. The previous credential keeps working for a grace period
+	// after this timestamp, so it also dates the window in which a rollout has
+	// to finish.
+	// +optional
+	CredentialsRotatedAt *metav1.Time `json:"credentialsRotatedAt,omitempty"`
+
 	// Conditions describe the current state of the provider.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

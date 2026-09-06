@@ -28,10 +28,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros/pkg/apiurl"
 	"github.com/faroshq/faros/pkg/kcppaths"
@@ -44,14 +46,78 @@ import (
 // `init`.
 type Provisioner struct {
 	kcpConfig *rest.Config
+
+	// workspaceClusterAdmin binds the provider ServiceAccount to cluster-admin
+	// in its own workspace instead of the generated faros:provider role. See
+	// WithWorkspaceClusterAdmin.
+	workspaceClusterAdmin bool
+	// credentialGracePeriod is how long a rotated-out token Secret stays valid
+	// before the sweeper deletes it. Zero means DefaultCredentialGracePeriod.
+	credentialGracePeriod time.Duration
+	// clock is overridable in tests. Read it through now(), which tolerates a
+	// zero-value Provisioner — several tests build one directly.
+	clock func() time.Time
+}
+
+// now is the Provisioner's clock, defaulting to the real one.
+func (p *Provisioner) now() time.Time {
+	if p.clock == nil {
+		return time.Now()
+	}
+	return p.clock()
+}
+
+// gracePeriod is how long a retired credential stays valid, defaulting to
+// DefaultCredentialGracePeriod.
+func (p *Provisioner) gracePeriod() time.Duration {
+	if p.credentialGracePeriod <= 0 {
+		return DefaultCredentialGracePeriod
+	}
+	return p.credentialGracePeriod
+}
+
+// ProvisionerOption configures a Provisioner.
+type ProvisionerOption func(*Provisioner)
+
+// WithWorkspaceClusterAdmin selects the role the provider's ServiceAccount is
+// bound to inside its own provider workspace: true keeps the historical
+// cluster-admin binding, false binds the generated, narrower faros:provider
+// ClusterRole (see providerClusterRoleRules).
+//
+// It is a Provisioner-level option rather than a per-call argument because
+// every caller that creates a provider SA — admin onboarding, the Provider
+// reconciler, org-owned registration — must agree: a hub that narrowed the
+// role in one path and not another would leave the wider binding in place for
+// whichever path ran last.
+func WithWorkspaceClusterAdmin(clusterAdmin bool) ProvisionerOption {
+	return func(p *Provisioner) { p.workspaceClusterAdmin = clusterAdmin }
+}
+
+// WithCredentialGracePeriod overrides how long a rotated-out provider token
+// Secret stays usable before it is swept. Zero or negative restores the
+// default.
+func WithCredentialGracePeriod(d time.Duration) ProvisionerOption {
+	return func(p *Provisioner) { p.credentialGracePeriod = d }
 }
 
 // NewProvisioner returns a Provisioner that performs provider-workspace
 // side-effects (workspace, ServiceAccount, minted kubeconfig) against kcp using
 // the given admin config. Used by the admin onboarding API
 // (pkg/hub/admin); the catalog controller no longer provisions.
-func NewProvisioner(kcpConfig *rest.Config) *Provisioner {
-	return &Provisioner{kcpConfig: kcpConfig}
+//
+// The default is the historical behaviour — cluster-admin in the provider's own
+// workspace. Pass WithWorkspaceClusterAdmin(false) to bind the narrower
+// generated role instead.
+func NewProvisioner(kcpConfig *rest.Config, opts ...ProvisionerOption) *Provisioner {
+	p := &Provisioner{
+		kcpConfig:             kcpConfig,
+		workspaceClusterAdmin: true,
+		credentialGracePeriod: DefaultCredentialGracePeriod,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // providersParentWorkspace is the parent of per-provider sub-workspaces
@@ -66,6 +132,9 @@ var (
 	}
 	clusterRoleBindingGVR = schema.GroupVersionResource{
 		Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings",
+	}
+	clusterRoleGVR = schema.GroupVersionResource{
+		Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles",
 	}
 	serviceAccountGVR = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "serviceaccounts",
@@ -98,6 +167,151 @@ const ProviderSANamespace = "default"
 // the provider pod — and any downstream consumer such as the kro cluster —
 // never needs a rotation loop.
 const ProviderTokenSecretSuffix = "-token"
+
+// ProviderTokenSecretName is the Secret every provider workspace starts with.
+// Rotation mints differently-named Secrets beside it and records which one is
+// current on the ServiceAccount, so this stays the name of the *first*
+// credential rather than always the live one — read the live one with
+// activeTokenSecretName.
+const ProviderTokenSecretName = ProviderSAName + ProviderTokenSecretSuffix
+
+const (
+	// AnnotationActiveTokenSecret names, on the provider ServiceAccount, the
+	// token Secret the hub currently mints kubeconfigs from. Its absence means
+	// ProviderTokenSecretName, which is what every workspace provisioned
+	// before rotation existed carries.
+	//
+	// The pointer lives on the ServiceAccount rather than being derived from
+	// Secret names so that "which credential is current" has exactly one
+	// answer, and so a half-finished rotation (new Secret created, pointer not
+	// yet moved) keeps handing out the old, still-valid credential rather than
+	// an unpopulated one.
+	AnnotationActiveTokenSecret = "providers.faros.sh/active-token-secret"
+
+	// AnnotationTokenSecretExpiry is stamped on a rotated-out token Secret with
+	// the RFC3339 time after which it may be deleted. Until then both tokens
+	// authenticate as the same ServiceAccount, which is what lets a provider be
+	// rolled onto the new credential without a gap.
+	AnnotationTokenSecretExpiry = "providers.faros.sh/delete-after"
+)
+
+// DefaultCredentialGracePeriod is how long a rotated-out provider token stays
+// valid. It has to outlast a leisurely rollout of the provider's chart — the
+// operator has to take the new kubeconfig, put it in a Secret, and restart the
+// workload — so a day rather than an hour, and short enough that a leaked
+// credential is not indefinitely live.
+const DefaultCredentialGracePeriod = 24 * time.Hour
+
+// ProviderClusterRoleName is the generated, narrower role bound to the provider
+// ServiceAccount in its own workspace when the hub runs with
+// --provider-workspace-cluster-admin=false.
+const ProviderClusterRoleName = "faros:provider"
+
+// providerSABindingName is the ClusterRoleBinding tying the provider SA to
+// whichever role the hub selected. The name is historical and stable across the
+// role switch: a rename would leave the old (cluster-admin) binding behind.
+const providerSABindingName = "faros:providers:sa:" + ProviderSAName
+
+// providerClusterRoleRules is what a provider actually needs inside its own
+// workspace, derived from what runs against the minted kubeconfig:
+// `provider-sdk/install` (every provider's `init`), the APIExport
+// virtual-workspace clients, the SDK's leader election, and the runtime
+// bootstrap the infrastructure provider performs.
+//
+// Everything a provider does OUTSIDE this workspace still comes from its
+// APIExport's permission claims, which each consuming workspace accepts at
+// Enable time; nothing here widens that.
+//
+// What it deliberately does NOT grant, and cluster-admin did:
+//   - escalate on ClusterRoles. The provider may create RBAC (the bind grant
+//     `init` writes), but RBAC's escalation-prevention then holds it to rights
+//     it already has, so it cannot promote itself back to cluster-admin.
+//   - impersonate, on any subject.
+//   - the workspace's own tenancy objects (Workspace, WorkspaceType) — the
+//     `provider` WorkspaceType does not extend universal, so a provider could
+//     not create sub-workspaces anyway, and this stops it deleting its own.
+//
+// A provider that defines its own CRDs in this workspace AND writes objects of
+// those CRDs (today: infrastructure, which seeds Templates) needs more than
+// this: escalation prevention stops it granting itself access to a resource it
+// has no rule for. That is the case --provider-workspace-cluster-admin=true
+// exists to keep working while providers declare what they need.
+func providerClusterRoleRules() []any {
+	rule := func(groups, resources, verbs []string) map[string]any {
+		return map[string]any{
+			"apiGroups": toAnySlice(groups),
+			"resources": toAnySlice(resources),
+			"verbs":     toAnySlice(verbs),
+		}
+	}
+	readWrite := []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+	return []any{
+		// `init` applies schemas, the APIExport, and the endpoint slice; the
+		// multicluster provider lists APIBindings and watches the slice to
+		// discover which logical clusters bound the export.
+		rule([]string{"apis.kcp.io"},
+			[]string{"apiresourceschemas", "apiexports", "apiexportendpointslices", "apibindings"},
+			readWrite),
+		// The APIExport virtual workspace gates EVERY call through a SAR for
+		// apiexports/content with the verb of the in-flight request — discovery
+		// included — so the verb set has to be open. Scope comes from the
+		// workspace: only this provider's exports live here.
+		rule([]string{"apis.kcp.io"}, []string{"apiexports/content"}, []string{"*"}),
+		// `bind` is what lets ApplyBindGrant create the tenant-facing bind
+		// ClusterRole without `escalate`: RBAC only permits granting rights the
+		// grantor holds.
+		rule([]string{"apis.kcp.io"}, []string{"apiexports"}, []string{"bind"}),
+		rule([]string{"cache.kcp.io"},
+			[]string{"cachedresources", "cachedresourceendpointslices"}, readWrite),
+		// Resolving the workspace's own path (ApplyBindGrant's org check, the
+		// infrastructure operator's discovery).
+		rule([]string{"core.kcp.io"}, []string{"logicalclusters"}, []string{"get", "list", "watch"}),
+		// The provider self-registers its CatalogEntry here and the hub reads
+		// its status back; the provider updates it on every chart upgrade.
+		rule([]string{"providers.faros.sh"},
+			[]string{"catalogentries", "catalogentries/status"},
+			[]string{"get", "list", "watch", "create", "update", "patch"}),
+		// The bind grant (ClusterRole + ClusterRoleBinding), created and — for
+		// org-owned workspaces — removed again by ApplyBindGrant.
+		rule([]string{"rbac.authorization.k8s.io"},
+			[]string{"clusterroles", "clusterrolebindings"},
+			[]string{"get", "list", "watch", "create", "update", "delete"}),
+		// Per-template CRDs (infrastructure) and any provider that serves
+		// workspace-local types.
+		rule([]string{"apiextensions.k8s.io"}, []string{"customresourcedefinitions"}, readWrite),
+		// Runtime identity minting (infrastructure), controller-runtime event
+		// recorders, and the Secrets a provider keeps for itself.
+		rule([]string{""},
+			[]string{"serviceaccounts", "secrets", "configmaps", "namespaces", "events"},
+			readWrite),
+		// Leader election (provider-sdk/leaderelection, kuery engagement
+		// claims, the edges tunnel registry).
+		rule([]string{"coordination.k8s.io"}, []string{"leases"}, readWrite),
+		// Providers that authenticate their own data-plane callers delegate the
+		// decision back to kcp rather than parsing JWTs.
+		rule([]string{"authentication.k8s.io"}, []string{"tokenreviews"}, []string{"create"}),
+		rule([]string{"authorization.k8s.io"},
+			[]string{"subjectaccessreviews", "selfsubjectaccessreviews", "selfsubjectrulesreviews"},
+			[]string{"create"}),
+		// Discovery and RESTMapper construction for every client-go and
+		// controller-runtime client built from the provider kubeconfig.
+		map[string]any{
+			"nonResourceURLs": toAnySlice([]string{
+				"/api", "/api/*", "/apis", "/apis/*", "/version",
+				"/openapi", "/openapi/*", "/healthz", "/livez", "/readyz",
+			}),
+			"verbs": toAnySlice([]string{"get"}),
+		},
+	}
+}
+
+func toAnySlice(in []string) []any {
+	out := make([]any, 0, len(in))
+	for _, s := range in {
+		out = append(out, s)
+	}
+	return out
+}
 
 // EnsureProviderSA creates the "provider" ServiceAccount in the platform
 // provider's sub-workspace (root:faros:providers/{name}) and grants it
@@ -136,29 +350,75 @@ func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath 
 		return fmt.Errorf("creating ServiceAccount %s/%s: %w", ProviderSANamespace, ProviderSAName, err)
 	}
 
-	// cluster-admin in the sub-workspace only. The provider pod reaches
-	// other workspaces via the APIExport's virtual workspace + accepted
-	// permission claims — NOT via this SA.
-	crbName := "faros:providers:sa:" + ProviderSAName
+	// Bound in the sub-workspace only, to whichever role this hub selected.
+	// The provider pod reaches other workspaces via the APIExport's virtual
+	// workspace + accepted permission claims — NOT via this SA.
+	return p.ensureProviderRoleBinding(ctx, cl)
+}
+
+// ensureProviderRoleBinding binds the provider ServiceAccount to cluster-admin
+// or to the generated faros:provider role, depending on the hub's
+// --provider-workspace-cluster-admin setting, and moves an existing binding
+// when the setting changed.
+//
+// roleRef is immutable in RBAC, so switching roles means delete-then-create
+// rather than an update. The window between the two is a few milliseconds in
+// which the provider's SA has no rights in its own workspace; its controllers
+// retry, and the alternative — a second binding under a different name — would
+// leave the wide grant in place forever, which is the thing being removed.
+func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.Interface) error {
+	roleName := "cluster-admin"
+	if !p.workspaceClusterAdmin {
+		roleName = ProviderClusterRoleName
+		cr := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "ClusterRole",
+			"metadata":   map[string]any{"name": ProviderClusterRoleName},
+			"rules":      providerClusterRoleRules(),
+		}}
+		if err := applyUnstructured(ctx, cl, clusterRoleGVR, cr); err != nil {
+			return fmt.Errorf("applying ClusterRole %s: %w", ProviderClusterRoleName, err)
+		}
+	}
+
 	crb := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRoleBinding",
-		"metadata":   map[string]any{"name": crbName},
+		"metadata":   map[string]any{"name": providerSABindingName},
 		"roleRef": map[string]any{
 			"apiGroup": "rbac.authorization.k8s.io",
 			"kind":     "ClusterRole",
-			"name":     "cluster-admin",
+			"name":     roleName,
 		},
 		"subjects": []any{
 			map[string]any{
 				"kind":      "ServiceAccount",
 				"name":      ProviderSAName,
-				"namespace": "default",
+				"namespace": ProviderSANamespace,
 			},
 		},
 	}}
-	if err := applyUnstructured(ctx, cl, clusterRoleBindingGVR, crb); err != nil {
-		return fmt.Errorf("applying %s: %w", crbName, err)
+
+	existing, err := cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return fmt.Errorf("getting %s: %w", providerSABindingName, err)
+	default:
+		current, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
+		if current == roleName {
+			crb.SetResourceVersion(existing.GetResourceVersion())
+			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, crb, metav1.UpdateOptions{}); err != nil {
+				return fmt.Errorf("updating %s: %w", providerSABindingName, err)
+			}
+			return nil
+		}
+		if err := cl.Resource(clusterRoleBindingGVR).Delete(ctx, providerSABindingName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("deleting %s to move it from %s to %s: %w", providerSABindingName, current, roleName, err)
+		}
+	}
+	if _, err := cl.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating %s: %w", providerSABindingName, err)
 	}
 	return nil
 }
@@ -194,11 +454,25 @@ func (p *Provisioner) MintProviderKubeconfigAtPath(ctx context.Context, workspac
 		return nil, fmt.Errorf("typed kube client for %s: %w", workspacePath, err)
 	}
 
-	token, err := ensureLegacySAToken(ctx, typed, "default", ProviderSAName, ProviderSAName+ProviderTokenSecretSuffix)
+	// Which Secret is current is recorded on the ServiceAccount by rotation;
+	// a workspace that has never rotated has no annotation and keeps the
+	// original name, so this returns the same token it always did.
+	secretName, err := activeTokenSecretName(ctx, typed)
+	if err != nil {
+		return nil, fmt.Errorf("resolving active token Secret for %s: %w", workspacePath, err)
+	}
+	token, err := ensureLegacySAToken(ctx, typed, ProviderSANamespace, ProviderSAName, secretName)
 	if err != nil {
 		return nil, fmt.Errorf("ensuring SA token for %s: %w", workspacePath, err)
 	}
 
+	return p.renderKubeconfig(ctx, cfg, hubExternalURL, token)
+}
+
+// renderKubeconfig turns a resolved bearer token into the provider kubeconfig,
+// resolving the workspace's logical cluster ID for the server URL. Shared by
+// minting and rotation so both hand back byte-identical shapes.
+func (p *Provisioner) renderKubeconfig(ctx context.Context, cfg *rest.Config, hubExternalURL, token string) ([]byte, error) {
 	// Resolve the provider workspace's logical cluster ID. The kubeconfig must
 	// address kcp by ID (/clusters/<id>), not by workspace path: kcp shards only
 	// resolve /clusters/<id>, and workspace-path resolution is front-proxy-only.
@@ -206,7 +480,7 @@ func (p *Provisioner) MintProviderKubeconfigAtPath(ctx context.Context, workspac
 	// shard (the SA token also carries this ID in its clusterName claim).
 	clusterID, err := resolveLogicalClusterID(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("resolving logical cluster ID for %s: %w", workspacePath, err)
+		return nil, fmt.Errorf("resolving logical cluster ID for %s: %w", cfg.Host, err)
 	}
 
 	server := hubExternalURL
@@ -300,6 +574,245 @@ func ensureLegacySAToken(ctx context.Context, cs kubernetes.Interface, namespace
 		return "", fmt.Errorf("waiting for token controller to populate Secret %s/%s: %w", namespace, secretName, err)
 	}
 	return token, nil
+}
+
+// activeTokenSecretName reads the provider ServiceAccount's pointer to the
+// token Secret currently in use. A ServiceAccount without the annotation —
+// every workspace provisioned before rotation existed — reports the original
+// name, so the answer is stable for a provider that has never rotated.
+func activeTokenSecretName(ctx context.Context, cs kubernetes.Interface) (string, error) {
+	sa, err := cs.CoreV1().ServiceAccounts(ProviderSANamespace).Get(ctx, ProviderSAName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting ServiceAccount %s/%s: %w", ProviderSANamespace, ProviderSAName, err)
+	}
+	if name := sa.Annotations[AnnotationActiveTokenSecret]; name != "" {
+		return name, nil
+	}
+	return ProviderTokenSecretName, nil
+}
+
+// RotatedCredential describes the outcome of a rotation.
+type RotatedCredential struct {
+	// Kubeconfig is the new credential, in the same shape registration
+	// returns.
+	Kubeconfig []byte
+	// SecretName is the token Secret the new credential came from.
+	SecretName string
+	// PreviousSecretName is the Secret that was current before, empty when
+	// there was none to retire.
+	PreviousSecretName string
+	// PreviousValidUntil is when the previous credential stops working. Zero
+	// when nothing was retired. Until then BOTH tokens authenticate as the
+	// same ServiceAccount, so anything that checks the provider's identity —
+	// the heartbeat's TokenReview included — keeps accepting the old one while
+	// the provider is rolled onto the new one.
+	PreviousValidUntil time.Time
+	// RotatedAt is the rotation's wall-clock time, recorded on the
+	// CatalogEntry status.
+	RotatedAt time.Time
+}
+
+// RotateProviderCredential rotates the platform provider at
+// root:faros:providers/{name}.
+func (p *Provisioner) RotateProviderCredential(ctx context.Context, providerName, hubExternalURL string) (*RotatedCredential, error) {
+	return p.RotateProviderCredentialAtPath(ctx, providersParentWorkspace+":"+providerName, providerName, hubExternalURL)
+}
+
+// RotateProviderCredentialAtPath issues a SECOND long-lived token for the
+// provider's ServiceAccount, makes it the one the hub hands out, and schedules
+// the previous one for deletion after the grace period.
+//
+// Both tokens belong to the same ServiceAccount, so during the grace period the
+// provider authenticates identically with either: the identity kcp reports is
+// system:serviceaccount:default:provider in both cases, which is what every
+// hub-side check keys on. That is what makes rotation a rolling change rather
+// than an outage — the operator installs the new kubeconfig whenever it suits
+// them, and the old credential stops working on its own.
+//
+// providerName is only used to record status.credentialsRotatedAt on the
+// provider's CatalogEntry; pass "" to skip that.
+func (p *Provisioner) RotateProviderCredentialAtPath(ctx context.Context, workspacePath, providerName, hubExternalURL string) (*RotatedCredential, error) {
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, workspacePath)
+	typed, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("typed kube client for %s: %w", workspacePath, err)
+	}
+
+	out, token, err := p.rotateToken(ctx, typed)
+	if err != nil {
+		return nil, fmt.Errorf("rotating provider credential in %s: %w", workspacePath, err)
+	}
+
+	kc, err := p.renderKubeconfig(ctx, cfg, hubExternalURL, token)
+	if err != nil {
+		return nil, err
+	}
+	out.Kubeconfig = kc
+
+	if providerName != "" {
+		// Best-effort: the CatalogEntry only exists once the provider's chart
+		// has run. A rotation before that is still a valid rotation.
+		if err := p.recordCredentialsRotated(ctx, cfg, providerName, out.RotatedAt); err != nil {
+			klog.FromContext(ctx).V(2).Info("could not record credentialsRotatedAt on CatalogEntry",
+				"provider", providerName, "workspace", workspacePath, "err", err.Error())
+		}
+	}
+	return out, nil
+}
+
+// rotateToken is the workspace-client half of a rotation: mint a second token
+// for the same ServiceAccount, repoint the hub at it, and give the previous one
+// a deadline. Split out from RotateProviderCredentialAtPath so it can be
+// exercised against an injected clientset — everything it does is Secret and
+// ServiceAccount bookkeeping, while its caller additionally needs a live kcp to
+// resolve the workspace's logical cluster ID.
+func (p *Provisioner) rotateToken(ctx context.Context, cs kubernetes.Interface) (*RotatedCredential, string, error) {
+	previous, err := activeTokenSecretName(ctx, cs)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolving active token Secret: %w", err)
+	}
+
+	now := p.now()
+	next := fmt.Sprintf("%s-%s", ProviderTokenSecretName, now.UTC().Format("20060102150405"))
+	if next == previous {
+		// Two rotations inside the same second would otherwise re-point at the
+		// Secret being retired and immediately schedule the live credential for
+		// deletion.
+		return nil, "", fmt.Errorf("a rotation already happened this second; retry")
+	}
+
+	token, err := ensureLegacySAToken(ctx, cs, ProviderSANamespace, ProviderSAName, next)
+	if err != nil {
+		return nil, "", fmt.Errorf("minting rotated SA token: %w", err)
+	}
+
+	// Move the pointer BEFORE retiring the old Secret. The reverse order has a
+	// window where the old credential is expiring and nothing yet says the new
+	// one is current, so a concurrent kubeconfig fetch would hand out the
+	// credential that is on its way out.
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, AnnotationActiveTokenSecret, next)
+	if _, err := cs.CoreV1().ServiceAccounts(ProviderSANamespace).Patch(
+		ctx, ProviderSAName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+	); err != nil {
+		return nil, "", fmt.Errorf("recording active token Secret on the ServiceAccount: %w", err)
+	}
+
+	out := &RotatedCredential{SecretName: next, RotatedAt: now}
+	if previous == "" || previous == next {
+		return out, token, nil
+	}
+	expiry := now.Add(p.gracePeriod())
+	retire := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, AnnotationTokenSecretExpiry, expiry.UTC().Format(time.RFC3339))
+	switch _, err := cs.CoreV1().Secrets(ProviderSANamespace).Patch(
+		ctx, previous, types.MergePatchType, []byte(retire), metav1.PatchOptions{},
+	); {
+	case apierrors.IsNotFound(err):
+		// Nothing to retire: the pointer named a Secret that is already gone.
+	case err != nil:
+		return nil, "", fmt.Errorf("scheduling previous token Secret %s for deletion: %w", previous, err)
+	default:
+		out.PreviousSecretName = previous
+		out.PreviousValidUntil = expiry
+	}
+	return out, token, nil
+}
+
+// recordCredentialsRotated stamps status.credentialsRotatedAt on the provider's
+// CatalogEntry so an operator can see, from the object the platform already
+// shows them, when the credential they hold was issued.
+func (p *Provisioner) recordCredentialsRotated(ctx context.Context, cfg *rest.Config, providerName string, at time.Time) error {
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("dynamic client: %w", err)
+	}
+	patch := fmt.Sprintf(`{"status":{"credentialsRotatedAt":%q}}`, at.UTC().Format(time.RFC3339))
+	_, err = dyn.Resource(catalogEntryGVR).Patch(
+		ctx, providerName, types.MergePatchType, []byte(patch), metav1.PatchOptions{}, "status",
+	)
+	return err
+}
+
+// SweepExpiredProviderTokens deletes the provider token Secrets in a provider
+// workspace whose grace period has passed, and reports when the next one lapses
+// (zero when none is pending).
+//
+// It is what actually ends the old credential's life: rotation only writes the
+// expiry. Running it from the catalog reconciler means it runs wherever a
+// provider is known, including org-owned workspaces the hub never lists.
+//
+// cluster may be a workspace path or a logical cluster ID.
+func (p *Provisioner) SweepExpiredProviderTokens(ctx context.Context, cluster string) (deleted int, nextExpiry time.Time, err error) {
+	if p.kcpConfig == nil {
+		// Registry-only mode: no kcp to sweep in, and no credentials to have
+		// rotated in the first place.
+		return 0, time.Time{}, nil
+	}
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
+	typed, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("typed kube client for %s: %w", cluster, err)
+	}
+	deleted, nextExpiry, err = p.sweepExpiredTokens(ctx, typed)
+	if err != nil {
+		return deleted, nextExpiry, fmt.Errorf("sweeping expired provider tokens in %s: %w", cluster, err)
+	}
+	return deleted, nextExpiry, nil
+}
+
+// sweepExpiredTokens is SweepExpiredProviderTokens against an already-built
+// clientset, so it can be exercised without a live kcp.
+func (p *Provisioner) sweepExpiredTokens(ctx context.Context, cs kubernetes.Interface) (deleted int, nextExpiry time.Time, err error) {
+	active, err := activeTokenSecretName(ctx, cs)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// No provider ServiceAccount: not a provider workspace, or not
+			// provisioned yet. Nothing to sweep either way.
+			return 0, time.Time{}, nil
+		}
+		return 0, time.Time{}, err
+	}
+	list, err := cs.CoreV1().Secrets(ProviderSANamespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("listing Secrets: %w", err)
+	}
+	now := p.now()
+	for i := range list.Items {
+		s := &list.Items[i]
+		if s.Name == active || s.Type != corev1.SecretTypeServiceAccountToken {
+			continue
+		}
+		if s.Annotations[corev1.ServiceAccountNameKey] != ProviderSAName {
+			continue
+		}
+		raw := s.Annotations[AnnotationTokenSecretExpiry]
+		if raw == "" {
+			// Never retired — the credential a workspace that has not rotated
+			// still holds. Deleting it would be an outage.
+			continue
+		}
+		expiry, parseErr := time.Parse(time.RFC3339, raw)
+		if parseErr != nil {
+			// An unparseable expiry is not a licence to keep a retired
+			// credential alive forever, but deleting on a value we cannot read
+			// is worse. Surface it and leave the Secret.
+			klog.FromContext(ctx).Info("provider token Secret has an unparseable expiry annotation; leaving it in place",
+				"secret", s.Name, "value", raw)
+			continue
+		}
+		if now.Before(expiry) {
+			if nextExpiry.IsZero() || expiry.Before(nextExpiry) {
+				nextExpiry = expiry
+			}
+			continue
+		}
+		if delErr := cs.CoreV1().Secrets(ProviderSANamespace).Delete(ctx, s.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return deleted, nextExpiry, fmt.Errorf("deleting expired token Secret %s: %w", s.Name, delErr)
+		}
+		deleted++
+	}
+	return deleted, nextExpiry, nil
 }
 
 // EncodeKubeconfig is a tiny helper for status reporting — surface the

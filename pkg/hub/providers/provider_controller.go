@@ -75,7 +75,7 @@ func SetupProviderWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, opt
 	}
 	r := &ProviderReconciler{
 		mgr:               mgr,
-		prov:              NewProvisioner(kcpConfig),
+		prov:              NewProvisioner(kcpConfig, opts.Provisioner...),
 		providerServerURL: serverURL,
 	}
 	return mcbuilder.ControllerManagedBy(mgr).

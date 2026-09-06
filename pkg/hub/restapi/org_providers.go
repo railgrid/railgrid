@@ -49,6 +49,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -84,6 +85,9 @@ type OrgProviderOps interface {
 type ProviderCredentialMinter interface {
 	EnsureProviderSAAtPath(ctx context.Context, workspacePath string) error
 	MintProviderKubeconfigAtPath(ctx context.Context, workspacePath, hubExternalURL string) ([]byte, error)
+	// RotateProviderCredentialAtPath issues a NEW token for the same
+	// ServiceAccount and retires the previous one after a grace period.
+	RotateProviderCredentialAtPath(ctx context.Context, workspacePath, providerName, hubExternalURL string) (*providers.RotatedCredential, error)
 }
 
 // orgProviderNameRE constrains a provider name to an RFC1123 label. The name
@@ -731,6 +735,103 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 		// to leave without generated instructions.
 		Instructions: h.installInstructions(r.Context(), orgUUID, name, name),
 	})
+}
+
+// RotateOrgProviderCredentialResponse is the body of
+// POST /api/orgs/{org}/providers/{name}/credentials/rotate.
+type RotateOrgProviderCredentialResponse struct {
+	Provider OrgProviderView `json:"provider"`
+	// Kubeconfig is the NEW credential. Shown exactly once, like registration.
+	Kubeconfig string `json:"kubeconfig"`
+	// PreviousValidUntil is when the credential this call replaced stops
+	// working (RFC3339); empty when there was nothing to retire. It is the
+	// deadline for reinstalling the chart with the new kubeconfig: until then
+	// both tokens belong to the same ServiceAccount and the provider keeps
+	// working on either.
+	PreviousValidUntil string `json:"previousValidUntil,omitempty"`
+	RotatedAt          string `json:"rotatedAt"`
+	// Instructions are re-rendered alongside the credential — whoever rotates
+	// is about to run the install commands again.
+	Instructions *providers.InstallInstructions `json:"instructions,omitempty"`
+}
+
+// rotateOrgProviderCredential handles
+// POST /api/orgs/{org}/providers/{name}/credentials/rotate.
+//
+// Admin-only, unconditionally: unlike registration this is not gated on
+// spec.catalogEntryCreation. An Org that lets members register providers is
+// saying members may create NEW credentials for workspaces they made; it is not
+// saying a member may re-issue the credential for a provider someone else
+// registered and put the running one on a deletion clock. That is an admin's
+// call in every Org.
+func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Request) {
+	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating: hands out a credential */)
+	if !ok {
+		return
+	}
+	if !h.requireOrgAdminMembership(w, r, tc, "rotating a provider credential requires organization admin") {
+		return
+	}
+	orgUUID := tc.OrgUUID
+	name := mux.Vars(r)["name"]
+	if name == "" {
+		writeError(w, newValidationError("provider name is required"))
+		return
+	}
+	ws, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), orgUUID, name)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "getting provider workspace: "+err.Error())
+		return
+	}
+	if ws == nil {
+		writeStatus(w, http.StatusNotFound, "NotFound", "provider "+name+" is not registered in this organization")
+		return
+	}
+	workspacePath := kcppaths.OrgProviderPath(orgUUID, name)
+	// Same reason the kubeconfig endpoint re-ensures: the workspace can exist
+	// with no ServiceAccount in it, and rotating a credential that was never
+	// created should produce one rather than an error.
+	if err := h.mgr.providerCreds.EnsureProviderSAAtPath(r.Context(), workspacePath); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensuring provider service account: "+err.Error())
+		return
+	}
+	rotated, err := h.mgr.providerCreds.RotateProviderCredentialAtPath(r.Context(), workspacePath, name, h.mgr.kubeconfig.HubExternalURL)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "rotating provider credential: "+err.Error())
+		return
+	}
+	resp := RotateOrgProviderCredentialResponse{
+		Provider:     h.orgProviderView(orgUUID, *ws),
+		Kubeconfig:   string(rotated.Kubeconfig),
+		RotatedAt:    rotated.RotatedAt.UTC().Format(time.RFC3339),
+		Instructions: h.installInstructions(r.Context(), orgUUID, name, name),
+	}
+	if !rotated.PreviousValidUntil.IsZero() {
+		resp.PreviousValidUntil = rotated.PreviousValidUntil.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// requireOrgAdminMembership enforces the caller's ORG-scope Membership role,
+// for the endpoints that are admin-only whatever the Org's policy says.
+//
+// It reads the Membership rather than tc.Role for the same reason
+// requireOrgProviderAccess does: tc.Role is resolved against whichever
+// (org, workspace) pair the request headers name, and both scopes spell admin
+// the same way, so an org member who administers their own team workspace would
+// otherwise pass just by sending X-Faros-Workspace — which the portal attaches
+// to every request.
+func (h *Handler) requireOrgAdminMembership(w http.ResponseWriter, r *http.Request, tc tenant.TenantContext, message string) bool {
+	role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, tc.User)
+	if err != nil && !apierrors.IsNotFound(err) {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "resolving org membership: "+err.Error())
+		return false
+	}
+	if role != tenancyv1alpha1.MembershipRoleAdmin {
+		writeStatus(w, http.StatusForbidden, "Forbidden", message)
+		return false
+	}
+	return true
 }
 
 // deleteOrgProvider handles DELETE /api/orgs/{org}/providers/{name}.

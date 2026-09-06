@@ -315,6 +315,10 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/providers", h.registerOrgProvider).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers/{name}", h.deleteOrgProvider).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/providers/{name}/kubeconfig", h.getOrgProviderKubeconfig).Methods(http.MethodGet)
+	// Rotation is its own POST rather than a variant of the kubeconfig GET:
+	// that endpoint deliberately returns the same credential every time, so
+	// asking for a different one has to be explicit. Org admin only.
+	r.HandleFunc("/{org}/providers/{name}/credentials/rotate", h.rotateOrgProviderCredential).Methods(http.MethodPost)
 
 	r.HandleFunc("/{org}/memberships", h.listOrgMemberships).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/memberships", h.addOrgMembership).Methods(http.MethodPost)

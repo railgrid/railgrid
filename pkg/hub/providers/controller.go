@@ -88,6 +88,24 @@ type CatalogReconciler struct {
 	// by the number of provider workspaces the hub has observed.
 	clusterPathsMu sync.RWMutex
 	clusterPaths   map[string]string
+
+	// sweepCredentials deletes rotated-out provider token Secrets whose grace
+	// period lapsed, reporting how many went and when the next one lapses. Nil
+	// means "use the Provisioner"; it is a field so tests can observe the call
+	// without a live kcp.
+	sweepCredentials func(ctx context.Context, cluster string) (int, time.Time, error)
+}
+
+// credentialSweeper returns the sweep to run for this reconcile, or nil when
+// there is nothing to sweep with (registry-only mode).
+func (r *CatalogReconciler) credentialSweeper() func(context.Context, string) (int, time.Time, error) {
+	if r.sweepCredentials != nil {
+		return r.sweepCredentials
+	}
+	if r.prov == nil {
+		return nil
+	}
+	return r.prov.SweepExpiredProviderTokens
 }
 
 type httpDoer interface {
@@ -118,6 +136,13 @@ type CatalogReconcilerOptions struct {
 	// the hub-owned Service in front of it. Nil leaves org-owned providers on
 	// their declared backend URL, which is the pre-edge-transport behaviour.
 	EdgeRoutes EdgeRouteResolver
+
+	// Provisioner configures the Provisioner these controllers build — notably
+	// WithWorkspaceClusterAdmin, which decides the role a provider's
+	// ServiceAccount is bound to in its own workspace. Nil means the
+	// Provisioner defaults, so a caller that forgets it gets the wide,
+	// backwards-compatible binding rather than silently narrowing one.
+	Provisioner []ProvisionerOption
 }
 
 // SetupCatalogWithManager wires the reconciler into a multicluster manager.
@@ -137,7 +162,7 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		clusterPaths:   map[string]string{},
 	}
 	if kcpConfig != nil {
-		r.prov = NewProvisioner(kcpConfig)
+		r.prov = NewProvisioner(kcpConfig, opts.Provisioner...)
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-catalog").
@@ -571,6 +596,29 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
+	// Rotated-out provider credentials die here. Rotation only writes an expiry
+	// onto the retired token Secret; something has to come back later and
+	// delete it, and this reconciler is the one loop that runs for every
+	// provider workspace the hub knows — platform and org-owned alike, without
+	// the hub having to enumerate every Org's tree. The CatalogEntry lives in
+	// the provider's own workspace, so the cluster it was observed in IS the
+	// workspace holding the Secrets; a cluster with no provider ServiceAccount
+	// (a builtin entry seeded into system:providers) sweeps to a no-op.
+	var credentialExpiryPending bool
+	if sweep := r.credentialSweeper(); sweep != nil {
+		deleted, next, err := sweep(ctx, string(req.ClusterName))
+		switch {
+		case err != nil:
+			// Never fatal to the reconcile: a provider whose old credential
+			// outlives its grace period by one interval is a smaller problem
+			// than a registry that stops tracking the provider at all.
+			logger.Info("WARNING could not sweep expired provider token Secrets", "err", err.Error())
+		case deleted > 0:
+			logger.Info("Deleted expired provider token Secrets", "count", deleted)
+		}
+		credentialExpiryPending = !next.IsZero()
+	}
+
 	// Update status.
 	now := metav1.NewTime(time.Now())
 	entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
@@ -639,7 +687,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	} else if requeue {
 		return ctrl.Result{Requeue: true}, nil
 	}
-	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil {
+	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil || credentialExpiryPending {
 		return ctrl.Result{RequeueAfter: SweepInterval}, nil
 	}
 	return ctrl.Result{}, nil

@@ -97,6 +97,18 @@ type Options struct {
 	// they are rolled forward; the next release flips the default to
 	// "enforce". See providers.HeartbeatAuthMode.
 	ProviderHeartbeatAuth string
+	// ProviderWorkspaceClusterAdmin selects the role the provider ServiceAccount
+	// is bound to inside its own provider workspace: true (the default this
+	// release) keeps cluster-admin, false binds the generated, narrower
+	// faros:provider ClusterRole.
+	//
+	// The default is the wide one for one release so an operator can stage the
+	// change — flip it, watch their providers, flip back if one of them needed
+	// a right the narrow role does not grant (the infrastructure provider, which
+	// serves its own CRDs from this workspace, is the known case). The NEXT
+	// release defaults this to false. Flipping either way replaces the existing
+	// binding: RoleRef is immutable, so the hub deletes and recreates it.
+	ProviderWorkspaceClusterAdmin bool
 
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
@@ -160,6 +172,8 @@ func NewOptions() *Options {
 		KCPBatteriesInclude: "admin,user",
 
 		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
+		// Wide for this release; the next one defaults to false. See the field.
+		ProviderWorkspaceClusterAdmin: true,
 
 		GraphQLAPIExportSliceName:      "core.faros.sh",
 		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,

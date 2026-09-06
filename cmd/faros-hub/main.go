@@ -78,6 +78,10 @@ func main() {
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 
 	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
+	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,
+		"Bind each provider's ServiceAccount to cluster-admin inside its own provider workspace. "+
+			"False binds the narrower generated faros:provider ClusterRole instead. Default true for this release so "+
+			"operators can stage the change; the next release defaults to false. Changing it replaces the existing binding.")
 	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
 	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")
 	cmd.Flags().StringVar(&opts.GraphQLAPIExportSliceName, "graphql-apiexport-slice-name", opts.GraphQLAPIExportSliceName, "APIExportEndpointSlice name to watch for GraphQL schema generation")

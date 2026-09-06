@@ -363,10 +363,11 @@ multicluster managers for no behavioral gain.
 ## Endpoints
 
 ```
-POST   /api/orgs/{org}/providers                      register; returns the install kubeconfig
-GET    /api/orgs/{org}/providers                      list this Org's providers + registration state
-DELETE /api/orgs/{org}/providers/{name}               delete the provider workspace (cascades)
-GET    /api/orgs/{org}/providers/{name}/kubeconfig    re-fetch the install kubeconfig
+POST   /api/orgs/{org}/providers                              register; returns the install kubeconfig
+GET    /api/orgs/{org}/providers                              list this Org's providers + registration state
+DELETE /api/orgs/{org}/providers/{name}                       delete the provider workspace (cascades)
+GET    /api/orgs/{org}/providers/{name}/kubeconfig            re-fetch the install kubeconfig
+POST   /api/orgs/{org}/providers/{name}/credentials/rotate    issue a NEW credential (org admin only)
 ```
 
 Mutating calls honour `Organization.spec.catalogEntryCreation` (decision O-7):
@@ -393,13 +394,70 @@ only once the chart has actually run). The gap between them is the
 `registered: false` state — workspace exists, provider not installed yet — which
 is the state an operator is most likely to be debugging.
 
+## Credentials and rotation
+
+Registration mints one long-lived credential: a
+`kubernetes.io/service-account-token` Secret for the `provider` ServiceAccount
+in the provider's own workspace, wrapped in the kubeconfig the Org installs the
+chart with. It does not expire on its own — it is valid until the Secret or the
+ServiceAccount is deleted — which is exactly why there has to be a way to
+replace it.
+
+**Rotating.** An **Org admin** (always, regardless of
+`spec.catalogEntryCreation` — see the Endpoints note above) posts:
+
+```
+POST /api/orgs/{org}/providers/{name}/credentials/rotate
+```
+
+The response carries a `kubeconfig` in the same shape registration returns, a
+`rotatedAt`, and a `previousValidUntil`. Reinstall the chart with the new
+kubeconfig before `previousValidUntil`; that is the whole procedure.
+
+**What the hub does.** It issues a *second* token Secret for the same
+ServiceAccount, records which one is current on the ServiceAccount
+(`providers.faros.sh/active-token-secret`), and stamps the previous Secret with
+`providers.faros.sh/delete-after` — 24 hours out by default. The catalog
+controller deletes retired Secrets once that time passes.
+
+**Why both work in the meantime.** Both Secrets are tokens for the *same*
+ServiceAccount, so kcp authenticates either as
+`system:serviceaccount:default:provider`. Every hub-side check keys on that
+identity, not on which Secret a token came from — including the heartbeat's
+TokenReview — so a provider still running on the old kubeconfig keeps working,
+and keeps reporting alive, for the whole grace period. Rotation is a rolling
+change, not an outage.
+
+**What it does not do.** It does not revoke anything early: if a credential has
+leaked, delete the retired Secret in the provider workspace by hand, or delete
+and re-register the provider. It also does not restart anything — the hub has no
+write access into the Org's cluster.
+
+`status.credentialsRotatedAt` on the provider's `CatalogEntry` records the last
+rotation, because the credential itself is shown once and stored nowhere the
+hub can read back.
+
+Platform providers have the same endpoint behind the platform-admin gate:
+`POST /api/admin/providers/{name}/credentials/rotate`, which additionally
+rewrites the kubeconfig Secret in `root:faros:system:providers` so in-cluster
+readers move with it. There is no `faros` CLI subcommand for either; use curl:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $FAROS_TOKEN" \
+  "$FAROS_HUB_URL/api/orgs/$ORG/providers/$NAME/credentials/rotate" \
+  | jq -r .kubeconfig > provider-kubeconfig.yaml
+```
+
 ## Isolation
 
 What an Org gets is deliberately narrow.
 
-- **The minted ServiceAccount is cluster-admin in its own provider workspace and
-  nowhere else.** It cannot read the Org workspace above it or any team
-  workspace beside it.
+- **The minted ServiceAccount holds rights only inside its own provider
+  workspace** — cluster-admin there today, and the narrower generated
+  `faros:provider` role on a hub started with
+  `--provider-workspace-cluster-admin=false` (see
+  [providers.md](./providers.md#credentials-and-rotation)). Either way it cannot
+  read the Org workspace above it or any team workspace beside it.
 - **Cross-workspace reach only ever comes from the APIExport's permission
   claims**, which each consuming Workspace accepts individually at Enable time —
   the same consent gate platform providers pass.

@@ -730,6 +730,21 @@ spec:
                   - type
                   type: object
                 type: array
+              credentialsRotatedAt:
+                description: |-
+                  CredentialsRotatedAt is when the hub last issued a NEW workspace
+                  credential for this provider's ServiceAccount
+                  (POST .../providers/{name}/credentials/rotate). Empty means the provider
+                  still holds the credential minted at registration.
+
+                  It is recorded here, on the object an operator already looks at, because
+                  the credential itself is returned once and never stored: without this
+                  there is nothing anywhere that says how old the token in a provider's
+                  Secret is. The previous credential keeps working for a grace period
+                  after this timestamp, so it also dates the window in which a rollout has
+                  to finish.
+                format: date-time
+                type: string
               endpoints:
                 description: Endpoints echo the resolved URLs from spec, for debugging.
                 properties:
