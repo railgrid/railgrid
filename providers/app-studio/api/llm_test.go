@@ -179,17 +179,20 @@ func TestProjectLLMSettingsUseCodexStreamRecoveryDefaults(t *testing.T) {
 
 func TestProjectAssistantDeepIterationsConfiguration(t *testing.T) {
 	maxInt := int(^uint(0) >> 1)
+	if projectAssistantDefaultMaxIterations != 200 {
+		t.Fatalf("default model-call ceiling = %d, want the finite 200 per run", projectAssistantDefaultMaxIterations)
+	}
 	tests := []struct {
 		value string
 		want  int
 	}{
-		{value: "", want: projectAssistantFiniteIterationCeiling},
+		{value: "", want: 200},
 		{value: "48", want: 48},
 		{value: " unlimited ", want: maxInt},
 		{value: "UNLIMITED", want: maxInt},
-		{value: "0", want: projectAssistantFiniteIterationCeiling},
-		{value: "-1", want: projectAssistantFiniteIterationCeiling},
-		{value: "invalid", want: projectAssistantFiniteIterationCeiling},
+		{value: "0", want: maxInt},
+		{value: "-1", want: 200},
+		{value: "invalid", want: 200},
 	}
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {
@@ -201,22 +204,109 @@ func TestProjectAssistantDeepIterationsConfiguration(t *testing.T) {
 }
 
 func TestProjectAssistantRolloutBudgetConfiguration(t *testing.T) {
+	if projectAssistantDefaultRolloutBudgetTokens != 2_000_000 {
+		t.Fatalf("default rollout budget = %d, want the finite 2,000,000 weighted tokens per run", projectAssistantDefaultRolloutBudgetTokens)
+	}
 	tests := []struct {
 		value string
 		want  int64
 	}{
-		{value: "", want: projectAssistantDefaultRolloutBudgetTokens},
+		{value: "", want: 2_000_000},
 		{value: "48000", want: 48000},
 		{value: " unlimited ", want: 0},
 		{value: "UNLIMITED", want: 0},
-		{value: "0", want: projectAssistantDefaultRolloutBudgetTokens},
-		{value: "-1", want: projectAssistantDefaultRolloutBudgetTokens},
-		{value: "invalid", want: projectAssistantDefaultRolloutBudgetTokens},
+		{value: "0", want: 0},
+		{value: "-1", want: 2_000_000},
+		{value: "invalid", want: 2_000_000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {
 			if got := projectAssistantRolloutBudgetTokensForValue(tt.value); got != tt.want {
 				t.Fatalf("rollout budget for %q = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// The startup log for a disabled run limit must describe the deployment it
+// runs in: name only the bounds still in force, and say plainly that runs are
+// unbounded when the operator has switched every backstop off too.
+func TestProjectAssistantUnlimitedLimitLogNamesOnlyActiveBounds(t *testing.T) {
+	tests := []struct {
+		name        string
+		disabledEnv string
+		env         map[string]string
+		wantNamed   []string
+		wantAbsent  []string
+	}{
+		{
+			name:        "iterations off, budget and cap default",
+			disabledEnv: projectAssistantMaxIterationsEnv,
+			env:         map[string]string{projectAssistantMaxIterationsEnv: "unlimited"},
+			wantNamed:   []string{projectAssistantBoundNameTokens, projectAssistantBoundNameSpendCap},
+			wantAbsent:  []string{projectAssistantBoundNameIterations, "unbounded"},
+		},
+		{
+			name:        "iterations and budget off, cap set",
+			disabledEnv: projectAssistantMaxIterationsEnv,
+			env: map[string]string{
+				projectAssistantMaxIterationsEnv:       "0",
+				projectAssistantRolloutBudgetTokensEnv: "unlimited",
+				projectAssistantOrgMonthlyUSDCapEnv:    "25",
+			},
+			wantNamed:  []string{projectAssistantBoundNameSpendCap},
+			wantAbsent: []string{projectAssistantBoundNameTokens, projectAssistantBoundNameIterations, "unbounded"},
+		},
+		{
+			name:        "iterations off, everything else off",
+			disabledEnv: projectAssistantMaxIterationsEnv,
+			env: map[string]string{
+				projectAssistantMaxIterationsEnv:       "unlimited",
+				projectAssistantRolloutBudgetTokensEnv: "0",
+				projectAssistantOrgMonthlyUSDCapEnv:    "unlimited",
+			},
+			wantNamed:  []string{"unbounded"},
+			wantAbsent: []string{"bounded only by", projectAssistantBoundNameTokens, projectAssistantBoundNameSpendCap},
+		},
+		{
+			name:        "budget off, iterations off, cap set",
+			disabledEnv: projectAssistantRolloutBudgetTokensEnv,
+			env: map[string]string{
+				projectAssistantRolloutBudgetTokensEnv: "0",
+				projectAssistantMaxIterationsEnv:       "unlimited",
+				projectAssistantOrgMonthlyUSDCapEnv:    "$10",
+			},
+			wantNamed:  []string{projectAssistantBoundNameSpendCap},
+			wantAbsent: []string{projectAssistantBoundNameIterations, projectAssistantBoundNameTokens, "unbounded"},
+		},
+		{
+			name:        "budget off, everything else off",
+			disabledEnv: projectAssistantRolloutBudgetTokensEnv,
+			env: map[string]string{
+				projectAssistantRolloutBudgetTokensEnv: "unlimited",
+				projectAssistantMaxIterationsEnv:       "0",
+				projectAssistantOrgMonthlyUSDCapEnv:    "0",
+			},
+			wantNamed:  []string{"unbounded"},
+			wantAbsent: []string{"bounded only by", projectAssistantBoundNameIterations, projectAssistantBoundNameSpendCap},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string { return tt.env[key] }
+			got := projectAssistantUnlimitedLimitMessage(tt.disabledEnv, "limit", getenv)
+			if !strings.HasPrefix(got, tt.disabledEnv+" disables the limit") {
+				t.Fatalf("message %q does not name the disabled knob first", got)
+			}
+			for _, want := range tt.wantNamed {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q should name %q", got, want)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("message %q must not mention %q", got, absent)
+				}
 			}
 		})
 	}

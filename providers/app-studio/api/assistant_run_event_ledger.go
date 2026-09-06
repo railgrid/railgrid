@@ -217,6 +217,39 @@ func newProjectAssistantRunEventLedger(
 	}
 }
 
+// RecordSpendCapReached appends the durable notice that the organization's
+// monthly spend cap was reached during this run. It is a plain ledger event:
+// replay treats unknown types as sequence advances, so it never perturbs tool
+// admission state, but it leaves an auditable reason next to the run.
+func (l *projectAssistantRunEventLedger) RecordSpendCapReached(ctx context.Context, spend store.OrganizationSpend) error {
+	if l == nil || l.store == nil || strings.TrimSpace(l.runID) == "" {
+		return fmt.Errorf("assistant run event ledger is not configured")
+	}
+	payload, err := projectAssistantRunSpendCapReachedEventPayload(spend, projectAssistantOrgMonthlyUSDCapMicros())
+	if err != nil {
+		return fmt.Errorf("encode assistant spend cap event: %w", err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for {
+		if err := l.refreshLocked(ctx); err != nil {
+			return err
+		}
+		saved, err := l.store.AppendAssistantRunEvent(ctx, l.scope, store.AssistantRunEvent{
+			RunID:   l.runID,
+			Type:    projectAssistantRunSpendCapReachedEventType,
+			Payload: payload,
+		}, l.lastSequence)
+		if errors.Is(err, store.ErrAssistantRunEventConflict) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("append assistant spend cap event: %w", err)
+		}
+		return l.applyEventLocked(saved)
+	}
+}
+
 // RecordToolRequest durably captures the model-authored call before argument,
 // policy, or permission validation. It does not authorize backend dispatch;
 // BeginToolCall records that separate admission boundary after validation.

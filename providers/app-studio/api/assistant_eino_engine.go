@@ -487,16 +487,13 @@ func projectEinoAssistantConfigureRolloutBudget(
 	if runState == nil {
 		return nil
 	}
+	// The budget is per run. It is restored only from this run's own
+	// checkpoint or audit snapshot (interrupt/approval resume, replica
+	// hand-off); a new run in the same conversation starts from zero. The
+	// organization spend cap is the cross-run bound.
 	restored := runState.RestoredRolloutBudget()
 	if restored == nil && recorder != nil {
 		restored = recorder.rolloutBudgetSnapshot()
-	}
-	if restored == nil && server != nil && server.store != nil {
-		var err error
-		restored, err = loadProjectAssistantConversationRolloutBudgetState(ctx, server.store, req.MessageScope)
-		if err != nil {
-			return fmt.Errorf("restore assistant conversation rollout budget: %w", err)
-		}
 	}
 	var persistReminder func(context.Context, *projectAssistantRolloutBudgetReminder) error
 	var persistState func(context.Context, projectAssistantRolloutBudgetState) error
@@ -545,6 +542,9 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if err != nil {
 		return nil, err
 	}
+	// The organization spend cap sits directly on the provider model so every
+	// sampling boundary of the run, compaction included, is priced and checked.
+	chatModel = projectEinoAssistantOrgSpendModelFor(e.server, req, chatModel)
 	chatModel, compactionModel := projectEinoAssistantModels(chatModel, req, runState)
 	var handlers []adk.ChatModelAgentMiddleware
 	// Keep the durable ledger and telemetry on the full tool result while the

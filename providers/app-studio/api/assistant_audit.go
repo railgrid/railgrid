@@ -890,6 +890,13 @@ func projectAssistantFailureSummary(err error, kind string) string {
 		summary = "assistant reached the bounded model-call limit"
 	case "session_budget":
 		summary = errProjectAssistantSessionBudgetExceeded.Error()
+	case "org_spend_cap":
+		var capExceeded *projectAssistantOrgSpendCapExceededError
+		if errors.As(err, &capExceeded) {
+			summary = capExceeded.Error()
+		} else {
+			summary = errProjectAssistantOrgSpendCapExceeded.Error()
+		}
 	case "no_output":
 		summary = "assistant model produced no accepted output"
 	case "cancelled":
@@ -912,6 +919,8 @@ func projectAssistantFailureKind(err error) string {
 		return "max_iterations"
 	case projectEinoAssistantRolloutBudgetExceeded(err):
 		return "session_budget"
+	case projectEinoAssistantOrgSpendCapExceeded(err):
+		return "org_spend_cap"
 	case errors.Is(err, errProjectAssistantNoOutput):
 		return "no_output"
 	case errors.Is(err, context.Canceled):
@@ -1098,6 +1107,8 @@ func projectAssistantAuditReason(failure string) string {
 		return "max_iterations"
 	case strings.Contains(failure, errProjectAssistantSessionBudgetExceeded.Error()):
 		return "session_budget"
+	case strings.Contains(failure, errProjectAssistantOrgSpendCapExceeded.Error()):
+		return "org_spend_cap"
 	case strings.Contains(failure, errProjectAssistantNoOutput.Error()):
 		return "no_output"
 	default:

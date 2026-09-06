@@ -68,6 +68,25 @@ assistant:
     # Deprecated boolean compatibility input. true maps to byo-only and emits
     # a startup warning; it never selects the platform Infrastructure export.
     enabled: null
+  # Spend limits. Empty keeps the provider defaults: 200 model calls and
+  # 2,000,000 weighted tokens per run, and 100 USD of model spend per
+  # organization per UTC calendar month (priced from provider token usage;
+  # unknown models are charged a frontier-tier rate). Only an explicit "0" or
+  # "unlimited" disables a limit, which the provider logs at startup; never
+  # disable them for a deployment that serves untrusted tenants. Values are
+  # strings: write "0", not 0 (a bare integer 0 is dropped and the default
+  # stays in force).
+  limits:
+    # APP_STUDIO_ASSISTANT_MAX_ITERATIONS
+    maxIterations: ""
+    # APP_STUDIO_ASSISTANT_ROLLOUT_BUDGET_TOKENS
+    rolloutBudgetTokens: ""
+    # APP_STUDIO_ORG_MONTHLY_USD_CAP (USD, decimals allowed). The cap bounds
+    # spend already incurred, not spend in flight: a model call's cost is only
+    # known once it returns, so the month can overshoot by at most one call per
+    # call in flight when the cap is crossed, after which every call fails
+    # closed.
+    orgMonthlyUSDCap: ""
 
 # Signed DOM annotation sharing starts automatically while the embedded preview
 # is open. Until both signing fields are configured, App Studio stays available

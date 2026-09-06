@@ -318,39 +318,6 @@ func appendProjectAssistantConversationRolloutBudgetState(
 	return err
 }
 
-func loadProjectAssistantConversationRolloutBudgetState(
-	ctx context.Context,
-	messageStore store.Store,
-	scope store.Scope,
-) (*projectAssistantRolloutBudgetState, error) {
-	if messageStore == nil {
-		return nil, nil
-	}
-	var latest *projectAssistantRolloutBudgetState
-	after := int64(0)
-	for {
-		page, err := messageStore.ListAssistantConversationItems(ctx, scope, after, projectAssistantConversationPageSize)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range page {
-			if item.Type != projectAssistantConversationRolloutBudget {
-				continue
-			}
-			var envelope projectAssistantConversationRolloutBudgetState
-			if json.Unmarshal(item.Payload, &envelope) != nil || envelope.Version != 1 || envelope.State.LimitTokens <= 0 {
-				continue
-			}
-			state := cloneProjectAssistantRolloutBudgetState(envelope.State)
-			latest = &state
-		}
-		if len(page) < projectAssistantConversationPageSize {
-			return latest, nil
-		}
-		after = page[len(page)-1].Sequence
-	}
-}
-
 // appendProjectAssistantConversationCompactionCheckpoint persists the finalized
 // compactor output verbatim. The caller owns replacement selection, window
 // identity, and token estimates; this storage boundary must not derive them from

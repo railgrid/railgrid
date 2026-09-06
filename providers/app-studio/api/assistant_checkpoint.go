@@ -1385,7 +1385,7 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 	} else if projectEinoAssistantBudgetLimited(cause) {
 		run.Status = store.AssistantRunStatusFailed
 		run.AbortReason = store.AssistantRunAbortReasonBudgetLimited
-		run.Error = projectAssistantRunErrorJSON(cause, "session_budget_exceeded")
+		run.Error = projectAssistantRunErrorJSON(cause, projectAssistantBudgetLimitedErrorInfo(cause))
 	} else {
 		run.Status = store.AssistantRunStatusFailed
 		run.Error = projectAssistantRunErrorJSON(cause, projectAssistantRunErrorInfo(cause))

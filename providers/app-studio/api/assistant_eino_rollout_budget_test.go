@@ -174,7 +174,7 @@ func TestProjectEinoAssistantRolloutBudgetPersistsThroughAuditAndCheckpoint(t *t
 	}
 }
 
-func TestProjectEinoAssistantRolloutBudgetRestoresAcrossConversationRuns(t *testing.T) {
+func TestProjectEinoAssistantRolloutBudgetIsPerRun(t *testing.T) {
 	t.Setenv(projectAssistantRolloutBudgetTokensEnv, "100")
 	ctx := context.Background()
 	memory := store.NewMemoryStore()
@@ -201,9 +201,41 @@ func TestProjectEinoAssistantRolloutBudgetRestoresAcrossConversationRuns(t *test
 	if err := projectEinoAssistantConfigureRolloutBudget(ctx, server, projectAssistantRunRequest{MessageScope: scope, AssistantRun: &runTwo}, stateTwo, nil); err != nil {
 		t.Fatal(err)
 	}
-	restored := stateTwo.RolloutBudget().Snapshot()
-	if restored == nil || restored.LimitTokens != 100 || restored.WeightedTokensUsed != 30 {
-		t.Fatalf("cross-run rollout budget = %#v, want 30/100 used", restored)
+	fresh := stateTwo.RolloutBudget().Snapshot()
+	if fresh == nil || fresh.LimitTokens != 100 || fresh.WeightedTokensUsed != 0 {
+		t.Fatalf("new-run rollout budget = %#v, want a fresh 0/100", fresh)
+	}
+}
+
+func TestProjectEinoAssistantRolloutBudgetDefaultsToFinitePerRunLimit(t *testing.T) {
+	t.Setenv(projectAssistantRolloutBudgetTokensEnv, "")
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-a"}
+	server := &Server{store: memory}
+	run := store.AssistantRun{ID: "run-default", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := memory.SaveAssistantRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	runState := newProjectEinoAssistantRunState()
+	if err := projectEinoAssistantConfigureRolloutBudget(ctx, server, projectAssistantRunRequest{MessageScope: scope, AssistantRun: &run}, runState, nil); err != nil {
+		t.Fatal(err)
+	}
+	budget := runState.RolloutBudget()
+	if budget == nil {
+		t.Fatal("default configuration must install a finite rollout budget")
+	}
+	if got := budget.Snapshot(); got.LimitTokens != projectAssistantDefaultRolloutBudgetTokens {
+		t.Fatalf("default rollout budget limit = %d, want %d", got.LimitTokens, projectAssistantDefaultRolloutBudgetTokens)
+	}
+
+	t.Setenv(projectAssistantRolloutBudgetTokensEnv, "unlimited")
+	unlimitedState := newProjectEinoAssistantRunState()
+	if err := projectEinoAssistantConfigureRolloutBudget(ctx, server, projectAssistantRunRequest{MessageScope: scope, AssistantRun: &run}, unlimitedState, nil); err != nil {
+		t.Fatal(err)
+	}
+	if unlimitedState.RolloutBudget() != nil {
+		t.Fatal("explicit unlimited configuration must disable the rollout budget")
 	}
 }
 

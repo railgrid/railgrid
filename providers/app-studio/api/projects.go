@@ -962,7 +962,7 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 		if projectEinoAssistantBudgetLimited(resumeErr) {
 			_ = accumulator.UpdateRun(context.Background(), func(current *store.AssistantRun) {
 				current.AbortReason = store.AssistantRunAbortReasonBudgetLimited
-				current.Error = projectAssistantRunErrorJSON(resumeErr, "session_budget_exceeded")
+				current.Error = projectAssistantRunErrorJSON(resumeErr, projectAssistantBudgetLimitedErrorInfo(resumeErr))
 			})
 			transitionTerminal(store.AssistantRunStatusFailed, "budget_limited", resumeErr)
 			return

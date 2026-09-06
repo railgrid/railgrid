@@ -1163,7 +1163,7 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 	if projectEinoAssistantBudgetLimited(err) {
 		state.status = "Failed"
 		state.abortReason = store.AssistantRunAbortReasonBudgetLimited
-		state.terminalError = projectAssistantRunErrorJSON(err, "session_budget_exceeded")
+		state.terminalError = projectAssistantRunErrorJSON(err, projectAssistantBudgetLimitedErrorInfo(err))
 		runStatus := store.AssistantRunStatusFailed
 		transitionErr := persistMetadata(context.Background(), &runStatus)
 		recordSnapshotErr(transitionErr)

@@ -250,6 +250,9 @@ type Store interface {
 	GetReplicaClaim(ctx context.Context, claimKey string) (ReplicaClaim, bool, error)
 	LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error)
 	BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error
+	// Per-organization monthly model spend (spend.go). The assistant checks
+	// the running total before each model call to enforce the USD cap.
+	OrganizationSpendStore
 }
 
 func prepareAssistantConversationItem(scope Scope, item AssistantConversationItem) (AssistantConversationItem, error) {

@@ -53,6 +53,7 @@ type MemoryStore struct {
 	attachments       map[Scope]map[string]Attachment
 	attachmentDeleted map[Scope]struct{}
 	attachmentQuota   AttachmentQuota
+	organizationSpend map[organizationSpendKey]OrganizationSpend
 }
 
 type assistantRunEventLookupKey struct {
@@ -84,6 +85,7 @@ func NewMemoryStore() *MemoryStore {
 		attachments:           map[Scope]map[string]Attachment{},
 		attachmentDeleted:     map[Scope]struct{}{},
 		attachmentQuota:       DefaultAttachmentQuota(),
+		organizationSpend:     map[organizationSpendKey]OrganizationSpend{},
 	}
 }
 

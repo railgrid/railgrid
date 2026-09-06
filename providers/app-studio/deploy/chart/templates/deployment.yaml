@@ -168,6 +168,18 @@ spec:
             {{- end }}
             - name: APP_STUDIO_DEVELOPMENT_MODE
               value: {{ .Values.assistant.runSandbox.developmentMode | quote }}
+            {{- with ((.Values.assistant).limits).maxIterations }}
+            - name: APP_STUDIO_ASSISTANT_MAX_ITERATIONS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with ((.Values.assistant).limits).rolloutBudgetTokens }}
+            - name: APP_STUDIO_ASSISTANT_ROLLOUT_BUDGET_TOKENS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with ((.Values.assistant).limits).orgMonthlyUSDCap }}
+            - name: APP_STUDIO_ORG_MONTHLY_USD_CAP
+              value: {{ . | quote }}
+            {{- end }}
             - name: APP_STUDIO_REPLICA_COUNT
               value: {{ .Values.replicaCount | quote }}
             {{- if ne .Values.assistant.runSandbox.enabled nil }}

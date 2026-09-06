@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -41,6 +42,7 @@ import (
 	einoschema "github.com/cloudwego/eino/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -58,12 +60,16 @@ const (
 	projectLLMProviderGoogle       = "google-ai-studio"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
 
-	// App Studio follows Codex's continuation-driven loop by default. Operators
-	// may still install a finite provider safety ceiling explicitly.
-	projectAssistantFiniteIterationCeiling               = int(^uint(0) >> 1)
+	// Every assistant run is bounded by default: a finite model-call ceiling
+	// and a finite weighted-token budget. Operators may raise either limit or
+	// disable it explicitly with "0" or "unlimited"; disabling is logged at
+	// startup of the first run so an unbounded deployment is never silent.
+	projectAssistantDefaultMaxIterations                 = 200
+	projectAssistantUnlimitedIterations                  = int(^uint(0) >> 1)
 	projectAssistantMaxIterationsEnv                     = "APP_STUDIO_ASSISTANT_MAX_ITERATIONS"
 	projectAssistantRolloutBudgetTokensEnv               = "APP_STUDIO_ASSISTANT_ROLLOUT_BUDGET_TOKENS"
-	projectAssistantDefaultRolloutBudgetTokens     int64 = 0
+	projectAssistantDefaultRolloutBudgetTokens     int64 = 2_000_000
+	projectAssistantUnlimitedRolloutBudgetTokens   int64 = 0
 	projectToolInfoLimit                                 = 1000
 	projectMCPCallTimeout                                = 2 * time.Minute
 	projectCommitProjectFilesMax                         = 500
@@ -72,42 +78,114 @@ const (
 	projectAssistantRepairRecoveryInstruction            = "Repair-or-stop cadence after a failed preview/API/network/console/provider observation: in Default mode, and only when the user's request authorizes action, identify the exact failed observation and the new question to answer, then take at most one targeted fresh read/search answering a new question (one read or search, never both). For a provider-backed failure, that single fresh evidence may be at most one provider MCP read or one Provider Action/schema probe to validate the referenced table, resource, action, or schema; never do both, broaden scope, or invent a tableRef, action, or schema. Never repeat an unchanged read/action/hypothesis loop. After that fresh evidence, either make one bounded repair attempt using authorized version-checked mutations (and call restart_runtime when a changed dependency manifest, start command, or build/runtime configuration requires it), then rerun the original failed observation once; this is the one bounded rerun of the original failed observation, or stop/report the blocker and remaining evidence gap. Repeated or opaque provider/read failures, or any failure without new authoritative evidence, require stop/report; do not retry the same opaque call. Do not start a second diagnosis/read loop without new evidence that changes the question. Never claim recovery without later success evidence from rerunning that same observation; never claim working behavior, verification, or completion without evidence supporting it. Plan and Review remain read-only: they cannot take the mutation branch, so stop/report the blocker after the allowed fresh read or search. "
 )
 
+var (
+	projectAssistantMaxIterationsUnlimitedLogOnce sync.Once
+	projectAssistantRolloutBudgetUnlimitedLogOnce sync.Once
+)
+
 func projectAssistantDeepIterations() int {
-	return projectAssistantDeepIterationsForValue(os.Getenv(projectAssistantMaxIterationsEnv))
+	iterations := projectAssistantDeepIterationsForValue(os.Getenv(projectAssistantMaxIterationsEnv))
+	if iterations == projectAssistantUnlimitedIterations {
+		projectAssistantMaxIterationsUnlimitedLogOnce.Do(func() {
+			klog.V(0).Info(projectAssistantUnlimitedLimitMessage(projectAssistantMaxIterationsEnv, "assistant model-call ceiling", os.Getenv))
+		})
+	}
+	return iterations
 }
 
+// Human names for the three assistant run limits, used when one is disabled
+// to say which of the others still hold.
+const (
+	projectAssistantBoundNameIterations = "model-call ceiling"
+	projectAssistantBoundNameTokens     = "per-run token budget"
+	projectAssistantBoundNameSpendCap   = "organization spend cap"
+)
+
+// projectAssistantUnlimitedLimitMessage is the startup log for a run limit an
+// operator disabled with "0" or "unlimited". Each of the three limits can be
+// switched off independently, so the message cannot promise the other two as
+// backstops: it reads them from the same configuration via getenv and names
+// only those still in force, or says plainly that runs are unbounded when
+// none is. That keeps the log true for an intentionally unbounded deployment,
+// which is exactly the one an operator most needs to recognise from its logs.
+func projectAssistantUnlimitedLimitMessage(disabledEnv, disabledWhat string, getenv func(string) string) string {
+	var active []string
+	if disabledEnv != projectAssistantMaxIterationsEnv &&
+		projectAssistantDeepIterationsForValue(getenv(projectAssistantMaxIterationsEnv)) != projectAssistantUnlimitedIterations {
+		active = append(active, projectAssistantBoundNameIterations)
+	}
+	if disabledEnv != projectAssistantRolloutBudgetTokensEnv &&
+		projectAssistantRolloutBudgetTokensForValue(getenv(projectAssistantRolloutBudgetTokensEnv)) != projectAssistantUnlimitedRolloutBudgetTokens {
+		active = append(active, projectAssistantBoundNameTokens)
+	}
+	if disabledEnv != projectAssistantOrgMonthlyUSDCapEnv &&
+		projectAssistantOrgMonthlyUSDCapMicrosForValue(getenv(projectAssistantOrgMonthlyUSDCapEnv)) != projectAssistantUnlimitedOrgMonthlyUSDCap {
+		active = append(active, projectAssistantBoundNameSpendCap)
+	}
+	switch len(active) {
+	case 0:
+		return fmt.Sprintf("%s disables the %s; every other assistant run limit is disabled too, so runs are unbounded", disabledEnv, disabledWhat)
+	case 1:
+		return fmt.Sprintf("%s disables the %s; runs are bounded only by the %s", disabledEnv, disabledWhat, active[0])
+	default:
+		return fmt.Sprintf("%s disables the %s; runs are bounded only by the %s and the %s", disabledEnv, disabledWhat, strings.Join(active[:len(active)-1], ", the "), active[len(active)-1])
+	}
+}
+
+// projectAssistantDeepIterationsForValue maps the configured value to the
+// per-run model-call ceiling. Empty, negative, or unparsable values fall back
+// to the finite default; only an explicit "0" or "unlimited" removes the
+// ceiling.
 func projectAssistantDeepIterationsForValue(value string) int {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return projectAssistantFiniteIterationCeiling
+		return projectAssistantDefaultMaxIterations
 	}
-	if strings.EqualFold(value, "unlimited") {
-		return int(^uint(0) >> 1)
+	if projectAssistantLimitValueUnlimited(value) {
+		return projectAssistantUnlimitedIterations
 	}
 	iterations, err := strconv.Atoi(value)
 	if err != nil || iterations <= 0 {
-		return projectAssistantFiniteIterationCeiling
+		return projectAssistantDefaultMaxIterations
 	}
 	return iterations
 }
 
 func projectAssistantRolloutBudgetTokens() int64 {
-	return projectAssistantRolloutBudgetTokensForValue(os.Getenv(projectAssistantRolloutBudgetTokensEnv))
+	tokens := projectAssistantRolloutBudgetTokensForValue(os.Getenv(projectAssistantRolloutBudgetTokensEnv))
+	if tokens == projectAssistantUnlimitedRolloutBudgetTokens {
+		projectAssistantRolloutBudgetUnlimitedLogOnce.Do(func() {
+			klog.V(0).Info(projectAssistantUnlimitedLimitMessage(projectAssistantRolloutBudgetTokensEnv, "assistant per-run token budget", os.Getenv))
+		})
+	}
+	return tokens
 }
 
+// projectAssistantRolloutBudgetTokensForValue maps the configured value to
+// the per-run weighted-token budget. Empty, negative, or unparsable values
+// fall back to the finite default; only an explicit "0" or "unlimited"
+// disables the budget.
 func projectAssistantRolloutBudgetTokensForValue(value string) int64 {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return projectAssistantDefaultRolloutBudgetTokens
 	}
-	if strings.EqualFold(value, "unlimited") {
-		return 0
+	if projectAssistantLimitValueUnlimited(value) {
+		return projectAssistantUnlimitedRolloutBudgetTokens
 	}
 	tokens, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || tokens <= 0 {
 		return projectAssistantDefaultRolloutBudgetTokens
 	}
 	return tokens
+}
+
+// projectAssistantLimitValueUnlimited reports whether an operator explicitly
+// asked for a limit to be removed. Only these spellings do so; anything else
+// that fails to parse keeps the finite default.
+func projectAssistantLimitValueUnlimited(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "0" || strings.EqualFold(value, "unlimited")
 }
 
 const (

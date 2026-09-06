@@ -356,8 +356,20 @@ func projectEinoAssistantRolloutBudgetExceeded(err error) bool {
 	return errors.Is(err, errProjectAssistantSessionBudgetExceeded)
 }
 
+// projectEinoAssistantBudgetLimited reports every bounded-spend exit: the
+// per-run weighted-token budget and the organization monthly USD cap. Both
+// terminate the run as failed with the budget_limited abort reason.
 func projectEinoAssistantBudgetLimited(err error) bool {
-	return projectEinoAssistantRolloutBudgetExceeded(err)
+	return projectEinoAssistantRolloutBudgetExceeded(err) || projectEinoAssistantOrgSpendCapExceeded(err)
+}
+
+// projectAssistantBudgetLimitedErrorInfo names which budget stopped the run
+// in the terminal run error so the portal can explain it to the user.
+func projectAssistantBudgetLimitedErrorInfo(err error) string {
+	if projectEinoAssistantOrgSpendCapExceeded(err) {
+		return "org_spend_cap_exceeded"
+	}
+	return "session_budget_exceeded"
 }
 
 func projectEinoAssistantIterationLimited(err error) bool {
