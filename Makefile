@@ -244,6 +244,58 @@ test-databricks-provider-chart: ## Lint and render both supported Databricks boo
 			echo "external bootstrap unexpectedly rendered a CatalogEntry"; exit 1; \
 		fi
 
+test-hub-chart: ## Lint and render the faros-hub chart's provider hardening values
+	@set -eu; \
+		tmp_parent="$${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"; \
+		mkdir -p "$$tmp_parent"; \
+		tmp_dir="$$(mktemp -d "$$tmp_parent/faros-hub-chart.XXXXXX")"; \
+		cleanup() { rm -rf -- "$$tmp_dir"; }; \
+		trap cleanup EXIT HUP INT TERM; \
+		chart=deploy/charts/faros-hub; url=https://faros.example.com; \
+		helm lint "$$chart" --set hub.hubExternalURL="$$url"; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" >"$$tmp_dir/default.yaml"; \
+		if grep -q -- '--provider-' "$$tmp_dir/default.yaml"; then \
+			echo "default values rendered a provider hardening flag; they must leave the binary default"; exit 1; \
+		fi; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+			--set hub.security.providerHeartbeatAuth=enforce \
+			--set hub.security.providerDelegatedTokens=platform \
+			--set 'hub.security.providerDelegatedTokensExclude={edges,mcp}' \
+			--set hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/hardened.yaml"; \
+		grep -q -- '- --provider-heartbeat-auth=enforce$$' "$$tmp_dir/hardened.yaml"; \
+		grep -q -- '- --provider-delegated-tokens=platform$$' "$$tmp_dir/hardened.yaml"; \
+		grep -q -- '- --provider-delegated-tokens-exclude=edges$$' "$$tmp_dir/hardened.yaml"; \
+		grep -q -- '- --provider-delegated-tokens-exclude=mcp$$' "$$tmp_dir/hardened.yaml"; \
+		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/hardened.yaml"; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+			--set hub.security.providerWorkspaceClusterAdmin=true >"$$tmp_dir/admin-true.yaml"; \
+		grep -q -- '- --provider-workspace-cluster-admin=true$$' "$$tmp_dir/admin-true.yaml"; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+			--set-string hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/admin-false-string.yaml"; \
+		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/admin-false-string.yaml"; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+			--set 'hub.extraArgs={--providers=edges\,infrastructure,--graphql-playground}' >"$$tmp_dir/extra.yaml"; \
+		grep -q -- '- "--providers=edges,infrastructure"$$' "$$tmp_dir/extra.yaml"; \
+		grep -q -- '- "--graphql-playground"$$' "$$tmp_dir/extra.yaml"; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
+			echo "invalid providerHeartbeatAuth unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerDelegatedTokens=some >/dev/null 2>&1; then \
+			echo "invalid providerDelegatedTokens unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerWorkspaceClusterAdmin=maybe >/dev/null 2>&1; then \
+			echo "invalid providerWorkspaceClusterAdmin unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--dev-mode}' >/dev/null 2>&1; then \
+			echo "extraArgs repeating a modelled flag unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-heartbeat-auth=enforce}' >/dev/null 2>&1; then \
+			echo "extraArgs repeating --provider-heartbeat-auth unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-delegated-tokens=platform}' >/dev/null 2>&1; then \
+			echo "extraArgs repeating --provider-delegated-tokens unexpectedly rendered"; exit 1; \
+		fi
+
 ## Generate deepcopy methods + CRD YAML for the infrastructure provider's
 ## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
 ## under providers/infrastructure/config/crds/ and are embedded into the

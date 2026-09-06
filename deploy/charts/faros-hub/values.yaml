@@ -109,6 +109,52 @@ hub:
   # published-app access (public apps are unaffected — they never touch the
   # hub).
   publishedAppsDomain: ""
+  # -- Provider hardening. Every key here is unset by default, which leaves
+  # the binary's own default for this release; nothing is rendered into the
+  # hub args until you set a value. The binary defaults are the soft, staged
+  # ones (warn / off / cluster-admin) so providers installed from older charts
+  # keep working while they are rolled forward. The NEXT release flips them to
+  # enforce / platform / false; set them here to move to that posture early
+  # and shake out any provider that needs it. See docs/helm.md "Turning on the
+  # hardened defaults early".
+  security:
+    # What the hub does with a provider heartbeat whose bearer token does not
+    # verify as that provider's own service account: "warn" logs and accepts
+    # it, "enforce" rejects it. Binary default this release: warn. Next
+    # release: enforce. Recommended for production: enforce (once every
+    # provider runs a chart that sends its own service-account token).
+    providerHeartbeatAuth: ""
+    # Which platform providers receive a short-lived workspace-scoped
+    # ServiceAccount token instead of the caller's own hub bearer on
+    # /services/providers/*: "off" (caller's bearer, historical behaviour),
+    # "platform" (delegated, except the names in providerDelegatedTokensExclude),
+    # or "all" (delegated, exclusion list ignored). Org-owned providers are
+    # always delegated regardless. Binary default this release: off. Next
+    # release: platform. Recommended for production: platform.
+    providerDelegatedTokens: ""
+    # Platform providers that keep receiving the caller's bearer under
+    # providerDelegatedTokens=platform. Empty leaves the binary's built-in
+    # list (currently just "edges": its SSH data plane resolves the caller
+    # with a TokenReview on the bearer). Setting this REPLACES the built-in
+    # list rather than adding to it, so include edges if you still need it.
+    providerDelegatedTokensExclude: []
+    # Role bound to each provider's ServiceAccount inside its own provider
+    # workspace: true keeps cluster-admin, false binds the narrower generated
+    # faros:provider ClusterRole. null (default) leaves the binary default,
+    # which is true this release so an operator can stage the change; the
+    # next release defaults to false. The narrow role cannot be the default
+    # yet because the infrastructure provider defines and serves its own CRDs
+    # from its provider workspace, which the generated role does not grant, so
+    # flip this per deployment once you have confirmed your providers do not
+    # need it. Flipping either way replaces the existing binding (RoleRef is
+    # immutable; the hub deletes and recreates it).
+    providerWorkspaceClusterAdmin: null
+  # -- Extra command-line flags appended to the hub container after the flags
+  # the chart renders from the values above, for flags the chart does not
+  # model yet (e.g. "--providers=edges,infrastructure"). The chart refuses an
+  # entry that repeats a flag it already renders from a value: set the value
+  # instead, so the modelled setting stays the single source of truth.
+  extraArgs: []
   resources:
     requests:
       cpu: 100m

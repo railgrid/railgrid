@@ -165,6 +165,52 @@ ingress:
           pathType: ImplementationSpecific
 ```
 
+### Turning on the hardened defaults early
+
+Three provider-facing hub flags shipped in this release with deliberately soft
+defaults so providers installed from older charts keep working while they are
+rolled forward; the next release flips each one. The chart leaves all three
+unset by default (nothing is rendered, the binary default applies), and
+`hub.security` lets you move to the hardened posture now instead of waiting
+for the flip. Recommended production values, safe with every provider this
+release ships:
+
+```yaml
+hub:
+  security:
+    # Reject provider heartbeats not signed by that provider's own service
+    # account (binary default this release: warn). Needs every provider on a
+    # chart that sends its service-account token as the heartbeat bearer.
+    providerHeartbeatAuth: enforce
+    # Hand platform providers a short-lived workspace-scoped token instead of
+    # the caller's own hub bearer (binary default: off). Org-owned providers
+    # are always delegated. `edges` stays excluded unless you replace the
+    # list with providerDelegatedTokensExclude.
+    providerDelegatedTokens: platform
+```
+
+The third flag, `providerWorkspaceClusterAdmin`, is deliberately not in that
+snippet. It binds provider service accounts to the narrow generated
+`faros:provider` ClusterRole instead of cluster-admin in their own workspace,
+and the infrastructure provider defines and serves its own CRDs from its
+provider workspace, which the narrow role does not grant. Leave it unset (or
+`true`) while you run the infrastructure provider. Once you have confirmed
+that none of your providers needs cluster-admin in its workspace, flip it
+separately:
+
+```yaml
+hub:
+  security:
+    # Only once your providers are verified: the hub replaces the binding in
+    # place, and setting this back to true restores cluster-admin.
+    providerWorkspaceClusterAdmin: false
+```
+
+Watch your providers after that upgrade. Flags the chart does not model yet
+go in `hub.extraArgs` (for example `["--providers=edges,infrastructure"]`);
+the chart refuses an entry that repeats a flag it already renders from a
+value.
+
 ---
 
 ## Scaling the hub
@@ -271,6 +317,11 @@ kind delete cluster --name faros
 | `hub.listenAddr` | Hub listen address | `":9443"` |
 | `hub.devMode` | Skip TLS verification for OIDC issuer | `false` |
 | `hub.staticAuthToken` | Static bearer token (bypasses OIDC) | `""` |
+| `hub.security.providerHeartbeatAuth` | Provider heartbeat auth: `warn` (log and accept) or `enforce` (reject). Unset leaves the binary default; next release defaults to `enforce` | `""` (binary: `warn`) |
+| `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all`. Next release defaults to `platform` | `""` (binary: `off`) |
+| `hub.security.providerDelegatedTokensExclude` | Platform providers kept on the caller's bearer under `platform`; replaces the built-in list | `[]` (binary: `[edges]`) |
+| `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `faros:provider` role. Next release defaults to `false` | `null` (binary: `true`) |
+| `hub.extraArgs` | Extra hub flags appended after the modelled ones; entries repeating a modelled flag are refused | `[]` |
 
 ### Identity Provider
 

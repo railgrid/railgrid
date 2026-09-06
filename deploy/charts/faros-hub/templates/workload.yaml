@@ -122,6 +122,58 @@ spec:
             {{- if .Values.hub.embeddedGraphQL }}
             - --embedded-graphql
             {{- end }}
+            {{- /*
+            Provider hardening flags. Each renders only when set so an
+            unchanged values file keeps the binary's defaults for this release
+            (warn / off / cluster-admin) and the rendered workload is
+            byte-identical to earlier chart versions.
+            */}}
+            {{- with .Values.hub.security }}
+            {{- if .providerHeartbeatAuth }}
+            {{- if not (has .providerHeartbeatAuth (list "warn" "enforce")) }}
+            {{- fail (printf "hub.security.providerHeartbeatAuth must be \"warn\" or \"enforce\", got %q" .providerHeartbeatAuth) }}
+            {{- end }}
+            - --provider-heartbeat-auth={{ .providerHeartbeatAuth }}
+            {{- end }}
+            {{- if .providerDelegatedTokens }}
+            {{- if not (has .providerDelegatedTokens (list "off" "platform" "all")) }}
+            {{- fail (printf "hub.security.providerDelegatedTokens must be \"off\", \"platform\" or \"all\", got %q" .providerDelegatedTokens) }}
+            {{- end }}
+            - --provider-delegated-tokens={{ .providerDelegatedTokens }}
+            {{- end }}
+            {{- range .providerDelegatedTokensExclude }}
+            - --provider-delegated-tokens-exclude={{ . }}
+            {{- end }}
+            {{- /*
+            Tri-state: null/absent leaves the binary default; true/false
+            renders --flag=<bool> (pflag needs the explicit =value form for
+            false). Accept the bool and its string spelling so --set-string
+            keeps working, and refuse anything else here rather than letting
+            a typo reach the hub's flag parser.
+            */}}
+            {{- if not (kindIs "invalid" .providerWorkspaceClusterAdmin) }}
+            {{- $clusterAdmin := toString .providerWorkspaceClusterAdmin }}
+            {{- if not (has $clusterAdmin (list "true" "false")) }}
+            {{- fail (printf "hub.security.providerWorkspaceClusterAdmin must be true or false, got %q" $clusterAdmin) }}
+            {{- end }}
+            - --provider-workspace-cluster-admin={{ $clusterAdmin }}
+            {{- end }}
+            {{- end }}
+            {{- /*
+            Escape hatch for flags the chart does not model yet. pflag takes
+            the LAST occurrence of a scalar flag, so an entry here that repeats
+            a flag rendered from a value above would silently override it;
+            refuse those so the modelled value stays the single source of
+            truth. Keep this list in step with the flags rendered above.
+            */}}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "dev-mode" "embedded-graphql" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "data-dir" }}
+            {{- range .Values.hub.extraArgs }}
+            {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
+            {{- if has $flag $modelled }}
+            {{- fail (printf "hub.extraArgs entry %q repeats --%s, which the chart renders from a value; set the value instead" (toString .) $flag) }}
+            {{- end }}
+            - {{ . | quote }}
+            {{- end }}
             - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
