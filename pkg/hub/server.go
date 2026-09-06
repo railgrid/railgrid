@@ -123,6 +123,19 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Reverse proxies whose X-Forwarded-For the pre-auth rate limiters may
+	// believe. Empty means every request is keyed on its connection peer; a
+	// hub behind a proxy then throttles all clients as one address, which is
+	// the safe way to be misconfigured (see proxy.ClientIP).
+	trustedProxies, err := proxy.ParseTrustedProxyCIDRs(s.opts.TrustedProxyCIDRs)
+	if err != nil {
+		return fmt.Errorf("--trusted-proxy-cidrs: %w", err)
+	}
+	if len(trustedProxies) > 0 {
+		logger.Info("Trusting X-Forwarded-For from proxies", "cidrs", trustedProxies)
+	} else {
+		logger.Info("No --trusted-proxy-cidrs configured; rate limits key on the connection peer and ignore proxy headers")
+	}
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
@@ -397,6 +410,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating auth handler: %w", err)
 		}
 		authHandler.SetBrowserSessionStore(browserSessionStore)
+		authHandler.SetTrustedProxies(trustedProxies)
 		// Auth routes registered below on the main router with /api/ prefix.
 		authHandler.RegisterRoutes(router)
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)
@@ -534,7 +548,9 @@ func (s *Server) Run(ctx context.Context) error {
 		Providers:   mcpProviderEnumerator,
 		Verifier:    mcpVerifier,
 		RateLimiter: mcpRateLimiter,
-		ClientIP:    proxy.ClientIP,
+		ClientIP: func(r *http.Request) string {
+			return proxy.ClientIP(r, trustedProxies)
+		},
 	})
 	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(
 		http.StripPrefix(apiurl.PathPrefixMCPServer, mcpAggregate))
@@ -611,6 +627,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		logger.Info("kcp API proxy enabled")
 		kcpProxy.SetBrowserSessionStore(browserSessionStore)
+		kcpProxy.SetTrustedProxies(trustedProxies)
 		authRateLimit := authHandler.RateLimitMiddleware()
 		if authHandler != nil {
 			authHandler.SetBrowserIdentityResolver(kcpProxy.BrowserIdentity)
@@ -618,6 +635,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Static-token-only hubs still expose the same bootstrap/logout
 			// contract even though no OIDC Handler exists.
 			sessionHandler := auth.NewBrowserSessionHandler(browserSessionStore, kcpProxy.BrowserIdentity)
+			sessionHandler.SetTrustedProxies(trustedProxies)
 			sessionHandler.RegisterBrowserSessionRoutes(router)
 			authRateLimit = sessionHandler.RateLimitMiddleware()
 		}

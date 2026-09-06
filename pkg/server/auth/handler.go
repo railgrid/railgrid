@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -545,6 +546,20 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthRefresh, h.rateLimiter.middleware(h.HandleRefresh)).Methods("POST")
 	h.RegisterBrowserSessionRoutes(router)
+}
+
+// SetTrustedProxies tells the auth rate limiter which connection peers are
+// reverse proxies whose X-Forwarded-For may be believed (see proxy.ClientIP).
+// Without it every request is keyed on the connection peer, so a hub behind
+// a proxy throttles all of its clients as one address.
+func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
+	if h == nil {
+		return
+	}
+	if h.rateLimiter == nil {
+		h.rateLimiter = newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit"))
+	}
+	h.rateLimiter.trustedProxies = prefixes
 }
 
 // RateLimitMiddleware exposes the auth rate limiter so auth-adjacent routes

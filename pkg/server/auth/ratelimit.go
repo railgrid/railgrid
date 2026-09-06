@@ -15,14 +15,15 @@
 package auth
 
 import (
-	"net"
 	"net/http"
-	"strings"
+	"net/netip"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros/pkg/server/proxy"
 )
 
 // rateLimiter implements a per-IP rate limiter for authentication endpoints.
@@ -34,15 +35,24 @@ import (
 // round trip on every unauthenticated request, and this limiter is defence in
 // depth behind bearer-token and OIDC verification, not the primary control.
 // Deployments that need a hard global bound should enforce it at the ingress.
+//
+// Requests are keyed on proxy.ClientIP: the connection peer, or — only when
+// that peer is one of trustedProxies — the client the proxy vouches for in
+// X-Forwarded-For. Buckets idle for a full window are forgotten and the
+// store is capped at proxy.DefaultMaxLimiterEntries, so distinct peers
+// cannot grow memory without bound.
 type rateLimiter struct {
-	limiters map[string]*rate.Limiter
-	mu       sync.RWMutex
+	limiters *proxy.BoundedKeys[*rate.Limiter]
+	mu       sync.Mutex
 	// bursts is the maximum burst size
 	bursts int
 	// burstDuration is the time window for the burst rate
 	burstDuration time.Duration
+	// trustedProxies is the prefix list handed to proxy.ClientIP.
+	trustedProxies []netip.Prefix
 	// logger for debugging
 	logger klog.Logger
+	now    func() time.Time
 }
 
 // newRateLimiter creates a new rate limiter with the given configuration.
@@ -50,37 +60,30 @@ type rateLimiter struct {
 // burstDuration: the time window for rate limiting
 func newRateLimiter(limit int, burstDuration time.Duration, logger klog.Logger) *rateLimiter {
 	return &rateLimiter{
-		limiters:      make(map[string]*rate.Limiter),
+		limiters:      proxy.NewBoundedKeys[*rate.Limiter](proxy.DefaultMaxLimiterEntries, burstDuration),
 		bursts:        limit,
 		burstDuration: burstDuration,
 		logger:        logger,
+		now:           time.Now,
 	}
 }
 
 // getLimiter returns a rate limiter for the given client IP.
 // If a limiter doesn't exist for the IP, it creates a new one.
 func (rl *rateLimiter) getLimiter(clientIP string) *rate.Limiter {
-	rl.mu.RLock()
-	limiter, exists := rl.limiters[clientIP]
-	rl.mu.RUnlock()
-
-	if exists {
-		return limiter
-	}
-
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if limiter, exists := rl.limiters[clientIP]; exists {
+	now := rl.now()
+	if limiter, exists := rl.limiters.Get(clientIP, now); exists {
 		return limiter
 	}
 
 	// Create a new limiter: limit requests per burstDuration
 	// rate.Every(burstDuration/limit) gives us the correct interval between requests
 	interval := rl.burstDuration / time.Duration(rl.bursts)
-	limiter = rate.NewLimiter(rate.Every(interval), rl.bursts)
-	rl.limiters[clientIP] = limiter
+	limiter := rate.NewLimiter(rate.Every(interval), rl.bursts)
+	rl.limiters.Put(clientIP, limiter, now)
 
 	return limiter
 }
@@ -92,11 +95,18 @@ func (rl *rateLimiter) isAllowed(clientIP string) bool {
 	return limiter.Allow()
 }
 
+// tracked is the number of addresses currently holding a bucket.
+func (rl *rateLimiter) tracked() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.limiters.Len()
+}
+
 // middleware returns an HTTP middleware that applies rate limiting.
 // Requests that exceed the rate limit receive a 429 Too Many Requests response.
 func (rl *rateLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r)
+		clientIP := proxy.ClientIP(r, rl.trustedProxies)
 
 		if !rl.isAllowed(clientIP) {
 			rl.logger.V(2).Info("rate limit exceeded", "clientIP", clientIP, "path", r.URL.Path)
@@ -107,44 +117,4 @@ func (rl *rateLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
-}
-
-// getClientIP extracts the client IP from the request.
-// It first checks the X-Forwarded-For header (for proxies), then X-Real-IP,
-// then falls back to the remote address.
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (common for proxied requests)
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		// X-Forwarded-For can contain multiple IPs, take the first one (client)
-		ips := splitAndTrim(xff, ",")
-		if len(ips) > 0 {
-			return ips[0]
-		}
-	}
-
-	// Check X-Real-IP header (alternative proxy header)
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr // Return as-is if parsing fails
-	}
-	return host
-}
-
-// splitAndTrim splits a string by comma and trims whitespace from each part.
-func splitAndTrim(s, delimiter string) []string {
-	parts := strings.Split(s, delimiter)
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }

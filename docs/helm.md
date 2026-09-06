@@ -123,6 +123,7 @@ For production, you need:
 1. **Public ingress** — So remote agents can connect (see [Ingress]({% link ingress/index.md %}))
 2. **Proper TLS** — Via cert-manager or your own certificates
 3. **Authentication** — Static token or OIDC (see [Security]({% link security.md %}))
+4. **Trusted proxies** — `hub.trustedProxyCIDRs` set to the ingress/load-balancer ranges, so the hub's per-client rate limits see real client addresses instead of the proxy's (without it every client shares one bucket)
 
 ### Example production values
 
@@ -309,5 +310,6 @@ kind delete cluster --name faros
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `service.type` | Service type | `ClusterIP` |
+| `hub.trustedProxyCIDRs` | CIDRs of the proxies fronting the hub (ingress pods, LB, CDN egress). Only a connection from these ranges has its `X-Forwarded-For` believed for the pre-auth rate limits; **required behind any proxy**, otherwise every client shares the proxy's one bucket | `[]` |
 | `ingress.enabled` | Enable Ingress | `false` |
 | `ingress.className` | Ingress class | `""` |

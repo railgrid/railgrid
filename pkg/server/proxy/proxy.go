@@ -27,13 +27,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
@@ -74,9 +73,21 @@ type KCPProxy struct {
 	// authorizer gates /clusters/{id} access against the caller's
 	// UserMembershipIndex (docs/hub-proxy-workspace-access.md, Option A).
 	authorizer *clusterAuthorizer
-	// staticTokenRateLimiter protects the token-login endpoint against brute force attacks
-	staticTokenRateLimiter *tokenRateLimiter
+	// staticTokenRateLimiter protects the token-login endpoint against brute
+	// force attacks. It is keyed on ClientIP, so it only sees through a proxy
+	// once SetTrustedProxies has been called with that proxy's address range.
+	staticTokenRateLimiter *rateLimiter
 	browserSessions        *browsersession.Store
+}
+
+// SetTrustedProxies tells the token-login rate limiter which connection peers
+// are reverse proxies whose X-Forwarded-For may be believed (see ClientIP).
+// Without it every request is keyed on the connection peer, so a hub behind
+// a proxy throttles all of its clients as one address.
+func (p *KCPProxy) SetTrustedProxies(prefixes []netip.Prefix) {
+	if p != nil && p.staticTokenRateLimiter != nil {
+		p.staticTokenRateLimiter.trustedProxies = prefixes
+	}
 }
 
 // SetBrowserSessionStore wires the hub-wide opaque browser-session store used
@@ -86,132 +97,6 @@ func (p *KCPProxy) SetBrowserSessionStore(store *browsersession.Store) {
 	if p != nil {
 		p.browserSessions = store
 	}
-}
-
-// tokenRateLimiter wraps the auth rate limiter for static token endpoints.
-type tokenRateLimiter struct {
-	limiter   *rateLimiter
-	interval  time.Duration
-	burstSize int
-}
-
-// rateLimiter implements a simple rate limiter for auth endpoints.
-type rateLimiter struct {
-	visitors  map[string]*visitor
-	mu        sync.RWMutex
-	interval  time.Duration
-	burstSize int
-}
-
-// visitor tracks rate limiting state for a single IP.
-type visitor struct {
-	tokens    int
-	lastVisit time.Time
-}
-
-// newRateLimiter creates a new in-memory rate limiter.
-func newRateLimiter(interval time.Duration, burstSize int) *rateLimiter {
-	return &rateLimiter{
-		visitors:  make(map[string]*visitor),
-		interval:  interval,
-		burstSize: burstSize,
-	}
-}
-
-// isAllowed checks if a request from the given client IP is allowed.
-func (rl *rateLimiter) isAllowed(clientIP string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	v, exists := rl.visitors[clientIP]
-	if !exists {
-		// First request from this IP
-		rl.visitors[clientIP] = &visitor{
-			tokens:    rl.burstSize - 1,
-			lastVisit: time.Now(),
-		}
-		return true
-	}
-
-	// Refill tokens based on time elapsed
-	elapsed := time.Since(v.lastVisit)
-	refill := int(elapsed / rl.interval)
-	if refill > 0 {
-		v.tokens = min(v.tokens+refill, rl.burstSize)
-		v.lastVisit = time.Now()
-	}
-
-	if v.tokens <= 0 {
-		return false
-	}
-
-	v.tokens--
-	return true
-}
-
-// middleware wraps an http.HandlerFunc with rate limiting.
-func (rl *rateLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r)
-		if !rl.isAllowed(clientIP) {
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "rate limit exceeded - too many requests", http.StatusTooManyRequests)
-			return
-		}
-		next(w, r)
-	}
-}
-
-// IPRateLimiter is the per-client-address token bucket the hub uses on its
-// pre-authentication endpoints (token-login, the aggregate MCP bearer check).
-// It is the same limiter HandleTokenLoginRateLimited applies, exposed so other
-// packages can share one implementation without importing its internals.
-type IPRateLimiter struct {
-	rl *rateLimiter
-}
-
-// NewIPRateLimiter returns a limiter that admits burstSize requests per client
-// address immediately and refills one token per interval up to burstSize.
-func NewIPRateLimiter(interval time.Duration, burstSize int) *IPRateLimiter {
-	return &IPRateLimiter{rl: newRateLimiter(interval, burstSize)}
-}
-
-// Allow reports whether a request from clientIP may proceed, consuming one
-// token when it may.
-func (l *IPRateLimiter) Allow(clientIP string) bool {
-	return l.rl.isAllowed(clientIP)
-}
-
-// ClientIP derives the client address the hub keys rate limits on. It trusts
-// X-Forwarded-For and X-Real-IP the same way the token-login limiter does,
-// falling back to the connection's RemoteAddr.
-func ClientIP(r *http.Request) string {
-	return getClientIP(r)
-}
-
-// getClientIP extracts the client IP from the request.
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
-	}
-
-	// Check X-Real-IP header
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return strings.TrimSpace(xri)
-	}
-
-	// Fall back to RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // NewKCPProxy creates a reverse proxy to kcp.
@@ -285,11 +170,7 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, farosCl
 		logger:               klog.Background().WithName("kcp-proxy"),
 		authorizer:           authorizer,
 		// Initialize rate limiter for token-login endpoint (10 requests per minute)
-		staticTokenRateLimiter: &tokenRateLimiter{
-			limiter:   newRateLimiter(defaultStaticTokenBurstDuration, defaultStaticTokenRateLimit),
-			interval:  defaultStaticTokenBurstDuration,
-			burstSize: defaultStaticTokenRateLimit,
-		},
+		staticTokenRateLimiter: newRateLimiter(defaultStaticTokenBurstDuration, defaultStaticTokenRateLimit),
 	}, nil
 }
 
@@ -996,7 +877,7 @@ func (p *KCPProxy) HandleTokenLoginRateLimited(w http.ResponseWriter, r *http.Re
 		p.HandleTokenLogin(w, r)
 		return
 	}
-	p.staticTokenRateLimiter.limiter.middleware(p.HandleTokenLogin)(w, r)
+	p.staticTokenRateLimiter.middleware(p.HandleTokenLogin)(w, r)
 }
 
 // HandleTokenLogin handles static token login requests.

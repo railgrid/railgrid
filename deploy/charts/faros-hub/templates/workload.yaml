@@ -113,6 +113,9 @@ spec:
             {{- range .Values.hub.portalFrameSources }}
             - --portal-frame-source={{ . }}
             {{- end }}
+            {{- with .Values.hub.trustedProxyCIDRs }}
+            - --trusted-proxy-cidrs={{ join "," . }}
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}

@@ -75,6 +75,22 @@ type Options struct {
 	DevMode          bool
 	StaticAuthTokens []string
 
+	// TrustedProxyCIDRs lists the address ranges of the reverse proxies that
+	// front this hub (ingress controller, load balancer, CDN egress). The
+	// pre-authentication rate limiters (token-login, /auth/refresh, the
+	// published-app code exchange, the aggregate MCP bearer check) key their
+	// buckets on the client address, and a proxy's X-Forwarded-For is only
+	// believed when the connection peer is inside one of these ranges — see
+	// proxy.ClientIP for the exact rule.
+	//
+	// Empty (the default) means proxy headers are ignored and every request is
+	// keyed on its connection peer. A hub deployed behind a proxy without this
+	// set therefore sees all of its clients as the proxy's own address and
+	// throttles them as one; that is the safe failure, so set it. Never widen
+	// it to ranges clients can connect from: any peer inside it can pick its
+	// own bucket by sending X-Forwarded-For.
+	TrustedProxyCIDRs []string
+
 	// ProviderDelegatedTokens selects which providers receive a short-lived,
 	// workspace-scoped ServiceAccount token in place of the caller's own hub
 	// bearer on the backend proxy (/services/providers/{name}/*). Org-owned

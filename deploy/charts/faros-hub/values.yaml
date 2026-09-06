@@ -92,6 +92,16 @@ hub:
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []
+  # CIDRs of the reverse proxies that front the hub (ingress controller pods,
+  # load balancer, CDN egress). The hub keys its pre-auth rate limits
+  # (token-login, /auth/refresh, MCP bearer checks) on the client address and
+  # only believes X-Forwarded-For from a connection inside these ranges.
+  # REQUIRED when the hub is reached through ingress.enabled or any other
+  # proxy: left empty, every client arrives as the proxy's own address and
+  # shares one bucket (over-throttling, never under). Never list ranges that
+  # clients connect from — a peer inside them can choose its own bucket.
+  # Example for an in-cluster ingress controller: ["10.244.0.0/16"].
+  trustedProxyCIDRs: []
   # DNS zone published apps are served under (the infrastructure provider's
   # apps base domain, e.g. apps.example.com). Enables the login-time
   # published-app authorize/exchange endpoints; sign-in redirects are only
