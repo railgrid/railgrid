@@ -335,6 +335,28 @@ func (g *projectEinoAssistantOrgSpendGuard) Record(ctx context.Context, usage *s
 	return nil
 }
 
+// RecordAtLeastPrompt records the provider's reported usage for one call, or,
+// when the call ended without any usage report, the prompt the provider was
+// handed. A stream the client cancelled before the final usage chunk, a
+// provider error mid-stream, or a provider that simply omits stream usage all
+// leave usage nil while the provider has already billed at least the input
+// tokens; recording nothing would let the cap be evaded by cancelling every
+// call before its last chunk. The estimate is the same one the compaction
+// planner uses, charged at the model's input rate; it is a floor, not a bill.
+func (g *projectEinoAssistantOrgSpendGuard) RecordAtLeastPrompt(ctx context.Context, input []*schema.Message, usage *schema.TokenUsage) error {
+	if g == nil {
+		return nil
+	}
+	if usage == nil {
+		estimate := projectEinoAssistantMessagesTokenEstimate(input)
+		if estimate <= 0 {
+			return nil
+		}
+		usage = &schema.TokenUsage{PromptTokens: estimate}
+	}
+	return g.Record(ctx, usage)
+}
+
 // reportCapReached appends the run's one durable cap notice. It is detached
 // for the same reason the ledger write is: the notice explains why the run
 // stopped, and a client that has already gone away is exactly when it is
@@ -383,7 +405,7 @@ func (m *projectEinoAssistantOrgSpendModel) Generate(
 	if err != nil {
 		return message, err
 	}
-	if err := m.guard.Record(ctx, projectEinoAssistantMessageUsage(message)); err != nil {
+	if err := m.guard.RecordAtLeastPrompt(ctx, input, projectEinoAssistantMessageUsage(message)); err != nil {
 		return nil, err
 	}
 	return message, nil
@@ -408,14 +430,22 @@ func (m *projectEinoAssistantOrgSpendModel) Stream(
 		var usage *schema.TokenUsage
 		for {
 			message, receiveErr := source.Recv()
-			if errors.Is(receiveErr, io.EOF) {
-				if recordErr := m.guard.Record(ctx, usage); recordErr != nil {
+			if receiveErr != nil {
+				// Every way the stream ends — EOF, a provider error, the
+				// client's cancellation — is the end of what the provider
+				// bills for this call, so every one of them records. Record
+				// writes on a detached context; the cancellation that ended
+				// the stream cannot also drop the ledger write.
+				recordErr := m.guard.RecordAtLeastPrompt(ctx, input, usage)
+				switch {
+				case !errors.Is(receiveErr, io.EOF):
+					if recordErr != nil {
+						klog.V(1).Infof("record organization spend after stream error (%v): %v", receiveErr, recordErr)
+					}
+					writer.Send(nil, receiveErr)
+				case recordErr != nil:
 					writer.Send(nil, recordErr)
 				}
-				return
-			}
-			if receiveErr != nil {
-				writer.Send(nil, receiveErr)
 				return
 			}
 			if current := projectEinoAssistantMessageUsage(message); current != nil {

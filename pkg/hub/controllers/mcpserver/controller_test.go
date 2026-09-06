@@ -227,6 +227,13 @@ func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/describe"); r == nil {
 		t.Fatal("readOnly should keep read-only actions")
 	}
+	// The edges tunnel serves kubectl delete, exec and SSH shells under the
+	// one "proxy" verb, so a readOnly server must not hold it on any edge.
+	for _, r := range rules {
+		if slices.Contains(r.Verbs, "proxy") {
+			t.Fatalf("readOnly must not grant the edge data plane: %+v", r)
+		}
+	}
 	// Only create rules allowed in readOnly are the SSAR plumbing and
 	// read-only actions.
 	for _, r := range rules {

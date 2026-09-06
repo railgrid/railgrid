@@ -36,8 +36,9 @@ const (
 	// the Services that need --svc-allow-cidr before flipping to enforce.
 	SvcPolicyWarn SvcPolicy = "warn"
 	// SvcPolicyAllowAny disables the allow list entirely (loudly logged at
-	// startup). Link-local, unspecified and multicast targets stay blocked
-	// even here — those are never overridable.
+	// startup). Link-local, unspecified, multicast and the cloud metadata
+	// endpoints in svcHardBlockedPrefixes stay blocked even here — those are
+	// never overridable.
 	SvcPolicyAllowAny SvcPolicy = "allow-any"
 )
 
@@ -143,8 +144,8 @@ func (c svcProxyConfig) dialer() svcDialer {
 }
 
 // svcDenial explains why a target failed the host checks. hard marks the
-// never-overridable class (link-local, unspecified, multicast): warn and
-// allow-any still refuse those.
+// never-overridable class (link-local, unspecified, multicast, cloud metadata
+// endpoints): warn and allow-any still refuse those.
 type svcDenial struct {
 	reason string
 	hard   bool
@@ -161,18 +162,52 @@ type svcVettedTarget struct {
 	denied   *svcDenial
 }
 
+// svcHardBlockedPrefixes lists the cloud metadata endpoints that live outside
+// the link-local class and so would otherwise be dialable under warn (the
+// default) and allow-any, or by putting them in --svc-allow-cidr. Every entry
+// hands out instance credentials to whatever can reach it; none is ever
+// overridable. Link-local (169.254.0.0/16, fe80::/10), unspecified and
+// multicast are blocked as classes in isHardBlockedAddr and need no entry.
+var svcHardBlockedPrefixes = []netip.Prefix{
+	// AWS IMDS over IPv6. It is a ULA (fd00::/8), not link-local, so the
+	// class checks do not catch it.
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+	// Alibaba Cloud metadata. Sits inside the CGNAT range (100.64.0.0/10),
+	// which operators legitimately allow for cluster networks, so only the
+	// endpoint itself is blocked.
+	netip.MustParsePrefix("100.100.100.200/32"),
+}
+
+// svcNAT64Prefix is the well-known NAT64 prefix (RFC 6052 / RFC 6146). A
+// host on a NAT64 network reaches 169.254.169.254 as 64:ff9b::a9fe:a9fe, so
+// the embedded IPv4 is classified as if it had been dialed directly.
+var svcNAT64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
 // isHardBlockedAddr reports the addresses no policy may open up: link-local
-// (169.254.0.0/16, fe80::/10 — cloud metadata lives here), unspecified, and
-// multicast. IPv4-mapped IPv6 forms are unmapped first so ::ffff:169.254.1.1
-// cannot slip past.
+// (169.254.0.0/16, fe80::/10 — cloud metadata lives here), unspecified,
+// multicast, and the svcHardBlockedPrefixes metadata endpoints outside those
+// classes. IPv4-mapped IPv6 forms are unmapped first so ::ffff:169.254.1.1
+// cannot slip past, and a NAT64 address is judged by the IPv4 it embeds.
 func isHardBlockedAddr(a netip.Addr) bool {
 	a = a.Unmap()
-	return !a.IsValid() ||
+	if !a.IsValid() ||
 		a.IsUnspecified() ||
 		a.IsMulticast() ||
 		a.IsLinkLocalUnicast() ||
 		a.IsLinkLocalMulticast() ||
-		a.IsInterfaceLocalMulticast()
+		a.IsInterfaceLocalMulticast() {
+		return true
+	}
+	for _, p := range svcHardBlockedPrefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	if svcNAT64Prefix.Contains(a) {
+		raw := a.As16()
+		return isHardBlockedAddr(netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]}))
+	}
+	return false
 }
 
 // allowAddr applies the policy to one address. clusterName says the address
@@ -181,7 +216,7 @@ func isHardBlockedAddr(a netip.Addr) bool {
 func (c svcProxyConfig) allowAddr(a netip.Addr, clusterName bool) *svcDenial {
 	a = a.Unmap()
 	if isHardBlockedAddr(a) {
-		return &svcDenial{reason: fmt.Sprintf("%s is link-local, unspecified or multicast; never allowed", a), hard: true}
+		return &svcDenial{reason: fmt.Sprintf("%s is link-local, unspecified, multicast or a cloud metadata endpoint; never allowed", a), hard: true}
 	}
 	if a.IsLoopback() {
 		return nil

@@ -105,6 +105,17 @@ func TestIsAllowedSvcHost(t *testing.T) {
 		{"mapped v4 metadata inside allow list", "::ffff:169.254.169.254", false, wide, false},
 		{"mapped v4 lan inside allow list", "::ffff:192.168.1.1", false, lan, true},
 
+		// cloud metadata endpoints that are not link-local: never, even in 0/0
+		{"aws imds v6 inside ::/0", "fd00:ec2::254", false, wide, false},
+		{"alibaba metadata inside 0/0", "100.100.100.200", false, wide, false},
+		{"alibaba metadata inside its /32", "100.100.100.200", true, prefixes(t, "100.100.100.200/32"), false},
+		{"nat64 link-local inside ::/0", "64:ff9b::a9fe:a9fe", false, wide, false},
+		{"nat64 link-local dotted inside ::/0", "64:ff9b::169.254.169.254", true, wide, false},
+		{"nat64 alibaba inside ::/0", "64:ff9b::6464:64c8", false, wide, false},
+		{"nat64 lan inside ::/0", "64:ff9b::c0a8:101", false, wide, true},
+		{"mapped alibaba inside ::/0", "::ffff:100.100.100.200", false, wide, false},
+		{"cgnat neighbour inside 0/0", "100.100.100.201", false, wide, true},
+
 		// cluster DNS only in kubernetes mode
 		{"cluster dns server", "svc.ns.svc.cluster.local", false, nil, false},
 		{"cluster dns cluster", "svc.ns.svc.cluster.local", true, nil, true},
@@ -376,19 +387,31 @@ func TestSvcProxyHandlerEnforceDeniesWithoutDialing(t *testing.T) {
 	}
 }
 
-// TestSvcProxyHandlerHardBlockIgnoresPolicy: link-local stays refused under
-// warn and allow-any, even when an allow list covers it.
+// TestSvcProxyHandlerHardBlockIgnoresPolicy: link-local and the cloud
+// metadata endpoints that live outside link-local stay refused under warn and
+// allow-any, even when an allow list covers them.
 func TestSvcProxyHandlerHardBlockIgnoresPolicy(t *testing.T) {
+	targets := []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[fd00:ec2::254]/latest/meta-data/",          // AWS IMDS over IPv6 (ULA)
+		"http://100.100.100.200/latest/meta-data/",          // Alibaba Cloud metadata
+		"http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",     // NAT64 of 169.254.169.254
+		"http://[::ffff:100.100.100.200]/latest/meta-data/", // IPv4-mapped
+	}
 	for _, policy := range []SvcPolicy{SvcPolicyWarn, SvcPolicyAllowAny} {
-		cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: policy, AllowedCIDRs: prefixes(t, "0.0.0.0/0")}}
-		_, do, dialer := svcProxyFixture(t, cfg)
-		resp := do("http://169.254.169.254/latest/meta-data/")
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("policy %s: status = %d, want 403", policy, resp.StatusCode)
-		}
-		if n := dialer.n.Load(); n != 0 {
-			t.Errorf("policy %s: dialed %d times, want 0", policy, n)
+		for _, target := range targets {
+			cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{Policy: policy, AllowedCIDRs: prefixes(t, "0.0.0.0/0", "::/0")}}
+			_, do, dialer := svcProxyFixture(t, cfg)
+			// Never let a failing case reach the network.
+			dialer.fail = func(string) bool { return true }
+			resp := do(target)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("policy %s, %s: status = %d, want 403", policy, target, resp.StatusCode)
+			}
+			if n := dialer.n.Load(); n != 0 {
+				t.Errorf("policy %s, %s: dialed %d times (%v), want 0", policy, target, n, dialer.addrs)
+			}
 		}
 	}
 }

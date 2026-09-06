@@ -63,7 +63,10 @@ func TestWithPortalSecurityHeadersSetsExactContentSecurityPolicy(t *testing.T) {
 		"script-src 'self'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"connect-src 'self'; " +
-		"font-src 'self' data:"
+		"font-src 'self' data:; " +
+		"object-src 'none'; " +
+		"base-uri 'self'; " +
+		"frame-ancestors 'self'"
 	if got := rec.Result().Header.Get("Content-Security-Policy"); got != want {
 		t.Fatalf("Content-Security-Policy = %q, want %q", got, want)
 	}

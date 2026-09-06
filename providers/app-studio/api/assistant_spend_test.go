@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
@@ -423,6 +424,98 @@ func TestProjectEinoAssistantOrgSpendRecordsUnderClientCancellation(t *testing.T
 	}
 	if streamSpend.USDMicros != 3_000_000 || streamSpend.OutputTokens != 300_000 {
 		t.Fatalf("stream ledger after cancellation = %#v, want the billed usage", streamSpend)
+	}
+}
+
+// projectAssistantSpendCancellableStreamModel streams one content chunk with
+// no usage and then holds the stream open until the request context is
+// cancelled, ending it with the context error — the shape of a client that
+// disconnects before the provider's final usage chunk. The provider has
+// already billed the prompt by then.
+type projectAssistantSpendCancellableStreamModel struct{}
+
+func (projectAssistantSpendCancellableStreamModel) Generate(context.Context, []*schema.Message, ...einomodel.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("response", nil), nil
+}
+
+func (projectAssistantSpendCancellableStreamModel) Stream(ctx context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	reader, writer := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer writer.Close()
+		writer.Send(schema.AssistantMessage("partial", nil), nil)
+		<-ctx.Done()
+		writer.Send(nil, ctx.Err())
+	}()
+	return reader, nil
+}
+
+// A stream that ends before its usage chunk (client cancel, provider error, or
+// a provider that never reports stream usage) still cost the organization at
+// least the prompt. The ledger must never record zero for a billed call.
+func TestProjectEinoAssistantOrgSpendRecordsPromptWhenStreamEndsWithoutUsage(t *testing.T) {
+	memory := store.NewMemoryStore()
+	now := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	guard := newProjectEinoAssistantOrgSpendGuard(memory, "org-a", "gpt-4o", 10_000_000, nil)
+	guard.now = func() time.Time { return now }
+	model := projectEinoAssistantOrgSpendModelWithGuard(projectAssistantSpendCancellableStreamModel{}, guard)
+
+	prompt := []*schema.Message{schema.UserMessage(strings.Repeat("build me a dashboard ", 200))}
+	ctx, cancel := context.WithCancel(context.Background())
+	reader, err := model.Stream(ctx, prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message, err := reader.Recv(); err != nil || message == nil || message.Content != "partial" {
+		t.Fatalf("first chunk = %#v, %v", message, err)
+	}
+	cancel()
+	var terminal error
+	for {
+		if _, err := reader.Recv(); err != nil {
+			terminal = err
+			break
+		}
+	}
+	reader.Close()
+	if !errors.Is(terminal, context.Canceled) {
+		t.Fatalf("stream terminal error = %v, want the cancellation", terminal)
+	}
+
+	spend, err := memory.GetOrganizationSpend(context.Background(), "org-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInput := int64(projectEinoAssistantMessagesTokenEstimate(prompt))
+	if wantInput <= 0 {
+		t.Fatalf("test prompt estimates to %d tokens; want a positive estimate", wantInput)
+	}
+	if spend.InputTokens != wantInput || spend.OutputTokens != 0 {
+		t.Fatalf("ledger after a cancelled stream = %#v, want the estimated prompt (%d input tokens) recorded", spend, wantInput)
+	}
+	if want := projectAssistantModelCostMicros("gpt-4o", wantInput, 0); spend.USDMicros != want || want == 0 {
+		t.Fatalf("ledger USD after a cancelled stream = %d, want %d (non-zero)", spend.USDMicros, want)
+	}
+
+	// Once the provider does report usage, the report wins over the estimate.
+	reported := newProjectEinoAssistantOrgSpendGuard(memory, "org-b", "gpt-4o", 10_000_000, nil)
+	reported.now = func() time.Time { return now }
+	base := &projectAssistantRolloutBudgetTestModel{usages: []*schema.TokenUsage{{PromptTokens: 7, CompletionTokens: 3}}}
+	reader, err = projectEinoAssistantOrgSpendModelWithGuard(base, reported).Stream(context.Background(), prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := reader.Recv(); err != nil {
+			break
+		}
+	}
+	reader.Close()
+	spend, err = memory.GetOrganizationSpend(context.Background(), "org-b", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend.InputTokens != 7 || spend.OutputTokens != 3 {
+		t.Fatalf("ledger with reported usage = %#v, want the provider's numbers, not an estimate", spend)
 	}
 }
 

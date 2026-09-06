@@ -89,6 +89,17 @@ var (
 // TokenReview every other beat.
 const heartbeatAuthCacheTTL = HeartbeatTTL / 2
 
+// heartbeatAuthNegativeCacheTTL bounds how long a definitive rejection (the
+// token did not authenticate, or authenticated as something other than the
+// provider's service account) is remembered without a fresh TokenReview. The
+// heartbeat endpoint is unauthenticated and provider names are guessable, so
+// without this every beat carrying a bad token cost kcp one TokenReview and a
+// hammering caller turned into TokenReview load on kcp. It is short so a token
+// that becomes valid — a provider re-minted right after a bad beat — is not
+// locked out for longer than one beat cadence. Verification outages
+// (ErrHeartbeatAuthUnavailable) are never cached: the provider retries those.
+const heartbeatAuthNegativeCacheTTL = 30 * time.Second
+
 // ProviderSAUsername is the username kcp reports for the provider's own
 // service account: the one MintProviderKubeconfigAtPath issues the provider
 // kubeconfig for. Every provider's heartbeat must authenticate as exactly it.
@@ -109,13 +120,23 @@ const ProviderSAUsername = "system:serviceaccount:" + ProviderSANamespace + ":" 
 // so a "provider" SA token from any other workspace does not authenticate here
 // at all, let alone as ProviderSAUsername.
 type tokenReviewAuthenticator struct {
-	clusters  ClusterResolver
-	newClient func(cluster string) (kubernetes.Interface, error)
-	now       func() time.Time
-	cacheTTL  time.Duration
+	clusters    ClusterResolver
+	newClient   func(cluster string) (kubernetes.Interface, error)
+	now         func() time.Time
+	cacheTTL    time.Duration
+	negativeTTL time.Duration
 
 	mu    sync.Mutex
 	cache map[heartbeatAuthCacheKey]time.Time
+	// negative remembers rejected (token, provider) pairs with the error to
+	// repeat, until the recorded time.
+	negative map[heartbeatAuthCacheKey]heartbeatAuthRejection
+}
+
+// heartbeatAuthRejection is one negatively cached outcome.
+type heartbeatAuthRejection struct {
+	err   error
+	until time.Time
 }
 
 // heartbeatAuthCacheKey is the sha256 of the token plus the provider it was
@@ -129,7 +150,8 @@ type heartbeatAuthCacheKey struct {
 // NewTokenReviewHeartbeatAuthenticator returns a HeartbeatAuthenticator that
 // accepts a beat for provider N only when its bearer token authenticates, via
 // TokenReview in N's own workspace, as that workspace's provider service
-// account. Successful verifications are cached for heartbeatAuthCacheTTL.
+// account. Successful verifications are cached for heartbeatAuthCacheTTL and
+// rejections for heartbeatAuthNegativeCacheTTL.
 func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters ClusterResolver) (HeartbeatAuthenticator, error) {
 	if kcpConfig == nil {
 		return nil, fmt.Errorf("kcp config is required")
@@ -144,9 +166,11 @@ func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters Clust
 			cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
 			return kubernetes.NewForConfig(cfg)
 		},
-		now:      time.Now,
-		cacheTTL: heartbeatAuthCacheTTL,
-		cache:    map[heartbeatAuthCacheKey]time.Time{},
+		now:         time.Now,
+		cacheTTL:    heartbeatAuthCacheTTL,
+		negativeTTL: heartbeatAuthNegativeCacheTTL,
+		cache:       map[heartbeatAuthCacheKey]time.Time{},
+		negative:    map[heartbeatAuthCacheKey]heartbeatAuthRejection{},
 	}
 	return a.Authenticate, nil
 }
@@ -161,6 +185,9 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	now := a.now()
 	if a.cached(key, now) {
 		return nil
+	}
+	if err := a.rejected(key, now); err != nil {
+		return err
 	}
 
 	cluster, ok := a.clusters.CatalogEntryCluster(providerName)
@@ -178,10 +205,10 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 		return fmt.Errorf("%w: reviewing token in cluster %s: %v", ErrHeartbeatAuthUnavailable, cluster, err)
 	}
 	if !review.Status.Authenticated {
-		return ErrHeartbeatTokenRejected
+		return a.reject(key, now, ErrHeartbeatTokenRejected)
 	}
 	if review.Status.User.Username != ProviderSAUsername {
-		return fmt.Errorf("%w: authenticated as %q, want %q", ErrHeartbeatWrongIdentity, review.Status.User.Username, ProviderSAUsername)
+		return a.reject(key, now, fmt.Errorf("%w: authenticated as %q, want %q", ErrHeartbeatWrongIdentity, review.Status.User.Username, ProviderSAUsername))
 	}
 
 	a.mu.Lock()
@@ -202,6 +229,39 @@ func (a *tokenReviewAuthenticator) cached(key heartbeatAuthCacheKey, now time.Ti
 	}
 	until, ok := a.cache[key]
 	return ok && now.Before(until)
+}
+
+// rejected returns the remembered rejection for key if one is still live (nil
+// otherwise), dropping expired entries as it goes. Only what kcp answered is
+// cached, so a caller cycling through guessed tokens still costs one review
+// per distinct token; what it can no longer do is turn one bad token into a
+// review per beat.
+func (a *tokenReviewAuthenticator) rejected(key heartbeatAuthCacheKey, now time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k, r := range a.negative {
+		if !now.Before(r.until) {
+			delete(a.negative, k)
+		}
+	}
+	if r, ok := a.negative[key]; ok && now.Before(r.until) {
+		return r.err
+	}
+	return nil
+}
+
+// reject records a definitive rejection for key and returns err.
+func (a *tokenReviewAuthenticator) reject(key heartbeatAuthCacheKey, now time.Time, err error) error {
+	if a.negativeTTL <= 0 {
+		return err
+	}
+	a.mu.Lock()
+	if a.negative == nil {
+		a.negative = map[heartbeatAuthCacheKey]heartbeatAuthRejection{}
+	}
+	a.negative[key] = heartbeatAuthRejection{err: err, until: now.Add(a.negativeTTL)}
+	a.mu.Unlock()
+	return err
 }
 
 // bearerToken extracts the token from an Authorization: Bearer header.

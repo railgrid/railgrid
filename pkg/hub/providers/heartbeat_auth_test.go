@@ -434,11 +434,13 @@ func (f *tokenReviewFake) newClient(cluster string) (kubernetes.Interface, error
 
 func newTestTokenReviewAuthenticator(reg *Registry, f *tokenReviewFake, now *time.Time) *tokenReviewAuthenticator {
 	return &tokenReviewAuthenticator{
-		clusters:  reg,
-		newClient: f.newClient,
-		now:       func() time.Time { return *now },
-		cacheTTL:  heartbeatAuthCacheTTL,
-		cache:     map[heartbeatAuthCacheKey]time.Time{},
+		clusters:    reg,
+		newClient:   f.newClient,
+		now:         func() time.Time { return *now },
+		cacheTTL:    heartbeatAuthCacheTTL,
+		negativeTTL: heartbeatAuthNegativeCacheTTL,
+		cache:       map[heartbeatAuthCacheKey]time.Time{},
+		negative:    map[heartbeatAuthCacheKey]heartbeatAuthRejection{},
 	}
 }
 
@@ -458,12 +460,75 @@ func TestTokenReviewAuthenticatorRejectsAuthenticatedWrongUser(t *testing.T) {
 	if heartbeatAuthStatus(err) != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", heartbeatAuthStatus(err))
 	}
-	// A failure is never cached: the next beat is reviewed again.
+	// A definitive rejection is remembered briefly: the same token is not
+	// re-reviewed on the next beat, and it still fails the same way.
 	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "tok"), "code"); !errors.Is(err, ErrHeartbeatWrongIdentity) {
 		t.Fatalf("second err = %v, want ErrHeartbeatWrongIdentity", err)
 	}
-	if f.reviews != 2 {
-		t.Fatalf("reviews = %d, want 2 (failures are not cached)", f.reviews)
+	if f.reviews != 1 {
+		t.Fatalf("reviews = %d, want 1 (rejections are negatively cached)", f.reviews)
+	}
+}
+
+// The endpoint is unauthenticated and a registered provider name is easy to
+// guess, so every beat with a bad token used to cost kcp one TokenReview. A
+// hammering caller must hit the negative cache instead, without that cache
+// ever vouching for a token or outliving its short TTL.
+func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+
+	for range 100 {
+		if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "garbage"), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+			t.Fatalf("err = %v, want ErrHeartbeatTokenRejected", err)
+		}
+	}
+	if f.reviews != 1 {
+		t.Fatalf("reviews = %d, want 1 (100 beats with the same bad token collapse into one TokenReview)", f.reviews)
+	}
+
+	// Keyed by token and provider: the same garbage for another provider, or
+	// different garbage for the same one, is its own review.
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("edges", "garbage"), "edges"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+		t.Fatalf("other provider: err = %v", err)
+	}
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "garbage2"), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+		t.Fatalf("other token: err = %v", err)
+	}
+	if f.reviews != 3 {
+		t.Fatalf("reviews = %d, want 3", f.reviews)
+	}
+
+	// The negative entry lapses quickly, so a token that becomes valid (a
+	// provider re-minted right after a bad beat) is not locked out for long:
+	// once kcp accepts it, the very next review says so.
+	if heartbeatAuthNegativeCacheTTL > heartbeatAuthCacheTTL {
+		t.Fatalf("negative cache TTL %v must not exceed the positive TTL %v", heartbeatAuthNegativeCacheTTL, heartbeatAuthCacheTTL)
+	}
+	now = now.Add(heartbeatAuthNegativeCacheTTL + time.Second)
+	f.status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername}}
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "garbage"), "code"); err != nil {
+		t.Fatalf("after the negative entry expired: %v", err)
+	}
+	if f.reviews != 4 {
+		t.Fatalf("reviews = %d, want 4 (expired negative entry is re-reviewed)", f.reviews)
+	}
+
+	// A verification outage is not a rejection and is never cached: the
+	// provider retries and the next beat asks kcp again.
+	reg.Upsert(Provider{Name: "late", EndpointsValid: true}) // no cluster yet
+	for range 2 {
+		if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("late", "tok"), "late"); !errors.Is(err, ErrHeartbeatAuthUnavailable) {
+			t.Fatalf("err = %v, want ErrHeartbeatAuthUnavailable", err)
+		}
+	}
+	reg.Upsert(Provider{Name: "late", EndpointsValid: true, CatalogEntryCluster: "late-cluster"})
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("late", "tok"), "late"); err != nil {
+		t.Fatalf("once the cluster is known: %v", err)
 	}
 }
 

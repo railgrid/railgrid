@@ -54,6 +54,12 @@ func WithPortalSecurityHeaders(next http.Handler, frameSources ...string) http.H
 // portalContentSecurityPolicy renders the portal CSP. Keep the directive list
 // in lockstep with the test asserting the exact header value: every change
 // here is a security-relevant change to what the browser will execute.
+//
+// object-src, base-uri and frame-ancestors do not fall back to default-src:
+// without them an injected <object>/<embed> could load a plugin document, an
+// injected <base> could redirect every relative script and API URL in the
+// document to another origin, and any site could frame the portal for
+// clickjacking. None of the three has a legitimate use in the portal.
 func portalContentSecurityPolicy(frameSources []string) string {
 	return "default-src 'self'; " +
 		"frame-src " + strings.Join(portalFrameSources(frameSources), " ") + "; " +
@@ -61,7 +67,10 @@ func portalContentSecurityPolicy(frameSources []string) string {
 		"script-src 'self'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"connect-src 'self'; " +
-		"font-src 'self' data:"
+		"font-src 'self' data:; " +
+		"object-src 'none'; " +
+		"base-uri 'self'; " +
+		"frame-ancestors 'self'"
 }
 
 func portalFrameSources(frameSources []string) []string {

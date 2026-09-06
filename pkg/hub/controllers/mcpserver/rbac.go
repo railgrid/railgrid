@@ -69,9 +69,13 @@ type dataPlaneGrant struct {
 	// grant widens itself as new resources join the group's APIExport.
 	resources []string
 	// verbs are extra verbs granted on the bound resources themselves. They
-	// gate access to a data plane rather than a mutation of the object, so
-	// they survive readOnly: without them the read-only tools cannot reach
-	// the data plane at all.
+	// gate access to a data plane rather than a mutation of the object, and
+	// they are dropped for readOnly servers: the data planes behind them do
+	// not distinguish reads from writes (the edges tunnel serves kubectl
+	// delete, exec and an SSH shell under the one "proxy" verb), so keeping
+	// the verb would make a read-only token a full operator of every bound
+	// edge. Read-only servers therefore lose data-plane access until a data
+	// plane offers a read-only mode of its own; that is the safe direction.
 	verbs []string
 	// subresources are virtual subresources granted with "create". They
 	// invoke something (a shell, a job) and are dropped for readOnly servers.
@@ -83,6 +87,9 @@ var dataPlaneGrants = map[string]dataPlaneGrant{
 	// The edges tunnel authorizes verb "proxy" on the edge object before
 	// serving its k8s/ssh/mcp subresources (providers/edges/internal/tunnel).
 	// Every edge kind the group exports is proxyable, so no resource filter.
+	// The tunnel checks "proxy" for every HTTP method on the k8s subresource
+	// and for ssh sessions alike, so this is never granted to readOnly
+	// servers (see dataPlaneGrant.verbs).
 	"edges.faros.sh": {verbs: []string{"proxy"}},
 	// The infrastructure data plane authorizes "create" on <instance>/exec
 	// before running a command in a dev instance
@@ -111,9 +118,9 @@ type ActionGrantSource func(ctx context.Context) ([]ActionGrant, error)
 
 // buildRules derives the ClusterRole rules for one server: every resource the
 // tenant has bound gets read (and, unless readOnly, write) verbs; data-plane
-// coordinates and catalog actions are added for bound resources only; plus the
-// read-only kcp/authz plumbing every tool path needs. Output is deterministic
-// so reconcile-time comparison is stable.
+// coordinates (never for readOnly) and catalog actions are added for bound
+// resources only; plus the read-only kcp/authz plumbing every tool path
+// needs. Output is deterministic so reconcile-time comparison is stable.
 func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, readOnly bool) []rbacv1.PolicyRule {
 	byGroup := map[string]map[string]struct{}{}
 	for _, b := range bound {
@@ -165,7 +172,9 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 			// so binding an unrelated resource in the same group never widens
 			// it (e.g. templates must not get templates/exec).
 			targets := filterResources(resources, dp.resources)
-			if len(dp.verbs) > 0 && len(targets) > 0 {
+			// Data-plane verbs and subresources are both invocation rights,
+			// not reads; neither survives readOnly.
+			if !readOnly && len(dp.verbs) > 0 && len(targets) > 0 {
 				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: targets, Verbs: dp.verbs})
 			}
 			if !readOnly && len(dp.subresources) > 0 && len(targets) > 0 {
