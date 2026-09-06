@@ -19,8 +19,12 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpclientset "github.com/kcp-dev/sdk/client/clientset/versioned"
@@ -58,6 +62,12 @@ var (
 // server. They exist purely as authorization coordinates, so the tenant's
 // APIBindings never list them and they have to be spelled out here.
 type dataPlaneGrant struct {
+	// resources, when non-empty, restricts the grant to those resources
+	// (intersected with what the tenant actually bound). Empty means every
+	// bound resource in the group, which is only correct when the data plane
+	// really does serve all of them. Anything narrower must be listed, or the
+	// grant widens itself as new resources join the group's APIExport.
+	resources []string
 	// verbs are extra verbs granted on the bound resources themselves. They
 	// gate access to a data plane rather than a mutation of the object, so
 	// they survive readOnly: without them the read-only tools cannot reach
@@ -72,11 +82,14 @@ type dataPlaneGrant struct {
 var dataPlaneGrants = map[string]dataPlaneGrant{
 	// The edges tunnel authorizes verb "proxy" on the edge object before
 	// serving its k8s/ssh/mcp subresources (providers/edges/internal/tunnel).
+	// Every edge kind the group exports is proxyable, so no resource filter.
 	"edges.faros.sh": {verbs: []string{"proxy"}},
-	// The infrastructure data plane authorizes "create" on
-	// <instance resource>/exec before running a command in a dev instance
-	// (providers/infrastructure/dataplane/authorizer.go).
-	"infrastructure.faros.sh": {subresources: []string{"exec"}},
+	// The infrastructure data plane authorizes "create" on <instance>/exec
+	// before running a command in a dev instance
+	// (providers/infrastructure/dataplane/authorizer.go). instances is the
+	// only resource the data plane serves — the handler rejects anything else
+	// — so exec is granted on instances alone and never on, say, templates.
+	"infrastructure.faros.sh": {resources: []string{"instances"}, subresources: []string{"exec"}},
 }
 
 // ActionGrant is one provider action from the platform catalog, expressed as
@@ -148,12 +161,16 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: resources, Verbs: verbs})
 
 		if dp, ok := dataPlaneGrants[g]; ok {
-			if len(dp.verbs) > 0 {
-				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: resources, Verbs: dp.verbs})
+			// Scope the grant to the resources the data plane actually serves,
+			// so binding an unrelated resource in the same group never widens
+			// it (e.g. templates must not get templates/exec).
+			targets := filterResources(resources, dp.resources)
+			if len(dp.verbs) > 0 && len(targets) > 0 {
+				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: targets, Verbs: dp.verbs})
 			}
-			if !readOnly && len(dp.subresources) > 0 {
-				subs := make([]string, 0, len(resources)*len(dp.subresources))
-				for _, r := range resources {
+			if !readOnly && len(dp.subresources) > 0 && len(targets) > 0 {
+				subs := make([]string, 0, len(targets)*len(dp.subresources))
+				for _, r := range targets {
 					for _, s := range dp.subresources {
 						subs = append(subs, r+"/"+s)
 					}
@@ -176,6 +193,21 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		APIGroups: []string{"authorization.k8s.io"}, Resources: []string{"selfsubjectaccessreviews"}, Verbs: []string{"create"},
 	})
 	return rules
+}
+
+// filterResources keeps the bound resources an allow-list names, preserving
+// order. An empty allow-list means "all of them".
+func filterResources(bound, allowed []string) []string {
+	if len(allowed) == 0 {
+		return bound
+	}
+	out := make([]string, 0, len(bound))
+	for _, r := range bound {
+		if slices.Contains(allowed, r) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func sortedKeys(m map[string]struct{}) []string {
@@ -223,10 +255,23 @@ func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *farosv1alp
 		}
 	case err != nil:
 		return fmt.Errorf("getting ClusterRole %s: %w", roleName, err)
-	case !equality.Semantic.DeepEqual(existing.Rules, rules):
-		existing.Rules = rules
-		if _, err := cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("updating ClusterRole %s: %w", roleName, err)
+	default:
+		// Ownership is reconciled alongside the rules: a role whose owner
+		// reference drifted or was stripped outlives its MCPServer, because
+		// nothing else ever deletes it.
+		changed := false
+		if !equality.Semantic.DeepEqual(existing.Rules, rules) {
+			existing.Rules = rules
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.OwnerReferences, role.OwnerReferences) {
+			existing.OwnerReferences = role.OwnerReferences
+			changed = true
+		}
+		if changed {
+			if _, err := cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+				return fmt.Errorf("updating ClusterRole %s: %w", roleName, err)
+			}
 		}
 	}
 
@@ -242,8 +287,29 @@ func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *farosv1alp
 	case err != nil:
 		return fmt.Errorf("getting ClusterRoleBinding %s: %w", saName, err)
 	case got.RoleRef == roleRef:
+		// RoleRef already points at the generated role, so the binding stays
+		// and its mutable fields are converged in place. Subjects matter for
+		// security — an extra subject left on the binding would hold the
+		// MCPServer's permissions, and a wrong one silently breaks the token —
+		// and the owner reference is what garbage-collects the binding.
+		changed := false
+		if !equality.Semantic.DeepEqual(got.Subjects, crb.Subjects) {
+			got.Subjects = crb.Subjects
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(got.OwnerReferences, crb.OwnerReferences) {
+			got.OwnerReferences = crb.OwnerReferences
+			changed = true
+		}
+		if changed {
+			if _, err := cs.RbacV1().ClusterRoleBindings().Update(ctx, got, metav1.UpdateOptions{}); err != nil {
+				return fmt.Errorf("updating ClusterRoleBinding %s: %w", saName, err)
+			}
+		}
 		return nil
 	default:
+		// RoleRef is immutable, so a binding pointing anywhere else (the
+		// cluster-admin era, say) can only be replaced.
 		klog.FromContext(ctx).Info("replacing MCPServer ClusterRoleBinding with a different roleRef", "binding", saName, "from", got.RoleRef.Name, "to", roleName)
 		if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, saName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("deleting stale ClusterRoleBinding %s: %w", saName, err)
@@ -255,6 +321,43 @@ func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *farosv1alp
 	return nil
 }
 
+// actionGrantCacheTTL bounds how stale the cached catalog action grants may
+// be. The platform catalog changes only when a provider ships, while every
+// MCPServer re-derives its role on each reconcile plus every 60s tools
+// refresh, so a short memo removes almost all of the listing without
+// meaningfully delaying a new action: worst case a server picks it up one TTL
+// later than it would have.
+const actionGrantCacheTTL = 30 * time.Second
+
+// cachedActionGrants memoizes an ActionGrantSource for ttl. The lock is held
+// across the refresh on purpose: concurrent reconciles then collapse into one
+// list of the system providers workspace instead of a stampede. Errors are not
+// cached, so a transient failure retries on the next reconcile, and the
+// returned slice is shared — callers must treat it as read-only.
+func cachedActionGrants(src ActionGrantSource, ttl time.Duration) ActionGrantSource {
+	if src == nil {
+		return nil
+	}
+	var (
+		mu      sync.Mutex
+		grants  []ActionGrant
+		expires time.Time
+	)
+	return func(ctx context.Context) ([]ActionGrant, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Now().Before(expires) {
+			return grants, nil
+		}
+		out, err := src(ctx)
+		if err != nil {
+			return nil, err
+		}
+		grants, expires = out, time.Now().Add(ttl)
+		return grants, nil
+	}
+}
+
 var catalogEntryGVR = schema.GroupVersionResource{
 	Group: providersv1alpha1.GroupName, Version: providersv1alpha1.Version, Resource: "catalogentries",
 }
@@ -263,16 +366,18 @@ var catalogEntryGVR = schema.GroupVersionResource{
 // providers' CatalogEntries from the system providers workspace. Only platform
 // providers federate into the aggregate (see the enumerator in server.go), so
 // org-owned catalogs are not consulted.
+// The dynamic client is built once and reused: it is stateless and its
+// construction was repeated on every reconcile.
 func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
+	if kcpConfig == nil {
+		return func(context.Context) ([]ActionGrant, error) { return nil, nil }
+	}
+	cfg := rest.CopyConfig(kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(kcpConfig.Host, kcppaths.SystemProviders)
+	dyn, dynErr := dynamic.NewForConfig(cfg)
 	return func(ctx context.Context) ([]ActionGrant, error) {
-		if kcpConfig == nil {
-			return nil, nil
-		}
-		cfg := rest.CopyConfig(kcpConfig)
-		cfg.Host = apiurl.KCPClusterURL(kcpConfig.Host, kcppaths.SystemProviders)
-		dyn, err := dynamic.NewForConfig(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("building system providers client: %w", err)
+		if dynErr != nil {
+			return nil, fmt.Errorf("building system providers client: %w", dynErr)
 		}
 		list, err := dyn.Resource(catalogEntryGVR).List(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -290,14 +395,27 @@ func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
 	}
 }
 
+// actionIDPattern is the documented action ID shape, "<name>/vN". It mirrors
+// the kubebuilder Pattern on ProviderActionSpec.ID character for character;
+// keep the two in step. The CRD rejects new objects that break it, but pattern
+// validation never retro-validates objects that predate the marker, so the
+// parser enforces the shape itself rather than trusting what is in storage.
+var actionIDPattern = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,62})/v[1-9][0-9]{0,7}$`)
+
 // actionGrantsFromSpec maps catalog action declarations to RBAC coordinates.
-// Action IDs are "<name>/<version>"; the provider reviews the unversioned
-// name as the subresource.
+// Action IDs are "<name>/vN"; the provider reviews the unversioned name as the
+// subresource. An ID that does not match the documented shape is skipped
+// rather than granted: a malformed catalog entry must not widen the role, and
+// "has a slash" is not the documented shape.
 func actionGrantsFromSpec(actions []providersv1alpha1.ProviderActionSpec) []ActionGrant {
 	out := make([]ActionGrant, 0, len(actions))
 	for _, a := range actions {
-		name, _, _ := strings.Cut(strings.TrimSpace(a.ID), "/")
-		if name == "" || a.BoundResource.Resource == "" {
+		m := actionIDPattern.FindStringSubmatch(strings.TrimSpace(a.ID))
+		if m == nil {
+			continue
+		}
+		name := m[1]
+		if a.BoundResource.Resource == "" {
 			continue
 		}
 		gv, err := schema.ParseGroupVersion(a.BoundResource.APIVersion)

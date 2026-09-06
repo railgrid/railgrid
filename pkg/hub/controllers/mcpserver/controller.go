@@ -85,7 +85,10 @@ type Reconciler struct {
 // Ready MCP-exposing providers each server discovers its tools from.
 func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternalURL string, enumerate ProviderEnumerator) error {
 	r := &Reconciler{mgr: mgr, kcpConfig: kcpConfig, hubExternalURL: hubExternalURL, enumerate: enumerate}
-	r.actionGrants = catalogActionGrants(kcpConfig)
+	// Cached: every reconcile derives the role from the catalog, so without a
+	// memo each MCPServer would re-list the system providers workspace on its
+	// own 60s refresh.
+	r.actionGrants = cachedActionGrants(catalogActionGrants(kcpConfig), actionGrantCacheTTL)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
 		For(&farosv1alpha1.MCPServer{}).

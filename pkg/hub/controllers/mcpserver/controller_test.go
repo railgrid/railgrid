@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpfake "github.com/kcp-dev/sdk/client/clientset/versioned/fake"
@@ -144,6 +145,57 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	}
 }
 
+// The infrastructure data plane serves exec for instances only; every other
+// resource bound from the same group (templates, and anything the APIExport
+// grows later) must not pick up an /exec grant just by sharing the group.
+func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
+	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("infrastructure.faros.sh", "templates"),
+		bound("infrastructure.faros.sh", "instances"),
+		bound("infrastructure.faros.sh", "executions"),
+	}, nil, false)
+	assertNoWildcards(t, rules)
+
+	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/exec"); r == nil {
+		t.Fatalf("instances/exec not granted: %+v", rules)
+	}
+	for _, res := range []string{"templates/exec", "executions/exec"} {
+		if r := findRule(t, rules, "infrastructure.faros.sh", res); r != nil {
+			t.Fatalf("%s must not be granted: %+v", res, r)
+		}
+	}
+
+	// A group whose data plane serves every bound resource keeps them all.
+	edges := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("edges.faros.sh", "kubernetesclusters"),
+		bound("edges.faros.sh", "linuxservers"),
+	}, nil, false)
+	var proxied []string
+	for _, r := range edges {
+		if slices.Contains(r.APIGroups, "edges.faros.sh") && slices.Equal(r.Verbs, []string{"proxy"}) {
+			proxied = r.Resources
+		}
+	}
+	if !slices.Equal(proxied, []string{"kubernetesclusters", "linuxservers"}) {
+		t.Fatalf("proxy resources = %v, want both edge kinds", proxied)
+	}
+}
+
+// With the instance resource unbound the group's data-plane grant yields
+// nothing at all, rather than falling back to whatever else is bound.
+func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {
+	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+		bound("infrastructure.faros.sh", "templates"),
+	}, nil, false)
+	for _, r := range rules {
+		for _, res := range r.Resources {
+			if strings.HasSuffix(res, "/exec") {
+				t.Fatalf("exec granted without instances bound: %+v", r)
+			}
+		}
+	}
+}
+
 func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
 		bound("code.faros.sh", "repositories"),
@@ -211,6 +263,40 @@ func TestActionGrantsFromSpec(t *testing.T) {
 	want := []ActionGrant{{Group: "databricks.faros.sh", Resource: "tables", Name: "query_table", ReadOnly: true}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("grants = %+v, want %+v", got, want)
+	}
+}
+
+// Action IDs are documented as "<name>/<version>". An ID without a version
+// segment is malformed, and granting it would put a subresource in the role
+// that no provider ever reviews.
+// The parser enforces the documented "<name>/vN" shape itself, mirroring the
+// CRD pattern, because pattern validation does not retro-validate objects
+// that predate the marker: a legacy entry must not be granted just because
+// it is stored.
+func TestActionGrantsFromSpec_SkipsIDsWithoutAVersion(t *testing.T) {
+	res := providersv1alpha1.ProviderActionBoundResource{APIVersion: "infrastructure.faros.sh/v1alpha1", Resource: "instances"}
+	for _, id := range []string{
+		"restart", "restart/", "  restart  ", "/v1", "",
+		// A slash with something after it is not enough: the version must be
+		// v followed by a non-zero-led number, exactly as the CRD requires.
+		"restart/latest", "restart/1", "restart/v0", "restart/v01", "restart/v1alpha1",
+		"restart/v123456789", // nine digits, one past the CRD bound
+		"Restart/v1",         // name must be lowercase
+		"restart/v1/v2",
+	} {
+		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
+		if len(got) != 0 {
+			t.Fatalf("ID %q granted %+v, want skipped", id, got)
+		}
+	}
+	for _, id := range []string{"restart/v1", "restart/v12345678", "query_table/v2", "a/v1", "  restart/v1  "} {
+		got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{{ID: id, BoundResource: res}})
+		if len(got) != 1 {
+			t.Fatalf("well-formed ID %q = %+v, want exactly one grant", id, got)
+		}
+		if want := strings.TrimSpace(id)[:strings.Index(strings.TrimSpace(id), "/")]; got[0].Name != want {
+			t.Fatalf("ID %q granted name %q, want %q", id, got[0].Name, want)
+		}
 	}
 }
 
@@ -302,6 +388,151 @@ func TestEnsureMCPRBAC_ReplacesClusterAdminBinding(t *testing.T) {
 	}
 	if deleted != 1 || created != 1 {
 		t.Fatalf("second pass touched the binding: deleted=%d created=%d", deleted, created)
+	}
+}
+
+// A binding that already points at the generated role still has to converge:
+// an extra subject holds the MCPServer's permissions, a wrong subject breaks
+// the token, and a missing owner reference leaves the binding behind after the
+// MCPServer is gone.
+func TestEnsureMCPRBAC_ConvergesBindingSubjectsAndOwnership(t *testing.T) {
+	ctx := context.Background()
+	srv := newServer("default", false)
+	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
+	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "faros:mcpserver:default"}
+	drifted := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-mcp"},
+		Subjects: []rbacv1.Subject{
+			{Kind: "ServiceAccount", Name: "default-mcp", Namespace: mcpIdentityNamespace},
+			{Kind: "User", APIGroup: rbacv1.GroupName, Name: "attacker@example.com"},
+		},
+		RoleRef: roleRef,
+	}
+	kube := kubefake.NewSimpleClientset(drifted)
+	var deleted, created int
+	kube.PrependReactor("delete", "clusterrolebindings", func(clienttesting.Action) (bool, runtime.Object, error) {
+		deleted++
+		return false, nil, nil
+	})
+	kube.PrependReactor("create", "clusterrolebindings", func(clienttesting.Action) (bool, runtime.Object, error) {
+		created++
+		return false, nil, nil
+	})
+
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+		t.Fatalf("ensureMCPRBAC: %v", err)
+	}
+	if deleted != 0 || created != 0 {
+		t.Fatalf("a matching roleRef must be converged in place: deleted=%d created=%d", deleted, created)
+	}
+	got, err := kube.RbacV1().ClusterRoleBindings().Get(ctx, "default-mcp", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	want := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default-mcp", Namespace: mcpIdentityNamespace}}
+	if !slices.Equal(got.Subjects, want) {
+		t.Fatalf("subjects = %+v, want only the MCPServer ServiceAccount", got.Subjects)
+	}
+	if len(got.OwnerReferences) != 1 || got.OwnerReferences[0].UID != srv.UID {
+		t.Fatalf("owner references not restored: %+v", got.OwnerReferences)
+	}
+
+	// A wrong subject (right kind, wrong identity) is corrected too.
+	got.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: "other-mcp", Namespace: "elsewhere"}}
+	if _, err := kube.RbacV1().ClusterRoleBindings().Update(ctx, got, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update binding: %v", err)
+	}
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+		t.Fatalf("second ensureMCPRBAC: %v", err)
+	}
+	got, err = kube.RbacV1().ClusterRoleBindings().Get(ctx, "default-mcp", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if !slices.Equal(got.Subjects, want) {
+		t.Fatalf("subjects = %+v, want the MCPServer ServiceAccount restored", got.Subjects)
+	}
+}
+
+// The generated role is only garbage-collected through its owner reference, so
+// a role whose ownership drifted has to be repaired even when its rules match.
+func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
+	ctx := context.Background()
+	srv := newServer("default", false)
+	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
+	rules := buildRules(nil, nil, false)
+	orphaned := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "faros:mcpserver:default"},
+		Rules:      rules,
+	}
+	kube := kubefake.NewSimpleClientset(orphaned)
+
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", rules); err != nil {
+		t.Fatalf("ensureMCPRBAC: %v", err)
+	}
+	role, err := kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if len(role.OwnerReferences) != 1 || role.OwnerReferences[0].UID != srv.UID {
+		t.Fatalf("role ownership not reconciled: %+v", role.OwnerReferences)
+	}
+
+	// A foreign owner reference is replaced, not appended to.
+	role.OwnerReferences = []metav1.OwnerReference{{Kind: "MCPServer", Name: "someone-else", UID: types.UID("uid-other")}}
+	if _, err := kube.RbacV1().ClusterRoles().Update(ctx, role, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update role: %v", err)
+	}
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", rules); err != nil {
+		t.Fatalf("second ensureMCPRBAC: %v", err)
+	}
+	role, err = kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if len(role.OwnerReferences) != 1 || role.OwnerReferences[0].UID != srv.UID {
+		t.Fatalf("foreign owner not replaced: %+v", role.OwnerReferences)
+	}
+}
+
+func TestCachedActionGrants_ReusesResultWithinTTL(t *testing.T) {
+	ctx := context.Background()
+	var calls int
+	grant := ActionGrant{Group: "infrastructure.faros.sh", Resource: "instances", Name: "restart"}
+	src := cachedActionGrants(func(context.Context) ([]ActionGrant, error) {
+		calls++
+		return []ActionGrant{grant}, nil
+	}, time.Hour)
+
+	for range 3 {
+		got, err := src(ctx)
+		if err != nil {
+			t.Fatalf("cached source: %v", err)
+		}
+		if !slices.Equal(got, []ActionGrant{grant}) {
+			t.Fatalf("grants = %+v", got)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("upstream called %d times, want 1", calls)
+	}
+
+	// Expired entries refresh, and failures are never cached.
+	var failed int
+	failing := cachedActionGrants(func(context.Context) ([]ActionGrant, error) {
+		failed++
+		return nil, context.DeadlineExceeded
+	}, time.Hour)
+	for range 2 {
+		if _, err := failing(ctx); err == nil {
+			t.Fatal("expected the upstream error")
+		}
+	}
+	if failed != 2 {
+		t.Fatalf("errors were cached: upstream called %d times, want 2", failed)
+	}
+	if src := cachedActionGrants(nil, time.Hour); src != nil {
+		t.Fatal("a nil source must stay nil")
 	}
 }
 
