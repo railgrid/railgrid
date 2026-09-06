@@ -116,6 +116,7 @@ func New(runtime dynamic.Interface) *Backend {
 		previewBridgeVerificationJWKSConfigKey: strings.TrimSpace(
 			os.Getenv("FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
 		),
+		sandboxRuntimeClassNameConfigKey: strings.TrimSpace(os.Getenv("FAROS_SANDBOX_RUNTIME_CLASS_NAME")),
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())

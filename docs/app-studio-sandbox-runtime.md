@@ -52,6 +52,17 @@ seccomp `RuntimeDefault`, `fsGroup: 1000`, and `shareProcessNamespace: false`.
 When a Template declares `reload.strategy: container`, the runtime supervisor
 container is restarted; the coordinator remains running.
 
+That profile still shares the host kernel with the node. The infrastructure
+provider therefore accepts a platform-configured RuntimeClass
+(`FAROS_SANDBOX_RUNTIME_CLASS_NAME`, chart value `sandbox.runtimeClassName`,
+`InfrastructureProvider.spec.sandbox.runtimeClassName`) and stamps it as
+`spec.runtimeClassName` on every synthesized development pod, including the
+universal coding sandbox. It is a platform decision, never a Template schema
+field: an empty `runtimeClassName` is an invalid PodSpec, and a per-instance
+field would let a tenant opt out of the isolation the operator mandated. The
+expected values are `gvisor` (gVisor/runsc) or `kata` (Kata Containers);
+installing the runtime and its RuntimeClass on the nodes is cluster-dependent.
+
 ## Development data plane
 
 For a Project with `spec.template`, App Studio reads the Template and resolves
@@ -111,9 +122,11 @@ or forged status cannot redirect App Studio to arbitrary runtime services.
 
 ## Current security caveats
 
-Development runs user-generated code. This remains a development-oriented
-runtime, not a complete untrusted-code sandbox. Before broad production use,
-add explicit runtime isolation (for example AppArmor or a hardened runtime
-class), quota defaults, image provenance controls, and restrictive network
-policy. File sync remains text-file oriented and skips binary or oversized App
-Studio workspace files.
+Development runs user-generated code. With the default (empty)
+`sandbox.runtimeClassName` this remains a development-oriented runtime, not a
+complete untrusted-code sandbox. Before exposing App Studio to untrusted
+users, set `sandbox.runtimeClassName` to a hardened RuntimeClass (`gvisor` or
+`kata`) that is installed on the runtime cluster; it is required, not
+optional, for that use. Quota defaults, image provenance controls, and
+restrictive network policy remain additional work. File sync remains
+text-file oriented and skips binary or oversized App Studio workspace files.

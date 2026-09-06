@@ -51,6 +51,14 @@ const (
 	// infrastructure provider or tenant pod.
 	previewBridgeVerificationJWKSConfigKey = "faros.previewBridgeVerificationJWKS"
 
+	// sandboxRuntimeClassNameConfigKey is internal backend configuration, not
+	// a template substitution token. When the operator sets
+	// FAROS_SANDBOX_RUNTIME_CLASS_NAME (chart value sandbox.runtimeClassName),
+	// every synthesized development pod, including the universal coding
+	// sandbox, is scheduled with that RuntimeClass (for example gVisor or
+	// Kata). Empty keeps the cluster default runtime.
+	sandboxRuntimeClassNameConfigKey = "faros.sandboxRuntimeClassName"
+
 	// appPublicPortToken is the ":<port>" suffix templates append to
 	// synthesized exposure URLs (status.url). Empty in production — the
 	// Gateway serves on 443 and the URL implies it — and ":10443" style when
@@ -391,7 +399,7 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 		resolved[appPublicPortToken] = ""
 	}
 	for token, value := range resolved {
-		if token == previewBridgeVerificationJWKSConfigKey {
+		if token == previewBridgeVerificationJWKSConfigKey || token == sandboxRuntimeClassNameConfigKey {
 			continue
 		}
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

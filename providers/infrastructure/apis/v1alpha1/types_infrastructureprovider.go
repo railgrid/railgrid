@@ -114,6 +114,33 @@ type InfrastructureProviderSpec struct {
 	// digests in Development.Images["universal"] and Development.AgentImage.
 	// +optional
 	CodingSandbox CodingSandboxSpec `json:"codingSandbox,omitempty"`
+
+	// A pointer, not a value struct: `omitempty` does not omit a struct, so a
+	// value type would always serialize as `sandbox: {}` and server-side apply
+	// would read that as an applier claiming ownership of a block it never
+	// set. This paragraph is deliberately detached from the doc comment below
+	// so it stays out of the generated CRD description.
+
+	// Sandbox configures runtime isolation for every development-mode pod the
+	// provider synthesizes (dev instances and the universal coding sandbox).
+	// Absent keeps the runtime cluster's default runtime.
+	// +optional
+	Sandbox *SandboxSpec `json:"sandbox,omitempty"`
+}
+
+// SandboxSpec is operator-owned isolation policy for development pods. The
+// PSS-restricted pod profile is not a complete untrusted-code sandbox, so an
+// operator exposing App Studio to untrusted users must select a hardened
+// RuntimeClass here.
+type SandboxSpec struct {
+	// RuntimeClassName is stamped as spec.runtimeClassName on every
+	// synthesized development pod (FAROS_SANDBOX_RUNTIME_CLASS_NAME). It must
+	// name a RuntimeClass that exists on the runtime cluster, typically
+	// "gvisor" or "kata". Empty keeps the cluster default runtime.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 }
 
 // CodingSandboxSpec configures the platform-owned universal coding sandbox

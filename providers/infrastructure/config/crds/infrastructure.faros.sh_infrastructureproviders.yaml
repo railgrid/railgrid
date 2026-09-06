@@ -347,6 +347,22 @@ spec:
                 required:
                 - name
                 type: object
+              sandbox:
+                description: |-
+                  Sandbox configures runtime isolation for every development-mode pod the
+                  provider synthesizes (dev instances and the universal coding sandbox).
+                  Absent keeps the runtime cluster's default runtime.
+                properties:
+                  runtimeClassName:
+                    description: |-
+                      RuntimeClassName is stamped as spec.runtimeClassName on every
+                      synthesized development pod (FAROS_SANDBOX_RUNTIME_CLASS_NAME). It must
+                      name a RuntimeClass that exists on the runtime cluster, typically
+                      "gvisor" or "kata". Empty keeps the cluster default runtime.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                type: object
             required:
             - kro
             - provider

@@ -163,6 +163,13 @@ func EnsureProviderServe(
 	if cr.Spec.CodingSandbox.Enabled {
 		env = append(env, corev1.EnvVar{Name: "FAROS_CODING_SANDBOX_ENABLED", Value: "true"})
 	}
+	// Hardened RuntimeClass for every synthesized development pod; empty keeps
+	// the runtime cluster's default runtime.
+	if cr.Spec.Sandbox != nil {
+		if runtimeClassName := strings.TrimSpace(cr.Spec.Sandbox.RuntimeClassName); runtimeClassName != "" {
+			env = append(env, corev1.EnvVar{Name: "FAROS_SANDBOX_RUNTIME_CLASS_NAME", Value: runtimeClassName})
+		}
+	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/faros/provider", ReadOnly: true},
 	}

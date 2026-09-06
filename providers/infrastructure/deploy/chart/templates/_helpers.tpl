@@ -58,6 +58,24 @@ demos.
 {{- end -}}
 {{- end -}}
 
+{{/*
+sandboxRuntimeClassName resolves the hardened RuntimeClass (gVisor, Kata)
+stamped on every synthesized development pod. Both consumers — the serve
+Deployment env var and the operator-managed InfrastructureProvider CR — go
+through this helper so they can never disagree.
+
+`default (dict)` keeps the lookup nil-safe: a release upgraded with
+--reuse-values from a version predating the sandbox block has no `sandbox`
+key at all, and a values file may set `sandbox:` to an explicit null.
+`trim` matches the operator and the kro backend, which both trim before
+deciding whether a runtime class was configured; without it a whitespace-only
+value would render an env var with spaces and a CR field that fails the CRD's
+pattern validation.
+*/}}
+{{- define "infrastructure.sandboxRuntimeClassName" -}}
+{{- trim (default "" (default (dict) .Values.sandbox).runtimeClassName) -}}
+{{- end -}}
+
 {{- define "infrastructure.centralKroSecretKey" -}}
 {{- default "kubeconfig" .Values.centralKro.kubeconfigSecretRef.key -}}
 {{- end -}}

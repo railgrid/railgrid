@@ -202,6 +202,13 @@ spec:
             - name: FAROS_DEV_AGENT_IMAGE
               value: {{ . | quote }}
             {{- end }}
+            {{- $sandboxRuntimeClass := include "infrastructure.sandboxRuntimeClassName" . }}
+            {{- if $sandboxRuntimeClass }}
+            # Hardened RuntimeClass (gVisor, Kata) stamped on every synthesized
+            # development pod. Required before serving untrusted users.
+            - name: FAROS_SANDBOX_RUNTIME_CLASS_NAME
+              value: {{ $sandboxRuntimeClass | quote }}
+            {{- end }}
             {{- with .Values.development.previewBridge.verificationJWKS }}
             # Current and optional previous public ES256 keys for the
             # development preview bridge. Signing keys remain in App

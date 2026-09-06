@@ -154,6 +154,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 		return nil, nil, fmt.Errorf("template %q: dev agent image is not configured; set FAROS_DEV_AGENT_IMAGE", tmpl.Name)
 	}
 	previewBridgeVerificationJWKS := tokens[previewBridgeVerificationJWKSConfigKey]
+	runtimeClassName := strings.TrimSpace(tokens[sandboxRuntimeClassNameConfigKey])
 	providerActions := true
 	if dev.ProviderActions != nil {
 		providerActions = *dev.ProviderActions
@@ -206,6 +207,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 			devImage,
 			agentImage,
 			previewBridgeVerificationJWKS,
+			runtimeClassName,
 			providerActions,
 			byID,
 		)
@@ -267,7 +269,7 @@ func findComponentWorkload(byID map[string]map[string]any, name string) (string,
 // synthesizeComponent builds the dev-mode resources for one component: the
 // workspace PVC, the dev variant of the workload, and the control Service.
 // Returns the resources plus the namespace expression the workload deploys to.
-func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage, previewBridgeVerificationJWKS string, providerActions bool, byID map[string]map[string]any) ([]any, string, error) {
+func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage, previewBridgeVerificationJWKS, runtimeClassName string, providerActions bool, byID map[string]map[string]any) ([]any, string, error) {
 	prodTemplate, _ := workload["template"].(map[string]any)
 	namespace, _, _ := nestedString(prodTemplate, "metadata", "namespace")
 	if namespace == "" {
@@ -299,6 +301,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		devImage,
 		agentImage,
 		previewBridgeVerificationJWKS,
+		runtimeClassName,
 		providerActions,
 		workingDir,
 		pvcName,
@@ -404,7 +407,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 // are built from scratch with their own mounts and minimal environments.
 // mountedWorkspace reports whether the overlay added the workspace mount (and
 // so needs the per-component workspace PVC).
-func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewBridgeVerificationJWKS string, providerActions bool, workingDir, pvcName, statePVCName, caBundleResourceID string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
+func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewBridgeVerificationJWKS, runtimeClassName string, providerActions bool, workingDir, pvcName, statePVCName, caBundleResourceID string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
 	tmplCopy, err := deepCopyMap(prodTemplate)
 	if err != nil {
 		return nil, nil, false, err
@@ -670,6 +673,15 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 	}
 	podSpec["shareProcessNamespace"] = false
+	// The PSS-restricted profile above is not a complete untrusted-code
+	// sandbox: the tenant's code still shares the host kernel. When the
+	// platform configures a RuntimeClass (gVisor, Kata) every development pod
+	// is scheduled with it. An empty value never reaches the pod spec —
+	// runtimeClassName: "" is an invalid PodSpec — so the cluster default
+	// runtime applies and whatever the production workload declared is kept.
+	if runtimeClassName != "" {
+		podSpec["runtimeClassName"] = runtimeClassName
+	}
 
 	return map[string]any{
 		"id":          name + "DevDeployment",

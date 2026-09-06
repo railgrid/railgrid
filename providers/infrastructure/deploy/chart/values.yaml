@@ -130,6 +130,21 @@ development:
 codingSandbox:
   enabled: false
 
+# Runtime isolation for every development-mode pod the provider synthesizes
+# (App Studio dev instances and the universal coding sandbox). Those pods run
+# TENANT code under a PSS-restricted profile (non-root, seccomp
+# RuntimeDefault, all capabilities dropped) but still share the host kernel,
+# which is not a complete untrusted-code sandbox.
+sandbox:
+  # RuntimeClass name stamped as spec.runtimeClassName on each development
+  # pod (FAROS_SANDBOX_RUNTIME_CLASS_NAME). Expected values are the name of a
+  # RuntimeClass installed on the runtime cluster: "gvisor" (gVisor/runsc) or
+  # "kata" (Kata Containers). Empty keeps the cluster default runtime, which
+  # is acceptable only for trusted users. Enabling one of these is REQUIRED
+  # before exposing App Studio to untrusted users; installing the runtime and
+  # its RuntimeClass on the nodes is cluster-dependent and outside this chart.
+  runtimeClassName: ""
+
 # Container images are NOT configured here. Templates declare them as schema
 # fields with sane defaults (e.g. the database template's spec.version defaults
 # to "16") — the same convention every template follows.
