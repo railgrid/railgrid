@@ -80,6 +80,23 @@ type LinuxServerSpec struct {
 	// SSHCredentialsRef references a Secret with admin-configured SSH credentials.
 	// +optional
 	SSHCredentialsRef *corev1.SecretReference `json:"sshCredentialsRef,omitempty"`
+
+	// SSHHostKey pins the sshd host public key (authorized_keys format, e.g.
+	// "ssh-ed25519 AAAA...") the provider verifies SSH sessions against. When
+	// set it takes precedence over the agent-reported status.sshHostKey, which
+	// a compromised agent could otherwise assert.
+	// +optional
+	SSHHostKey string `json:"sshHostKey,omitempty"`
+
+	// SSHHostKeyPolicy controls what happens when no host key is known (neither
+	// spec.sshHostKey nor status.sshHostKey is set): "strict" refuses the SSH
+	// session; "tofu" trusts the key presented on the first session, records it
+	// in status.sshHostKey and enforces it from then on. A known key is always
+	// enforced regardless of the policy.
+	// +kubebuilder:validation:Enum=strict;tofu
+	// +kubebuilder:default=strict
+	// +optional
+	SSHHostKeyPolicy edgeapi.SSHHostKeyPolicy `json:"sshHostKeyPolicy,omitempty"`
 }
 
 // LinuxServerStatus defines the observed state of a LinuxServer.
@@ -91,7 +108,10 @@ type LinuxServerStatus struct {
 	// +optional
 	SSHCredentials *edgeapi.SSHCredentials `json:"sshCredentials,omitempty"`
 
-	// SSHHostKey is the SSH host public key reported by the agent (authorized_keys format).
+	// SSHHostKey is the SSH host public key reported by the agent (authorized_keys
+	// format). Recorded once, on the first report (or on the first "tofu"
+	// session), and never replaced automatically: a differing later report sets
+	// the SSHHostKeyChanged condition instead. Overridden by spec.sshHostKey.
 	// +optional
 	SSHHostKey string `json:"sshHostKey,omitempty"`
 }

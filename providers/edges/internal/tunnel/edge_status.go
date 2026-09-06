@@ -118,25 +118,7 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			Message:            "Agent has registered and received a durable ServiceAccount credential.",
 			LastTransitionTime: now,
 		}
-		condJSON, _ := json.Marshal(registeredCondition)
-		var condMap map[string]interface{}
-		_ = json.Unmarshal(condJSON, &condMap)
-
-		// Replace or append the Registered condition in the conditions array.
-		conditions, _, _ := unstructured.NestedSlice(status, "conditions")
-		found := false
-		for i, c := range conditions {
-			cMap, ok := c.(map[string]interface{})
-			if ok && cMap["type"] == edgeapi.ConnectionConditionRegistered {
-				conditions[i] = condMap
-				found = true
-				break
-			}
-		}
-		if !found {
-			conditions = append(conditions, condMap)
-		}
-		status["conditions"] = conditions
+		setStatusCondition(status, registeredCondition)
 
 		// If the agent sent SSH credentials, create a secret and set sshCredentials in status.
 		if sshCreds != nil && sshCreds.User != "" {
@@ -150,9 +132,9 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		// Persist the agent's sshd host public key so the hub can perform strict
 		// host-key verification on subsequent SSH sessions. This is independent of
 		// auth credentials: an agent without password/privateKey still benefits
-		// from MITM protection.
+		// from MITM protection. Write-once: see applyReportedSSHHostKey.
 		if sshCreds != nil && sshCreds.HostKey != "" {
-			status["sshHostKey"] = sshCreds.HostKey
+			applyReportedSSHHostKey(status, sshCreds.HostKey, now)
 		}
 
 		if err := unstructured.SetNestedField(edge.Object, status, "status"); err != nil {
@@ -170,6 +152,89 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 
 	p.logger.Info("Edge marked Ready and registered on join-token tunnel open",
 		"cluster", cluster, "edge", name)
+}
+
+// applyReportedSSHHostKey records the agent-reported sshd host key into
+// status.sshHostKey the first time one is seen and never replaces it: the report
+// is agent-asserted, so letting every reconnect overwrite the recorded key would
+// let a compromised agent rotate the key the hub pins SSH sessions to, silently.
+// A later report of a different key sets the SSHHostKeyChanged condition (with
+// both fingerprints) for an operator to resolve by pinning spec.sshHostKey or
+// clearing status.sshHostKey; a report matching the recorded key clears it.
+func applyReportedSSHHostKey(status map[string]interface{}, reported string, now metav1.Time) {
+	existing, _, _ := unstructured.NestedString(status, "sshHostKey")
+	switch {
+	case existing == "":
+		status["sshHostKey"] = reported
+	case sameSSHHostKey(existing, reported):
+		if findStatusCondition(status, edgeapi.ConnectionConditionSSHHostKeyChanged) != nil {
+			setStatusCondition(status, metav1.Condition{
+				Type:               edgeapi.ConnectionConditionSSHHostKeyChanged,
+				Status:             metav1.ConditionFalse,
+				Reason:             "Match",
+				Message:            "The agent-reported SSH host key matches status.sshHostKey.",
+				LastTransitionTime: now,
+			})
+		}
+	default:
+		setStatusCondition(status, metav1.Condition{
+			Type:   edgeapi.ConnectionConditionSSHHostKeyChanged,
+			Status: metav1.ConditionTrue,
+			Reason: "FingerprintMismatch",
+			Message: fmt.Sprintf("The agent reported SSH host key %s but status.sshHostKey holds %s; the recorded key is kept. "+
+				"Pin spec.sshHostKey, or clear status.sshHostKey to accept the reported key.",
+				sshHostKeyFingerprint(reported), sshHostKeyFingerprint(existing)),
+			LastTransitionTime: now,
+		})
+	}
+}
+
+// findStatusCondition returns the condition of the given type from an
+// unstructured status map, or nil.
+func findStatusCondition(status map[string]interface{}, condType string) map[string]interface{} {
+	conditions, _, _ := unstructured.NestedSlice(status, "conditions")
+	for _, c := range conditions {
+		if cMap, ok := c.(map[string]interface{}); ok && cMap["type"] == condType {
+			return cMap
+		}
+	}
+	return nil
+}
+
+// setStatusCondition replaces (or appends) the condition of cond's type in an
+// unstructured status map. LastTransitionTime is preserved from the existing
+// condition when its status is unchanged.
+func setStatusCondition(status map[string]interface{}, cond metav1.Condition) {
+	if existing := findStatusCondition(status, cond.Type); existing != nil {
+		if existing["status"] == string(cond.Status) {
+			if ltt, ok := existing["lastTransitionTime"].(string); ok && ltt != "" {
+				// RFC3339Nano parses the seconds-precision form as well, so it
+				// also tolerates a fractional-seconds value that reached the
+				// object by some other route than a metav1.Time marshal.
+				if t, err := time.Parse(time.RFC3339Nano, ltt); err == nil {
+					cond.LastTransitionTime = metav1.NewTime(t)
+				}
+			}
+		}
+	}
+	condJSON, _ := json.Marshal(cond)
+	var condMap map[string]interface{}
+	_ = json.Unmarshal(condJSON, &condMap)
+
+	conditions, _, _ := unstructured.NestedSlice(status, "conditions")
+	found := false
+	for i, c := range conditions {
+		cMap, ok := c.(map[string]interface{})
+		if ok && cMap["type"] == cond.Type {
+			conditions[i] = condMap
+			found = true
+			break
+		}
+	}
+	if !found {
+		conditions = append(conditions, condMap)
+	}
+	status["conditions"] = conditions
 }
 
 // storeSSHCredentials creates a Secret with the agent's SSH credentials and

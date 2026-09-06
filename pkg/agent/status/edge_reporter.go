@@ -161,14 +161,12 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		"lastHeartbeatTime": metav1.Now(),
 	}
 
-	// Report the sshd host public key so the hub can verify the agent's identity.
-	// We dial the SSH server directly to fetch its actual key, which works for
-	// both the real sshd (production) and the embedded TestSSHServer (e2e tests).
-	if r.sshProxyPort > 0 {
-		if hostKey := DialAndFetchSSHHostKey(r.sshProxyPort, logger); hostKey != "" {
-			statusPatch["sshHostKey"] = hostKey
-		}
-	}
+	// The sshd host public key is NOT patched here. It is reported once, on
+	// tunnel connect (X-Faros-SSH-HostKey, see agent.go), and the provider
+	// records it write-once: re-asserting it on every heartbeat would let a
+	// compromised agent rotate the key the hub pins SSH sessions to.
+	// sshProxyPort stays so DialAndFetchSSHHostKey remains available to the
+	// connect path and tests.
 
 	patch := map[string]interface{}{
 		"status": statusPatch,

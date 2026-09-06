@@ -47,6 +47,13 @@ const ConnectionConditionRegistered = "Registered"
 // separate lookup.
 const ConnectionConditionUpgradeAvailable = "UpgradeAvailable"
 
+// ConnectionConditionSSHHostKeyChanged is set True on an SSH-server kind when a
+// reconnecting agent reports an sshd host key whose fingerprint differs from the
+// key already recorded in status.sshHostKey. The recorded key is never replaced
+// automatically (the report is agent-asserted); an operator resolves the
+// condition by pinning spec.sshHostKey or clearing status.sshHostKey.
+const ConnectionConditionSSHHostKeyChanged = "SSHHostKeyChanged"
+
 // AnnotationRegenerateJoinToken, set on a connectable resource, instructs the
 // token reconciler to mint a fresh bootstrap join token.
 const AnnotationRegenerateJoinToken = "edges.faros.sh/regenerate-join-token"
@@ -101,6 +108,20 @@ const (
 	SSHUserMappingInherited SSHUserMappingMode = "inherited"
 	SSHUserMappingProvided  SSHUserMappingMode = "provided"
 	SSHUserMappingIdentity  SSHUserMappingMode = "identity"
+)
+
+// SSHHostKeyPolicy controls what the provider does when it opens an SSH session
+// to a server-kind edge for which no host key is known (neither spec.sshHostKey
+// nor status.sshHostKey is set). A known key is always enforced.
+type SSHHostKeyPolicy string
+
+const (
+	// SSHHostKeyPolicyStrict refuses the session until a key is known. Default.
+	SSHHostKeyPolicyStrict SSHHostKeyPolicy = "strict"
+	// SSHHostKeyPolicyTOFU (trust on first use) accepts the key the server
+	// presents on the first session, records it in status.sshHostKey, and
+	// enforces it from then on.
+	SSHHostKeyPolicyTOFU SSHHostKeyPolicy = "tofu"
 )
 
 // SSHCredentials holds SSH authentication credentials for SSH-server kinds.

@@ -18,17 +18,20 @@ package tunnel
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	gossh "golang.org/x/crypto/ssh"
-
 	"k8s.io/klog/v2"
+
+	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
 )
 
 // sshExec runs remoteCmd on the SSH client via a non-interactive exec channel
@@ -68,7 +71,9 @@ func (p *Server) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient 
 
 	// Run the remote command (blocks until it exits).
 	if err := sshSession.Run(remoteCmd); err != nil {
-		logger.V(4).Info("SSH exec command finished", "cmd", remoteCmd, "err", err)
+		// remoteCmd is caller-controlled; escape and bound it before logging
+		// (see sanitizeAuditValue).
+		logger.V(4).Info("SSH exec command finished", "cmd", sanitizeAuditValue(remoteCmd), "err", err)
 	}
 
 	// Close the write end of the pipe so the forwarder goroutine sees EOF.
@@ -133,32 +138,65 @@ type SSHClientCredentials struct {
 	Username   string
 	Password   string // non-empty if password auth is available
 	PrivateKey []byte // non-empty if key auth is available
-	// SSHHostKey is the agent's sshd host public key in authorized_keys format
-	// (e.g. "ssh-ed25519 AAAA..."). Used for strict host key verification.
+	// SSHHostKey is the sshd host public key in authorized_keys format (e.g.
+	// "ssh-ed25519 AAAA...") the session is verified against: the operator pin
+	// (spec.sshHostKey) when set, else the agent-reported status.sshHostKey.
 	SSHHostKey string
+	// SSHHostKeyPolicy applies when SSHHostKey is empty (see
+	// edgeapi.SSHHostKeyPolicy). Empty means strict.
+	SSHHostKeyPolicy edgeapi.SSHHostKeyPolicy
 }
 
-// newSSHClient creates an SSH client through a device connection.
-// If creds is nil or empty, falls back to empty password authentication.
-// hostKey is the SSH host public key in authorized_keys format (as stored in
-// Edge.Status.SSHHostKey). When non-empty it is used for strict host key
-// verification via gossh.FixedHostKey; when empty the client falls back to
-// InsecureIgnoreHostKey and logs a warning.
-func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCredentials, hostKey string, logger klog.Logger) (*gossh.Client, error) {
-	// Default to root user with empty password if no credentials provided.
-	sshUser := "root"
-	var authMethods []gossh.AuthMethod
+// sshHostKeyVerification describes how newSSHClient verifies the server's host
+// key.
+type sshHostKeyVerification struct {
+	// Key is the expected host public key in authorized_keys format. Empty
+	// means no key is known.
+	Key string
+	// Policy applies only when Key is empty: strict (the default) refuses the
+	// session; tofu accepts the key the server presents and reports it as the
+	// learned key so the caller can record it.
+	Policy edgeapi.SSHHostKeyPolicy
+	// AllowUnverified is the provider-wide legacy escape hatch
+	// (--allow-unverified-ssh-host-key): an empty Key is accepted without
+	// verification or recording. It never applies to an unparseable Key.
+	AllowUnverified bool
+}
 
+// sshUsername returns the SSH login the session authenticates as: the resolved
+// credential's username, else root.
+func sshUsername(creds *SSHClientCredentials) string {
 	if creds != nil && creds.Username != "" {
-		sshUser = creds.Username
+		return creds.Username
 	}
+	return "root"
+}
+
+// sshHandshakeTimeout bounds the SSH version + key exchange when the caller's
+// context carries no deadline. The SSH data-plane path is a WebSocket upgrade,
+// whose request context has none.
+const sshHandshakeTimeout = 30 * time.Second
+
+// newSSHClient creates an SSH client through a device connection. If creds is
+// nil or empty, falls back to empty password authentication.
+//
+// Host key verification fails closed: a key that does not parse is an error,
+// and an empty key is an error under the strict policy. Under tofu the key the
+// server presents is accepted and returned as learnedKey (empty otherwise) so
+// the caller can record it in status.sshHostKey and enforce it from then on.
+//
+// ctx bounds the handshake only (see sshHandshakeTimeout); the established
+// session outlives it.
+func newSSHClient(ctx context.Context, deviceConn net.Conn, creds *SSHClientCredentials, hk sshHostKeyVerification, logger klog.Logger) (client *gossh.Client, learnedKey string, err error) {
+	sshUser := sshUsername(creds)
+	var authMethods []gossh.AuthMethod
 
 	if creds != nil {
 		// Prefer private key auth if available.
 		if len(creds.PrivateKey) > 0 {
 			signer, err := gossh.ParsePrivateKey(creds.PrivateKey)
 			if err != nil {
-				return nil, fmt.Errorf("parsing SSH private key: %w", err)
+				return nil, "", fmt.Errorf("parsing SSH private key: %w", err)
 			}
 			authMethods = append(authMethods, gossh.PublicKeys(signer))
 			logger.V(4).Info("Using SSH public key authentication", "user", sshUser)
@@ -177,23 +215,32 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCreden
 		logger.V(4).Info("Using empty password authentication (fallback)", "user", sshUser)
 	}
 
-	// Determine host key verification strategy.
-	// Prefer FixedHostKey when the agent has reported its sshd public key in
-	// Edge.Status.SSHHostKey; fall back to InsecureIgnoreHostKey with a warning
-	// for backward compatibility with agents that predate this feature.
+	// Host key verification. A known key (operator pin or the recorded agent
+	// report) is always enforced. With no key known the per-edge policy
+	// decides: strict refuses, tofu learns. The provider-wide escape hatch
+	// restores the legacy unverified behaviour for agents that never reported
+	// a key; it is logged at V(0) on every use.
 	var hostKeyCallback gossh.HostKeyCallback
-	if hostKey != "" {
-		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(hostKey))
+	var presented gossh.PublicKey
+	switch {
+	case hk.Key != "":
+		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(hk.Key))
 		if err != nil {
-			logger.Error(err, "failed to parse SSH host key from Edge status; falling back to InsecureIgnoreHostKey")
-			hostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec // parse error fallback
-		} else {
-			hostKeyCallback = gossh.FixedHostKey(pk)
-			logger.V(4).Info("Using strict SSH host key verification", "keyType", pk.Type())
+			return nil, "", fmt.Errorf("parsing SSH host key: %w", err)
 		}
-	} else {
-		logger.Info("WARNING: no SSH host key in Edge status — falling back to InsecureIgnoreHostKey (MITM risk)")
-		hostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec // no host key yet; backward compat
+		hostKeyCallback = gossh.FixedHostKey(pk)
+		logger.V(4).Info("Using strict SSH host key verification", "keyType", pk.Type())
+	case hk.Policy == edgeapi.SSHHostKeyPolicyTOFU:
+		hostKeyCallback = func(_ string, _ net.Addr, key gossh.PublicKey) error {
+			presented = key
+			return nil
+		}
+		logger.Info("no SSH host key known for edge; trusting the key presented on this first session (sshHostKeyPolicy=tofu)")
+	case hk.AllowUnverified:
+		hostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec // explicit operator escape hatch, logged
+		logger.Info("WARNING: no SSH host key known for edge and --allow-unverified-ssh-host-key is set; host identity is NOT verified (MITM risk)")
+	default:
+		return nil, "", fmt.Errorf("no SSH host key known for edge and sshHostKeyPolicy is strict: pin spec.sshHostKey, wait for the agent to report one, or set sshHostKeyPolicy=tofu")
 	}
 
 	sshConfig := &gossh.ClientConfig{
@@ -202,12 +249,64 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCreden
 		HostKeyCallback: hostKeyCallback,
 	}
 
+	// gossh.NewClientConn takes no context and blocks for as long as the peer
+	// keeps the socket open without completing the version exchange or key
+	// exchange — a stalled tunnel would pin this handler goroutine forever.
+	// Bound it on the connection, the same way remoteDialer.Dial bounds its
+	// relay handshake: honour the caller's deadline when it has one, else a
+	// short default; clear it once the connection is up so the session itself
+	// is not time-limited.
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = deviceConn.SetDeadline(deadline)
+	} else {
+		_ = deviceConn.SetDeadline(time.Now().Add(sshHandshakeTimeout))
+	}
 	sshConn, chans, reqs, err := gossh.NewClientConn(deviceConn, "agent:22", sshConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH client connection: %w", err)
+		_ = deviceConn.SetDeadline(time.Time{})
+		return nil, "", fmt.Errorf("failed to create SSH client connection: %w", err)
 	}
+	_ = deviceConn.SetDeadline(time.Time{})
 
-	return gossh.NewClient(sshConn, chans, reqs), nil
+	if presented != nil {
+		learnedKey = strings.TrimSpace(string(gossh.MarshalAuthorizedKey(presented)))
+	}
+	return gossh.NewClient(sshConn, chans, reqs), learnedKey, nil
+}
+
+// Fingerprint placeholders for keys that have none. "no key recorded" and
+// "a key is recorded but it is malformed" are very different states in a
+// condition message or an audit line, so they never share a rendering.
+const (
+	sshHostKeyFingerprintUnknown     = "unknown"
+	sshHostKeyFingerprintUnparseable = "unparseable"
+)
+
+// sshHostKeyFingerprint returns the SHA256 fingerprint of an authorized_keys
+// format host key. An empty (or whitespace-only) key yields "unknown"; a
+// non-empty key that does not parse yields "unparseable". Used in conditions
+// and audit lines so raw keys never need to be compared by eye.
+func sshHostKeyFingerprint(key string) string {
+	if strings.TrimSpace(key) == "" {
+		return sshHostKeyFingerprintUnknown
+	}
+	pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(key))
+	if err != nil {
+		return sshHostKeyFingerprintUnparseable
+	}
+	return gossh.FingerprintSHA256(pk)
+}
+
+// sameSSHHostKey reports whether two authorized_keys format keys denote the
+// same public key (ignoring comments and whitespace). Unparseable keys compare
+// by exact string.
+func sameSSHHostKey(a, b string) bool {
+	pa, _, _, _, errA := gossh.ParseAuthorizedKey([]byte(a))
+	pb, _, _, _, errB := gossh.ParseAuthorizedKey([]byte(b))
+	if errA != nil || errB != nil {
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
+	}
+	return bytes.Equal(pa.Marshal(), pb.Marshal())
 }
 
 // isUpgradeRequest checks if the request is a protocol upgrade.

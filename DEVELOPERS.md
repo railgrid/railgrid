@@ -227,6 +227,56 @@ When the agent starts with `--token` and `--ssh-user`/`--ssh-password`:
 4. `storeSSHCredentials` creates a `faros-ssh-<name>` Secret in `faros-system`.
 5. `edge.status.sshCredentials` is populated with the username and secret ref.
 
+### SSH host key verification
+
+The provider verifies the sshd host key on every SSH session and fails closed
+(`providers/edges/internal/tunnel/agent_proxy_builder.go`, `newSSHClient`):
+
+- **Key source.** `spec.sshHostKey` (operator pin, authorized_keys format) wins.
+  Otherwise `status.sshHostKey`, which the agent reports once on tunnel connect
+  (`X-Faros-SSH-HostKey`). The provider records the reported key **write-once**:
+  a later report with a different fingerprint is not applied and instead sets
+  the `SSHHostKeyChanged` condition (both fingerprints in the message). Resolve
+  it by pinning `spec.sshHostKey` or clearing `status.sshHostKey`.
+- **Unparseable key** → the session is refused.
+- **No key known** → `spec.sshHostKeyPolicy` decides:
+  - `strict` (default): the session is refused until a key is pinned or
+    reported.
+  - `tofu`: the key presented on the first session is trusted, recorded in
+    `status.sshHostKey`, and enforced from then on.
+- **Legacy escape hatch.** `edges-provider serve --allow-unverified-ssh-host-key`
+  (env `FAROS_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, chart value
+  `allowUnverifiedSSHHostKey`) opens sessions to edges with no known key
+  without verification. It is logged at verbosity 0 on startup and on every
+  use, and never affects an edge whose key is known. A malformed value for the
+  env form (e.g. `treu`) is a startup error rather than a silent `false`.
+
+The handshake itself is bounded: `newSSHClient` arms a deadline on the tunnelled
+connection (the caller's context deadline, else 30s) before
+`gossh.NewClientConn`, which takes no context, and clears it once the session is
+up. Without it a stalled tunnel pins the handler goroutine indefinitely.
+
+Every session emits two structured lines at verbosity 0: `SSH session opened`
+(cluster, edge, caller, SSH user, mode, exec command, remote address, host key
+fingerprint) and `SSH session ended` (plus duration and error). A session
+refused before opening still gets the `ended` line with `opened=false`. When the
+caller's TokenReview fails the lines carry `caller=unknown` and `callerError`.
+
+Two properties keep those lines trustworthy:
+
+- **`remoteAddr` is the LAST `X-Forwarded-For` hop**, not the first. Exactly one
+  trusted proxy (the hub backend) fronts this handler and *appends* the peer it
+  saw; every entry to its left is caller-supplied and forgeable. With no header
+  the peer address is used, port stripped. The value is always a parsed IP or
+  `unknown` — junk is never echoed.
+- **`exec` is escaped and bounded.** The command is a raw query parameter;
+  control characters (newlines above all, which would otherwise forge extra
+  audit records) are escaped rather than dropped, and the value is truncated at
+  256 runes with an explicit `...[truncated]` marker.
+
+Fingerprints in conditions and audit lines distinguish `unknown` (no key
+recorded) from `unparseable` (a key is recorded but malformed).
+
 ### SSH username mapping (OIDC)
 
 With OIDC auth, the SSH username is derived from the user's token claim:

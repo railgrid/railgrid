@@ -113,6 +113,11 @@ type Server struct {
 	// bearers. main.go never sets it, so production always fails closed.
 	allowStaticTokenBypass bool
 
+	// allowUnverifiedSSHHostKey is the provider-wide legacy escape hatch that
+	// lets an SSH session to an edge with no known host key proceed
+	// unverified. Logged at V(0) on startup and on every use.
+	allowUnverifiedSSHHostKey bool
+
 	// hubExternalURL is embedded into agent kubeconfigs. hubInternalURL is used
 	// for internal MCP→edgeproxy calls to avoid CDN loops; falls back to
 	// hubExternalURL when empty.
@@ -208,7 +213,12 @@ type Config struct {
 	AllowStaticTokenBypass bool
 	HubExternalURL         string
 	HubInternalURL         string
-	Logger                 klog.Logger
+	// AllowUnverifiedSSHHostKey restores the legacy behaviour of opening SSH
+	// sessions to edges with no known host key without verifying the server
+	// (--allow-unverified-ssh-host-key). Never affects an edge whose key is
+	// known or pinned; those are always enforced.
+	AllowUnverifiedSSHHostKey bool
+	Logger                    klog.Logger
 }
 
 // New constructs the tunnel Server for one or more connectable kinds.
@@ -240,19 +250,20 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 	return &Server{
-		kinds:                  kinds,
-		group:                  group,
-		version:                version,
-		edgeConnManager:        NewConnManager(),
-		kcpConfig:              cfg.KCPConfig,
-		staticTokens:           tokenSet,
-		allowStaticTokenBypass: cfg.AllowStaticTokenBypass,
-		hubExternalURL:         cfg.HubExternalURL,
-		hubInternalURL:         cfg.HubInternalURL,
-		agentPickupPath:        cfg.AgentPickupPath,
-		edgeProxyPublicPath:    cfg.EdgeProxyPublicPath,
-		authorizeFn:            authorize,
-		logger:                 cfg.Logger.WithName("edge-tunnel"),
+		kinds:                     kinds,
+		group:                     group,
+		version:                   version,
+		edgeConnManager:           NewConnManager(),
+		kcpConfig:                 cfg.KCPConfig,
+		staticTokens:              tokenSet,
+		allowStaticTokenBypass:    cfg.AllowStaticTokenBypass,
+		hubExternalURL:            cfg.HubExternalURL,
+		hubInternalURL:            cfg.HubInternalURL,
+		agentPickupPath:           cfg.AgentPickupPath,
+		edgeProxyPublicPath:       cfg.EdgeProxyPublicPath,
+		allowUnverifiedSSHHostKey: cfg.AllowUnverifiedSSHHostKey,
+		authorizeFn:               authorize,
+		logger:                    cfg.Logger.WithName("edge-tunnel"),
 	}, nil
 }
 

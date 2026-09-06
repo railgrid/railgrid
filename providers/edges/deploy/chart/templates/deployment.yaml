@@ -109,6 +109,10 @@ spec:
             - name: FAROS_DEV_MODE
               value: "true"
             {{- end }}
+            {{- if .Values.allowUnverifiedSSHHostKey }}
+            - name: FAROS_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY
+              value: "true"
+            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: FAROS_HUB_INSECURE
               value: "true"

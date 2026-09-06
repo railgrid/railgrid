@@ -884,10 +884,15 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 
 	// In join-token mode, pass SSH credentials as WebSocket headers so the hub
 	// can store them server-side (the agent's join token is not a valid kcp
-	// credential for creating secrets).
+	// credential for creating secrets). The sshd host key travels on EVERY
+	// connect, whatever the mode: the provider records it write-once (it is
+	// no longer re-asserted via the heartbeat status patch), so an agent that
+	// first connects with a saved kubeconfig must still get to report it.
 	var sshHeaders http.Header
 	if a.opts.Token != "" {
 		sshHeaders = a.buildSSHHeaders()
+	} else {
+		sshHeaders = a.sshHostKeyHeader()
 	}
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
@@ -1102,10 +1107,19 @@ func (a *Agent) buildSSHHeaders() http.Header {
 			klog.Warningf("Failed to read SSH private key from %s: %v", a.opts.SSHPrivateKeyPath, err)
 		}
 	}
-	// Probe the local sshd for its host public key so the hub can pin it for
-	// strict host-key verification (avoids the InsecureIgnoreHostKey fallback
-	// in pkg/virtual/builder/agent_proxy_builder.go). Best-effort: an empty
-	// result simply leaves the hub on its existing fallback path.
+	for k, v := range a.sshHostKeyHeader() {
+		h[k] = v
+	}
+	return h
+}
+
+// sshHostKeyHeader probes the local sshd for its host public key and returns
+// it as the X-Faros-SSH-HostKey header so the provider can record it
+// (write-once) and verify SSH sessions against it. Best-effort: an empty
+// result sends nothing, and the provider's sshHostKeyPolicy decides what
+// happens to sessions until a key is known.
+func (a *Agent) sshHostKeyHeader() http.Header {
+	h := http.Header{}
 	if a.opts.SSHProxyPort > 0 {
 		if hostKey := agentStatus.DialAndFetchSSHHostKey(a.opts.SSHProxyPort, klog.Background()); hostKey != "" {
 			h.Set("X-Faros-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))

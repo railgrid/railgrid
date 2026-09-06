@@ -19,24 +19,30 @@ package tunnel
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
@@ -120,11 +126,13 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		case "k8s":
 			p.edgesK8sHandler(r.Context(), w, r, key, dialer)
 		case "ssh":
-			// Resolve caller identity for identity-mode SSH mapping.
-			// Best-effort: empty string is fine for inherited/provided modes.
-			callerIdentity := resolveCallerIdentity(r.Context(), p.kcpConfig, token, p.logger)
+			// Resolve caller identity for identity-mode SSH mapping and the
+			// session audit line. Best-effort: inherited/provided modes work
+			// without it (the token already passed authorizeFn above); the audit
+			// line then records caller=unknown with the reason.
+			callerIdentity, callerErr := resolveCallerIdentity(r.Context(), p.kcpConfig, token)
 			gvr, _, _ := p.gvrForResource(resource)
-			p.edgesSSHHandler(r.Context(), w, r, key, dialer, callerIdentity, gvr)
+			p.edgesSSHHandler(r.Context(), w, r, key, dialer, callerIdentity, callerErr, gvr)
 		default:
 			p.logger.Info("unknown subresource requested", "subresource", subresource, "cluster", cluster, "name", name)
 			http.Error(w, "unknown subresource", http.StatusNotFound)
@@ -174,9 +182,13 @@ func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *
 // edgesSSHHandler establishes a WebSocket SSH session to the edge agent.
 // It dials the agent via the revdial.Dialer, opens the agent-side SSH tunnel,
 // and then bridges the caller's WebSocket to the SSH session.
+//
+// Every session produces two V(0) audit lines: "SSH session opened" once the
+// SSH client is established, and "SSH session ended" when the handler returns
+// (also for sessions refused before opening, with opened=false and the reason).
 func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, key string, dialer interface {
 	Dial(context.Context) (net.Conn, error)
-}, callerIdentity string, gvr schema.GroupVersionResource) {
+}, callerIdentity string, callerErr error, gvr schema.GroupVersionResource) {
 	logger := klog.FromContext(ctx)
 
 	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
@@ -184,12 +196,41 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	// Optional non-interactive exec mode (e.g. `faros ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
+	mode := "interactive"
+	if remoteCmd != "" {
+		mode = "exec"
+	}
+
+	caller := callerIdentity
+	if caller == "" {
+		caller = "unknown"
+	}
+	// remoteCmd is a raw query parameter. It is escaped and bounded before it
+	// reaches the audit line so it cannot forge extra records or dump an
+	// unbounded argument list into the log.
+	audit := logger.WithValues(
+		"cluster", cluster, "edge", edgeName, "caller", caller,
+		"mode", mode, "exec", sanitizeAuditValue(remoteCmd), "remoteAddr", clientAddr(r))
+	if callerErr != nil {
+		audit = audit.WithValues("callerError", callerErr.Error())
+	}
+	start := time.Now()
+	opened := false
+	var outcome error
+	defer func() {
+		kv := []interface{}{"opened", opened, "durationSeconds", time.Since(start).Seconds()}
+		if outcome != nil {
+			kv = append(kv, "error", outcome.Error())
+		}
+		audit.Info("SSH session ended", kv...)
+	}()
 
 	// Fetch SSH credentials from Edge status, applying the configured user mapping.
 	creds, err := p.fetchSSHCredentials(ctx, cluster, edgeName, callerIdentity, gvr, logger)
 	if err != nil {
 		logger.Error(err, "failed to fetch SSH credentials", "key", key)
-		// Continue with nil credentials - will fall back to empty password auth
+		// Continue with nil credentials: auth falls back to an empty password and
+		// host key verification to the strict policy, which fails closed below.
 	}
 
 	logger.V(4).Info("Edges SSH handler", "key", key, "hasCredentials", creds != nil, "exec", remoteCmd != "")
@@ -197,6 +238,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// Dial the agent via the reverse tunnel.
 	deviceConn, err := dialer.Dial(ctx)
 	if err != nil {
+		outcome = fmt.Errorf("dialing edge agent: %w", err)
 		logger.Error(err, "failed to dial edge agent for SSH", "key", key)
 		http.Error(w, "failed to connect to edge agent", http.StatusBadGateway)
 		return
@@ -205,6 +247,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// Open the SSH tunnel over the raw reverse-tunnel connection.
 	sshConn, err := openAgentSSHTunnel(ctx, deviceConn)
 	if err != nil {
+		outcome = fmt.Errorf("opening agent SSH tunnel: %w", err)
 		logger.Error(err, "failed to open SSH tunnel to edge agent", "key", key)
 		http.Error(w, "failed to open SSH tunnel", http.StatusBadGateway)
 		return
@@ -223,24 +266,43 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		outcome = fmt.Errorf("upgrading caller connection: %w", err)
 		logger.Error(err, "failed to upgrade caller connection to WebSocket")
 		return
 	}
 	defer wsConn.Close() //nolint:errcheck
 
-	// Extract the host key from the credentials (may be empty for older agents).
-	var sshHostKey string
+	// Host key verification inputs: the pinned/recorded key and the per-edge
+	// policy come from the edge object (via creds); the escape hatch is
+	// provider-wide.
+	hk := sshHostKeyVerification{AllowUnverified: p.allowUnverifiedSSHHostKey}
 	if creds != nil {
-		sshHostKey = creds.SSHHostKey
+		hk.Key = creds.SSHHostKey
+		hk.Policy = creds.SSHHostKeyPolicy
 	}
 
 	// Build the SSH client over the tunnelled raw connection.
-	sshClient, err := newSSHClient(ctx, sshConn, creds, sshHostKey, logger)
+	sshClient, learnedKey, err := newSSHClient(ctx, sshConn, creds, hk, logger)
 	if err != nil {
+		outcome = fmt.Errorf("establishing SSH client: %w", err)
 		logger.Error(err, "failed to create SSH client for edge")
 		return
 	}
 	defer sshClient.Close() //nolint:errcheck
+	opened = true
+	audit.Info("SSH session opened", "sshUser", sshUsername(creds),
+		"hostKeyFingerprint", sshHostKeyFingerprint(firstNonEmpty(learnedKey, hk.Key)))
+
+	// tofu: persist the key this first session trusted so every later session
+	// enforces it. Best-effort — a failed write only means the next session
+	// trusts on first use again.
+	if learnedKey != "" {
+		if rerr := p.recordSSHHostKey(ctx, gvr, cluster, edgeName, learnedKey); rerr != nil {
+			logger.Error(rerr, "failed to record SSH host key learned on first use", "key", key)
+		} else {
+			audit.Info("SSH host key recorded on first use", "hostKeyFingerprint", sshHostKeyFingerprint(learnedKey))
+		}
+	}
 
 	if remoteCmd != "" {
 		// Non-interactive exec: run command, stream output, close.
@@ -251,14 +313,139 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// Interactive PTY + shell session over WebSocket.
 	session, err := utilssh.NewSocketSSHSession(logger, 120, 40, sshClient, wsConn)
 	if err != nil {
+		outcome = fmt.Errorf("creating SSH session: %w", err)
 		logger.Error(err, "failed to create SSH session for edge")
 		return
 	}
 	defer session.Close()
 
 	if err := session.Run(ctx); err != nil {
+		outcome = err
 		logger.Error(err, "SSH session error for edge")
 	}
+}
+
+// unknownAddr is recorded when no address can be trusted or the candidate is
+// not an IP. Better a placeholder than junk echoed into the audit trail.
+const unknownAddr = "unknown"
+
+// clientAddr returns the caller's address for audit lines.
+//
+// Exactly one trusted proxy fronts this handler (the hub backend proxy), and a
+// forwarding proxy APPENDS the peer it saw to X-Forwarded-For. So the LAST hop
+// is the address that proxy observed, and every entry to its left is whatever
+// the client chose to send — an attacker can prepend anything. Taking the last
+// hop is what makes the audit line worth writing. If several trusted proxies
+// were ever chained in front of this handler, the rule would become "count back
+// from the right by the number of trusted hops" — the leading entries stay
+// untrustworthy either way.
+//
+// With no XFF header the immediate peer (r.RemoteAddr) is the client; its port
+// is stripped since only the host identifies the caller. The result is always a
+// parsed IP or unknownAddr.
+func clientAddr(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); strings.TrimSpace(xff) != "" {
+		hops := strings.Split(xff, ",")
+		return auditIP(hops[len(hops)-1])
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return auditIP(host)
+	}
+	return auditIP(r.RemoteAddr)
+}
+
+// auditIP validates that s is an IP address and returns its canonical form, or
+// unknownAddr. Bracketed IPv6 ("[::1]") is accepted.
+func auditIP(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return unknownAddr
+	}
+	return addr.String()
+}
+
+// maxAuditValueLen bounds a caller-controlled value in an audit line, in runes.
+const maxAuditValueLen = 256
+
+// auditTruncationMarker is appended when sanitizeAuditValue cuts a value short,
+// so a reader never mistakes a truncated command for the whole one.
+const auditTruncationMarker = "...[truncated]"
+
+// sanitizeAuditValue makes a caller-controlled string safe to place in an audit
+// line. Newlines and other control characters would otherwise let a caller
+// forge additional audit records, and an unbounded value can carry a lot of
+// (possibly sensitive) argument text into the log.
+//
+// Non-printable runes are escaped rather than dropped: this is an audit record,
+// so it must stay a faithful, reversible rendering of what was requested.
+func sanitizeAuditValue(s string) string {
+	var b strings.Builder
+	runes := 0
+	for _, r := range s {
+		if runes >= maxAuditValueLen {
+			b.WriteString(auditTruncationMarker)
+			break
+		}
+		runes++
+		switch {
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == utf8.RuneError:
+			// Invalid UTF-8 in the input; range yields RuneError per bad byte.
+			b.WriteString(`�`)
+		case unicode.IsPrint(r):
+			b.WriteRune(r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// recordSSHHostKey persists a host key learned on a tofu first session into
+// status.sshHostKey, unless a key has been recorded in the meantime (the
+// recorded key is never replaced automatically; see applyReportedSSHHostKey).
+func (p *Server) recordSSHHostKey(ctx context.Context, gvr schema.GroupVersionResource, cluster, edgeName, hostKey string) error {
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("resolving tenant config: %w", err)
+	}
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		edge, err := dynClient.Resource(gvr).Get(ctx, edgeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		status, _, _ := unstructured.NestedMap(edge.Object, "status")
+		if status == nil {
+			status = map[string]interface{}{}
+		}
+		if existing, _, _ := unstructured.NestedString(status, "sshHostKey"); existing != "" {
+			return nil
+		}
+		status["sshHostKey"] = hostKey
+		if err := unstructured.SetNestedField(edge.Object, status, "status"); err != nil {
+			return fmt.Errorf("setting status: %w", err)
+		}
+		_, err = dynClient.Resource(gvr).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
+		return err
+	})
 }
 
 // parseEdgeConnKey extracts cluster and name from the connection key.
@@ -311,8 +498,16 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 		return nil, fmt.Errorf("decoding edge %s: %w", edgeName, err)
 	}
 
-	// SSHHostKey is carried through regardless of mapping mode.
-	hostKey := edge.Status.SSHHostKey
+	// Host key verification inputs are carried through regardless of mapping
+	// mode.
+	hostKey, policy := sshHostKeyFor(edge)
+	withHostKey := func(creds *SSHClientCredentials) *SSHClientCredentials {
+		if creds != nil {
+			creds.SSHHostKey = hostKey
+			creds.SSHHostKeyPolicy = policy
+		}
+		return creds
+	}
 
 	switch edge.Spec.SSHUserMapping {
 	case edgeapi.SSHUserMappingProvided:
@@ -325,10 +520,7 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 		if err != nil {
 			return nil, err
 		}
-		if creds != nil {
-			creds.SSHHostKey = hostKey
-		}
-		return creds, nil
+		return withHostKey(creds), nil
 
 	case edgeapi.SSHUserMappingIdentity:
 		// Username = caller identity; key from sshCredentialsRef or status creds.
@@ -340,10 +532,7 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 			if err != nil {
 				return nil, err
 			}
-			if creds != nil {
-				creds.SSHHostKey = hostKey
-			}
-			return creds, nil
+			return withHostKey(creds), nil
 		}
 		// Fall back to status credentials but override the username.
 		creds, err := p.readStatusSSHCreds(ctx, k8sClient, edge, logger)
@@ -354,8 +543,7 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 			return nil, fmt.Errorf("sshUserMapping=identity: no credentials available for edge %s (set sshCredentialsRef or ensure agent reports SSHCredentials)", edgeName)
 		}
 		creds.Username = callerIdentity
-		creds.SSHHostKey = hostKey
-		return creds, nil
+		return withHostKey(creds), nil
 
 	default:
 		// "inherited" (or empty default) → existing behavior: use agent-reported creds.
@@ -363,11 +551,30 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 		if err != nil {
 			return nil, err
 		}
-		if creds != nil {
-			creds.SSHHostKey = hostKey
+		if creds == nil {
+			// No credentials at all: still carry the host key inputs so the
+			// session is verified (and fails closed under strict) rather than
+			// silently falling back to an unverified empty-password attempt.
+			creds = &SSHClientCredentials{}
 		}
-		return creds, nil
+		return withHostKey(creds), nil
 	}
+}
+
+// sshHostKeyFor picks the host key an SSH session to the edge is verified
+// against and the policy that applies when there is none: the operator pin
+// (spec.sshHostKey) wins over the agent-reported status.sshHostKey; the policy
+// defaults to strict.
+func sshHostKeyFor(edge *sshEdgeView) (hostKey string, policy edgeapi.SSHHostKeyPolicy) {
+	hostKey = strings.TrimSpace(edge.Spec.SSHHostKey)
+	if hostKey == "" {
+		hostKey = strings.TrimSpace(edge.Status.SSHHostKey)
+	}
+	policy = edge.Spec.SSHHostKeyPolicy
+	if policy == "" {
+		policy = edgeapi.SSHHostKeyPolicyStrict
+	}
+	return hostKey, policy
 }
 
 // sshEdgeView is the ssh-relevant projection of a server-kind CR (e.g.
@@ -399,6 +606,8 @@ type sshEdgeView struct {
 	Spec struct {
 		SSHUserMapping    edgeapi.SSHUserMappingMode `json:"sshUserMapping,omitempty"`
 		SSHCredentialsRef *corev1.SecretReference    `json:"sshCredentialsRef,omitempty"`
+		SSHHostKey        string                     `json:"sshHostKey,omitempty"`
+		SSHHostKeyPolicy  edgeapi.SSHHostKeyPolicy   `json:"sshHostKeyPolicy,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		SSHHostKey     string                  `json:"sshHostKey,omitempty"`
@@ -469,16 +678,20 @@ func (p *Server) readSSHCredsFromSecret(ctx context.Context, k8sClient kubernete
 	return creds, nil
 }
 
-// resolveCallerIdentity performs a kcp TokenReview to extract the caller's username.
-// Returns empty string on any error (non-fatal: inherited/provided modes don't need it).
-func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token string, logger klog.Logger) string {
-	if kcpConfig == nil || token == "" {
-		return ""
+// resolveCallerIdentity performs a kcp TokenReview to extract the caller's
+// username. Returns an empty identity and the reason on failure; the caller
+// decides whether that is fatal (identity-mode SSH mapping) or only affects the
+// audit line (inherited/provided modes).
+func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token string) (string, error) {
+	if kcpConfig == nil {
+		return "", errors.New("no kcp config")
+	}
+	if token == "" {
+		return "", errors.New("no bearer token")
 	}
 	client, err := kubernetes.NewForConfig(kcpConfig)
 	if err != nil {
-		logger.V(4).Info("resolveCallerIdentity: failed to create client", "err", err)
-		return ""
+		return "", fmt.Errorf("creating token-review client: %w", err)
 	}
 	// This runs on the SSH data-plane path BEFORE the tunnel dial, and the
 	// request context is a WebSocket upgrade with no deadline. A TokenReview that
@@ -492,11 +705,13 @@ func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token st
 		Spec: authv1.TokenReviewSpec{Token: token},
 	}
 	result, err := client.AuthenticationV1().TokenReviews().Create(trCtx, tr, metav1.CreateOptions{})
-	if err != nil || !result.Status.Authenticated {
-		logger.V(4).Info("resolveCallerIdentity: token review failed or unauthenticated", "err", err)
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("token review: %w", err)
 	}
-	return result.Status.User.Username
+	if !result.Status.Authenticated {
+		return "", errors.New("token review: not authenticated")
+	}
+	return result.Status.User.Username, nil
 }
 
 // edgesHandleK8sUpgrade handles upgrade requests (exec, port-forward) to an
