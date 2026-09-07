@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -59,6 +60,9 @@ func (f *fakeKCP) clusterConfig(cluster string) *rest.Config {
 func (f *fakeKCP) newClient(cfg *rest.Config) (kubernetes.Interface, error) {
 	cluster := strings.TrimPrefix(cfg.Host, "https://kcp.test/clusters/")
 	cs := kubefake.NewClientset()
+	cs.PrependReactor("create", "subjectaccessreviews", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, &authorizationv1.SubjectAccessReview{}, nil // no explicit workload grants
+	})
 	cs.PrependReactor("create", "tokenreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		f.reviews++
 		review := action.(clienttesting.CreateAction).GetObject().(*authnv1.TokenReview)

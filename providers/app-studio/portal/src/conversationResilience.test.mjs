@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import ts from 'typescript'
-import { computed, ref } from 'vue'
+import { computed, effectScope, ref, watch } from 'vue'
 
 const source = await readFile(new URL('./conversationResilience.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
@@ -10,6 +10,99 @@ const state = await import(`data:text/javascript;base64,${Buffer.from(outputText
 
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
 const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
+
+// Execute the actual App stop-state boundaries with Vue reactivity, without
+// mounting unrelated project/preview services or duplicating their logic.
+async function stopStateHarness(t) {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const functions = new Set(['setActiveAssistantRun', 'resetAssistantStopState', 'assistantStopContextFingerprint', 'cancelMessageStream'])
+  const statements = ast.statements.filter(node =>
+    ts.isFunctionDeclaration(node) && functions.has(node.name?.text) ||
+    ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => decl.name.getText(ast) === 'assistantStopRequested') ||
+    ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(') && node.getText(ast).includes('() => resetAssistantStopState()'),
+  )
+  assert.equal(statements.length, 6)
+  const { outputText } = ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  return scope.run(() => new Function('ref', 'computed', 'watch', 'assistantRunTerminal', `
+    const context = ref({ tenant: 'tenant-a', token: 'token-a', subPath: '/project-a' });
+    const props = { get ctx() { return context.value; } };
+    const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const assistantStopRequestedRunID = ref('');
+    const assistantPendingStartStopRequested = ref(false);
+    const assistantStopError = ref(null);
+    const conversationStatus = ref('');
+    const messageStreaming = ref(true);
+    const activeAssistantRunRevision = ref(0);
+    let activeAssistantRun = null;
+    let assistantThreadRequestSerial = 0;
+    let rejectStop;
+    let recovered = 0;
+    const assistantRunController = { stop: () => new Promise((_, reject) => { rejectStop = reject; }) };
+    const recoverAssistantConversation = async () => { recovered++; };
+    ${outputText}
+    return { selected, context, assistantStopRequested, assistantStopRequestedRunID,
+      assistantPendingStartStopRequested, assistantStopError, conversationStatus,
+      setActiveAssistantRun, resetAssistantStopState, cancelMessageStream,
+      rejectStop: () => rejectStop(new Error('network failure')),
+      recovered: () => recovered };
+  `)(ref, computed, watch, state.assistantRunTerminal))
+}
+
+test('stopping survives recovery but cannot follow project, tenant or run replacement', async t => {
+  for (const transition of ['project', 'recreated project', 'tenant', 'new run']) {
+    const h = await stopStateHarness(t)
+    h.setActiveAssistantRun({ id: 'run-a', status: 'running' })
+    h.cancelMessageStream()
+    assert.equal(h.assistantStopRequested.value, true)
+    h.context.value.token = 'refreshed-token'
+    h.context.value.subPath = '/project-a/settings'
+    assert.equal(h.assistantStopRequested.value, true, 'token refresh and sub-view navigation preserve ownership')
+    h.setActiveAssistantRun(null)
+    assert.equal(h.assistantStopRequested.value, true, 'same-conversation recovery stays latched')
+    h.setActiveAssistantRun({ id: 'run-a', status: 'running' })
+    if (transition === 'project') h.selected.value = { name: 'project-b', uid: 'uid-b' }
+    if (transition === 'recreated project') h.selected.value = { name: 'project-a', uid: 'uid-new' }
+    if (transition === 'tenant') h.context.value.tenant = 'tenant-b'
+    if (transition !== 'new run') assert.equal(h.assistantStopRequested.value, false, `${transition} clears immediately`)
+    h.setActiveAssistantRun({ id: 'run-b', status: 'running' })
+    assert.equal(h.assistantStopRequested.value, false, transition)
+    h.rejectStop()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(h.assistantStopError.value, null, 'late error must not enter the new conversation')
+    assert.equal(h.recovered(), 0)
+  }
+})
+
+test('pending-start stop clears on navigation and same-conversation stop failure remains actionable', async t => {
+  const h = await stopStateHarness(t)
+  h.cancelMessageStream()
+  assert.equal(h.assistantPendingStartStopRequested.value, true)
+  h.selected.value = { name: 'project-b', uid: 'uid-b' }
+  assert.equal(h.assistantPendingStartStopRequested.value, false)
+  assert.equal(h.conversationStatus.value, '')
+  h.setActiveAssistantRun({ id: 'run-b', status: 'running' })
+  h.cancelMessageStream()
+  h.setActiveAssistantRun(null)
+  h.rejectStop()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.assistantStopRequested.value, false)
+  assert.match(h.assistantStopError.value, /Could not stop the response: network failure/)
+  assert.equal(h.recovered(), 1)
+})
+
+test('committed thread switches and thread creation clear their local stop state', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const select = app.slice(app.indexOf('async function selectAssistantThread('), app.indexOf('async function createAssistantThread('))
+  const create = app.slice(app.indexOf('async function createAssistantThread('), app.indexOf('function beginAssistantThreadTitleRename('))
+  assert.ok(select.indexOf('resetAssistantStopState()') > select.indexOf('await api.listAssistantThreadItemPage'))
+  assert.ok(select.indexOf('resetAssistantStopState()') < select.indexOf('activeAssistantThreadID.value = threadID'))
+  assert.ok(create.indexOf('resetAssistantStopState()') > create.indexOf('if (!createIsCurrent()) return'))
+  assert.ok(create.indexOf('resetAssistantStopState()') < create.indexOf('activeAssistantThreadID.value = thread.id'))
+})
 
 test('start fingerprint changes with one-turn skill, resource, and inline-part selections', () => {
   const base = { content: 'inspect this', collaborationMode: 'default' }

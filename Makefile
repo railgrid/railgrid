@@ -383,6 +383,15 @@ test:
 test-util:
 	go test ./pkg/util/...
 
+.PHONY: test-app-studio-mcp-access lint-app-studio-mcp-access
+test-app-studio-mcp-access: ## Verify MCP workload authorization and App Studio identity provisioning
+	go test -count=1 ./pkg/hub/mcpaggregate
+	cd providers/app-studio && go test -count=1 ./controller/project ./hubmcp
+
+lint-app-studio-mcp-access: $(GOLANGCI_LINT) ## Lint the MCP authorization integration across both modules
+	$(GOLANGCI_LINT) run ./pkg/hub/mcpaggregate
+	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./controller/project ./hubmcp
+
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
 

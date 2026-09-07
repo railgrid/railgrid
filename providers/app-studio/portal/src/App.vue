@@ -1028,6 +1028,10 @@ let activeAssistantSubscription: AbortController | null = null
 let activeAssistantRun: AssistantRun | null = null
 const activeAssistantRunRevision = ref(0)
 function setActiveAssistantRun(run: AssistantRun | null) {
+  if (run && assistantStopRequestedRunID.value && assistantStopRequestedRunID.value !== run.id) {
+    assistantStopRequestedRunID.value = ''
+    assistantStopError.value = null
+  }
   activeAssistantRun = run
   activeAssistantRunRevision.value += 1
 }
@@ -2015,6 +2019,29 @@ const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).len
 // is still in flight; tying the latch to it makes the primary action briefly
 // fall back to Send and then return to Stop.
 const assistantStopRequested = computed(() => Boolean(assistantStopRequestedRunID.value) || assistantPendingStartStopRequested.value)
+
+function resetAssistantStopState() {
+  assistantStopRequestedRunID.value = ''
+  assistantPendingStartStopRequested.value = false
+  assistantStopError.value = null
+  if (conversationStatus.value === 'Stopping') conversationStatus.value = ''
+}
+
+function assistantStopContextFingerprint(ctx: FarosContext | null): string {
+  return JSON.stringify([
+    ctx?.tenant ?? '', ctx?.orgUUID ?? '', ctx?.workspaceUUID ?? '',
+    ctx?.user?.userId ?? '', ctx?.user?.sub ?? '', ctx?.user?.email ?? '',
+  ])
+}
+
+// Keep the stop latch through same-conversation snapshot recovery, but never
+// across project/tenant navigation (including creation and same-name recreation).
+// Token refresh and sub-view navigation do not change conversation ownership.
+watch(
+  [() => assistantStopContextFingerprint(props.ctx), () => selected.value?.uid ?? selected.value?.name ?? ''],
+  () => resetAssistantStopState(),
+  { flush: 'sync' },
+)
 const assistantComposerStopControl = computed(() => assistantComposerStopControlState({
   // activeAssistantRun is intentionally kept outside Vue proxying because it
   // is also the controller's mutable durable snapshot. Its revision makes
@@ -5695,6 +5722,7 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
     // Do not strand the UI on a target thread until its history has loaded.
     // Commit the selection only after the request succeeds; a failure keeps
     // the prior thread, conversation, stream, and focus valid.
+    resetAssistantStopState()
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
     setActiveAssistantRun(null)
@@ -5736,6 +5764,7 @@ async function createAssistantThread() {
   try {
     const thread = await api.createAssistantThread(props.ctx, projectName)
     if (!createIsCurrent()) return
+    resetAssistantStopState()
     assistantThreads.value = [thread, ...assistantThreads.value]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
@@ -7359,6 +7388,8 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
 function cancelMessageStream() {
   const runID = activeAssistantRun?.id
   const projectName = selected.value?.name
+  const stopRequestSerial = assistantThreadRequestSerial
+  const stopContextFingerprint = assistantStopContextFingerprint(props.ctx)
   if (!projectName || assistantRunTerminal(activeAssistantRun?.status)) return
   if (!runID) {
     if (!messageStreaming.value || assistantPendingStartStopRequested.value) return
@@ -7372,11 +7403,17 @@ function cancelMessageStream() {
   assistantStopError.value = null
   conversationStatus.value = 'Stopping'
   void assistantRunController.stop().catch(async (e) => {
+    if (
+      assistantThreadRequestSerial !== stopRequestSerial ||
+      assistantStopContextFingerprint(props.ctx) !== stopContextFingerprint ||
+      selected.value?.name !== projectName ||
+      assistantStopRequestedRunID.value !== runID ||
+      (activeAssistantRun && activeAssistantRun.id !== runID)
+    ) return
     if (assistantStopRequestedRunID.value === runID) assistantStopRequestedRunID.value = ''
     assistantStopError.value = e instanceof Error && e.message.trim()
       ? `Could not stop the response: ${e.message}`
       : 'Could not stop the response. Try again.'
-    if (selected.value?.name !== projectName || activeAssistantRun?.id !== runID) return
     try {
       await recoverAssistantConversation(projectName)
     } catch {

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -85,7 +86,7 @@ var logicalClusterGVR = schema.GroupVersionResource{
 	Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
 }
 
-// Verifier is the production BearerVerifier. It accepts exactly two kinds of
+// Verifier is the production BearerVerifier. It accepts three kinds of
 // bearer:
 //
 //  1. The MCPServer's own ServiceAccount token, which the mcpserver controller
@@ -97,6 +98,9 @@ var logicalClusterGVR = schema.GroupVersionResource{
 //     hub's normal identity path; the CLI's `faros mcp` and the e2e suites
 //     use these. The user must hold a live Membership covering the tenant
 //     the cluster belongs to, per the UserMembershipIndex.
+//  3. Other tenant ServiceAccounts with explicit RBAC permission to use the
+//     named MCPServer. TokenReview authenticates them before SubjectAccessReview
+//     authorizes access; downstream calls retain the original bearer.
 //
 // Signatures and claims are never trusted offline; both paths are online
 // checks against kcp.
@@ -192,8 +196,9 @@ func (v *Verifier) Verify(r *http.Request, token, cluster, mcpServerName string)
 	return v.verifyServiceAccount(ctx, token, cluster, mcpServerName)
 }
 
-// verifyServiceAccount runs a TokenReview in the tenant cluster and requires
-// the reviewed identity to be the MCPServer's own ServiceAccount. No audience
+// verifyServiceAccount runs a TokenReview in the tenant cluster. The server's
+// own identity is accepted; other ServiceAccounts require explicit use access.
+// No audience
 // is requested: the controller mints legacy Secret-backed tokens, which carry
 // the API server's implicit audience only.
 func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcpServerName string) error {
@@ -214,8 +219,33 @@ func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcp
 	if !review.Status.Authenticated {
 		return ErrUnauthenticated
 	}
-	if review.Status.User.Username != ServiceAccountUsername(mcpServerName) {
-		return fmt.Errorf("%w: reviewed identity %q is not the MCPServer service account", ErrForbidden, review.Status.User.Username)
+	user := review.Status.User
+	if user.Username == ServiceAccountUsername(mcpServerName) {
+		return nil
+	}
+	if !strings.HasPrefix(user.Username, serviceAccountPrefix) {
+		return ErrForbidden
+	}
+	extra := make(map[string]authorizationv1.ExtraValue, len(user.Extra))
+	for key, values := range user.Extra {
+		extra[key] = authorizationv1.ExtraValue(values)
+	}
+	access, err := cs.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User: user.Username, UID: user.UID, Groups: user.Groups, Extra: extra,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Group: "faros.sh", Resource: "mcpservers", Name: mcpServerName, Verb: "use",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("authorizing MCPServer use in cluster %q: %w", cluster, err)
+	}
+	if access.Status.EvaluationError != "" {
+		return fmt.Errorf("evaluating MCPServer use: %s", access.Status.EvaluationError)
+	}
+	if !access.Status.Allowed || access.Status.Denied {
+		return fmt.Errorf("%w: reviewed identity %q cannot use MCPServer %q", ErrForbidden, user.Username, mcpServerName)
 	}
 	return nil
 }

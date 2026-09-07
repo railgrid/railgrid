@@ -62,6 +62,14 @@ func projectOwnerRef(p *aiv1alpha1.Project) metav1.OwnerReference {
 func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, p *aiv1alpha1.Project) (string, error) {
 	rules := []rbacv1.PolicyRule{
 		{
+			// Admission to the aggregate does not grant downstream provider
+			// permissions: federation retains this project's bearer.
+			APIGroups:     []string{"faros.sh"},
+			Resources:     []string{"mcpservers"},
+			ResourceNames: []string{"default"},
+			Verbs:         []string{"use"},
+		},
+		{
 			// Full lifecycle: the reconciler creates, converges, and (on
 			// Project deletion) deletes the project's environment instances.
 			APIGroups: []string{"infrastructure.faros.sh"},
