@@ -82,18 +82,16 @@ test('organization settings are scoped to the selected org and gate governance w
   assert.match(orgSection, /v-if="canManageOrg"/)
 })
 
-test('organization metadata links back to the chooser with a scoped return path', () => {
-  const orgSectionStart = tenantSettingsPage.indexOf('<template v-else-if="activeSection === \'organizations\'">')
-  const orgSectionEnd = tenantSettingsPage.indexOf('<!-- Issued-token modal.', orgSectionStart)
-  assert.ok(orgSectionStart >= 0 && orgSectionEnd > orgSectionStart)
-  const orgSection = tenantSettingsPage.slice(orgSectionStart, orgSectionEnd)
-  const linkStart = orgSection.indexOf('<router-link')
-  const dangerStart = orgSection.indexOf('<div v-if="canManageOrg"')
-  assert.ok(linkStart >= 0 && dangerStart > linkStart)
-  const link = orgSection.slice(linkStart, dangerStart)
-  assert.match(link, /:to="\{ path: '\/organizations', query: \{ from: '\/settings\/organizations' \} \}"/)
-  assert.match(link, />\s*Change organization\s*[\s\S]*<ExternalLink/)
-  assert.equal((link.match(/Change organization/g) ?? []).length, 1)
+test('organization switching sits beside the organization name, outside the page header', () => {
+  const header = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<header'), tenantSettingsPage.indexOf('</header>'))
+  assert.doesNotMatch(header, /Switch organization|Switch or create organization/)
+  const titleStart = tenantSettingsPage.indexOf('<h2 id="organization-settings-title"')
+  const identityRow = tenantSettingsPage.slice(titleStart, tenantSettingsPage.indexOf('</div>', titleStart))
+  assert.match(identityRow, /organizationSettingsOrg\.displayName/)
+  assert.match(identityRow, /:to="\{ path: '\/organizations', query: \{ from: '\/settings\/organizations' \} \}"/)
+  assert.match(identityRow, /class="k-btn k-btn--ghost shrink-0"/)
+  assert.match(identityRow, /Switch organization/)
+  assert.doesNotMatch(tenantSettingsPage, /Switch or create organization|>\s*Change organization\s*</)
 })
 
 test('organization settings use the org MemberList contract and lifecycle actions', () => {
@@ -154,7 +152,7 @@ test('account access keeps identity and organization rows compact', () => {
   const identityAndOrganizationRows = accountMenu.slice(identityRow, organizationRow)
   assert.doesNotMatch(identityAndOrganizationRows, /<span class="k-eyebrow">(?:Identity|Organization)<\/span>/)
   assert.doesNotMatch(identityAndOrganizationRows, /h-px bg-border-subtle/)
-  assert.match(accountMenu, /const organizationDestination = computed\(\(\) => tenant\.orgs\.length > 1[\s\S]*\{ path: '\/settings\/organizations' \}/)
+  assert.match(accountMenu, /const organizationDestination = computed\(\(\) => \(\{\s*path: '\/organizations',\s*query: \{ from: route\.fullPath \},\s*\}\)\)/)
   assert.match(memberList, /memberColumns[\s\S]*\{ key: 'actions', label: '', ariaLabel: 'Actions' \}/)
 })
 
@@ -780,11 +778,15 @@ function extractValidatedInternalPath() {
   return new Function(`return ${signature}${body}`)()
 }
 
-test('Account & Access routes zero/one org to settings and many orgs to the chooser', () => {
-  assert.match(accountMenu, /tenant\.orgs\.length > 1/)
-  assert.match(accountMenu, /path: '\/organizations'/)
-  assert.match(accountMenu, /query: \{ from: route\.fullPath \}/)
-  assert.match(accountMenu, /: \{ path: '\/settings\/organizations' \}/)
+test('Account & Access opens the chooser regardless of organization count', () => {
+  const match = accountMenu.match(/const organizationDestination = computed\(\(\) => (\([\s\S]*?\))\)/)
+  assert.ok(match)
+  for (const count of [0, 1, 2]) {
+    const destination = new Function('tenant', 'route', `return ${match[1]}`)(
+      { orgs: Array(count).fill({}) }, { fullPath: '/settings/organizations' },
+    )
+    assert.deepEqual(destination, { path: '/organizations', query: { from: '/settings/organizations' } })
+  }
   assert.match(router, /path: '\/organizations'/)
 })
 

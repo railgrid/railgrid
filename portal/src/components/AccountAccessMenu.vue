@@ -96,10 +96,10 @@ const orgDetail = computed(() => {
   if (org.personal) return 'Personal organization'
   return org.role === 'admin' ? 'Organization admin' : 'Organization member'
 })
-const organizationDestination = computed(() => tenant.orgs.length > 1
-  ? { path: '/organizations', query: { from: route.fullPath } }
-  : { path: '/settings/organizations' },
-)
+const organizationDestination = computed(() => ({
+  path: '/organizations',
+  query: { from: route.fullPath },
+}))
 const initials = computed(() => {
   const value = email.value === 'Authenticated user' ? '' : email.value
   const parts = value.split(/[@.\s_-]+/).filter(Boolean)

@@ -47,7 +47,6 @@ import {
   Check,
   Copy,
   Download,
-  ExternalLink,
   FolderTree,
   KeyRound,
   Loader2,
@@ -2118,9 +2117,18 @@ function fmtDate(s?: string | null): string {
             <div class="mb-4 flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <p class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Organization</p>
-                <h2 id="organization-settings-title" class="mt-1 truncate text-lg font-semibold text-text-primary">
-                  {{ organizationSettingsOrg.displayName }}
-                </h2>
+                <div class="mt-1 flex flex-wrap items-center gap-3">
+                  <h2 id="organization-settings-title" class="min-w-0 break-words text-lg font-semibold text-text-primary">
+                    {{ organizationSettingsOrg.displayName }}
+                  </h2>
+                  <router-link
+                    :to="{ path: '/organizations', query: { from: '/settings/organizations' } }"
+                    class="k-btn k-btn--ghost shrink-0"
+                  >
+                    <Building2 class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
+                    Switch organization
+                  </router-link>
+                </div>
                 <p class="mt-1 text-[12px] text-text-muted">
                   Organization metadata and lifecycle for this selected organization.
                 </p>
@@ -2199,14 +2207,6 @@ function fmtDate(s?: string | null): string {
                 </button>
               </div>
             </div>
-
-            <router-link
-              class="mt-4 inline-flex items-center gap-1.5 text-[11px] text-text-muted transition-colors hover:text-accent"
-              :to="{ path: '/organizations', query: { from: '/settings/organizations' } }"
-            >
-              Change organization
-              <ExternalLink class="h-3 w-3" :stroke-width="1.75" />
-            </router-link>
 
             <div v-if="canManageOrg" class="mt-4">
               <h3 class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-danger/80">Danger zone</h3>
