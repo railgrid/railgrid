@@ -34,8 +34,39 @@ func TestProjectAssistantResearchPhraseRequested(t *testing.T) {
 		{"deep-research this market", true},
 		{"Research the best auth libraries", true},
 		{"RESEARCH: swipe patterns", true},
+		{"do a deep reseach on docs page again", true},
+		{"resarch the competitors", true},
+		{"deep reserach please", true},
+		{"researh this", true},
+		{"run a few researches on pricing", true},
+		{"investigate the swipe UX market", true},
+		{"investgate what competitors charge", true},
+		{"open an investigation into onboarding patterns", true},
+		{"do a deep dive on the Faros docs", true},
+		{"Deep-Dive: kcp vs vcluster", true},
+		{"deepdive into oauth device flow", true},
+		{"dig into how Vercel prices previews", true},
+		{"dig deeper on the pricing page", true},
+		{"give me a competitor analysis", true},
+		{"competitive landscape scan for MCP gateways", true},
+		{"market overview of internal developer platforms", true},
+		{"write a literature review on agent memory", true},
+		{"lit review on retrieval eval", true},
+		{"find out everything about Runlayer", true},
+		{"find out more about agentgateway", true},
+		{"fact-check these deck claims", true},
+		{"do due diligence on the vendor", true},
+		{"get some background on kcp", true},
+		{"gather sources for the pricing slide", true},
 		{"I was researching this earlier", false},
 		{"ask the researcher agent", false},
+		{"we researched it last week", false},
+		{"I am investigating the failing test", false},
+		{"look into the login bug", false},
+		{"find out why the build fails", false},
+		{"dive into the code", false},
+		{"reach out to the team", false},
+		{"search the docs", false},
 		{"fix the login bug", false},
 		{"", false},
 	}
@@ -223,5 +254,65 @@ func TestProjectAssistantMCPToolSpecAllowsAgentsRunTools(t *testing.T) {
 		if spec.Risk != tc.risk {
 			t.Fatalf("%s risk = %v, want %v", tc.name, spec.Risk, tc.risk)
 		}
+	}
+}
+
+func TestProjectAssistantResearchConversation(t *testing.T) {
+	req := researchCapabilityRequest(nil, projectAssistantCollaborationModeDefault, "fix the login button")
+	if got := projectAssistantResearchConversation(req, nil); len(got) != 1 || got[0].Content != "fix the login button" {
+		t.Fatalf("nil run state must fall back to the request conversation, got %#v", got)
+	}
+	state := newProjectEinoAssistantRunState()
+	if got := projectAssistantResearchConversation(req, state); len(got) != 1 || got[0].Content != "fix the login button" {
+		t.Fatalf("run state without model messages must fall back to the request conversation, got %#v", got)
+	}
+	state.RecordModelInput(req.Conversation)
+	state.RecordSteeringInput("do a deep research for https://faros.sh/docs/")
+	got := projectAssistantResearchConversation(req, state)
+	if latest := projectAssistantLatestUserMessage(got); latest != "do a deep research for https://faros.sh/docs/" {
+		t.Fatalf("steered user message must be the latest, got %q from %#v", latest, got)
+	}
+}
+
+// researchCapabilityDiscoveryPort federates the agents run tools on discovery
+// and answers list_agents, so a full tool-discovery pass can exercise the
+// research capability end to end.
+type researchCapabilityDiscoveryPort struct {
+	researchCapabilityFakePort
+}
+
+func (p *researchCapabilityDiscoveryPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+	return researchCapabilityAgentsTools(), false, nil
+}
+
+func TestProjectEinoAssistantRefreshToolDiscoveryActivatesResearchForSteeredMessage(t *testing.T) {
+	server := &Server{}
+	port := &researchCapabilityDiscoveryPort{researchCapabilityFakePort{listAgentsResult: `{"agents":[{"name":"researcher","phase":"Ready"}]}`}}
+	req := projectAssistantRunRequest{
+		ToolPort:          port,
+		CollaborationMode: projectAssistantCollaborationModeDefault,
+		TurnPolicy:        projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+		Conversation:      []chatMessage{{Role: "user", Content: "fix the login button"}},
+	}
+	state := newProjectEinoAssistantRunState()
+
+	first := projectEinoAssistantRefreshToolDiscovery(context.Background(), server, req, state)
+	if strings.Contains(first.Prompt, "Research delegation capability") {
+		t.Fatalf("start-of-run discovery must not activate research for %q: %q", req.Conversation[0].Content, first.Prompt)
+	}
+	if len(port.invoked) != 0 {
+		t.Fatalf("list_agents must not be called without the phrase, got %v", port.invoked)
+	}
+
+	// The user steers a research request into the running turn. The request
+	// conversation is frozen at run start; only the run state sees the message.
+	state.RecordModelInput(req.Conversation)
+	state.RecordSteeringInput("do a deep research for https://faros.sh/docs/")
+	second := projectEinoAssistantRefreshToolDiscovery(context.Background(), server, req, state)
+	if !strings.Contains(second.Prompt, "Research delegation capability") || !strings.Contains(second.Prompt, "researcher") {
+		t.Fatalf("steered research request must activate delegation, got prompt %q", second.Prompt)
+	}
+	if len(port.invoked) != 1 || port.invoked[0] != projectToolAgentsListAgents {
+		t.Fatalf("expected exactly one list_agents call on the steered refresh, got %v", port.invoked)
 	}
 }
