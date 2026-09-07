@@ -156,7 +156,7 @@ func projectEinoAssistantRefreshToolDiscovery(
 			browserCatalogCached = len(cachedBrowserTools) > 0
 		}
 	}
-	discovery := projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, cachedBrowserTools, browserCatalogCached)
+	discovery := projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, runState, cachedBrowserTools, browserCatalogCached)
 	if runState != nil {
 		runState.SetToolDiscovery(discovery)
 	}
@@ -164,13 +164,18 @@ func projectEinoAssistantRefreshToolDiscovery(
 }
 
 func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req projectAssistantRunRequest) projectEinoAssistantToolDiscovery {
-	return projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, nil, false)
+	return projectEinoAssistantDiscoverToolsWithBrowserCatalog(ctx, server, req, nil, nil, false)
 }
 
+// projectEinoAssistantDiscoverToolsWithBrowserCatalog assembles the turn's tool
+// catalog and prompt. runState may be nil (start-of-run discovery); when set,
+// its recorded model messages — which include user steering appended mid-run —
+// decide per-message capabilities such as research delegation.
 func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 	ctx context.Context,
 	server *Server,
 	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
 	cachedBrowserTools []projectAssistantTool,
 	browserCatalogCached bool,
 ) projectEinoAssistantToolDiscovery {
@@ -249,7 +254,7 @@ func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 	if browserErr != nil && includePreviewInspection {
 		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserErr)
 	}
-	if researchPrompt := projectAssistantResearchCapabilityPrompt(ctx, req, discovery.MCPTools); researchPrompt != "" {
+	if researchPrompt := projectAssistantResearchCapabilityPromptForConversation(ctx, req, projectAssistantResearchConversation(req, runState), discovery.MCPTools); researchPrompt != "" {
 		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + researchPrompt
 	}
 	return discovery
