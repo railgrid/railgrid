@@ -229,8 +229,8 @@ helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider:0.0
   --set githubOAuth.clientId=<oauth-app-client-id> \
   --set githubOAuth.clientSecretRef.name=code-github-oauth \
   --set githubOAuth.clientSecretRef.key=clientSecret \
-  --set githubOAuth.redirectURL=https://console.faros.sh/services/providers/code/oauth/github/callback \
-  --set githubOAuth.portalOrigin=https://console.faros.sh
+  --set githubOAuth.redirectURL=https://faros.example.com/services/providers/code/oauth/github/callback \
+  --set githubOAuth.portalOrigin=https://faros.example.com
 ```
 
 Notes:
@@ -246,7 +246,7 @@ Notes:
   container keep `backend.url` in sync with the release namespace automatically.
 - After install, verify the OAuth probe returns `{"enabled":true}`:
   ```sh
-  curl -s https://console.faros.sh/services/providers/code/oauth/github/config
+  curl -s https://faros.example.com/services/providers/code/oauth/github/config
   ```
 
 `values.yaml` documents the full surface — image, replicas, hub URL + token

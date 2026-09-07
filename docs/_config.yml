@@ -1,6 +1,6 @@
 # Site settings
 title: Faros Documentation
-description: Multi-tenant control plane for deploying and managing workloads across distributed edge sites
+description: An open-source control plane for platform teams
 baseurl: "/faros"
 url: "https://faroshq.github.io"
 

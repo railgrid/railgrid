@@ -17,7 +17,7 @@ Thanks for your interest in contributing! This document covers building from sou
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Go | 1.25+ | `go env GOVERSION` |
+| Go | 1.26+ | `go env GOVERSION`; `go.mod` pins the exact version |
 | Docker | any recent | must be running |
 | kind | latest | for local clusters |
 | kubectl | 1.28+ | |

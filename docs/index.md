@@ -2,109 +2,66 @@
 layout: default
 title: Home
 nav_order: 1
-description: "Faros - The ultimate home lab tool for managing distributed Kubernetes clusters"
+description: "faros: an open-source control plane for platform teams"
 permalink: /
 ---
 
-# Faros
+# faros
 {: .fs-9 }
 
-The ultimate home lab tool for managing distributed Kubernetes clusters.
+An open-source control plane for platform teams.
 {: .fs-6 .fw-300 }
 
-[Get Started]({% link getting-started.md %}){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
+[Get started]({% link getting-started.md %}){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [View on GitHub](https://github.com/faroshq/faros){: .btn .fs-5 .mb-4 .mb-md-0 }
 
 ---
 
-## Why Faros?
+## What faros is
 
-Managing multiple Kubernetes clusters across your home lab, remote locations, or edge sites is painful. You end up juggling kubeconfigs, SSH tunnels, VPNs, and port forwards. Faros solves this by providing a single control plane that connects all your clusters through secure reverse tunnels.
+Providers publish Kubernetes-style APIs, versioned actions and MCP tools into isolated tenant workspaces. Users, teams and organizations reach them through one portal, one CLI, one API and one MCP endpoint, and every call is authorized as the caller by the same RBAC. Edges extend the control plane to clusters and servers behind NAT through outbound tunnels.
 
-**Perfect for:**
+faros is alpha software at v0.1.x. There is no hosted service; you run the hub yourself.
 
-- **Home labs** — Manage k3s/k0s clusters on Raspberry Pis, NUCs, or old laptops from anywhere
-- **Remote sites** — Connect clusters behind NAT, firewalls, or without public IPs
-- **Edge deployments** — Deploy workloads to distributed locations with simple placement rules
-- **Small teams** — Multi-tenant workspaces with OIDC authentication
+## How it works
 
-## How It Works
+{% include excalidraw.html file="architecture.excalidraw" alt="faros architecture: hub with workspaces, providers registering with it, and edge agents connecting outward" %}
 
-{% include excalidraw.html file="architecture.excalidraw" alt="Faros architecture diagram showing agents connecting to hub via reverse tunnels" %}
+1. **Run a hub.** One Helm release runs everything; larger installs can split the control-plane store into shards.
+2. **Enable providers.** Each provider registers with the hub and serves its APIs, portal and MCP tools inside its own workspace. Tenants enable the ones they want.
+3. **Connect edges.** Install the agent on a cluster or server; it dials out to the hub and becomes reachable for `kubectl`, SSH and AI agents.
 
-1. **Deploy a Hub** — Run the Faros hub on any reachable server (cloud VM, VPS, or your main home server)
-2. **Connect Sites** — Install the agent on each cluster; it establishes outbound tunnels to the hub
-3. **Manage Everything** — Use the CLI to deploy workloads, check status, and manage all clusters from one place
-
-## Key Features
+## Key features
 
 | Feature | Description |
 |:--------|:------------|
-| **Reverse tunnels** | Agents connect outbound — no port forwarding, no VPN, no public IPs needed |
-| **Multi-tenant** | Built on [kcp](https://github.com/kcp-dev/kcp) for workspace isolation |
-| **Flexible auth** | OIDC via [Dex](https://github.com/dexidp/dex) or simple static tokens for personal use |
-| **Placement rules** | Deploy workloads to clusters matching labels (location, arch, resources) |
-| **Lightweight** | Works with k3s, k0s, kind, or full Kubernetes |
-| **Simple networking** | HTTP/1.1 + WebSockets — works with any proxy, load balancer, or tunnel |
-
-## Why HTTP/1.1?
-
-Faros intentionally uses HTTP/1.1 with WebSockets for all communication. While HTTP/2 or HTTP/3 offer some benefits, they create significant deployment complexity — especially for home labs and small setups.
-
-With HTTP/1.1:
-
-- **Works everywhere** — Compatible with nginx, Cloudflare, Caddy, HAProxy, and any reverse proxy
-- **Easy debugging** — Standard tools like `curl` and browser DevTools work out of the box
-- **No special configuration** — No need for gRPC passthrough, HTTP/2 termination, or ALPN setup
-- **Tunnel-friendly** — WebSockets work through Cloudflare Tunnel, ngrok, and similar services
-
-This design choice prioritizes ease of deployment over marginal performance gains. For home labs managing a handful of clusters, simplicity wins.
+| **Tenancy** | Organizations, teams and users each get an isolated workspace, with first-party membership and roles |
+| **Providers** | Helm-installed extensions: APIs, controllers, a portal micro-frontend, MCP tools and actions; organizations can run their own |
+| **Actions and MCP** | Versioned verbs on resources and one MCP endpoint per workspace, every call authorized as the caller |
+| **Edges** | Outbound agent tunnels for clusters and Linux servers; `kubectl`, SSH and service proxying through the hub |
+| **Auth** | Any OIDC provider, or a static token for a single user |
+| **Plain networking** | HTTP/1.1 and WebSockets only, so any reverse proxy, ingress or tunnel in front of the hub works, and `curl` still debugs it |
 
 ## Components
 
 | Component | Description |
 |:----------|:------------|
-| **Hub** (`faros-hub`) | Central control plane — hosts the API, authentication, tunnel endpoints, and scheduling |
-| **Agent** (`faros-agent`) | Runs on each site — establishes tunnels, reports status, reconciles workloads |
-| **CLI** (`faros`) | User tool — login, register sites, deploy workloads |
-
-## Resources
-
-| Resource | Scope | Description |
-|:---------|:------|:------------|
-| `Site` | Cluster | A connected Kubernetes cluster |
-| `VirtualWorkload` | Namespace | Workload definition with placement rules |
-| `Placement` | Namespace | Binding of a workload to a specific site |
-
----
+| **Hub** (`faros-hub`) | The control plane: authentication, tenancy, provider registry, proxies and the MCP aggregate |
+| **Providers** | Out-of-process extensions installed by Helm; see the [repository](https://github.com/faroshq/faros/tree/main/providers) |
+| **Agent** (`faros agent`) | The CLI's agent mode, packaged as the agent image and chart; runs on each edge, establishes the tunnel and serves `kubectl`, SSH and service proxying |
+| **CLI** (`faros`) | Log in, pick a workspace, manage edges, print MCP endpoints, run a local environment |
 
 ## Documentation
 
 | Guide | Description |
 |:------|:------------|
-| [Getting Started]({% link getting-started.md %}) | Set up your first hub and connect a site |
-| [Security]({% link security.md %}) | Authentication options — static tokens and OIDC |
-| [Ingress]({% link ingress/index.md %}) | Expose the hub publicly for remote access |
-| [Helm Deployment]({% link helm.md %}) | Production deployment with Helm charts |
+| [Getting started]({% link getting-started.md %}) | Run a local hub, connect a cluster, hand a workspace to an AI agent |
+| [Helm deployment]({% link helm.md %}) | Production deployment, including the provider hardening values |
+| [Single hub]({% link install-embedded-kcp.md %}) | One release behind Gateway API, control-plane store included |
+| [Multi-shard]({% link install-external-kcp.md %}) | The control-plane store split into shards for larger installs |
+| [Security]({% link security.md %}) | Static tokens, OIDC, and what the hub does with provider and agent credentials |
+| [Ingress]({% link ingress/index.md %}) | Expose the hub through nginx, Gateway API or Cloudflare Tunnel |
+| [MCP architecture]({% link mcp-architecture.md %}) | How tools from providers and edges become one endpoint |
+| [Developer guide]({% link developers.md %}) | The local kind environment and provider development |
 
----
-
-## Quick Start
-
-```bash
-# Clone and build
-git clone https://github.com/faroshq/faros.git
-cd faros
-make build
-
-# Run the full dev stack locally
-make dev
-
-# In another terminal
-make dev-login           # Authenticate
-make dev-edge-create     # Register an edge
-make dev-run-edge       # Start the edge agent
-make dev-create-workload # Deploy a sample workload
-```
-
-See the [Getting Started guide]({% link getting-started.md %}) for the full walkthrough.
+Under the hood, workspaces are served by [kcp](https://github.com/kcp-dev/kcp); the [developer guide]({% link developers.md %}) covers what that means for operators and provider authors. Design documents live in the repository: [providers](https://github.com/faroshq/faros/blob/main/docs/providers.md), [organizations](https://github.com/faroshq/faros/blob/main/docs/organizations.md), [provider actions](https://github.com/faroshq/faros/blob/main/docs/provider-actions.md), [BYO providers](https://github.com/faroshq/faros/blob/main/docs/byo-providers.md).

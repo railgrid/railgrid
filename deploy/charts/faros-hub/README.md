@@ -1,6 +1,6 @@
 # faros-hub Helm Chart
 
-Deploys the faros hub — the central control plane for managing distributed edge clusters and servers.
+Deploys the faros hub: the control plane that hosts workspaces, authentication, the provider registry, the proxies to providers and edges, and the per-workspace MCP endpoint.
 
 ## Quick Install
 

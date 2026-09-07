@@ -41,8 +41,9 @@ import (
 	cliauth "github.com/faroshq/faros/pkg/cli/auth"
 )
 
-// DefaultHubURL is the hosted faros hub used when --hub-url is not specified.
-const DefaultHubURL = "https://console.faros.sh"
+// hubURLEnv names the environment variable consulted when --hub-url is not
+// given. There is no hosted faros hub, so there is no built-in default.
+const hubURLEnv = "FAROS_HUB_URL"
 
 func newLoginCommand() *cobra.Command {
 	var (
@@ -57,8 +58,10 @@ func newLoginCommand() *cobra.Command {
 		Short: "Authenticate with the faros hub via OIDC or static token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hubURL == "" {
-				hubURL = DefaultHubURL
-				fmt.Printf("Using default hub: %s (override with --hub-url)\n", hubURL)
+				hubURL = strings.TrimSpace(os.Getenv(hubURLEnv))
+			}
+			if hubURL == "" {
+				return fmt.Errorf("no hub configured: pass --hub-url https://<your-hub> or set %s", hubURLEnv)
 			}
 			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
@@ -94,7 +97,7 @@ func newLoginCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (defaults to "+DefaultHubURL+")")
+	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (or set "+hubURLEnv+")")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification")
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "After login, interactively pick the organization and workspace")

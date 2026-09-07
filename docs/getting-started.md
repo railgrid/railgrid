@@ -2,13 +2,13 @@
 layout: default
 title: Getting Started
 nav_order: 2
-description: "Set up your first Faros hub and connect an edge"
+description: "Run a local faros hub, connect a cluster, and hand a workspace to an AI agent"
 ---
 
 # Getting Started
 {: .no_toc }
 
-Set up Faros and connect your first cluster in minutes.
+Run a local hub, connect a cluster, and hand a workspace to an AI agent.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,235 +21,120 @@ Set up Faros and connect your first cluster in minutes.
 
 ## Overview
 
-This guide walks you through:
-
-1. Running the hub locally (development mode)
-2. Connecting an edge (k3s, k0s, kind, or any Kubernetes cluster)
-3. Deploying your first workload
-
-For production deployments, see [Helm Deployment]({% link helm.md %}) after completing this guide.
-
----
+This guide uses the CLI's built-in local environment: a kind cluster running the hub, and optionally a second kind cluster that joins it as an edge. Nothing here is exposed to the internet. For a real install, follow [Helm deployment]({% link helm.md %}) instead; the CLI steps from section 3 onward are the same.
 
 ## Prerequisites
 
-| Tool | Description |
-|:-----|:------------|
-| [Go 1.25+](https://go.dev/doc/install) | Required to build from source |
-| [Docker](https://docs.docker.com/get-docker/) | Container runtime |
-| [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | Local Kubernetes cluster (for dev mode) |
-| [kubectl](https://kubernetes.io/docs/tasks/tools/) | Kubernetes CLI |
+| Tool | Notes |
+|:-----|:------|
+| [Docker](https://docs.docker.com/get-docker/) | Runs the kind clusters |
+| [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | Local Kubernetes |
+| [kubectl](https://kubernetes.io/docs/tasks/tools/) | Talks to the clusters |
+| [Helm](https://helm.sh/docs/intro/install/) 3 | Installs the hub and agent charts |
+| `faros` CLI | A binary from the [releases page](https://github.com/faroshq/faros/releases), or `go install github.com/faroshq/faros/cmd/faros@latest` with Go 1.26+ |
 
----
-
-## Step 1: Build from Source
-
-Clone the repository and build all binaries:
+## Step 1: Create a local hub
 
 ```bash
-git clone https://github.com/faroshq/faros.git
-cd faros
-make build
+faros dev init --worker-count 1
 ```
 
-This builds three binaries in `bin/`:
+This creates two kind clusters on a shared Docker network: `faros-hub`, which runs the hub from the published Helm chart with a self-signed certificate, and `faros-agent`, a plain cluster you will connect as an edge. Leave `--worker-count` off for a hub-only environment. Use `--chart-path deploy/charts/faros-hub` to run the chart from a checkout.
 
-| Binary | Description |
-|:-------|:------------|
-| `faros-hub` | The central control plane server |
-| `faros-agent` | The agent that runs on each edge |
-| `faros` | The CLI for users |
+When it finishes, the command prints the remaining steps with the exact names it used. They are the ones below.
 
----
+The local hub runs in development mode with a static token, `dev-token`. That is fine on a laptop and nowhere else.
 
-## Step 2: Run the Development Stack
+## Step 2: Log in and pick a workspace
 
-The fastest way to try Faros is using the development mode, which runs the full stack locally:
+The hub answers on `https://faros.localhost:9443`. Add the name to `/etc/hosts` once, then log in:
 
 ```bash
-make dev
+echo '127.0.0.1 faros.localhost' | sudo tee -a /etc/hosts
+faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token dev-token
+faros use
 ```
 
-This starts:
+`faros use` lists your organizations and workspaces and makes one active. A static-token user gets a personal organization on first login.
 
-- **kcp** — Multi-tenant API server
-- **Dex** — OIDC identity provider
-- **Hub** — Faros control plane
-- **kind cluster** — A local Kubernetes cluster for the agent
+## Step 3: Connect the worker cluster as an edge
 
-{: .note }
-The dev stack uses hot-reload, so code changes are automatically picked up.
-
-Wait until you see the hub is ready:
-
-```
-faros-hub: listening on :9443
-```
-
----
-
-## Step 3: Log In
-
-Open a new terminal and authenticate:
+Register the edge, then hand its credentials to the agent in the worker cluster. `faros dev init` wrote one kubeconfig per kind cluster into the current directory: `faros-hub.kubeconfig` and `faros-agent.kubeconfig`.
 
 ```bash
-make dev-login
+export KUBECONFIG=faros-hub.kubeconfig
+faros edge create local --labels env=dev
+
+# the hub mints a kubeconfig for the edge; extract it
+kubectl get secret -n faros-system edge-local-kubeconfig \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig
+
+# hand it to the worker cluster and install the agent there
+kubectl --kubeconfig faros-agent.kubeconfig create namespace faros-agent
+kubectl --kubeconfig faros-agent.kubeconfig -n faros-agent create secret generic edge-kubeconfig \
+  --from-file=kubeconfig=edge-kubeconfig
+
+HUB_IP=$(docker inspect faros-hub-control-plane \
+  -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \
+  --kubeconfig faros-agent.kubeconfig -n faros-agent \
+  --set agent.edgeName=local \
+  --set agent.hub.existingSecret=edge-kubeconfig \
+  --set agent.hub.url=https://$HUB_IP:31443 \
+  --set agent.hub.insecureSkipTLSVerify=true
 ```
 
-This opens a browser for OIDC login. Use the development credentials:
-
-- **Email:** `admin@example.com`
-- **Password:** `password`
-
-After login, your kubeconfig is configured with a `faros` context.
-
----
-
-## Step 4: Register an Edge
-
-Create a new edge registration:
+The hub address override is needed because `faros.localhost` resolves only on your machine; inside the Docker network the hub is its kind node's address on NodePort 31443. When the agent connects:
 
 ```bash
-make dev-edge-create
+faros edge list                              # local shows Ready
+faros kubeconfig edge local > local.yaml
+kubectl --kubeconfig local.yaml get nodes    # reaches the worker through the hub
 ```
 
-This creates an `Edge` resource in the hub. You can view it:
+The kubeconfig points at the hub, which proxies to the edge and authorizes each request as you in the workspace. Against a real hub the same registration is one command: `faros edge join-command <name>` prints a Helm install that carries a one-time token.
+
+## Step 4: Hand the workspace to an AI agent
 
 ```bash
-kubectl --context=faros get edges
+faros mcp url --name default
 ```
 
----
+The command prints the workspace's MCP endpoint and configuration snippets for Claude Code and Claude Desktop. Add it, then ask the assistant to list nodes on `local`. Tools from every enabled provider appear on the same endpoint, and every call runs under your identity and RBAC.
 
-## Step 5: Start the Agent
+## Step 5: Enable a provider
 
-Start the agent on the local kind cluster:
+Providers are Helm releases that register with the hub. The [quickstart provider](https://github.com/faroshq/faros/tree/main/providers/quickstart) is the smallest one and a good first install; the [developer guide]({% link developers.md %}) covers installing it into the local environment and writing your own. Once a provider is registered, enable it for the workspace in the portal at `https://localhost:9443` and its APIs and tools appear.
+
+## Step 6: Clean up
 
 ```bash
-make dev-run-edge
+faros dev delete --worker-count 1
 ```
-
-The agent:
-
-1. Connects to the hub via a reverse tunnel
-2. Reports the edge status
-3. Watches for workloads to deploy
-
-Check that the edge shows as connected:
-
-```bash
-kubectl --context=faros get edges
-```
-
-The `READY` column should show `True`.
-
----
-
-## Step 6: Deploy a Workload
-
-Deploy a sample workload:
-
-```bash
-make dev-create-workload
-```
-
-This creates a `VirtualWorkload` resource. The hub schedules it to available sites, creating `Placement` resources:
-
-```bash
-# View the workload
-kubectl --context=faros get virtualworkloads
-
-# View the placement (binding to an edge)
-kubectl --context=faros get placements
-```
-
-The agent picks up the placement and reconciles the actual workload on the kind cluster:
-
-```bash
-kubectl --context=kind-faros-dev get pods
-```
-
----
-
-## What Just Happened?
-
-{% include excalidraw.html file="getting-started-flow.excalidraw" alt="Getting started flow showing workload deployment from hub to agent" %}
-
----
-
-## Connecting Your Own Cluster
-
-To connect a real cluster (k3s, k0s, etc.) instead of the dev kind cluster:
-
-### 1. Create an edge registration
-
-```bash
-faros edge create my-home-server
-```
-
-This outputs a bootstrap token.
-
-### 2. Run the agent
-
-On the target cluster, run the agent with the bootstrap token:
-
-```bash
-faros-agent \
-  --hub-url https://your-hub-url:9443 \
-  --bootstrap-token <token> \
-  --edge-name my-home-server
-```
-
-Or deploy via Helm (see agent chart documentation).
-
-### 3. Verify connection
-
-```bash
-kubectl --context=faros get edges
-```
-
----
-
-## Next Steps
-
-| Guide | Description |
-|:------|:------------|
-| [Security]({% link security.md %}) | Configure authentication — static tokens for personal use, OIDC for teams |
-| [Ingress]({% link ingress/index.md %}) | Expose the hub publicly so remote agents can connect |
-| [Helm Deployment]({% link helm.md %}) | Deploy the hub to a real Kubernetes cluster |
-
----
 
 ## Troubleshooting
 
-### Agent can't connect to hub
+### The edge never becomes Ready
 
-- Check that the hub is reachable from the agent
-- For local dev, both run on the same machine so `localhost` works
-- For remote agents, see [Ingress]({% link ingress/index.md %}) to expose the hub
-
-### Login fails
-
-- Check Dex is running: look for "dex: listening on :5556" in the dev output
-- Check the browser console for OIDC errors
-
-### Workload not deploying
+Check the agent's logs on the worker cluster:
 
 ```bash
-# Check edge status
-kubectl --context=faros describe edge <edge-name>
-
-# Check agent logs
-# (in dev mode, look at the terminal running make dev-run-edge)
-
-# Check placement status
-kubectl --context=faros describe placement <placement-name>
+kubectl --kubeconfig faros-agent.kubeconfig -n faros-agent logs deploy/faros-agent
 ```
 
-### View hub logs
+A certificate error means `agent.hub.insecureSkipTLSVerify` was not set for the self-signed local hub. A connection refused or timeout means `agent.hub.url` is not the hub node's Docker-network address, or the two kind clusters are not on the same network; recreate with `faros dev init`.
 
-In dev mode, logs are printed to the terminal. For Helm deployments:
+### `faros login` says OIDC is not configured
 
-```bash
-kubectl -n faros-system logs -l app.kubernetes.io/name=faros-hub -c hub
-```
+The local hub uses a static token. Pass `--token dev-token`.
+
+### Port 9443 is already in use
+
+Delete any previous environment with `faros dev delete`, or stop whatever is bound to the port, then run `faros dev init` again.
+
+## Next steps
+
+- [Helm deployment]({% link helm.md %}): a real hub with TLS, OIDC and ingress
+- [Security]({% link security.md %}): authentication options and the provider hardening values
+- [MCP architecture]({% link mcp-architecture.md %}): how the endpoint is assembled
+- [Developer guide]({% link developers.md %}): building providers

@@ -25,10 +25,10 @@ Faros supports two authentication methods:
 
 | Method | Use Case | Complexity |
 |:-------|:---------|:-----------|
-| **Static Token** | Personal home labs, development, CI/CD | Simple |
+| **Static Token** | Single user, development, CI | Simple |
 | **OIDC (Dex)** | Teams, production, audit requirements | More setup |
 
-For a single-user home lab, static tokens are the easiest option. For teams or when you need proper user management, use OIDC.
+For a single user or a development hub, static tokens are the easiest option. For teams, or whenever you need per-user identity and audit, use OIDC. Provider and agent credentials, and the hardening values that govern them, are covered in [Helm deployment]({% link helm.md %}).
 
 ---
 
@@ -38,7 +38,7 @@ Static tokens are the simplest way to secure your hub. A pre-shared token grants
 
 ### When to Use
 
-- Personal home lab with a single user
+- A single-user hub
 - Development and testing
 - CI/CD pipelines
 - Quick deployments without OIDC infrastructure

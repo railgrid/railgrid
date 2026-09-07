@@ -1,171 +1,180 @@
 # faros
 
-faros connects your distributed Kubernetes clusters and servers through a single control plane — no VPNs, no open firewall ports, no kubeconfig juggling. Agents running on each edge establish outbound reverse tunnels to the hub, so clusters behind NAT, home-lab Raspberry Pis, and bare-metal machines in remote sites all become reachable through one authenticated endpoint.
+faros is an open-source control plane for platform teams.
 
-## Features
+Providers publish Kubernetes-style APIs, versioned actions and MCP tools into isolated tenant workspaces. Users, teams and organizations reach them through one portal, one CLI, one API and one MCP endpoint, and every call is authorized as the caller by the same RBAC. Edges extend the control plane to clusters and servers behind NAT through outbound tunnels, so the same workspace that holds an application also reaches the cluster it runs on.
 
-- **Reverse tunnel connectivity** — agents dial out; no inbound firewall rules needed
-- **Kubernetes edge support** — proxy `kubectl` to any registered cluster via the hub
-- **SSH server mode** — manage non-Kubernetes hosts (VMs, bare metal) through the same hub
-- **MCP integration** — expose all connected clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) server for AI agents (Claude, Cursor, etc.)
-- **OIDC authentication** — plug in any OIDC provider (Dex, Auth0, Okta, …)
-- **Static token auth** — quick setup for home labs and dev environments
-- **Multi-tenant workspaces** — per-user/team kcp workspace isolation
-- **CLI-first** — register edges, get kubeconfigs, and SSH into servers with one command
+> **Status: alpha.** faros is at v0.1.x, every API is `v1alpha1`, and it is developed by a small team. There is no hosted service; you run the hub yourself. Expect breaking changes between minor versions until the APIs stabilize.
 
-## Architecture
+## What faros gives you
+
+- **Tenancy.** Organizations, teams and users each get an isolated workspace with its own API surface. Membership and roles are first-party APIs. Authenticate with any OIDC provider or, for a single user, a static token.
+- **Providers.** Helm-installed extensions that bring an APIExport, controllers, a backend, a portal micro-frontend, MCP tools and actions. Tenants enable a provider in a workspace and get its APIs bound there. Organizations can also register providers they run themselves, reached over an edge ([BYO providers](docs/byo-providers.md)).
+- **Provider actions.** Versioned verbs on resources, granted through the workspace's RBAC, callable by people and by agents ([design](docs/provider-actions.md)).
+- **One MCP endpoint per workspace.** Tools from every enabled provider and every connected edge, aggregated into one Model Context Protocol server. Each tool call runs as the calling user ([architecture](docs/mcp-architecture.md)).
+- **Edges.** Kubernetes clusters and Linux servers join through an agent that dials out. The hub proxies `kubectl`, SSH and selected in-cluster services to them.
+- **A portal.** One web UI that hosts each provider's micro-frontend under the tenant's identity.
+
+## Providers in this repository
+
+| Provider | What it does |
+|---|---|
+| [edges](providers/edges) | Connectivity: `KubernetesCluster` and `LinuxServer` edges, the agent tunnel, `Service` connectors, per-edge MCP |
+| [infrastructure](providers/infrastructure) | Brokers [kro](https://github.com/kro-run/kro) application templates into tenant workspaces and runs them on a runtime cluster |
+| [app-studio](providers/app-studio) | Persistent AI project workspaces with a chat assistant, sandboxed development instances and publishing, on the tenant's own model credentials |
+| [agents](providers/agents) | Long-running personal agents with scheduled runs, tool use, approvals, budgets and memory, reachable from Slack, Telegram, Discord and email |
+| [code](providers/code) | Source repositories, deploy keys and collaborators as workspace resources, on GitHub today |
+| [databricks](providers/databricks) | Databricks connections, warehouses and tables as workspace resources, with a `query_table` action |
+| [kuery](providers/kuery) | Fleet-wide object search and relationship traversal across a workspace's connected clusters |
+| [quickstart](providers/quickstart) | A minimal reference provider that exercises the whole plugin surface |
+
+Provider directories are mirrored read-only to `faroshq/provider-*` repositories. Open changes here.
+
+## How it fits together
 
 ```
-   [ your laptop ]
-        │  faros CLI
-        ▼
-   ┌─────────────┐
-   │  faros hub  │  ◄── central control plane (Kubernetes + kcp + OIDC)
-   └──────┬──────┘
-          │  reverse tunnels (outbound from agents)
-    ┌─────┴──────────────────┐
-    │                        │
-┌───▼────┐             ┌─────▼──────┐
-│ agent  │             │   agent    │
-│ (k8s)  │             │  (server)  │
-│cluster │             │  bare metal│
-└────────┘             └────────────┘
+                 people · CLI · portal · AI agents (MCP)
+                                 │
+                        ┌────────▼────────┐
+                        │    faros hub    │   workspaces, OIDC, RBAC,
+                        │                 │   provider registry, proxies
+                        └──┬─────┬─────┬──┘
+           provider APIs   │     │     │   outbound tunnels
+      ┌────────────────────┘     │     └────────────────────┐
+┌─────▼──────┐          ┌────────▼───────┐           ┌──────▼──────┐
+│  platform  │          │   org-owned    │           │    edges    │
+│  providers │          │   providers    │           │ clusters &  │
+│ (in-cluster│          │ (your cluster, │           │   servers   │
+│  with hub) │          │  over an edge) │           │ behind NAT  │
+└────────────┘          └────────────────┘           └─────────────┘
 ```
 
-The hub is the only component that needs to be publicly reachable. Agents connect outward — NAT and firewalls are not a problem.
+The hub is the only component that needs to be reachable. Providers register with the hub and serve their APIs inside their own workspace; agents on edges connect outward. Traffic between the hub and everything else is HTTP/1.1 and WebSockets, so any reverse proxy, ingress or tunnel in front of the hub works.
 
-## Installation
+## Install
 
 ### Hub
 
-The hub is the only component that needs a public endpoint. Any device you're comfortable exposing works — a VPS, cloud VM, home server, or anything behind a Cloudflare Tunnel or ingress controller.
+```bash
+helm install faros-hub oci://ghcr.io/faroshq/charts/faros-hub \
+  --namespace faros --create-namespace \
+  --set hub.hubExternalURL=https://faros.example.com
+```
 
-→ **[Installation](https://faroshq.github.io/faros/helm.html)**
+That is a complete single hub; its control-plane store runs inside the same release. For TLS, OIDC, ingress and the provider hardening flags, see [Helm deployment](https://faroshq.github.io/faros/helm.html). Larger installs can run the control-plane store as separate shards: [single hub](https://faroshq.github.io/faros/install-embedded-kcp.html), [multi-shard](https://faroshq.github.io/faros/install-external-kcp.html).
+
+To try faros on a laptop, the CLI can create a local hub in a kind cluster:
+
+```bash
+faros dev init
+```
 
 ### CLI
 
-Install the `faros` CLI on any machine you want to interact with the hub from:
-
-**Binary (recommended)** — download from the [releases page](https://github.com/faroshq/faros/releases) and put the binary in your `$PATH`.
-
-**krew:**
+Download a binary from the [releases page](https://github.com/faroshq/faros/releases), or:
 
 ```bash
+# krew
 kubectl krew index add faros https://github.com/faroshq/krew-index.git
 kubectl krew install faros/faros
-```
 
-**From source:**
-
-```bash
+# from source
 go install github.com/faroshq/faros/cmd/faros@latest
 ```
 
 ## Quickstart
 
-### 1. Log in
-
-`--hub-url` defaults to `https://console.faros.sh`, the hosted hub. Pass your own to use a self-hosted hub.
+### 1. Log in and pick a workspace
 
 ```bash
-# Hosted hub
-faros login
-
-# Self-hosted hub
-faros login --hub-url https://faros.example.com
+faros login --hub-url https://faros.example.com          # OIDC in the browser
+faros login --hub-url https://faros.example.com --token <static-token>
+faros use                                                 # choose organization and workspace
 ```
 
-### 2. Connect a Kubernetes cluster
+`--hub-url` can also come from `FAROS_HUB_URL`.
+
+### 2. Connect a cluster
 
 ```bash
-# Register the edge on the hub
 faros edge create my-cluster --type kubernetes
-
-# Print the agent install command (includes the one-time join token)
-faros edge join-command my-cluster
+faros edge join-command my-cluster        # prints the agent install command with a one-time token
 ```
 
-Copy the printed command and run it on the target cluster. Once the agent connects:
+Run the printed command on the target cluster. Then:
 
 ```bash
-faros edge list                                # should show my-cluster as Ready
-faros kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
+faros edge list
+faros kubeconfig edge my-cluster > kc.yaml
 kubectl --kubeconfig kc.yaml get nodes
 ```
 
-### 3. Use MCP with AI agents (Claude, Cursor, …)
-
-faros exposes all your connected Kubernetes clusters as a single MCP server, letting AI coding assistants interact with your clusters directly.
-
-```bash
-# Print the MCP endpoint URL + ready-to-use setup commands
-faros mcp url --name default
-```
-
-Example output:
-```
-https://hub.example.com/services/mcp/root:faros:user-default/apis/faros.sh/v1alpha1/kubernetesmcps/default/mcp
-
-To add this MCP server to Claude Code:
-  claude mcp add --transport http faros "https://hub.example.com/..." -H "Authorization: Bearer <token>"
-
-To add to Claude Desktop (claude_desktop_config.json):
-  {
-    "mcpServers": {
-      "faros": {
-        "url": "https://hub.example.com/...",
-        "headers": { "Authorization": "Bearer <token>" }
-      }
-    }
-  }
-```
-
-The MCP server aggregates **all connected kubernetes-type clusters** into one endpoint. AI agents can list pods, describe deployments, apply manifests, and more — across all your clusters at once.
-
-### 4. Connect a server (SSH mode)
+### 3. Connect a server
 
 ```bash
 faros edge create my-server --type server
 faros edge join-command my-server
+faros ssh my-server -- uptime
 ```
 
-Run the printed command on the target host, then:
+### 4. Give an AI agent your workspace
 
 ```bash
-faros ssh my-server              # interactive shell
-faros ssh my-server -- df -h     # single command
+faros mcp url --name default
 ```
 
-## CLI Reference
+This prints the workspace's MCP endpoint and ready-to-paste configuration for Claude Code and Claude Desktop. The endpoint carries the tools of every enabled provider and every connected edge, and each call is authorized as you.
 
-| Command | Description |
+## Security
+
+The hub authenticates users with OIDC or a static token, and providers with their own workspace service-account token. Org-owned providers never see a user's bearer: they receive a short-lived, workspace-bound delegated token. Agents refuse to proxy to link-local and metadata addresses and can be locked to an allow-list. Webhooks into the agents provider are signature-checked. Details are in [Security](https://faroshq.github.io/faros/security.html).
+
+Some hardened behaviours ship off by default for one release so existing installs can roll forward; the Helm doc's section "Turning on the hardened defaults early" lists the values that turn them on.
+
+To report a vulnerability, open a private security advisory on this repository rather than a public issue.
+
+## CLI reference
+
+| Command | What it does |
 |---|---|
-| `faros login` | Authenticate with the hub (OIDC or static token) |
-| `faros edge create <name>` | Register a new edge |
-| `faros edge join-command <name>` | Print the agent run command with join token |
-| `faros edge list` | List all edges and their connection status |
-| `faros edge get <name>` | Show details for a specific edge |
-| `faros edge delete <name>` | Remove an edge |
-| `faros kubeconfig edge <name>` | Generate a kubeconfig for a Kubernetes-type edge |
-| `faros ssh <name>` | Open an SSH session to a server-mode edge |
-| `faros ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
-| `faros agent run` | Start the agent as a foreground process |
-| `faros agent join` | Install the agent as a persistent service (systemd / Deployment) |
-| `faros mcp url --name <name>` | Print the Kubernetes multi-cluster MCP endpoint URL |
-| `faros mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
+| `faros login` | Authenticate with a hub via OIDC or static token |
+| `faros use` | Switch the active organization and workspace |
+| `faros edge create\|list\|get\|delete <name>` | Manage edges |
+| `faros edge join-command <name>` | Print the agent join command for an edge |
+| `faros edge upgrade <name>` | Print upgrade instructions for an edge agent |
+| `faros kubeconfig edge <name>` | Generate a kubeconfig that reaches an edge through the hub |
+| `faros ssh <name> [-- cmd]` | Open a shell or run a command on a server edge |
+| `faros mcp url --name <name>` / `--edge <name>` | Print the workspace or per-edge MCP endpoint |
+| `faros get`, `faros apply` | Read and apply workspace resources |
+| `faros agent join\|run\|install\|uninstall\|upgrade` | Run or install the agent on a cluster or host |
+| `faros dev init\|update\|delete` | Manage a local kind-based environment |
+| `faros get-token` | OIDC token for a kubectl exec credential plugin |
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `cmd/` | `faros` CLI (which also runs the agent through `faros agent`), `faros-hub`, the GraphQL gateway, and the release helper |
+| `pkg/hub` | Hub: control-plane bootstrap, tenancy, provider registry, proxies, MCP aggregation |
+| `pkg/agent` | Edge agent and tunnel |
+| `providers/` | The providers listed above, each its own Go module |
+| `deploy/charts` | Helm charts for the hub and the agent |
+| `docs/` | Published docs and design documents |
 
 ## Documentation
 
-- [Getting Started](https://faroshq.github.io/faros/getting-started.html)
-- [Helm Deployment](https://faroshq.github.io/faros/helm.html)
-- [Security & Auth](https://faroshq.github.io/faros/security.html)
-- [Ingress Setup](https://faroshq.github.io/faros/ingress/)
-- [Developer Guide](https://faroshq.github.io/faros/developers.html)
+Published: [Getting started](https://faroshq.github.io/faros/getting-started.html) · [Helm deployment](https://faroshq.github.io/faros/helm.html) · [Security](https://faroshq.github.io/faros/security.html) · [Ingress](https://faroshq.github.io/faros/ingress/) · [MCP architecture](https://faroshq.github.io/faros/mcp-architecture.html) · [Developer guide](https://faroshq.github.io/faros/developers.html)
+
+Design documents in this repository: [providers](docs/providers.md), [organizations and the workspace tree](docs/organizations.md), [provider scoping](docs/provider-scoping.md), [provider actions](docs/provider-actions.md), [BYO providers](docs/byo-providers.md), [MCP architecture](docs/mcp-architecture.md).
+
+## Under the hood
+
+Workspaces are served by [kcp](https://github.com/kcp-dev/kcp), which gives every tenant a Kubernetes-style API server without a cluster per tenant; providers publish their APIs into it and tenants bind them. You meet this as an operator when you size and back up the hub, and as a provider author when you write one. Users see the portal, the CLI, the API and MCP.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build setup, running tests, and PR guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, running the local stack, tests and the pull-request workflow.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+Apache 2.0. See [LICENSE](LICENSE).
