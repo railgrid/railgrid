@@ -247,6 +247,15 @@ retained historical proposal in
 
 ### Provider Actions
 
+Authenticated workload callers can read `GET /api/providers` to validate action
+grants against the live catalog. The hub verifies their bearer online with the
+workload audience in the selected tenant workspace and checks the backing
+ServiceAccount. Delegated user identities also require the hub's signed proof.
+Catalog visibility is scoped to the verified organization; this read does not
+grant a membership role, mutation access, or bypass action authorization.
+Anonymous callers remain rejected, and human catalog discovery retains its
+optional-organization behavior.
+
 Provider Actions extends the isolation boundary with catalog-declared,
 versioned capabilities served on the provider's **embedded virtual
 workspace** — the same resource-addressed data-plane shape as the

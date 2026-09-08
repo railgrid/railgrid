@@ -383,7 +383,10 @@ test:
 test-util:
 	go test ./pkg/util/...
 
-.PHONY: test-app-studio-mcp-access lint-app-studio-mcp-access
+.PHONY: test-provider-catalog-auth test-app-studio-mcp-access lint-app-studio-mcp-access
+test-provider-catalog-auth: ## Verify tenant-scoped workload catalog authentication
+	go test -count=1 ./pkg/hub -run 'TestProviderCatalog|TestKCPTenantResolver'
+	go test -count=1 ./pkg/hub/tenant ./pkg/hub/providers ./pkg/hub/serviceaccounts
 test-app-studio-mcp-access: ## Verify MCP workload authorization and App Studio identity provisioning
 	go test -count=1 ./pkg/hub/mcpaggregate
 	cd providers/app-studio && go test -count=1 ./controller/project ./hubmcp

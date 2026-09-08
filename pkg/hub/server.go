@@ -730,12 +730,14 @@ func (s *Server) Run(ctx context.Context) error {
 			// endpoint with their own bearer, gated on tenant membership.
 			mcpVerifier.SetUserIdentity(kcpProxy.IdentifyUser, membershipLookup.GetUserMembershipIndex)
 
-			// GET /api/providers: authenticated, Org optional. The catalog
+			// GET /api/providers: human callers have optional Org selection.
+			// Workload callers require online verification in a concrete tenant
+			// (middleware installed below after the proof keys are available).
+			// The catalog
 			// describes what this deployment runs, so it is not enumerable
 			// anonymously; the Org is optional because the portal fetches it
 			// before one is selected, and an Org only takes effect once the
 			// caller's membership in it is verified.
-			providerListHandler.SetMiddleware(tenant.OptionalOrgMiddleware(userResolver, membershipLookup))
 
 			// Wire the backend-proxy tenant resolver. With this in place
 			// every authenticated request to /services/providers/{name}/*
@@ -756,6 +758,11 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating delegated-identity proof key source: %w", err)
 			}
+			catalogWorkloads := &kcpTenantResolver{workloadConfig: bootstrapper, proofKeys: delegatedProofKeys}
+			providerListHandler.SetMiddleware(providerCatalogMiddleware(
+				tenant.OptionalOrgMiddleware(userResolver, membershipLookup),
+				catalogWorkloads.resolveWorkloadServiceAccount,
+			))
 			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys))
 			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
