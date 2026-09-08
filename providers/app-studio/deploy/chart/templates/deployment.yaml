@@ -205,9 +205,17 @@ spec:
             - name: APP_STUDIO_ATTACHMENT_DRAFT_RETENTION
               value: {{ .Values.store.attachmentDraftRetention | quote }}
             {{- end }}
-            {{- if ne (toString .Values.store.attachmentWorkspaceQuotaBytes) "" }}
+            {{- /* Helm decodes bare YAML integers as float64, so a byte count such
+                 as 1073741824 would render as "1.073741824e+09" and the provider
+                 refuses to start. Integers are rendered as plain digits; strings
+                 such as "1Gi" pass through untouched. */}}
+            {{- $attachmentQuota := .Values.store.attachmentWorkspaceQuotaBytes }}
+            {{- if or (kindIs "float64" $attachmentQuota) (kindIs "int64" $attachmentQuota) (kindIs "int" $attachmentQuota) }}
+            {{- $attachmentQuota = printf "%d" (int64 $attachmentQuota) }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" $attachmentQuota)) (ne (toString $attachmentQuota) "") }}
             - name: APP_STUDIO_ATTACHMENT_WORKSPACE_QUOTA_BYTES
-              value: {{ .Values.store.attachmentWorkspaceQuotaBytes | quote }}
+              value: {{ $attachmentQuota | quote }}
             {{- end }}
             {{- if .Values.store.messageEncryptionKeysSecretRef.name }}
             - name: APP_STUDIO_MESSAGE_ENCRYPTION_KEYS
