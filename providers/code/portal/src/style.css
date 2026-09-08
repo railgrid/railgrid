@@ -283,10 +283,13 @@ faros-provider-code .repo-conditions__facts dd {
   color: var(--color-text-primary, #e9e9f2);
   font-size: 12px;
 }
-faros-provider-code .repo-detail__resource,
+/* Preserve component-owned widths for menus, controls, and tooltips. */
 faros-provider-code .repo-detail *,
 faros-provider-code .repo-detail *::before,
-faros-provider-code .repo-detail *::after,
+faros-provider-code .repo-detail *::after {
+  box-sizing: border-box;
+}
+faros-provider-code .repo-detail__resource,
 faros-provider-code .repo-section-card__facts,
 faros-provider-code .repo-integration-row,
 faros-provider-code .repo-integration-card__connection,
@@ -364,10 +367,13 @@ faros-provider-code .connection-detail__sections {
   flex-direction: column;
   gap: 14px;
 }
-faros-provider-code .connection-detail__resource,
+/* Preserve component-owned widths for menus, controls, and tooltips. */
 faros-provider-code .connection-detail *,
 faros-provider-code .connection-detail *::before,
-faros-provider-code .connection-detail *::after,
+faros-provider-code .connection-detail *::after {
+  box-sizing: border-box;
+}
+faros-provider-code .connection-detail__resource,
 faros-provider-code .connection-detail .props,
 faros-provider-code .connection-detail dl,
 faros-provider-code .connection-detail__facts,
