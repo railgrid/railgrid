@@ -121,3 +121,4 @@ docs/superpowers/
 /PRODUCT.md
 agent_docs/
 hack/provider-sdk-cutover.sh
+.claude

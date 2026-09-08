@@ -10,7 +10,10 @@ You may obtain a copy of the License at
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDatabricksComponentReleaseContract(t *testing.T) {
 	component, ok := components["databricks"]
@@ -83,6 +86,33 @@ func TestTagSet(t *testing.T) {
 			}
 			if len(got) != len(tc.want) {
 				t.Errorf("tagSet size = %d, want %d (%v)", len(got), len(tc.want), got)
+			}
+		})
+	}
+}
+
+// TestMultipleComponentTargets covers the argument parsing that lets a run name
+// several components: the pseudo-targets stay exclusive, and anything that is
+// not a component is rejected before a tag is created.
+func TestMultipleComponentTargets(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"all is exclusive", []string{"all", "quickstart", "--dry-run"}, "`all` already covers every component"},
+		{"current is exclusive", []string{"current", "hub"}, "`current` prints every component's latest tag"},
+		{"unknown component", []string{"quickstart", "bogus", "--dry-run"}, `unknown component "bogus"`},
+		{"flags only", []string{"--dry-run"}, "no component given"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(tc.args)
+			if err == nil {
+				t.Fatalf("run(%q) = nil, want error containing %q", tc.args, tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run(%q) = %v, want error containing %q", tc.args, err, tc.want)
 			}
 		})
 	}

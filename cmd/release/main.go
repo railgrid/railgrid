@@ -27,10 +27,11 @@
 //
 // Usage:
 //
-//	release <component|all> [flags]
+//	release <component...|all> [flags]
 //
 //	release current               # print every component's latest tag
 //	release quickstart            # bump providers/quickstart/v* patch and push
+//	release quickstart code       # bump several components in one run
 //	release hub --minor           # bump v* minor
 //	release quickstart --tag v0.0.1   # explicit version
 //	release all --dry-run         # preview every component's next tag
@@ -52,6 +53,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,13 +106,22 @@ func run(args []string) error {
 		usage()
 		return nil
 	}
-	target := args[0]
-	if target == "current" {
+	// Leading positional args are the targets: one or more component names, or
+	// a single pseudo-target (`all` / `current`). Flags follow them.
+	var targets []string
+	i := 0
+	for ; i < len(args) && !strings.HasPrefix(args[i], "-"); i++ {
+		targets = append(targets, args[i])
+	}
+	if slices.Contains(targets, "current") {
+		if len(targets) > 1 {
+			return fmt.Errorf("`current` prints every component's latest tag — don't list components alongside it")
+		}
 		return printCurrent()
 	}
 	opts := options{bump: "patch", ref: "HEAD"}
 
-	for i := 1; i < len(args); i++ {
+	for ; i < len(args); i++ {
 		switch args[i] {
 		case "--tag":
 			i++
@@ -139,16 +150,33 @@ func run(args []string) error {
 
 	// Resolve the target component set.
 	var names []string
-	if target == "all" {
+	if slices.Contains(targets, "all") {
+		if len(targets) > 1 {
+			return fmt.Errorf("`all` already covers every component — don't list components alongside it")
+		}
 		// `all --tag vX.Y.Z` deliberately puts every component on the SAME
 		// version — the way to re-align independently drifted release lines at
 		// a common milestone. Without --tag each line bumps from its own latest.
 		names = componentOrder
 	} else {
-		if _, ok := components[target]; !ok {
-			return fmt.Errorf("unknown component %q; valid: all, %s", target, strings.Join(componentOrder, ", "))
+		selected := map[string]bool{}
+		for _, t := range targets {
+			if _, ok := components[t]; !ok {
+				return fmt.Errorf("unknown component %q; valid: all, %s", t, strings.Join(componentOrder, ", "))
+			}
+			selected[t] = true
 		}
-		names = []string{target}
+		// Walk componentOrder rather than the command line: duplicates collapse
+		// and provider-sdk still gets tagged before the providers that depend on
+		// it, whatever order they were typed in.
+		for _, name := range componentOrder {
+			if selected[name] {
+				names = append(names, name)
+			}
+		}
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("no component given (try --help)")
 	}
 
 	commit, err := gitOut("rev-parse", "--short", opts.ref)
@@ -452,7 +480,10 @@ func usage() {
 	fmt.Print(`release — cut release tags for faros components
 
 Usage:
-  release <component|all> [flags]
+  release <component...|all> [flags]
+
+Several components can be listed in one run; they are tagged in the order
+shown below (provider-sdk first), whatever order you type them in.
 
 Components:
   provider-sdk    provider-sdk/v<X.Y.Z>             (split → faroshq/provider-sdk)
@@ -469,7 +500,7 @@ Components:
   current         print every component's latest existing tag (no changes)
 
 Flags:
-  --tag <vX.Y.Z>   set the exact version; with 'all', every component gets it
+  --tag <vX.Y.Z>   set the exact version; every targeted component gets it
                    (must be ahead of each targeted component's latest tag)
   --minor          bump the minor (default: patch)
   --major          bump the major
@@ -480,6 +511,7 @@ Flags:
 Examples:
   release current               print every component's latest tag
   release quickstart            bump providers/quickstart/v* patch and push
+  release quickstart code kuery bump several components in one run
   release hub --minor           bump v* minor
   release quickstart --tag v0.0.1
   release all --dry-run
