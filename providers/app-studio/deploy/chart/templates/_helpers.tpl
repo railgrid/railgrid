@@ -35,3 +35,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Render a numeric chart value as plain digits. Helm decodes bare YAML integers
+as float64, so 1000000 would otherwise reach the container as "1e+06" and
+1073741824 as "1.073741824e+09", which the provider's integer parsers reject
+or silently replace with their defaults. Whole numbers render as digits,
+fractional values keep their decimal form, and strings such as "1Gi",
+"unlimited" or "$25.50" pass through untouched.
+*/}}
+{{- define "appstudio.numeric" -}}
+{{- if or (kindIs "float64" .) (kindIs "int64" .) (kindIs "int" .) -}}
+{{- if and (kindIs "float64" .) (ne (float64 (int64 .)) .) -}}
+{{- printf "%g" . -}}
+{{- else -}}
+{{- printf "%d" (int64 .) -}}
+{{- end -}}
+{{- else -}}
+{{- toString . -}}
+{{- end -}}
+{{- end -}}
