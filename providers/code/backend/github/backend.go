@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gogithub "github.com/google/go-github/v66/github"
@@ -38,7 +39,10 @@ import (
 )
 
 // Backend is the GitHub implementation of backend.GitBackend.
-type Backend struct{}
+type Backend struct {
+	mu       sync.Mutex
+	requests *requestCache
+}
 
 // New returns a GitHub backend registered under "github".
 func New() *Backend { return &Backend{} }
@@ -56,6 +60,8 @@ func (b *Backend) client(ctx context.Context, cred backend.Credential, baseURL s
 	}
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: cred.Token})
 	httpClient := oauth2.NewClient(ctx, ts)
+	httpClient.Timeout = githubRequestTimeout
+	httpClient.Transport = &sharedTransport{base: httpClient.Transport, cache: b.requestCache(), credential: credentialHash(cred.Token)}
 	if baseURL == "" {
 		return gogithub.NewClient(httpClient), nil
 	}
@@ -662,19 +668,33 @@ var packageTypes = []string{"container", "docker", "npm", "maven", "rubygems", "
 
 // ListPackages returns the packages published under repo's owner that are linked
 // to repo. GitHub has no per-repository packages endpoint, so we list the
-// owner's packages per ecosystem (org endpoint, falling back to the user
-// endpoint when the owner is a user account) and filter by repository. Read-only
+// owner's packages per ecosystem using a cached owner classification and
+// shared discovery pages, then filter by repository. Read-only
 // — packages are created by pushing artifacts, not through this call.
 func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) ([]backend.PackageInfo, error) {
+	ctx = packageCacheContext(ctx, conn)
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
 		return nil, err
 	}
 	org := owner(conn, repo)
 
+	// The users endpoint returns both User and Organization accounts. Cache this
+	// explicit classification instead of interpreting permission-related 404s.
+	account, resp, err := c.Users.Get(context.WithValue(ctx, cacheTTLKey{}, time.Hour), org)
+	if err != nil {
+		return nil, classify(resp, err)
+	}
+	asUser := account.GetType() == "User"
+	if !asUser && account.GetType() != "Organization" {
+		return nil, fmt.Errorf("github: unknown package owner type %q", account.GetType())
+	}
+
 	var out []backend.PackageInfo
 	for _, pt := range packageTypes {
-		pkgs, err := listPackagesOfType(ctx, c, org, pt)
+		pkgs, err := cachedPackageListing(ctx, b, c, cred, []string{"packages", org, pt}, func(ctx context.Context) ([]*gogithub.Package, error) {
+			return listPackagesOfType(ctx, c, org, pt, asUser)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -685,19 +705,23 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 			info := packageInfo(p)
 			// Resolve versions (tags + digest) and the pullable image path for
 			// image packages so callers can map a build tag to a deployable
-			// reference. Best-effort: a versions failure must not drop the
-			// package from the crawl.
+			// reference. A failed version refresh fails the crawl so the controller
+			// preserves the last known tags and digests.
 			if pt == "container" || pt == "docker" {
 				info.ImageRepository = "ghcr.io/" + strings.ToLower(org) + "/" + strings.ToLower(p.GetName())
-				if versions, err := listPackageVersions(ctx, c, org, pt, p.GetName()); err == nil {
-					info.Versions = versions
-					// GHCR's list-packages version_count is unreliable (often 0),
-					// so never report fewer versions than we actually resolved.
-					// Keep the host's total when it exceeds our paged view (we cap
-					// at packageVersionsMax).
-					if n := int64(len(versions)); n > info.VersionCount {
-						info.VersionCount = n
-					}
+				versions, err := cachedPackageListing(ctx, b, c, cred, []string{"versions", org, pt, p.GetName()}, func(ctx context.Context) ([]backend.PackageVersion, error) {
+					return listPackageVersions(ctx, c, org, pt, p.GetName(), asUser)
+				})
+				if err != nil {
+					return nil, err
+				}
+				info.Versions = versions
+				// GHCR's list-packages version_count is unreliable (often 0),
+				// so never report fewer versions than we actually resolved.
+				// Keep the host's total when it exceeds our paged view (we cap
+				// at packageVersionsMax).
+				if n := int64(len(versions)); n > info.VersionCount {
+					info.VersionCount = n
 				}
 			}
 			out = append(out, info)
@@ -711,14 +735,13 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 const packageVersionsMax = 100
 
 // listPackageVersions returns a package's versions (most recent first, bounded)
-// with their tags and digest. Tries the organization endpoint, falling back to
-// the user endpoint on the "owner is a user" signal, like listPackagesOfType.
-func listPackageVersions(ctx context.Context, c *gogithub.Client, org, pkgType, pkgName string) ([]backend.PackageVersion, error) {
+// with their tags and digest, using the cached owner classification.
+func listPackageVersions(ctx context.Context, c *gogithub.Client, org, pkgType, pkgName string, asUser bool) ([]backend.PackageVersion, error) {
 	// Package names can contain "/" (e.g. "repo/component"); the API path
-	// segment must be escaped.
+	// segment must be escaped. go-github escapes it for organizations but
+	// requires callers to escape it for users.
 	name := url.PathEscape(pkgName)
 	opt := &gogithub.PackageListOptions{ListOptions: gogithub.ListOptions{PerPage: packageVersionsMax}}
-	asUser := false
 	var versions []*gogithub.PackageVersion
 	for {
 		var (
@@ -729,11 +752,7 @@ func listPackageVersions(ctx context.Context, c *gogithub.Client, org, pkgType, 
 		if asUser {
 			page, resp, err = c.Users.PackageGetAllVersions(ctx, org, pkgType, name, opt)
 		} else {
-			page, resp, err = c.Organizations.PackageGetAllVersions(ctx, org, pkgType, name, opt)
-			if err != nil && isNotOrg(resp) {
-				asUser = true
-				continue
-			}
+			page, resp, err = c.Organizations.PackageGetAllVersions(ctx, org, pkgType, pkgName, opt)
 		}
 		if err != nil {
 			return nil, classify(resp, err)
@@ -762,16 +781,13 @@ func listPackageVersions(ctx context.Context, c *gogithub.Client, org, pkgType, 
 	return out, nil
 }
 
-// listPackagesOfType pages through one ecosystem's packages for org. It tries
-// the organization endpoint first and falls back to the user endpoint on the
-// "owner is a user, not an org" 404 (same signal EnsureRepository handles).
-func listPackagesOfType(ctx context.Context, c *gogithub.Client, org, pkgType string) ([]*gogithub.Package, error) {
+// listPackagesOfType pages through one ecosystem using the owner classification.
+func listPackagesOfType(ctx context.Context, c *gogithub.Client, org, pkgType string, asUser bool) ([]*gogithub.Package, error) {
 	opt := &gogithub.PackageListOptions{
 		PackageType: gogithub.String(pkgType),
 		ListOptions: gogithub.ListOptions{PerPage: 100},
 	}
 	var all []*gogithub.Package
-	asUser := false
 	for {
 		var (
 			page []*gogithub.Package
@@ -782,10 +798,6 @@ func listPackagesOfType(ctx context.Context, c *gogithub.Client, org, pkgType st
 			page, resp, err = c.Users.ListPackages(ctx, org, opt)
 		} else {
 			page, resp, err = c.Organizations.ListPackages(ctx, org, opt)
-			if err != nil && isNotOrg(resp) {
-				asUser = true
-				continue // re-issue the same page against the user endpoint
-			}
 		}
 		if err != nil {
 			return nil, classify(resp, err)

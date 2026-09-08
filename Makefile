@@ -395,6 +395,19 @@ lint-app-studio-mcp-access: $(GOLANGCI_LINT) ## Lint the MCP authorization integ
 	$(GOLANGCI_LINT) run ./pkg/hub/mcpaggregate
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./controller/project ./hubmcp
 
+.PHONY: test-code-provider test-code-provider-race lint-code-provider fix-lint-code-provider
+test-code-provider: ## Run standalone Code provider tests
+	cd providers/code && go test -count=1 ./...
+
+test-code-provider-race: ## Race-check GitHub polling caches and Package reconciliation
+	cd providers/code && go test -race -count=1 ./backend/github ./controller/packages
+
+lint-code-provider: $(GOLANGCI_LINT) ## Lint the standalone Code provider
+	cd providers/code && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./...
+
+fix-lint-code-provider: $(GOLANGCI_LINT) ## Format and auto-fix the standalone Code provider
+	cd providers/code && $(abspath $(GOLANGCI_LINT)) run --fix $(ARGS) ./...
+
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
 

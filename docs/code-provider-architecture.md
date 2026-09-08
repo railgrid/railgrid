@@ -1,6 +1,9 @@
 # Code provider: git repository management
 
-Status: **Design proposal, scaffold in progress.**
+Status: **Historical design proposal.** Current package discovery and retry behavior
+is documented in [the Code provider README](../providers/code/README.md).
+The controller/backend ownership described below still applies; the original
+API inventory and staged-delivery list predate package discovery.
 Author: 2026-06-09
 Related: `providers/infrastructure/` (the standalone-provider pattern this is modeled on), `pkg/hub/providers/` (CatalogEntry provisioning), `docs/providers.md`, `docs/infrastructure-architecture.md`.
 

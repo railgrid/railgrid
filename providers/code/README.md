@@ -287,10 +287,70 @@ The portal then reads those CRs through the hub's GraphQL gateway
 like any other CRD — no provider round-trip, no throttling. Crawling still needs
 the connection token's `read:packages` scope.
 
+Complete GitHub discovery listings (all six ecosystems) and image-version listings are shared
+for two minutes across repositories using the same Connection and credential.
+Owner classification is cached for one hour, avoiding repeated organization
+probes for personal accounts. Cache identity includes the Connection UID/tenant,
+API base URL, owner, ecosystem and package identity, and a SHA-256 token fingerprint;
+tokens are not stored in cache keys or logged. Rotating the token immediately
+uses a separate cache and request budget. A shorter controller interval does
+not bypass the two-minute cache. With the default interval and positive jitter,
+a new artifact can take roughly 4.5 minutes to reach a particular Repository's
+Package CRs if another repository refreshed the shared listing just before publish.
+
+GitHub API calls through the backend's go-github client, including workflow
+build-status reads, share a serialized request gate per credential and host.
+Complete listing refreshes coalesce separately, releasing that gate between
+pages so a long crawl does not monopolize other API operations. Primary exhaustion
+pauses network requests until reset (plus one second); secondary throttling uses
+`Retry-After`, or exponential delays from one minute up to fifteen minutes when
+that header is absent. The backend returns a typed `RateLimitError` with an
+absolute `RetryAt` deadline. The package controller schedules `RequeueAfter`
+until that deadline; it returns other host or credential-resolution failures
+as errors for controller-runtime's exponential workqueue backoff. Successful
+crawls keep the normal polling interval and jitter. Listing or version failures
+leave the last successful Package CR state intact. The shared GitHub gate still
+enforces throttling if resource events trigger reconciliation before a scheduled
+retry, or another repository/controller uses the same credential.
+Connection spec changes and credential Secret create/update/delete events
+enqueue affected repositories in the same tenant immediately, including during
+a reset delay. Secret matching respects the configured default namespace. A
+rotated token therefore selects fresh backend state on the next reconciliation.
+Fresh cached listings may still be used while the network gate is paused.
+Paginated refreshes fetch every page anew and publish only on complete success;
+failed refreshes never leave independently reusable pages behind. Each GitHub
+HTTP request has a 30-second timeout (including gate waits and response reads),
+so a stalled response releases the gate. Throttle headers are recorded before
+reading the body, including when the body is truncated or times out.
+
+Caches and throttle deadlines are process-local and reset after a process restart
+or failover to another replica. Existing controller leader election limits active
+controller crawlers, but does not coordinate HTTP callers across replicas.
+Replicas, different tokens for the same GitHub user,
+and other GitHub clients do not share a budget. There are at most 64 credential/
+host states, each with at most 256 cached entries and 1 MiB of serialized entry data.
+Oversized listings are fetched normally but not cached. Idle states are reclaimed
+on subsequent requests after an hour, except while a throttle is active. At state
+capacity, the oldest idle, unthrottled state is evicted. If every slot is busy or
+throttled, new credential/host requests fail locally until a slot is available;
+active throttle state is never evicted to admit new traffic. This global capacity
+bound does not guarantee availability isolation or fairness between tenants. Large
+accounts that exceed the response cache bounds will see less request sharing.
+
+For five repositories on one personal account with one page per ecosystem, the
+old polling model implied 7,200 listing requests/hour (five repositories × 120
+polls × six ecosystems × organization/user attempts). The mock-server regression
+measures seven cold requests (one owner lookup plus six listings), zero warm
+requests, and six per two-minute refresh: about 181 listing/classification
+requests/hour in a steady shared-cache scenario, excluding versions and other
+API operations. These are test counts and a model, not historical production
+request accounting.
+
 ## Env vars
 
 | Var | Default | Purpose |
 |---|---|---|
+| `CODE_PACKAGE_CRAWL_INTERVAL` | `2m` | Repository package crawl interval; does not bypass the two-minute shared GitHub cache |
 | `PORT` | `8083` | Listen port |
 | `FAROS_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
 | `FAROS_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
