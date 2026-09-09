@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { ArrowLeft, Bot, Check } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { ArrowLeft, Bot, Check, Clock } from 'lucide-vue-next'
 import FormSelect from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { mutate } from '../mutate'
@@ -30,6 +30,12 @@ const systemPrompt = ref('')
 const channel = ref('')
 const web = ref(false)
 const fanOut = ref(false)
+// Background runs (schedules, triggers) have no human watching, so a family
+// stays interactive-only unless opted in here — same rule as the Config pane.
+const webBackground = ref(false)
+const fanOutBackground = ref(false)
+watch(web, on => { if (!on) webBackground.value = false })
+watch(fanOut, on => { if (!on) fanOutBackground.value = false })
 const errors = reactive<Record<string, string>>({})
 const busy = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -48,7 +54,10 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const capabilities = computed(() => [web.value ? 'web' : '', fanOut.value ? 'fan-out' : ''].filter(Boolean).join(', ') || 'Core only')
+const capabilities = computed(() => [
+  web.value ? `web${webBackground.value ? ' (+background)' : ''}` : '',
+  fanOut.value ? `fan-out${fanOutBackground.value ? ' (+background)' : ''}` : '',
+].filter(Boolean).join(', ') || 'Core only')
 
 onMounted(() => { void nextTick(() => nameInput.value?.focus()) })
 
@@ -87,6 +96,10 @@ async function submit(): Promise<void> {
   if (web.value) families.push('web')
   if (fanOut.value) families.push('spawn')
   if (families.length > 1) body.interactiveFamilies = families
+  const background = ['core']
+  if (web.value && webBackground.value) background.push('web')
+  if (fanOut.value && fanOutBackground.value) background.push('spawn')
+  if (background.length > 1) body.backgroundFamilies = background
 
   busy.value = true
   let result: Agent | undefined
@@ -203,14 +216,24 @@ async function submit(): Promise<void> {
 
             <fieldset class="agents-cap-fs">
               <legend>Can do <span class="agents-hint">— changeable later</span></legend>
-              <label class="agents-cap">
-                <input v-model="web" type="checkbox" :disabled="busy" />
-                <span><strong>Read the web</strong> <span class="muted">— fetch pages; search needs a websearch tool</span></span>
-              </label>
-              <label class="agents-cap">
-                <input v-model="fanOut" type="checkbox" :disabled="busy" />
-                <span><strong>Research fan-out</strong> <span class="muted">— work independent parts in parallel</span></span>
-              </label>
+              <div class="agents-cap-row">
+                <label class="agents-cap">
+                  <input v-model="web" type="checkbox" :disabled="busy" />
+                  <span><strong>Read the web</strong> <span class="muted">— fetch pages; search needs a websearch tool</span></span>
+                </label>
+                <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
+                  <input v-model="webBackground" type="checkbox" :disabled="busy || !web" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
+                </label>
+              </div>
+              <div class="agents-cap-row">
+                <label class="agents-cap">
+                  <input v-model="fanOut" type="checkbox" :disabled="busy" />
+                  <span><strong>Research fan-out</strong> <span class="muted">— work independent parts in parallel</span></span>
+                </label>
+                <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
+                  <input v-model="fanOutBackground" type="checkbox" :disabled="busy || !fanOut" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
+                </label>
+              </div>
             </fieldset>
           </div>
 

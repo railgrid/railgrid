@@ -224,6 +224,8 @@ faros-provider-agents .agents-cap-fs legend {
   padding: 0; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--color-text-muted, #5d5f78);
 }
+faros-provider-agents .agents-cap-row { display: flex; flex-direction: row; align-items: center; gap: 10px; }
+faros-provider-agents .agents-cap-row .agents-cap { flex: 1 1 auto; }
 faros-provider-agents .agents-cap {
   /* flex-direction is not optional here: `label` is globally a COLUMN flex
      (see the base rule above), and a column flex with align-items:center

@@ -93,6 +93,7 @@ import {
   type AssistantProgress,
 } from './assistantProgress'
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
+import { assistantVerificationBanner } from './assistantVerification'
 import {
   appendAssistantCommentaryToMessage,
   assistantContentPartsFromThreadItem,
@@ -9444,6 +9445,27 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 v-else
                 class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
               >
+                <div
+                  v-if="assistantVerificationBanner(message.metadata)"
+                  role="alert"
+                  class="mb-3 rounded-md border px-3 py-2 text-[12.5px] leading-5"
+                  :class="assistantVerificationBanner(message.metadata)?.tone === 'error'
+                    ? 'border-danger/30 bg-danger-subtle text-danger'
+                    : 'border-warning/30 bg-warning/5 text-warning'"
+                  data-testid="assistant-verification-banner"
+                >
+                  <div class="flex items-center gap-1.5 font-semibold">
+                    <TriangleAlert class="h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
+                    <span>{{ assistantVerificationBanner(message.metadata)?.title }}</span>
+                  </div>
+                  <p class="mt-1 text-text-secondary">{{ assistantVerificationBanner(message.metadata)?.summary }}</p>
+                  <ul
+                    v-if="assistantVerificationBanner(message.metadata)?.blockers.length"
+                    class="mt-1 list-disc space-y-0.5 pl-5 text-text-secondary"
+                  >
+                    <li v-for="(blocker, blockerIndex) in assistantVerificationBanner(message.metadata)?.blockers" :key="blockerIndex">{{ blocker }}</li>
+                  </ul>
+                </div>
                 <template v-if="assistantProgressHeaderVisible(message)">
                   <div class="mb-3 flex min-h-7 flex-wrap items-center gap-2 border-b border-border-subtle pb-1">
                     <button

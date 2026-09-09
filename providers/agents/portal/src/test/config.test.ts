@@ -973,6 +973,75 @@ describe('agent creation capabilities', () => {
     expect(sent!.systemPrompt).toBeUndefined()
   })
 
+  // Background is opt-in per family, exactly as in the Config pane: the toggle
+  // is inert until the family itself is on, and only opted-in families reach
+  // backgroundFamilies (core always rides along, as the API expects).
+  it('sends background families only for capabilities opted in', async () => {
+    const { el, createAgent } = await mountCreate()
+    const bg = [...el.querySelectorAll<HTMLInputElement>('.agents-bg-toggle input[type=checkbox]')]
+    expect(bg).toHaveLength(2)
+    expect(bg.every(input => input.disabled)).toBe(true)
+
+    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
+    nameInput.value = 'scout'
+    nameInput.dispatchEvent(new Event('input'))
+    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
+    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+
+    const [web, fanOut] = caps(el)
+    web.checked = true
+    web.dispatchEvent(new Event('change'))
+    fanOut.checked = true
+    fanOut.dispatchEvent(new Event('change'))
+    await settle(3)
+    expect(bg.every(input => !input.disabled)).toBe(true)
+
+    bg[0].checked = true
+    bg[0].dispatchEvent(new Event('change'))
+    await settle(3)
+    expect(text(el)).toContain('web (+background)')
+
+    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
+    await settle(3)
+
+    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
+    expect(sent.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
+    expect(sent.backgroundFamilies).toEqual(['core', 'web'])
+  })
+
+  // Turning a family off drops its background grant too; nothing may run in
+  // the background that cannot run interactively.
+  it('drops the background grant when the family is unticked', async () => {
+    const { el, createAgent } = await mountCreate()
+    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
+    nameInput.value = 'scout'
+    nameInput.dispatchEvent(new Event('input'))
+    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
+    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+
+    const [web] = caps(el)
+    const bg = [...el.querySelectorAll<HTMLInputElement>('.agents-bg-toggle input[type=checkbox]')]
+    web.checked = true
+    web.dispatchEvent(new Event('change'))
+    await settle(3)
+    bg[0].checked = true
+    bg[0].dispatchEvent(new Event('change'))
+    await settle(3)
+    web.checked = false
+    web.dispatchEvent(new Event('change'))
+    await settle(3)
+    expect(bg[0].checked).toBe(false)
+    expect(bg[0].disabled).toBe(true)
+
+    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
+    await settle(3)
+    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
+    expect(sent.interactiveFamilies).toBeUndefined()
+    expect(sent.backgroundFamilies).toBeUndefined()
+  })
+
   it('omits families entirely when nothing is ticked', async () => {
     const { el, createAgent } = await mountCreate()
     const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!

@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 
 	farosclient "github.com/faroshq/faros/pkg/client"
 )
@@ -120,18 +122,19 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("building SSH endpoint URL: %w", err)
 	}
 
-	headers := http.Header{}
-	if config.BearerToken != "" {
-		headers.Set("Authorization", "Bearer "+config.BearerToken)
+	headers, tlsConfig, err := wsAuthFromRest(ctx, config, externalURL)
+	if err != nil {
+		return fmt.Errorf("resolving kubeconfig credentials: %w", err)
 	}
 
 	dialer := &websocket.Dialer{
-		TLSClientConfig: tlsConfigFromRest(config),
+		TLSClientConfig: tlsConfig,
+		Proxy:           http.ProxyFromEnvironment,
 	}
 
-	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
-		return fmt.Errorf("connecting to hub SSH endpoint %s: %w", wsURL, err)
+		return fmt.Errorf("connecting to hub SSH endpoint %s: %w", wsURL, describeDialError(err, resp))
 	}
 	defer conn.Close() //nolint:errcheck
 
@@ -261,9 +264,87 @@ func sendSSHResize(conn *websocket.Conn, cols, rows int) {
 	_ = conn.WriteMessage(websocket.TextMessage, b)
 }
 
-func tlsConfigFromRest(config *rest.Config) *tls.Config {
-	if config.Insecure {
-		return &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+// wsAuthFromRest resolves the request headers and TLS settings a raw WebSocket
+// dial needs in order to authenticate the same way client-go would.
+//
+// The hub SSH endpoint is a plain WebSocket, not a Kubernetes streaming
+// subresource, so it is dialled with gorilla directly rather than through a
+// rest client — which means the kubeconfig's credentials have to be applied by
+// hand. Reading config.BearerToken is not enough: that field is empty for every
+// kubeconfig that authenticates through an exec credential plugin (the common
+// case for `faros login`), a token file, basic auth, or a client certificate,
+// and the dial then goes out unauthenticated and the hub answers 401 — which
+// gorilla surfaces only as "websocket: bad handshake".
+//
+// Instead the standard client-go transport stack is assembled around a
+// round tripper that records the request rather than sending it, so the exec
+// plugin (and every other credential wrapper) decorates a probe request exactly
+// as it would a real one; the headers it produced are then handed to the dialer.
+// Client-certificate credentials, custom CAs and --insecure-skip-tls-verify come
+// through the tls.Config that TLSConfigFor builds from the same config.
+func wsAuthFromRest(ctx context.Context, config *rest.Config, targetURL string) (http.Header, *tls.Config, error) {
+	transportConfig, err := config.TransportConfig()
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil
+	tlsConfig, err := transport.TLSConfigFor(transportConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("building TLS config: %w", err)
+	}
+
+	capture := &captureRoundTripper{}
+	rt, err := transport.HTTPWrappersForConfig(transportConfig, capture)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// The probe is never sent; it carries the real URL only so credential
+	// plugins that key off it behave as they would for the actual dial.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := rt.RoundTrip(req); err != nil {
+		return nil, nil, err
+	}
+	if capture.header == nil {
+		return http.Header{}, tlsConfig, nil
+	}
+	return capture.header, tlsConfig, nil
+}
+
+// captureRoundTripper records the headers of the request it is given and
+// answers with an empty 200 instead of sending anything over the network.
+type captureRoundTripper struct {
+	header http.Header
+}
+
+func (c *captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.header = req.Header.Clone()
+	return &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Proto:      "HTTP/1.1",
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+// describeDialError enriches a WebSocket dial failure with the server's
+// response. gorilla reports every non-101 answer as the opaque
+// "websocket: bad handshake", which hides whether the hub said 401
+// (credentials), 403 (RBAC) or 502 (no agent tunnel).
+func describeDialError(err error, resp *http.Response) error {
+	if resp == nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
+		return fmt.Errorf("%w (%s)", err, resp.Status)
+	}
+	return fmt.Errorf("%w (%s: %s)", err, resp.Status, detail)
 }

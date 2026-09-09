@@ -123,6 +123,12 @@ type Server struct {
 	// sandbox; logging it alone made that invisible to the user AND to the
 	// model, which would then diagnose a stale runtime as a code bug.
 	developmentSyncFailures map[string]string
+	// workspaceRebuilds records, per project, that this replica rebuilt the
+	// workspace from git after taking the project over while the claim still
+	// carried uncommitted source revisions. The tree on disk then no longer
+	// matches what earlier assistant turns wrote; verification reports it as a
+	// blocker until the next mutation lands on the rebuilt tree.
+	workspaceRebuilds map[string]workspaceRebuildNotice
 	// projectBuildRunCache keeps the explanatory CI observation short-lived.
 	// Registry Package objects remain the promotion authority; this cache only
 	// prevents the Production surface's polling loop from creating duplicate

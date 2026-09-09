@@ -953,3 +953,59 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 	}
 	t.Fatal("assistant message not found")
 }
+
+// A failed verification receipt used to carry only its outcome, so the portal
+// could not tell the user why and the model's prose was the only account of
+// the runtime. The receipt now carries the provider's own summary and a
+// bounded list of blockers for negative outcomes only, and re-bounds them when
+// read back rather than dropping the receipt.
+func TestProjectAssistantVerificationViewCarriesFailureReasons(t *testing.T) {
+	blockers := make([]string, 0, 6)
+	for i := 0; i < 6; i++ {
+		blockers = append(blockers, fmt.Sprintf("blocker %d", i))
+	}
+	failed := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{
+		VerificationOutcome: "not_ready",
+		VerificationSummary: "  The development sandbox is not running the latest workspace code: the last sync failed.  ",
+		Blockers:            blockers,
+	})
+	if failed.Outcome != "failed" {
+		t.Fatalf("outcome = %q, want failed", failed.Outcome)
+	}
+	if failed.Summary != "The development sandbox is not running the latest workspace code: the last sync failed." {
+		t.Errorf("summary = %q, want the trimmed verification summary", failed.Summary)
+	}
+	if len(failed.Blockers) != projectAssistantVerificationMaxBlockers || failed.Blockers[0] != "blocker 0" {
+		t.Errorf("blockers = %q, want the first %d", failed.Blockers, projectAssistantVerificationMaxBlockers)
+	}
+
+	ready := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{
+		VerificationOutcome: "ready",
+		VerificationSummary: "ready",
+		Blockers:            []string{"leftover"},
+	})
+	if ready.Summary != "" || len(ready.Blockers) != 0 {
+		t.Errorf("verified receipt carried detail: %#v", ready)
+	}
+
+	long := strings.Repeat("x", projectAssistantVerificationMaxBlockerLength+50)
+	stored := map[string]any{
+		"outcome":  "failed",
+		"summary":  strings.Repeat("s", projectAssistantVerificationMaxSummaryLength+10),
+		"blockers": []any{long, "", " short "},
+	}
+	view, ok := projectAssistantVerificationFromMetadata(stored)
+	if !ok {
+		t.Fatal("oversized detail rejected the receipt")
+	}
+	if len(view.Summary) > projectAssistantVerificationMaxSummaryLength+len("…") || !strings.HasSuffix(view.Summary, "…") {
+		t.Errorf("summary not bounded: %d chars", len(view.Summary))
+	}
+	if len(view.Blockers) != 2 || !strings.HasSuffix(view.Blockers[0], "…") || view.Blockers[1] != "short" {
+		t.Errorf("blockers = %q, want the long one truncated and the empty one dropped", view.Blockers)
+	}
+	verified, ok := projectAssistantVerificationFromMetadata(map[string]any{"outcome": "runtime_verified", "summary": "stale text", "blockers": []any{"old"}})
+	if !ok || verified.Summary != "" || len(verified.Blockers) != 0 {
+		t.Errorf("positive receipt kept stale detail: %#v", verified)
+	}
+}

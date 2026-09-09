@@ -675,6 +675,9 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 	}
 	project := p.DeepCopy()
 	key := developmentSyncFailureKey(id, project)
+	// A mutation landing on the tree means the assistant is now editing what
+	// is actually on disk; a rebuild notice from the takeover has done its job.
+	s.clearWorkspaceRebuild(id, project)
 	s.mu.Lock()
 	hook := s.developmentSyncAfterMutation
 	if s.developmentSyncTails == nil {

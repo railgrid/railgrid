@@ -325,6 +325,45 @@ type projectAssistantVerificationView struct {
 	AssertionsPassed      bool   `json:"assertionsPassed,omitempty"`
 	AssertionCount        int    `json:"assertionCount,omitempty"`
 	FailedAssertionCount  int    `json:"failedAssertionCount,omitempty"`
+	// Summary and Blockers carry the server-owned reason behind a failed or
+	// stale outcome: the last verification tool result's summary and the
+	// blockers it listed (a failed workspace sync, a rebuilt tree). The portal
+	// renders them under the message so the user sees the runtime state the
+	// provider observed, whatever the model chose to say about it.
+	Summary  string   `json:"summary,omitempty"`
+	Blockers []string `json:"blockers,omitempty"`
+}
+
+const (
+	projectAssistantVerificationMaxBlockers      = 4
+	projectAssistantVerificationMaxBlockerLength = 320
+	projectAssistantVerificationMaxSummaryLength = 240
+)
+
+// projectAssistantVerificationDetail bounds the free-text part of a
+// verification receipt. The receipt is persisted in message metadata and
+// re-read on every projection, so it must stay small and never carry more
+// than the handful of reasons a user can act on.
+func projectAssistantVerificationDetail(summary string, blockers []string) (string, []string) {
+	summary = strings.TrimSpace(summary)
+	if len(summary) > projectAssistantVerificationMaxSummaryLength {
+		summary = strings.TrimSpace(summary[:projectAssistantVerificationMaxSummaryLength-1]) + "…"
+	}
+	var bounded []string
+	for _, blocker := range blockers {
+		blocker = strings.TrimSpace(blocker)
+		if blocker == "" {
+			continue
+		}
+		if len(blocker) > projectAssistantVerificationMaxBlockerLength {
+			blocker = strings.TrimSpace(blocker[:projectAssistantVerificationMaxBlockerLength-1]) + "…"
+		}
+		bounded = append(bounded, blocker)
+		if len(bounded) == projectAssistantVerificationMaxBlockers {
+			break
+		}
+	}
+	return summary, bounded
 }
 
 func projectAssistantVerificationFromCompletionEvidence(evidence projectAssistantCompletionEvidence) projectAssistantVerificationView {
@@ -346,7 +385,7 @@ func projectAssistantVerificationFromCompletionEvidence(evidence projectAssistan
 	default:
 		outcome = "not_verified"
 	}
-	return projectAssistantVerificationView{
+	view := projectAssistantVerificationView{
 		Outcome:               outcome,
 		RenderedStateObserved: evidence.PreviewRenderedStateObserved,
 		InteractionVerified:   evidence.PreviewInteractionVerified,
@@ -355,6 +394,12 @@ func projectAssistantVerificationFromCompletionEvidence(evidence projectAssistan
 		AssertionCount:        evidence.PreviewAssertionCount,
 		FailedAssertionCount:  evidence.PreviewFailedAssertionCount,
 	}
+	// Only a negative verdict needs its reasons attached: a verified runtime
+	// speaks for itself, and "not_verified" means no evidence was gathered.
+	if outcome == "failed" || outcome == "stale" {
+		view.Summary, view.Blockers = projectAssistantVerificationDetail(evidence.VerificationSummary, evidence.Blockers)
+	}
+	return view
 }
 
 func projectAssistantVerificationFromMetadata(value any) (projectAssistantVerificationView, bool) {
@@ -390,6 +435,12 @@ func projectAssistantVerificationFromMetadata(value any) (projectAssistantVerifi
 		if !verification.RenderedStateObserved || verification.InteractionVerified {
 			return projectAssistantVerificationView{}, false
 		}
+	}
+	// Stored detail is re-bounded rather than rejected: an oversized reason
+	// must not hide the receipt it explains.
+	verification.Summary, verification.Blockers = projectAssistantVerificationDetail(verification.Summary, verification.Blockers)
+	if verification.Outcome != "failed" && verification.Outcome != "stale" {
+		verification.Summary, verification.Blockers = "", nil
 	}
 	return verification, true
 }

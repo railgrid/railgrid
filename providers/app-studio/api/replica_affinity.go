@@ -330,6 +330,21 @@ func (s *Server) adoptProject(r *http.Request, id identity, projectName string, 
 	}
 	logger.Info("project adopted: workspace rebuilt from git",
 		"commit", hydrated.CommitSHA, "files", len(hydrated.Written), "revisionFloor", claim.Revision)
+	if claim.Revision > 0 {
+		// The claim's revision floor proves earlier turns mutated the workspace.
+		// Those edits were only ever on the previous owner's disk; the rebuilt
+		// tree holds what git has. Record it so verification and the user see
+		// it instead of a log line nobody reads.
+		notice := workspaceRebuildNotice{
+			CommitSHA:       hydrated.CommitSHA,
+			Files:           len(hydrated.Written),
+			DroppedRevision: uint64(claim.Revision),
+			At:              time.Now(),
+			PreviousOwner:   prev.OwnerReplica,
+		}
+		s.recordWorkspaceRebuild(id, p, notice)
+		logger.Info("project adoption dropped uncommitted workspace revisions", "blocker", notice.Blocker())
+	}
 }
 
 // OwnsProject reports whether the project's workspace commit convergence may

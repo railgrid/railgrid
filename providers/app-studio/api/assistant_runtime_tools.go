@@ -494,10 +494,23 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 	// verify in: the sandbox is healthy and serving, just not the code that was
 	// written. Surface it before any status-derived verdict so the assistant
 	// re-syncs instead of debugging code that was never deployed.
-	if reason := projectAssistantLastSyncFailure(input.RunContext); reason != "" {
+	syncFailure := projectAssistantLastSyncFailure(input.RunContext)
+	rebuild := projectAssistantWorkspaceRebuild(input.RunContext)
+	if syncFailure != "" || rebuild != "" {
 		result.Status = "not_ready"
-		result.Summary = "The development sandbox is not running the latest workspace code: the last sync failed."
-		result.Blockers = append([]string{reason}, result.Blockers...)
+		switch {
+		case syncFailure != "" && rebuild != "":
+			result.Summary = "The development sandbox is not running the work from this conversation: the workspace was rebuilt from git after a replica change and the last sync failed."
+			result.Blockers = append([]string{rebuild, syncFailure}, result.Blockers...)
+		case rebuild != "":
+			// The tree matches git, and the sandbox may well match the tree,
+			// but neither holds the edits the conversation describes.
+			result.Summary = "The development sandbox is not running the work from this conversation: the workspace was rebuilt from git after a replica change, so uncommitted edits from earlier turns are gone."
+			result.Blockers = append([]string{rebuild}, result.Blockers...)
+		default:
+			result.Summary = "The development sandbox is not running the latest workspace code: the last sync failed."
+			result.Blockers = append([]string{syncFailure}, result.Blockers...)
+		}
 		return result, nil
 	}
 	switch result.Status {
