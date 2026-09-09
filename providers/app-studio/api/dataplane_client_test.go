@@ -62,3 +62,44 @@ func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 		t.Fatalf("Authorization = %q, want Bearer tok", got)
 	}
 }
+
+// The hub resolves a provider call's scope from X-Faros-Org and
+// X-Faros-Workspace. An org-owned infrastructure provider is reached with a
+// delegated token minted in that workspace, so a data-plane request without
+// the selection is refused with "a workspace selection (X-Faros-Workspace) is
+// required to reach provider: infrastructure" — which is exactly what every
+// sandbox sync, exec and restart returned once the infrastructure provider
+// moved into a tenant cluster.
+func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
+	s := &Server{hubBase: "https://hub.example"}
+	ref := dataPlaneRef{Resource: "instances", Name: "pitch-dev", Component: "app"}
+	req, err := s.newDataPlaneRequest(context.Background(), http.MethodPost, identity{
+		clusterID:     "c1",
+		token:         "tok",
+		orgUUID:       " org-1 ",
+		workspaceUUID: "ws-1",
+	}, ref, dataPlaneVerbSync, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := req.Header.Get("X-Faros-Org"); got != "org-1" {
+		t.Errorf("X-Faros-Org = %q, want org-1", got)
+	}
+	if got := req.Header.Get("X-Faros-Workspace"); got != "ws-1" {
+		t.Errorf("X-Faros-Workspace = %q, want ws-1", got)
+	}
+
+	// An org-only identity sends no workspace header rather than an empty one:
+	// the hub treats a present-but-empty header as an org-scope selection too,
+	// but an absent header keeps the request identical to today's for callers
+	// that never had a workspace.
+	req, err = s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{clusterID: "c1", token: "tok"}, ref, dataPlaneVerbLog, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, header := range []string{"X-Faros-Org", "X-Faros-Workspace"} {
+		if _, present := req.Header[header]; present {
+			t.Errorf("%s set on an identity without a tenant scope", header)
+		}
+	}
+}

@@ -98,6 +98,20 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	if token := strings.TrimSpace(id.token); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	// The hub's provider proxy resolves the caller's scope from these headers
+	// exactly as it does for the portal. An org-owned (BYO) infrastructure
+	// provider is reached over the edge tunnel with a delegated token minted
+	// in the selected workspace, and the hub refuses that call with
+	// "a workspace selection (X-Faros-Workspace) is required" when the
+	// selection is missing. Without them every sandbox sync, exec, restart and
+	// log fetch against a tenant-hosted runtime fails with that 403 while the
+	// preview edge itself stays reachable.
+	if org := strings.TrimSpace(id.orgUUID); org != "" {
+		req.Header.Set("X-Faros-Org", org)
+	}
+	if ws := strings.TrimSpace(id.workspaceUUID); ws != "" {
+		req.Header.Set("X-Faros-Workspace", ws)
+	}
 	return req, nil
 }
 
