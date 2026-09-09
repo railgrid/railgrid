@@ -7,6 +7,7 @@
 import { AgentsDashboardTileElement, AgentsElement } from './element'
 import { ensureFarosUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
+import activityStyles from './activity.css?raw'
 
 const TAG = 'faros-provider-agents'
 const TILE_TAG = 'faros-dashboard-tile-agents'
@@ -23,7 +24,7 @@ if (!customElements.get(TAG)) {
     s.id = styleId
     // PortalKit owns the tab and component recipes. Agents keeps only its
     // domain layout rules in this provider stylesheet.
-    s.textContent = styles
+    s.textContent = `${styles}\n${activityStyles}`
     document.head.appendChild(s)
   }
   customElements.define(TAG, AgentsElement)

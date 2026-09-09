@@ -1,0 +1,70 @@
+/* Activity composition. PortalKit owns tables, page chrome, badges and actions. */
+faros-provider-agents .agents-activity-title {
+  margin: 0;
+  font: 600 19px/1.3 var(--font-display);
+}
+faros-provider-agents .agents-activity-description { margin: 6px 0 0; color: var(--color-text-secondary); font-size: 13px; }
+faros-provider-agents .agents-run-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+faros-provider-agents .agents-run-preview { font-weight: 500; }
+faros-provider-agents .agents-run-secondary { color: var(--color-text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+faros-provider-agents .agents-approvals { display: flex; flex-direction: column; gap: 12px; }
+faros-provider-agents .agents-attention-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; }
+faros-provider-agents .agents-approval-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px; }
+faros-provider-agents .agents-approval-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; flex: 1; }
+faros-provider-agents .agents-approval-prompt { font-size: 13px; overflow-wrap: anywhere; }
+faros-provider-agents .agents-approval-meta, faros-provider-agents .agents-approval-actions,
+faros-provider-agents .agents-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+faros-provider-agents .agents-approval-meta { font-size: 11px; }
+faros-provider-agents .agents-approval-disclosure { min-width: 0; }
+faros-provider-agents .agents-approval-args { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+faros-provider-agents .agents-run-layout { display: flex; flex-direction: column; gap: 24px; container-type: inline-size; }
+faros-provider-agents .agents-runmeta { display: grid; grid-template-columns: 1fr 1fr .7fr 1.5fr; gap: 20px; padding: 16px 0; border-block: 1px solid var(--color-border-subtle); }
+faros-provider-agents .agents-runmeta-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+faros-provider-agents .agents-runmeta-k { font: 600 10px/1.4 var(--agents-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-secondary); }
+faros-provider-agents .agents-runmeta-v { font: 12px/1.6 var(--agents-mono); overflow-wrap: anywhere; }
+faros-provider-agents .agents-elapsed { display: inline-flex; align-items: center; gap: 6px; }
+faros-provider-agents .agents-run-columns { display: grid; grid-template-columns: minmax(0, 1fr) 235px; gap: 24px; }
+faros-provider-agents .agents-run-main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+faros-provider-agents .agents-run-aside { min-width: 0; padding-inline-start: 20px; border-inline-start: 1px solid var(--color-border-subtle); }
+faros-provider-agents .agents-run-facts { display: flex; flex-direction: column; gap: 18px; margin-top: 16px; }
+faros-provider-agents .agents-runinput h2, faros-provider-agents .agents-run-aside h2,
+faros-provider-agents .agents-run-steps h2, faros-provider-agents .agents-runsources h2,
+faros-provider-agents .agents-run-failure h2 { margin: 0; font-size: 14px; font-weight: 600; }
+faros-provider-agents .agents-runinput p { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-width: 75ch; }
+faros-provider-agents .agents-run-approval { border-color: color-mix(in srgb, var(--color-warning) 35%, transparent); }
+faros-provider-agents .agents-run-approval-body { display: flex; flex-direction: column; gap: 16px; }
+faros-provider-agents .agents-run-failure { padding: 16px; background: var(--color-danger-subtle); border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); border-radius: 6px; }
+faros-provider-agents .agents-run-failure h2 { color: var(--color-danger); }
+faros-provider-agents .agents-run-failure p { margin: 8px 0 0; overflow-wrap: anywhere; }
+faros-provider-agents .agents-run-main .agents-body { font-size: 13px; overflow-wrap: anywhere; }
+faros-provider-agents .agents-run-main pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+faros-provider-agents .agents-timeline { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--color-border-subtle); border-radius: 6px; overflow: hidden; background: var(--color-surface-raised); }
+faros-provider-agents .agents-step + .agents-step { border-top: 1px solid var(--color-border-subtle); }
+faros-provider-agents .agents-step-head { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; padding: 12px; text-align: left; border-radius: 0; }
+faros-provider-agents .agents-step-n { flex: none; color: var(--color-text-secondary); font: 11px var(--agents-mono); font-variant-numeric: tabular-nums; }
+faros-provider-agents .agents-step-name { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+faros-provider-agents .agents-step-meta { display: flex; align-items: center; gap: 14px; color: var(--color-text-secondary); font: 11px var(--agents-mono); font-variant-numeric: tabular-nums; }
+faros-provider-agents .agents-step-outcome.is-ok { color: var(--color-success); }
+faros-provider-agents .agents-step-outcome.is-err { color: var(--color-danger); }
+faros-provider-agents .agents-step-outcome.is-wait { color: var(--color-warning); }
+faros-provider-agents .agents-step-body { display: flex; flex-direction: column; gap: 12px; padding: 0 16px 16px 36px; }
+faros-provider-agents .agents-step-body pre { margin: 4px 0 0; }
+faros-provider-agents .agents-child-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0; font-size: 12px; }
+@container (max-width: 760px) {
+  faros-provider-agents .agents-runmeta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  faros-provider-agents .agents-run-columns { grid-template-columns: minmax(0, 1fr); }
+  faros-provider-agents .agents-run-aside { padding: 16px 0 0; border-inline-start: 0; border-top: 1px solid var(--color-border-subtle); }
+  faros-provider-agents .agents-run-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  faros-provider-agents .agents-step-head { flex-wrap: wrap; }
+  faros-provider-agents .agents-step-meta { flex-wrap: wrap; gap: 8px; }
+}
+@media (max-width: 640px) {
+  faros-provider-agents .agents-approval-row { flex-direction: column; }
+}
+/* Run output is a document, while the same body class in chat is a bubble. */
+faros-provider-agents .agents-run-main .agents-body { padding: 0; border-radius: 0; background: transparent; }
+faros-provider-agents .agents-run-main .agents-body ul { list-style: disc; }
+faros-provider-agents .agents-run-main .agents-body ol { list-style: decimal; }
+faros-provider-agents .agents-run-failure .agents-err { padding: 0; border: 0; background: transparent; }
+faros-provider-agents .agents-step-head { border: 0; background: transparent; }
+faros-provider-agents .agents-step-head:hover { background: var(--color-surface-hover); }

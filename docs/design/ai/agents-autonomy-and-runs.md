@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.ai.agents-autonomy-and-runs","title":"Agents autonomy and run transparency","kind":"journey","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The Agents provider ships autonomy policy controls, separate interactive/background grants, and a live run detail with approval, step, source, failure, and child-run evidence."},"appliesTo":["agents","provider-portals","assistant"],"owner":"agents","canonicalSource":[{"path":"docs/design/ai/agents-autonomy-and-runs.md#agents-autonomy-and-run-transparency","role":"design"},{"path":"providers/agents/portal/src/views/AgentConfig.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"},{"path":"providers/agents/portal/src/types.ts","role":"implementation"},{"path":"providers/agents/portal/src/test/config.test.ts","role":"reference"},{"path":"providers/agents/portal/src/test/activity.test.ts","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-design-docs","status":"passing","evidence":"The design knowledge-base metadata, IDs, sources, and links validate."},{"kind":"test","ref":"providers/agents/portal/src/test/config.test.ts","status":"not-run","evidence":"Portal dependencies are not installed in this worktree."},{"kind":"test","ref":"providers/agents/portal/src/test/activity.test.ts","status":"not-run","evidence":"Portal dependencies are not installed in this worktree."}]},"relatedDocuments":[{"id":"design.ai.app-studio-conversation","relation":"see-also"},{"id":"design.ai.evidence-and-status","relation":"see-also"},{"id":"design.patterns.navigation-and-feedback","relation":"see-also"}]}
+{"schema":1,"id":"design.ai.agents-autonomy-and-runs","title":"Agents autonomy and run transparency","kind":"journey","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The Agents provider ships autonomy policy controls, separate interactive/background grants, and a live run detail with approval, step, source, failure, and child-run evidence."},"appliesTo":["agents","provider-portals","assistant"],"owner":"agents","canonicalSource":[{"path":"docs/design/ai/agents-autonomy-and-runs.md#agents-autonomy-and-run-transparency","role":"design"},{"path":"providers/agents/portal/src/views/AgentConfig.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/RunDetail.vue","role":"implementation"},{"path":"providers/agents/portal/src/types.ts","role":"implementation"},{"path":"providers/agents/portal/src/test/config.test.ts","role":"reference"},{"path":"providers/agents/portal/src/test/activity.test.ts","role":"reference"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-design-docs","status":"passing","evidence":"The design knowledge-base metadata, IDs, sources, and links validate."},{"kind":"test","ref":"providers/agents/portal/src/test/config.test.ts","status":"passing","evidence":"make build-agents-provider-portal passed all 350 portal tests, typecheck, and Vite build on 2026-09-09."},{"kind":"test","ref":"providers/agents/portal/src/test/activity.test.ts","status":"passing","evidence":"make build-agents-provider-portal passed all 350 portal tests, typecheck, and Vite build on 2026-09-09."},{"kind":"browser","ref":"Agents Activity and run-detail rendered verification","status":"passing","evidence":"2026-09-09: production bundle with fixture API data in Chromium, 1440px and 390px, html.dark and html.light; 12 screenshots, approval interaction, child ResourceTable, and no page overflow. Evidence: /var/tmp/codex-build/agents-activity-proof/verification.json. No live-backend verification."}]},"relatedDocuments":[{"id":"design.ai.app-studio-conversation","relation":"see-also"},{"id":"design.ai.evidence-and-status","relation":"see-also"},{"id":"design.patterns.navigation-and-feedback","relation":"see-also"}]}
 ---
 
 # Agents autonomy and run transparency
@@ -50,6 +50,19 @@ stops live polling. **Cancel** is available only while live.
 An approval pause shows the tool and disclosed arguments with **Approve &
 resume** and **Deny**. A missing or malformed disclosure is a reason to stop
 and report, not a reason to reconstruct or guess the operation.
+
+Activity retains PortalKit's queryable `ResourceTable` for filters, cursor
+pagination, read states, and keyboard row navigation. The primary cell groups
+the input preview with the agent; phase, trigger/class, duration, usage, and
+creation time remain separate scan columns. Pending inbox actions retain their
+argument disclosure and approval/denial controls above the table.
+
+Run detail groups agent, trigger/class, elapsed duration, and usage in a compact
+summary. Approval and failure states precede the input/output and expandable
+tool trace. Session, start time, attempt, and parent navigation occupy a
+secondary details column that stacks below the trace in narrow containers.
+Child runs continue to use the shared simple `ResourceTable`. Output uses
+document styling, and sources remain available alongside partial failed output.
 
 The trace then makes the following evidence available when present:
 

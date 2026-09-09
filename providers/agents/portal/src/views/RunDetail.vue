@@ -246,7 +246,7 @@ function attachCodeCopy(container: ParentNode | null): void {
 }
 
 function stepClass(step: RunStep): string {
-  return step.outcome === 'error' ? 'err' : step.outcome === 'pending_approval' ? 'wait' : 'ok'
+  return step.outcome === 'error' ? 'err' : step.outcome === 'pending_approval' ? 'wait' : step.outcome === 'ok' ? 'ok' : 'unknown'
 }
 
 function elapsed(current: Run): string {
@@ -288,7 +288,6 @@ onBeforeUnmount(() => {
     <ResourceBackLink :href="hashFor({ kind: 'menu', menu: 'activity' })" @back="emit('navigate', { kind: 'menu', menu: 'activity' })">Activity</ResourceBackLink>
     <ResourcePage
       title="Run"
-      kind="Run"
       :subtitle="runId"
       :loaded="!!run"
       :loading="loading"
@@ -308,75 +307,91 @@ onBeforeUnmount(() => {
         </div>
       </template>
       <template v-if="run" #body>
-      <ResourceSectionCard title="Run details">
-        <div class="agents-runmeta">
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'config' })">{{ run.agent }}</button></span></div>
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
-          <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
-          <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
-          <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
-          <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
-        </div>
-        <div v-if="run.input" class="agents-runinput"><span class="agents-runmeta-k">input</span><pre>{{ run.input }}</pre></div>
-      </ResourceSectionCard>
-
-      <ResourceSectionCard v-if="run.phase === 'PendingApproval' && run.pending" title="Approval required">
-        <div class="agents-approval" role="group" aria-label="Tool approval required">
-          <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused />
-          <div class="agents-approval-actions">
-            <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID ? 'Resolving…' : 'Approve & resume' }}</button>
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
+        <div class="agents-run-layout">
+          <div class="agents-runmeta" aria-label="Run summary">
+            <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'config' })">{{ run.agent }}</button></span></div>
+            <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
+            <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
+            <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
           </div>
+        <ResourceSectionCard v-if="run.phase === 'PendingApproval' && run.pending" class="agents-run-approval" title="Approval required">
+          <div class="agents-run-approval-body" role="group" aria-label="Tool approval required">
+            <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused />
+            <div class="agents-approval-actions">
+              <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID ? 'Resolving…' : 'Approve & resume' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
+            </div>
+          </div>
+        </ResourceSectionCard>
+
+        <section v-if="(run.phase === 'Failed' || run.phase === 'Aborted') && run.message" class="agents-run-failure" aria-label="Run error">
+          <h2>{{ run.phase === 'Failed' ? 'Run failed' : 'Run aborted' }}</h2>
+          <p class="agents-err" role="alert">{{ run.message }}</p>
+        </section>
+        <div class="agents-run-columns">
+          <div class="agents-run-main">
+            <section v-if="run.input" class="agents-runinput" aria-labelledby="run-input-heading">
+              <h2 id="run-input-heading">Input</h2>
+              <p>{{ run.input }}</p>
+            </section>
+            <ResourceSectionCard v-if="run.output || (run.message && run.phase !== 'Failed' && run.phase !== 'Aborted')" :title="run.phase === 'Failed' || run.phase === 'Aborted' ? 'Partial output' : 'Output'">
+              <div class="agents-body" v-html="markdownHTML(run.output || run.message || '')"></div>
+            </ResourceSectionCard>
+            <p v-else-if="LIVE_PHASES.has(run.phase)" class="agents-hint">No output yet. {{ run.phase === 'PendingApproval' ? 'The run is waiting for approval.' : run.phase === 'Pending' ? 'The run is queued.' : 'The run is in progress.' }}</p>
+            <section v-if="run.sources?.length" class="agents-runsources" aria-labelledby="run-sources-heading">
+              <h2 id="run-sources-heading">Sources</h2>
+              <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
+            </section>
+
+        <section class="agents-run-steps" aria-labelledby="run-steps-heading">
+          <h2 id="run-steps-heading">Tool steps <span class="muted">({{ run.steps.length }})</span></h2>
+          <p v-if="!run.steps.length" class="agents-hint"><Wrench :stroke-width="1.75" aria-hidden="true" /> This run made no tool calls.</p>
+          <ol v-else class="agents-timeline">
+            <li v-for="(step, index) in run.steps" :key="step.id" class="agents-step" :class="`is-${stepClass(step)}`">
+              <button class="k-btn k-btn--ghost agents-step-head" type="button" :aria-expanded="expanded.has(step.id)" @click="toggle(step.id)">
+                <span class="agents-step-n">{{ index + 1 }}</span><span class="agents-step-name mono">{{ step.tool }}</span><span class="agents-step-meta"><span :class="`agents-step-outcome is-${stepClass(step)}`">{{ step.outcome === 'ok' ? 'Succeeded' : step.outcome === 'error' ? 'Failed' : step.outcome === 'pending_approval' ? 'Needs approval' : step.outcome }}</span><span>{{ step.durationMS != null ? fmtDuration(step.durationMS) : '—' }}</span></span><span class="agents-toolcard-chev" :class="{ open: expanded.has(step.id) }"><ChevronRight :stroke-width="1.75" aria-hidden="true" /></span>
+              </button>
+              <div v-if="expanded.has(step.id)" class="agents-step-body"><time class="agents-run-secondary mono" :datetime="step.at">{{ fmtTime(step.at) }}</time><div v-if="step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(step.args) }}</pre></div><div v-if="step.error" class="agents-kv"><span>Error</span><pre class="err">{{ step.error }}</pre></div><div v-if="step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(step.result) }}</pre></div></div>
+            </li>
+          </ol>
+        </section>
+          </div>
+          <aside class="agents-run-aside" aria-labelledby="run-details-heading">
+            <h2 id="run-details-heading">Run details</h2>
+            <div class="agents-run-facts">
+            <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
+            <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
+            <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
+            <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
+            </div>
+          </aside>
         </div>
-      </ResourceSectionCard>
 
-      <ResourceSectionCard v-if="(run.phase === 'Failed' || run.phase === 'Aborted') && run.message" title="Error">
-        <div class="agents-err" role="alert">{{ run.message }}</div>
-        <template v-if="run.output"><h3>Partial output</h3><div class="agents-body" v-html="markdownHTML(run.output)"></div></template>
-      </ResourceSectionCard>
-      <ResourceSectionCard v-else-if="run.output || run.message" title="Output">
-        <div class="agents-body" v-html="markdownHTML(run.output || run.message || '')"></div>
-        <div v-if="run.sources?.length" class="agents-runsources"><span class="agents-runmeta-k">sources</span><ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul></div>
-      </ResourceSectionCard>
-
-      <ResourceSectionCard :title="`Steps (${run.steps.length})`">
-        <p v-if="!run.steps.length" class="agents-hint"><Wrench :stroke-width="1.75" aria-hidden="true" /> This run made no tool calls.</p>
-        <ol v-else class="agents-timeline">
-          <li v-for="(step, index) in run.steps" :key="step.id" class="agents-step" :class="`is-${stepClass(step)}`">
-            <button class="k-btn k-btn--ghost agents-step-head" type="button" :aria-expanded="expanded.has(step.id)" @click="toggle(step.id)">
-              <span class="agents-step-n">{{ index + 1 }}</span><span class="agents-step-name mono">{{ step.tool }}</span><span class="agents-step-meta">{{ step.outcome }}<template v-if="step.durationMS"> · {{ fmtDuration(step.durationMS) }}</template> · {{ fmtTime(step.at) }}</span><span class="agents-toolcard-chev" :class="{ open: expanded.has(step.id) }"><ChevronRight :stroke-width="1.75" aria-hidden="true" /></span>
-            </button>
-            <div v-if="expanded.has(step.id)" class="agents-step-body"><div v-if="step.args" class="agents-kv"><span>args</span><pre>{{ prettyJSON(step.args) }}</pre></div><div v-if="step.error" class="agents-kv"><span>error</span><pre class="err">{{ step.error }}</pre></div><div v-if="step.result" class="agents-kv"><span>result</span><pre>{{ prettyJSON(step.result) }}</pre></div></div>
-          </li>
-        </ol>
-      </ResourceSectionCard>
-
-      <ResourceSectionCard v-if="!run.children?.length && fanOutGranted" title="Child runs (0)">
-        <p class="agents-hint"><Circle :stroke-width="1.75" aria-hidden="true" /><template v-if="run.steps.some(step => step.tool === 'spawn')"> This run called <span class="mono">spawn</span> but no worker runs were recorded — check the steps above for the error it came back with.</template><template v-else> Research fan-out is enabled and the agent was told how to use it, but it answered this request directly rather than splitting it up. That is the right call for a narrow question — a fan-out you do not need is just slower. For a request with genuinely independent parts, phrasing them explicitly ("compare X, Y and Z") makes the split obvious.</template></p>
-      </ResourceSectionCard>
-      <ResourceSectionCard v-else-if="run.children?.length" :title="`Child runs (${run.children.length})`" :description="childSummary.workers ? `${childSummary.workers} spawned worker${childSummary.workers === 1 ? '' : 's'}` : ''">
-        <p class="agents-child-summary" :class="{ 'is-live': childSummary.live }"><LoaderCircle v-if="childSummary.live" class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ childSummary.text }} <span v-if="childSummary.live" class="muted">— this updates as they finish</span></p>
-        <ResourceTable
-          :columns="[{ key: 'agent', label: 'Agent', primary: true }, { key: 'kind', label: 'Kind' }, { key: 'input', label: 'Input' }, { key: 'phase', label: 'Phase' }, { key: 'duration', label: 'Duration' }, { key: 'usage', label: 'Usage' }]"
-          :rows="childRows"
-          row-key="id"
-          aria-label="Child runs"
-          variant="simple"
-          :loaded="true"
-          :interactive="true"
-          :row-aria-label="childAriaLabel"
-          @row-click="openChild(asChild($event))"
-        >
-          <template #agent="{ row }"><strong>{{ asChild(row).agent }}</strong></template>
-          <template #kind="{ row }"><span class="muted mono">{{ asChild(row).trigger === 'spawn' ? 'worker' : 'delegated' }}</span></template>
-          <template #input="{ row }"><span class="agents-cell-task muted">{{ asChild(row).inputPreview || '—' }}</span></template>
-          <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[asChild(row).phase].cls}`" :status="phaseMeta[asChild(row).phase].label" :tone="phaseMeta[asChild(row).phase].tone" /></template>
-          <template #duration="{ row }"><span class="muted">{{ asChild(row).durationMS ? fmtDuration(asChild(row).durationMS) : '—' }}</span></template>
-          <template #usage="{ row }"><span class="muted mono">{{ fmtTokens(asChild(row).inputTokens + asChild(row).outputTokens) }} · {{ fmtUSD(asChild(row).usdMicros) }}</span></template>
-        </ResourceTable>
-      </ResourceSectionCard>
+        <ResourceSectionCard v-if="!run.children?.length && fanOutGranted" title="Child runs (0)">
+          <p class="agents-hint"><Circle :stroke-width="1.75" aria-hidden="true" /><template v-if="run.steps.some(step => step.tool === 'spawn')"> This run called <span class="mono">spawn</span> but no worker runs were recorded — check the steps above for the error it came back with.</template><template v-else-if="LIVE_PHASES.has(run.phase)"> No child runs have been recorded yet.</template><template v-else> No child runs were recorded. Fan-out is enabled, but this run answered directly.</template></p>
+        </ResourceSectionCard>
+        <ResourceSectionCard v-else-if="run.children?.length" :title="`Child runs (${run.children.length})`" :description="childSummary.workers ? `${childSummary.workers} spawned worker${childSummary.workers === 1 ? '' : 's'}` : ''">
+          <p class="agents-child-summary" :class="{ 'is-live': childSummary.live }"><LoaderCircle v-if="childSummary.live" class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ childSummary.text }} <span v-if="childSummary.live" class="muted">— this updates as they finish</span></p>
+          <ResourceTable
+            :columns="[{ key: 'agent', label: 'Agent', primary: true }, { key: 'kind', label: 'Kind' }, { key: 'input', label: 'Input' }, { key: 'phase', label: 'Phase' }, { key: 'duration', label: 'Duration' }, { key: 'usage', label: 'Usage' }]"
+            :rows="childRows"
+            row-key="id"
+            aria-label="Child runs"
+            variant="simple"
+            :loaded="true"
+            :interactive="true"
+            :row-aria-label="childAriaLabel"
+            @row-click="openChild(asChild($event))"
+          >
+            <template #agent="{ row }"><strong>{{ asChild(row).agent }}</strong></template>
+            <template #kind="{ row }"><span class="muted mono">{{ asChild(row).trigger === 'spawn' ? 'worker' : 'delegated' }}</span></template>
+            <template #input="{ row }"><span class="agents-cell-task muted">{{ asChild(row).inputPreview || '—' }}</span></template>
+            <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[asChild(row).phase].cls}`" :status="phaseMeta[asChild(row).phase].label" :tone="phaseMeta[asChild(row).phase].tone" /></template>
+            <template #duration="{ row }"><span class="muted">{{ asChild(row).durationMS ? fmtDuration(asChild(row).durationMS) : '—' }}</span></template>
+            <template #usage="{ row }"><span class="muted mono">{{ fmtTokens(asChild(row).inputTokens + asChild(row).outputTokens) }} · {{ fmtUSD(asChild(row).usdMicros) }}</span></template>
+          </ResourceTable>
+        </ResourceSectionCard>
+        </div>
       </template>
     </ResourcePage>
   </div>

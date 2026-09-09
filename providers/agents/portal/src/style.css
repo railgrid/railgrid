@@ -261,24 +261,6 @@ faros-provider-agents .agents-runsources a { font-size: 12px; overflow-wrap: any
 faros-provider-agents .agents-kv pre.err { color: var(--color-danger, #ff5d5d); }
 faros-provider-agents .agents-kv { display: flex; flex-direction: column; gap: 3px; }
 faros-provider-agents .agents-kv > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #5d5f78); }
-faros-provider-agents .agents-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-faros-provider-agents .agents-step {
-  border-radius: 6px; overflow: hidden; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  background: var(--color-surface-raised, #111320);
-}
-faros-provider-agents .agents-step-head {
-  width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 12px; text-align: left;
-  background: transparent; color: inherit; font: inherit; font-weight: 500; border-radius: 0;
-}
-faros-provider-agents .agents-step-head:hover { background: var(--color-surface-hover, #1e2033); }
-faros-provider-agents .agents-step-n {
-  flex: none; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
-  font-size: 10.5px; font-weight: 700; background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #5d5f78);
-}
-faros-provider-agents .agents-step-name { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
-faros-provider-agents .agents-step-meta { font-size: 11.5px; color: var(--color-text-muted, #5d5f78); white-space: nowrap; }
-faros-provider-agents .agents-step-body { display: flex; flex-direction: column; gap: 9px; padding: 4px 12px 12px; }
-
 /* --- chat --- */
 faros-provider-agents .agents-chat {
   display: flex; flex-direction: column; gap: 8px;

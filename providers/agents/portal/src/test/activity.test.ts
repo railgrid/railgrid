@@ -94,6 +94,8 @@ describe('Activity.vue', () => {
     expect(listRuns.mock.calls[0][0].since).toBeUndefined()
     expect(text(view.element.querySelector('.k-table__row'))).toContain('summarise the open PRs')
     expect(text(view.element.querySelector('.agents-phase'))).toContain('Succeeded')
+    expect(text(view.element.querySelector('td:first-child'))).toContain('scout')
+    expect(text(view.element.querySelector('td:first-child'))).toContain('summarise the open PRs')
 
     view.element.querySelector<HTMLElement>('.k-table__row')!.click()
     expect(view.navigations).toEqual([{ kind: 'run', id: 'r1' }])
@@ -332,8 +334,8 @@ describe('Activity.vue', () => {
     const view = await mount(Activity, { store, api })
 
     expect([...view.element.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(heading => [heading.tagName, text(heading)])).toEqual([
-      ['H3', 'Activity'],
-      ['H4', 'Needs your attention (1)'],
+      ['H1', 'Activity'],
+      ['H2', 'Needs your attention (1)'],
     ])
     expect(text(view.element.querySelector('.agents-approval-disclosure'))).toContain('edges__pods_delete')
     expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
@@ -408,12 +410,14 @@ describe('RunDetail.vue', () => {
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
 
     expect(text(view.element.querySelector('.k-resource-page__title'))).toBe('Run')
-    expect(text(view.element.querySelector('.k-resource-page__kind'))).toBe('Run')
+    expect(view.element.querySelector('.k-resource-page__kind')).toBeNull()
     expect(text(view.element.querySelector('.k-resource-page__subtitle'))).toBe('r5')
     expect(view.element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/activity')
     expect(text(view.element.querySelector('.agents-runmeta'))).toContain('scout')
     expect(view.element.querySelectorAll('.agents-step')).toHaveLength(2)
-    expect(view.element.querySelectorAll('[data-k-resource-section-card]')).toHaveLength(3)
+    expect(text(view.element.querySelector('[data-k-resource-section-card] h2'))).toBe('Output')
+    expect(text(view.element.querySelector('#run-input-heading'))).toBe('Input')
+    expect(text(view.element.querySelector('#run-steps-heading'))).toBe('Tool steps (2)')
     expect(view.element.querySelector('.agents-panel.k-card')).toBeNull()
     expect(view.element.querySelectorAll('.agents-step')[1].className).toContain('is-err')
     buttonWithText(view.element.querySelector('.agents-step')!, 'edges__pods_list').click()
@@ -421,6 +425,17 @@ describe('RunDetail.vue', () => {
     expect(text(view.element.querySelector('.agents-step-body'))).toContain('"ns"')
     expect(view.element.querySelector('.agents-body strong')?.textContent).toBe('Answer')
     expect(view.element.querySelector<HTMLAnchorElement>('.agents-runsources a')?.rel).toContain('noopener')
+  })
+
+  it('keeps secondary metadata inspectable beside the trace', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ sessionID: 'session-full-id', parentRunID: 'parent-run-id', attempt: 2 })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const facts = view.element.querySelector('.agents-run-aside')!
+    expect(text(facts)).toContain('session-full-id')
+    expect([...facts.querySelectorAll('.agents-runmeta-cell')].map(cell => [...cell.children].map(child => text(child)))).toContainEqual(['attempt', '2'])
+    buttonWithText(facts, 'parent-r').click()
+    expect(view.navigations).toEqual([{ kind: 'run', id: 'parent-run-id' }])
+    expect(text(view.element.querySelector('.agents-runmeta'))).toContain('1.2k in')
   })
 
   it('keeps a loaded trace visible after a background refresh failure', async () => {
@@ -597,12 +612,14 @@ describe('RunDetail.vue', () => {
   })
 
   it('shows the error and partial output for a failed run', async () => {
-    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Failed', message: 'model unavailable', output: 'got this far' })) })
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Failed', message: 'model unavailable', output: 'got this far', sources: ['https://example.com/evidence'] })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
 
     expect(text(view.element.querySelector('.agents-err'))).toContain('model unavailable')
     expect(text(view.element)).toContain('Partial output')
     expect(text(view.element.querySelector('.agents-body'))).toContain('got this far')
+    expect(view.element.querySelector('.agents-runsources a')?.getAttribute('href')).toBe('https://example.com/evidence')
+    expect(view.element.querySelector('.agents-run-failure')!.compareDocumentPosition(view.element.querySelector('.agents-body')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('summarizes running, queued, approval-gated, completed, and failed children', async () => {
@@ -661,7 +678,7 @@ describe('RunDetail.vue', () => {
     store.agents.data[0].spec.tools!.interactive!.families = ['core', 'spawn']
     store.dispatchEvent(new Event('change'))
     await settleVue()
-    expect(text(view.element)).toContain('answered this request directly')
+    expect(text(view.element)).toContain('this run answered directly')
   })
 })
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, Clock, Inbox, MessageCircle, RefreshCw, X } from 'lucide-vue-next'
+import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import type { ApiClient, RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, type InboxItem, type RunPhase, type RunSummary } from '../types'
@@ -98,13 +98,12 @@ const filters = computed<TableFilterDefinition[]>(() => [
   },
 ])
 const columns = computed(() => [
-  ...(!props.agent ? [{ key: 'agent', label: 'Agent', primary: true }] : []),
-  { key: 'trigger', label: 'Trigger', primary: !!props.agent },
-  { key: 'input', label: 'Input' },
+  { key: 'input', label: props.agent ? 'Run' : 'Run / Agent', primary: true, fullValue: (row: Record<string, unknown>) => props.agent ? String(row.input) : `${row.input} · ${row.agent}` },
   { key: 'phase', label: 'Phase' },
-  { key: 'duration', label: 'Duration' },
-  { key: 'usage', label: 'Usage' },
-  { key: 'when', label: 'When' },
+  { key: 'trigger', label: 'Trigger / Class' },
+  { key: 'duration', label: 'Duration', align: 'end' as const },
+  { key: 'usage', label: 'Usage', align: 'end' as const },
+  { key: 'when', label: 'Created', align: 'end' as const },
 ])
 const tableRows = computed(() => runs.value.map(run => ({ ...run, input: run.inputPreview || '—', when: run.createdAt })))
 
@@ -240,9 +239,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="agents-panel k-card agents-route-panel agents-activity-panel">
+  <div class="agents-panel agents-activity-panel">
     <div class="agents-panel-head agents-activity-head">
-      <h3 v-if="!agent">Activity</h3>
+      <div v-if="!agent"><h1 class="agents-activity-title">Activity</h1><p class="agents-activity-description">Run history and actions waiting for your review.</p></div>
       <button
         class="k-btn k-btn--ghost secondary agents-filter-refresh"
         type="button"
@@ -266,15 +265,15 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
       </div>
       <section v-if="pending.length" class="agents-approvals">
-        <component :is="agent ? 'h2' : 'h4'"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
-        <div v-for="item in pending" :key="item.id" class="agents-approval-row">
+        <h2 class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h2>
+        <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
             <ApprovalDisclosure v-if="item.kind === 'approval'" :tool="item.payload?.tool" :args="item.payload?.args" />
             <div class="agents-approval-meta">
               <span class="k-badge agents-badge">{{ item.agentName }}</span>
               <span class="muted">{{ fmtTime(item.createdAt) }}</span>
-              <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">view run</button>
+              <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
             </div>
           </div>
           <div class="agents-approval-actions">
@@ -317,12 +316,21 @@ onBeforeUnmount(() => {
       @retry="reload('foreground')"
       @row-click="openRun"
     >
-      <template #agent="{ row }"><strong>{{ row.agent }}</strong></template>
-      <template #trigger="{ row }"><span class="k-badge agents-badge" :class="row.class === 'interactive' ? 'agents-cat-tool' : ''"><MessageCircle v-if="row.class === 'interactive'" :stroke-width="1.75" aria-hidden="true" /><Clock v-else :stroke-width="1.75" aria-hidden="true" /> {{ row.trigger }}</span> <span v-if="row.parentRunID" class="k-badge agents-badge k-badge--muted agents-badge-muted">delegated</span></template>
-      <template #input="{ row }"><span class="agents-cell-task muted">{{ row.input }}</span></template>
+      <template #input="{ row }">
+        <span class="agents-run-cell">
+          <strong class="agents-run-preview">{{ row.input }}</strong>
+          <span v-if="!agent" class="agents-run-secondary">{{ row.agent }}</span>
+        </span>
+      </template>
+      <template #trigger="{ row }">
+        <span class="agents-run-cell">
+          <span class="mono">{{ row.trigger }}</span>
+          <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
+        </span>
+      </template>
       <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></template>
       <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
-      <template #usage="{ row }"><span class="muted mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<template v-if="row.usdMicros"> · {{ fmtUSD(Number(row.usdMicros)) }}</template></span></template>
+      <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
       <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
     </ResourceTable>
   </div>
