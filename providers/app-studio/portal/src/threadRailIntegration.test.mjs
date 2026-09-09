@@ -141,7 +141,7 @@ test('keeps identity and thread controls in one workspace-wide title bar', () =>
   assert.match(app, /v-if="threadError"[\s\S]*role="alert"[\s\S]*aria-live="assertive"[\s\S]*\{\{ threadError \}\}/)
   assert.match(app, /<span class="truncate">\{\{ activeAssistantThreadTitle \}\}<\/span>/)
   assert.match(app, /selected\.displayName \|\| selected\.name \|\| 'Project'/)
-  assert.match(app, /selected\.repository\?\.name \|\| selected\.repository\?\.ref \|\| 'No repository'/)
+  assert.match(app, /selected\.repository\.name \|\| selected\.repository\.ref/)
   const titleBarStart = app.indexOf('<header data-app-studio-titlebar')
   const titleBarEnd = app.indexOf('</header>', titleBarStart)
   const railStart = app.indexOf('<ThreadRail', titleBarEnd)

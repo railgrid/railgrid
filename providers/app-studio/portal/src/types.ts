@@ -399,6 +399,7 @@ export interface Project {
   deleting?: boolean
   template?: string
   repository?: {
+    canRetryCreation?: boolean
     ref: string
     name?: string
     connectionRef?: string

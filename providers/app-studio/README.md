@@ -25,6 +25,30 @@ The provider acts **as the calling user**: the hub's backend proxy forwards
 per-request, token-scoped client (see `tenant/`). There is no provider
 service-account escalation.
 
+## Start with or without Git
+
+Onboarding requires an AI model connection. Git is recommended, with an explicit
+**Skip for now** action. Projects without Git support assistant authoring and
+development previews; their source resides in App Studio workspace storage.
+The chart uses persistent storage by default. Operators upgrading from
+`emptyDir` must follow the [workspace migration procedure](deploy/chart/README.md#workspace-persistence-and-upgrades).
+
+Connect later from **Project settings → Git → Create repository and save project
+files**. This creates a new private repository through the Code provider and
+queues current source for persistence when the project is idle. Provisioning,
+commit failures, and pending source are separate states; binary or oversized
+files may remain only in App Studio. Connecting a workspace account does not
+automatically attach existing projects. History restore, commits, and Git-based
+production builds require a connected repository.
+
+Both `POST /api/projects` and `/api/projects/stream` accept `repositoryMode`:
+`auto` (default) uses a validated connection when available; `none` avoids Code
+entirely; `create` requires Git. Explicit `connectionRef` or
+`existingRepositoryRef` still requires Git and cannot accompany `none`.
+Unexpected connection-discovery errors are returned; an explicit `none` request
+can proceed independently. `PUT /api/projects/{project}/repository` accepts
+`connectionRef`, reuses the binding on retries, and refuses repository replacement.
+
 ## What's here
 
 | Surface | Where |

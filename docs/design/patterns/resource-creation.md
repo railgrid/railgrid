@@ -38,3 +38,11 @@ desktop and 4K widths.
 After creation, navigate to the resource when it owns status or recovery;
 otherwise return to the collection with the result clearly visible. This is the
 target standard; existing flows adopt it incrementally.
+
+Required setup and recommended integrations must be distinguishable. A recommended
+integration must offer an explicit skip action and must not block creation while
+its connection is missing, validating, or failing. Preserve the creation draft
+when the user visits setup or changes the integration choice. App Studio applies
+this to Git: model setup is required for the assistant journey, while Git can be
+connected later from project settings. Completion copy must describe the services
+actually connected, not imply that skipping established a connection.

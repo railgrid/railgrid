@@ -183,8 +183,10 @@ test('wizard handoff keeps the existing readiness and project/thread start path 
   const handoff = appSource.match(/async function onWizardCreate\([\s\S]*?\n\}/)?.[0]
   assert.ok(handoff, 'wizard create handler must remain explicit')
   assert.match(handoff, /prompt\.value = payload\.prompt/)
-  assert.match(handoff, /await ensureCreateSetupReady\(\)/)
-  assert.ok(handoff.indexOf('await ensureCreateSetupReady()') < handoff.indexOf('wizardOpen.value = false'), 'readiness must pass before closing the confirmation surface')
+  assert.match(handoff, /await projectCreationSubmit\.run\(ensureCreateSetupReady, async \(\) =>/)
+  assert.ok(handoff.indexOf('projectCreationSubmit.run') < handoff.indexOf('wizardOpen.value = false'), 'guarded readiness must pass before closing the confirmation surface')
+  assert.match(appSource, /:disabled="projectCreationPending \|\| busy \|\| !canStartProjectFromPrompt"/)
+  assert.match(appSource, /async function onWizardCancel\(\) \{\s+projectCreationSubmit\.invalidate\(\)/)
   assert.match(handoff, /createProjectAndStartConversation\(payload\.prompt, \{[\s\S]*templateName: payload\.templateName,[\s\S]*displayName: payload\.displayName/)
   assert.match(appSource, /:setup-items="createSetupItemsForPrompt"/)
   assert.match(appSource, /:setup-error="createSetupErrorMessage"/)

@@ -12,6 +12,7 @@ package project
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +31,7 @@ var repositoryGVK = schema.GroupVersionKind{Group: "code.faros.sh", Version: "v1
 // handler-side cleanup and adoption keep recognizing reconciler-created
 // repositories.
 const projectRepositoryLabel = "app-studio.ai.faros.sh/project"
+const projectRepositoryUIDAnnotation = "app-studio.ai.faros.sh/project-uid"
 
 // ensureRepository creates the Repository CR the spec binding names, if any
 // (autoInit creates the repo on the git host), and returns the observed
@@ -46,6 +48,16 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 	got.SetGroupVersionKind(repositoryGVK)
 	err := c.Get(ctx, types.NamespacedName{Name: b.RepositoryRef}, got)
 	if err == nil {
+		if got.GetLabels()[projectRepositoryLabel] != p.Name {
+			return nil, fmt.Errorf("repository %q is not claimed by project %q", b.RepositoryRef, p.Name)
+		}
+		if uid := got.GetAnnotations()[projectRepositoryUIDAnnotation]; uid != "" && uid != string(p.UID) {
+			return nil, fmt.Errorf("repository %q belongs to a different project incarnation", b.RepositoryRef)
+		}
+		connection, _, _ := unstructured.NestedString(got.Object, "spec", "connectionRef")
+		if b.ConnectionRef != "" && connection != b.ConnectionRef {
+			return nil, fmt.Errorf("repository %q uses a different connection", b.RepositoryRef)
+		}
 		return got, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -65,7 +77,7 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 		"metadata": map[string]any{
 			"name":        b.RepositoryRef,
 			"labels":      map[string]any{projectRepositoryLabel: p.Name},
-			"annotations": map[string]any{projectRepositoryLabel: p.Name},
+			"annotations": map[string]any{projectRepositoryLabel: p.Name, projectRepositoryUIDAnnotation: string(p.UID), "code.faros.sh/create-only": "true"},
 		},
 		"spec": map[string]any{
 			"connectionRef": b.ConnectionRef,

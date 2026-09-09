@@ -45,7 +45,7 @@ func TestProjectCreateReadinessRequiresValidatedGitConnection(t *testing.T) {
 	if readiness.GitConnection.ConnectionRef != "" {
 		t.Fatalf("GitConnection.ConnectionRef = %q, want empty", readiness.GitConnection.ConnectionRef)
 	}
-	if readiness.GitConnection.Message != "You need to connect to a Git account before you can continue" {
+	if readiness.GitConnection.Message != "Connect Git to keep an external copy of your project source" {
 		t.Fatalf("GitConnection.Message = %q, want missing connection guidance", readiness.GitConnection.Message)
 	}
 }

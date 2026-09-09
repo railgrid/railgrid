@@ -19,115 +19,18 @@ const {
   createPromptBlockedMessage,
 } = await import(moduleURL)
 
-test('blocks project creation when no validated Git connection is ready', () => {
-  const readiness = {
-    gitConnection: {
-      ready: false,
-      message: 'You need to connect to a Git account before you can continue',
-    },
+test('Git health never blocks a nonempty project prompt or model-only readiness', () => {
+  for (const status of ['ready', 'provider-missing', 'connection-missing', 'validating', 'failed']) {
+    const readiness = { gitConnection: { ready: status === 'ready', status } }
+    assert.equal(canSubmitCreatePrompt('build a dashboard', readiness), true)
+    assert.equal(canSubmitCreatePrompt('  ', readiness), false)
+    assert.equal(createPromptBlockedMessage(readiness), '')
+    assert.deepEqual(createSetupItems({ readiness, llmConfigured: true, checkingGit: true }), [])
+    assert.deepEqual(createSetupItems({ readiness, llmConfigured: false, checkingGit: false }), [{
+      id: 'llm', label: 'LLM credentials', status: 'missing', actionLabel: 'Set up LLM', action: 'setup-llm',
+    }])
   }
-
-  assert.equal(canSubmitCreatePrompt('build a dashboard', readiness), false)
-  assert.equal(
-    createPromptBlockedMessage(readiness),
-    'You need to connect to a Git account before you can continue',
-  )
-})
-
-test('allows the a-ha prompt only after Git durability is ready', () => {
-  const readiness = {
-    gitConnection: {
-      ready: true,
-      connectionRef: 'github',
-    },
-  }
-
-  assert.equal(canSubmitCreatePrompt('build a dashboard', readiness), true)
-  assert.equal(createPromptBlockedMessage(readiness), '')
-})
-
-test('still requires the user to type a prompt before submitting', () => {
-  const readiness = {
-    gitConnection: {
-      ready: true,
-      connectionRef: 'github',
-    },
-  }
-
-  assert.equal(canSubmitCreatePrompt('   ', readiness), false)
-})
-
-test('summarizes Git and LLM setup as one checklist', () => {
-  const items = createSetupItems({
-    readiness: {
-      gitConnection: {
-        ready: false,
-        message: 'You need to connect to a Git account before you can continue',
-      },
-    },
-    llmConfigured: false,
-    checkingGit: false,
-  })
-
-  assert.deepEqual(items, [
-    {
-      id: 'git',
-      label: 'Git connection',
-      status: 'missing',
-      actionLabel: 'Connect Git',
-      action: 'connect-git',
-    },
-    {
-      id: 'llm',
-      label: 'LLM credentials',
-      status: 'missing',
-      actionLabel: 'Set up LLM',
-      action: 'setup-llm',
-    },
-  ])
-})
-
-test('collapses the setup checklist once all prerequisites are ready', () => {
-  const items = createSetupItems({
-    readiness: {
-      gitConnection: {
-        ready: true,
-        connectionRef: 'github',
-      },
-    },
-    llmConfigured: true,
-    checkingGit: false,
-  })
-
-  assert.deepEqual(items, [])
-})
-
-test('keeps ready setup rows visible while another prerequisite is missing', () => {
-  const items = createSetupItems({
-    readiness: {
-      gitConnection: {
-        ready: true,
-        connectionRef: 'github',
-      },
-    },
-    llmConfigured: false,
-    checkingGit: false,
-  })
-
-  assert.deepEqual(items, [
-    {
-      id: 'git',
-      label: 'Git connection',
-      status: 'ready',
-    },
-    {
-      id: 'llm',
-      label: 'LLM credentials',
-      status: 'missing',
-      actionLabel: 'Set up LLM',
-      action: 'setup-llm',
-    },
-  ])
+  assert.equal(canSubmitCreatePrompt('build a dashboard', null), true)
 })
 
 test('new-project route has one setup surface and a stable wizard entry label', () => {
@@ -137,7 +40,7 @@ test('new-project route has one setup surface and a stable wizard entry label', 
   assert.match(appSource, /<Tabs[\s\S]*aria-label="App Studio sections"/)
   assert.match(appSource, /function openSettings\(\)[\s\S]*openModelsSection\(\)/)
   assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
-  assert.match(appSource, /if \(gitConnectionCreateReady\.value && llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
+  assert.match(appSource, /if \(llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
   assert.match(appSource, />\s*Continue\s*</)
 })
 
@@ -146,4 +49,16 @@ test('new-project stream explicitly authorizes development-template inference wh
     appSource,
     /api\.createProjectStream\(props\.ctx,\s*\{[\s\S]*prompt:\s*content,[\s\S]*inferDevelopmentTemplate:\s*!createOverrides\?\.templateName,[\s\S]*\}, \(message\) =>/,
   )
+})
+
+test('optional Code reads cannot put the entire App Studio into initialization', () => {
+  for (const name of ['loadCreateReadiness', 'loadImportRepositories']) {
+    const start = appSource.indexOf(`async function ${name}()`)
+    const end = appSource.indexOf('\nasync function ', start + 1)
+    assert.doesNotMatch(appSource.slice(start, end), /handleProjectAPIInitializing/)
+  }
+})
+
+test('workspace revalidation keeps the reviewed wizard mounted', () => {
+  assert.match(appSource, /firstTimeSetupVisible = computed\(\(\) => isCreateRoute\.value && !wizardOpen\.value/)
 })

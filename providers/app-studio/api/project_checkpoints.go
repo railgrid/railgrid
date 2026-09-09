@@ -118,11 +118,10 @@ func (s *Server) checkpointGit(repo *ProjectRepositoryView) projectCheckpoint {
 	cp := projectCheckpoint{Key: projectCheckpointGit, Label: "Git"}
 	if repo == nil || strings.TrimSpace(repo.Ref) == "" {
 		cp.State = projectCheckpointStatePending
-		cp.Reason = "No repository connected."
+		cp.Reason = "Git is optional for development. Connect a repository for external source persistence."
 		cp.Remediation = &projectCheckpointRemediation{
-			Kind:    projectCheckpointFixAuto,
-			Tool:    projectActionWorkspaceSync,
-			Message: "Connect a Git repository to hold the project's source.",
+			Kind:    projectCheckpointFixManual,
+			Message: "Open project settings to connect Git and save project files.",
 		}
 		return cp
 	}

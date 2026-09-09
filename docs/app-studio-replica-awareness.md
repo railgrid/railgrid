@@ -107,22 +107,19 @@ on the owner.
   - *Served anywhere (store/CR-backed)*: SSE event streams, thread/message
     listing, project listing, health, portal assets, MCP surfaces that only
     read the store.
-- **Workspace lifecycle becomes claim-driven**: on claiming a project whose
-  tree is absent locally, re-hydrate from git (the existing
-  `hydrate-workspace` flow) before serving. This turns the volume into a
-  **cache**: the chart's RWO PVC can become `emptyDir`, pods become cattle,
-  and the migration-marker/monotonic-growth issues go with it. The
-  `source-revision.json` fence must be seeded from the durable side (a
-  revision column on the project claim) rather than restarting at 1, so the
-  dev-sandbox staleness check survives a move (audit F3).
+- **Workspace lifecycle follows retained source**: on claiming a project,
+  preserve its ProjectUID-scoped tree if its local revision is at least the
+  claim's recorded revision. This includes an intentionally empty tree after
+  deletions. Inspect that evidence before raising the local revision floor;
+  revision metadata alone does not prove that source exists. Hydrate absent
+  or stale source from Git when a repository is connected.
 
-**Failover semantics (the deliberate trade)**: a replica crash loses the
-uncommitted workspace edits of the projects it owned; the next request
-re-claims elsewhere and re-hydrates from the last commit. For a dev sandbox
-whose durable truth is git, that matches user expectations — and commit
-cadence is assistant-driven and frequent. Hardening later, if wanted:
-periodic WIP snapshot pushes to a scratch branch shrink the loss window
-without changing the design.
+**Persistence**: Git is optional and the chart uses a PVC by default. A pod
+replacement can have a new address while retaining the same source volume;
+pod identity therefore cannot decide whether to overwrite local files with
+Git. Ephemeral deployments still lose local source on pod replacement, and
+Git can only recover committed files. Projects without Git require retained
+storage or an operator backup. Multiple provider replicas remain unsupported.
 
 ## Mechanism 3 — reconciler sharding (no leader election)
 

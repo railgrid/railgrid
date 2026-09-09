@@ -79,5 +79,7 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_180_000, gzipBytes: 335_000 })
+// Allow 500 raw bytes for Git prerequisites in onboarding and Publishing;
+// compressed transfer and total-asset budgets remain unchanged.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_180_500, gzipBytes: 335_000 })
 enforce('App Studio total assets', allArtifacts, { rawBytes: 1_200_000, gzipBytes: 345_000 })

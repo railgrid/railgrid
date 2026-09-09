@@ -15,6 +15,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -100,6 +101,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	res, err := b.EnsureRepository(ctx, conn, cred, &repo)
 	if err != nil {
+		if errors.Is(err, backend.ErrRepositoryIdentityConflict) {
+			return r.fail(ctx, c, &repo, "RepositoryIdentityConflict", err.Error())
+		}
 		return r.fail(ctx, c, &repo, "EnsureFailed", err.Error())
 	}
 

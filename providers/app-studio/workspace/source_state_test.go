@@ -278,3 +278,54 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 		t.Fatalf("uncommitted paths = %v, err=%v", paths, err)
 	}
 }
+
+func TestInitializeRepositorySourceSurvivesRestartAndDoesNotRequeueSettledFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewFileStore(root)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "app.txt", Content: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	// Even a clean scaffold must enter the first commit.
+	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeRepositorySource(ctx, scope, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	store = NewFileStore(root)
+	paths, err := store.UncommittedPaths(ctx, scope)
+	if err != nil || !reflect.DeepEqual(paths, []string{"app.txt"}) {
+		t.Fatalf("paths=%v err=%v", paths, err)
+	}
+	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "new.txt", Content: "later edit"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"new.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeRepositorySource(ctx, scope, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	paths, err = store.UncommittedPaths(ctx, scope)
+	if err != nil || !reflect.DeepEqual(paths, []string{"new.txt"}) {
+		t.Fatalf("retry paths=%v err=%v", paths, err)
+	}
+	recreated := scope
+	recreated.ProjectUID = "new-uid"
+	if err := store.InitializeRepositorySource(ctx, recreated, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	paths, err = store.UncommittedPaths(ctx, recreated)
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("recreated paths=%v err=%v", paths, err)
+	}
+	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "app.txt"})
+	if err != nil || file.Content != "before" {
+		t.Fatalf("restart lost source: %#v %v", file, err)
+	}
+}

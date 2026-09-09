@@ -102,7 +102,7 @@ func (b *Backend) ValidateConnection(ctx context.Context, conn *codev1alpha1.Con
 }
 
 // EnsureRepository creates the repository if absent and returns its host
-// identifiers. Idempotent: an existing repo returns its current identifiers.
+// identifiers. Create-only requests may only reuse the recorded remote identity.
 func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) (backend.RepositoryResult, error) {
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
@@ -113,6 +113,9 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 	// Look up first so the call is idempotent and we don't 422 on re-reconcile.
 	existing, resp, err := c.Repositories.Get(ctx, org, repo.Spec.Name)
 	if err == nil {
+		if err := checkRepositoryIdentity(repo, existing); err != nil {
+			return backend.RepositoryResult{}, err
+		}
 		return repoResult(existing), nil
 	}
 	if resp == nil || resp.StatusCode != http.StatusNotFound {
@@ -154,6 +157,22 @@ func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Conne
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
 		return err
+	}
+	if repo.Annotations[createOnlyAnnotation] == "true" {
+		// A failed creation must never delete the conflicting remote repository.
+		if repo.Status.RepoID == "" {
+			return nil
+		}
+		existing, resp, err := c.Repositories.Get(ctx, owner(conn, repo), repo.Spec.Name)
+		if err != nil {
+			if resp != nil && resp.StatusCode == http.StatusNotFound {
+				return nil
+			}
+			return classify(resp, err)
+		}
+		if err := checkRepositoryIdentity(repo, existing); err != nil {
+			return err
+		}
 	}
 	resp, err := c.Repositories.Delete(ctx, owner(conn, repo), repo.Spec.Name)
 	if err != nil {
@@ -200,6 +219,15 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 		return backend.RepositoryCommitResult{}, err
 	}
 	org := owner(conn, repo)
+	if repo.Annotations[createOnlyAnnotation] == "true" {
+		existing, resp, err := c.Repositories.Get(ctx, org, repo.Spec.Name)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, classify(resp, err)
+		}
+		if err := checkRepositoryIdentity(repo, existing); err != nil {
+			return backend.RepositoryCommitResult{}, err
+		}
+	}
 	refName := "heads/" + branch
 	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, refName)
 	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
@@ -950,4 +978,19 @@ func classify(resp *gogithub.Response, err error) error {
 		}
 	}
 	return err
+}
+
+// createOnlyAnnotation distinguishes creation from explicit import. A successful
+// create must persist its remote ID before subsequent reconciliation can reuse it.
+// If that status write is lost, fail closed rather than adopting by name.
+const createOnlyAnnotation = "code.faros.sh/create-only"
+
+func checkRepositoryIdentity(repo *codev1alpha1.Repository, remote *gogithub.Repository) error {
+	if repo.Annotations[createOnlyAnnotation] != "true" {
+		return nil
+	}
+	if repo.Status.RepoID == "" || remote.GetID() == 0 || repo.Status.RepoID != strconv.FormatInt(remote.GetID(), 10) {
+		return fmt.Errorf("%w: repository %q already exists and its ownership could not be confirmed; create a new repository from project Git settings", backend.ErrRepositoryIdentityConflict, repo.Spec.Name)
+	}
+	return nil
 }

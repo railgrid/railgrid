@@ -380,6 +380,10 @@ codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
+.PHONY: test-tilt-sandbox-default
+test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
+	python3 hack/scripts/verify-tilt-sandbox-default.test.py
+
 test-util:
 	go test ./pkg/util/...
 
@@ -1724,7 +1728,9 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@# an admin /clusters/root kubeconfig makes the reconcilers watch an empty
 	@# workspace and silently never engage. The retry loop tolerates the file
 	@# being absent until init writes it.
+	@# A new dev bundle must change the heartbeat version to refresh the hub SRI pin.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	FAROS_PROVIDER_VERSION="$${FAROS_PROVIDER_VERSION:-dev-$$(sha256sum providers/app-studio/portal/dist/main.js | cut -c1-16)}"; export FAROS_PROVIDER_VERSION; \
 	FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL:-$(FAROS_ACTIONS_EXTERNAL_URL)}"; \
 	FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL:-$(APP_STUDIO_HUB_PUBLIC_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \

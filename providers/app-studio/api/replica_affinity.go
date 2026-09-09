@@ -275,12 +275,12 @@ func localSafeProjectRead(method, rest string) bool {
 // adoptProject prepares this replica's workspace after it takes over a
 // project (Phase C of docs/app-studio-replica-awareness.md): seed the
 // source-revision fence from the claim's durable floor, then rebuild the tree
-// from git unless the previous owner was THIS pod (same forwarding address —
-// a process restart on a persistent volume, where the local tree is newer
-// than the last commit). Hydration failures are logged and the request served
+// from git only when current source has not survived on the local volume.
+// Pod addresses do not identify volumes: a replacement pod can mount the same
+// PVC with uncommitted edits. Hydration failures are logged and the request served
 // anyway: a project without a repository has nothing to hydrate, and failing
 // closed would brick every project whenever the code provider is down.
-func (s *Server) adoptProject(r *http.Request, id identity, projectName string, prev store.ReplicaClaim, prevOK bool, claim store.ReplicaClaim) {
+func (s *Server) adoptProject(r *http.Request, id identity, projectName string, prev store.ReplicaClaim, _ bool, claim store.ReplicaClaim) {
 	routing := s.routing()
 	if routing == nil || s.workspaces == nil {
 		return
@@ -298,14 +298,23 @@ func (s *Server) adoptProject(r *http.Request, id identity, projectName string, 
 		return
 	}
 	scope := projectWorkspaceScope(id, p)
+	var floor uint64
 	if claim.Revision > 0 {
-		if err := s.workspaces.EnsureSourceRevisionFloor(ctx, scope, uint64(claim.Revision)); err != nil {
+		floor = uint64(claim.Revision)
+	}
+	// Inspect before raising the floor, or stale/absent source would appear
+	// current merely because adoption wrote fresh revision metadata.
+	retained, err := s.workspaces.RetainsSource(ctx, scope, floor)
+	if err != nil {
+		logger.Error(err, "project adoption: inspecting retained source; refusing to overwrite it")
+		return
+	}
+	if claim.Revision > 0 {
+		if err := s.workspaces.EnsureSourceRevisionFloor(ctx, scope, floor); err != nil {
 			logger.Error(err, "project adoption: seeding source-revision floor")
 		}
 	}
-	if prevOK && prev.OwnerAddr != "" && prev.OwnerAddr == routing.addr {
-		// Same pod, new process: the local volume outlived the restart and may
-		// hold uncommitted work newer than the last commit — keep it.
+	if retained {
 		return
 	}
 	hydrated, err := s.hydrateWorkspaceFromRepository(ctx, id, p, r, "")

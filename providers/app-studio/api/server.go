@@ -307,6 +307,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/llm-settings/default", s.setDefaultProjectLLMModel).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/{project}/repository", s.putProjectRepository).Methods(http.MethodPut)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/thumbnail", s.getProjectThumbnail).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/attachments", s.listProjectAssistantAttachments).Methods(http.MethodGet)

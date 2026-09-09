@@ -570,3 +570,12 @@ test('keeps Preview edits dirty until the API acknowledges the desired mode', ()
   assert.match(save, /previewAccess\.value = state/)
   assert.match(save, /previewMode\.value = state\.mode === 'public' \? 'public' : 'restricted'/)
 })
+
+test('Publishing explains Git prerequisites and links unconnected projects to settings', () => {
+  const start = app.indexOf('aria-label="Production overview"')
+  const end = app.indexOf('<ProductionSettingsLoadingShell', start)
+  const overview = app.slice(start, end)
+  assert.match(overview, /selected\?\.repository\?\.ref \? productionOverviewDescription/)
+  assert.match(overview, /Production publishing requires a connected repository, a Git commit, and a successful build/)
+  assert.match(overview, /v-if="selected && !selected\.repository\?\.ref"[^>]*@click="openSettings">Connect Git/)
+})

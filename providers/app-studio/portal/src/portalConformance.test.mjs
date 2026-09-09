@@ -188,6 +188,6 @@ test('keeps the project collection fluid while constraining only the create-rout
 
   assert.match(
     app.slice(createStart),
-    /<section class="w-full max-w-\[1060px\]">[\s\S]*<template v-else-if="wizardOpen">\s*<NewProjectWizard/,
+    /<section class="w-full max-w-\[1060px\]">[\s\S]*<template v-else-if="wizardOpen">[\s\S]*<NewProjectWizard/,
   )
 })

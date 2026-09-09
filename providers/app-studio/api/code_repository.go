@@ -45,6 +45,7 @@ const (
 	codeLabelRepository    = "code.faros.sh/repository"
 
 	projectRepositoryProjectAnnotation = "app-studio.ai.faros.sh/project"
+	projectRepositoryUIDAnnotation     = "app-studio.ai.faros.sh/project-uid"
 
 	projectRepositoryProjectLabel = "app-studio.ai.faros.sh/project"
 
@@ -108,6 +109,9 @@ type codeResourceGetter func(ctx context.Context, gvr schema.GroupVersionResourc
 type codeResourceLister func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
 
 func (p projectRepositoryPlan) projectBinding() *aiv1alpha1.ProjectRepositoryBinding {
+	if p.Ref == "" {
+		return nil
+	}
 	return &aiv1alpha1.ProjectRepositoryBinding{
 		RepositoryRef: p.Ref,
 		Name:          p.Name,
@@ -171,7 +175,7 @@ func adoptProjectRepository(ctx context.Context, c *asclient.Client, repositoryR
 }
 
 // claimProjectRepository stamps the project claim onto an adopted Repository.
-func claimProjectRepository(ctx context.Context, c *asclient.Client, projectName string, plan projectRepositoryPlan) error {
+func claimProjectRepository(ctx context.Context, c *asclient.Client, projectName, projectUID string, plan projectRepositoryPlan) error {
 	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, plan.Ref, metav1.GetOptions{})
 	if err != nil {
 		return codeProviderRequestError("get Code repository", err)
@@ -190,6 +194,7 @@ func claimProjectRepository(ctx context.Context, c *asclient.Client, projectName
 		annotations = map[string]string{}
 	}
 	annotations[projectRepositoryProjectAnnotation] = projectName
+	annotations[projectRepositoryUIDAnnotation] = projectUID
 	annotations[projectRepositoryAdoptedAnnotation] = "true"
 	repo.SetAnnotations(annotations)
 	if _, err := c.Resource(codeRepositoryResource, "").Update(ctx, repo, metav1.UpdateOptions{}); err != nil {
@@ -213,6 +218,7 @@ func releaseProjectRepository(ctx context.Context, c *asclient.Client, repositor
 	repo.SetLabels(labels)
 	annotations := repo.GetAnnotations()
 	delete(annotations, projectRepositoryProjectAnnotation)
+	delete(annotations, projectRepositoryUIDAnnotation)
 	delete(annotations, projectRepositoryAdoptedAnnotation)
 	repo.SetAnnotations(annotations)
 	_, err = c.Resource(codeRepositoryResource, "").Update(ctx, repo, metav1.UpdateOptions{})
@@ -236,7 +242,7 @@ func inspectCodeConnectionReadiness(ctx context.Context, c *asclient.Client) (Pr
 	list, err := c.Resource(codeConnectionResource, "").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if codeProviderResourceMissing(err) {
-			return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusProviderMissing, Message: "Enable the Code provider before creating App Studio projects"}, nil
+			return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusProviderMissing, Message: "Enable the Code provider to connect Git"}, nil
 		}
 		return ProjectCreateGitConnectionReadiness{}, fmt.Errorf("list Code connections: %w", err)
 	}
@@ -247,7 +253,7 @@ func inspectCodeConnectionReadiness(ctx context.Context, c *asclient.Client) (Pr
 		}
 	}
 	if len(list.Items) == 0 {
-		return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusConnectionMissing, Message: "You need to connect to a Git account before you can continue"}, nil
+		return ProjectCreateGitConnectionReadiness{Status: projectCreateGitStatusConnectionMissing, Message: "Connect Git to keep an external copy of your project source"}, nil
 	}
 	var firstFailure *ProjectCreateGitConnectionReadiness
 	hasPending := false
@@ -379,6 +385,7 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 	if connectionRef, _, _ := unstructured.NestedString(repo.Object, "spec", "connectionRef"); connectionRef != "" {
 		view.ConnectionRef = connectionRef
 	}
+	view.CanRetryCreation = projectRepositoryCreationRetryable(p, repo)
 	view.HTMLURL, _, _ = unstructured.NestedString(repo.Object, "status", "htmlURL")
 	if view.ConnectionRef == "" {
 		view.Status = projectRepositoryStatusConnectionMissing
@@ -478,7 +485,7 @@ func codeProviderRequestError(op string, err error) error {
 		return nil
 	}
 	if codeProviderResourceMissing(err) {
-		return newValidationError("enable the Code provider before creating App Studio projects")
+		return newValidationError("enable the Code provider to connect a Git repository")
 	}
 	return fmt.Errorf("%s: %w", op, err)
 }
@@ -489,7 +496,8 @@ func codeProviderResourceMissing(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "server could not find the requested resource") ||
-		strings.Contains(msg, "the server doesn't have a resource type")
+		strings.Contains(msg, "the server doesn't have a resource type") ||
+		(strings.Contains(msg, `"code_faros_sh"`) && (strings.Contains(msg, "cannot query field") || strings.Contains(msg, "unknown field")))
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, condType string) bool {

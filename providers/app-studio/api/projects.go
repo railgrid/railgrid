@@ -51,6 +51,7 @@ type CreateProjectRequest struct {
 	TemplateName             string `json:"templateName,omitempty"`
 	InferDevelopmentTemplate bool   `json:"inferDevelopmentTemplate,omitempty"`
 	ConnectionRef            string `json:"connectionRef,omitempty"`
+	RepositoryMode           string `json:"repositoryMode,omitempty"`
 
 	// ExistingRepositoryRef imports an existing Code Repository instead of
 	// creating one: the project adopts the repository (claims it, never
@@ -137,16 +138,17 @@ type ProjectProviderBindingView struct {
 }
 
 type ProjectRepositoryView struct {
-	Ref           string                        `json:"ref"`
-	Name          string                        `json:"name,omitempty"`
-	ConnectionRef string                        `json:"connectionRef,omitempty"`
-	HTMLURL       string                        `json:"htmlURL,omitempty"`
-	Status        string                        `json:"status,omitempty"`
-	Message       string                        `json:"message,omitempty"`
-	Ready         bool                          `json:"ready,omitempty"`
-	Commits       []ProjectRepositoryCommitView `json:"commits,omitempty"`
-	CommitsError  string                        `json:"commitsError,omitempty"`
-	commitsErr    error
+	CanRetryCreation bool                          `json:"canRetryCreation,omitempty"`
+	Ref              string                        `json:"ref"`
+	Name             string                        `json:"name,omitempty"`
+	ConnectionRef    string                        `json:"connectionRef,omitempty"`
+	HTMLURL          string                        `json:"htmlURL,omitempty"`
+	Status           string                        `json:"status,omitempty"`
+	Message          string                        `json:"message,omitempty"`
+	Ready            bool                          `json:"ready,omitempty"`
+	Commits          []ProjectRepositoryCommitView `json:"commits,omitempty"`
+	CommitsError     string                        `json:"commitsError,omitempty"`
+	commitsErr       error
 }
 
 type ProjectRepositoryCommitView struct {
@@ -323,6 +325,9 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 }
 
 func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc, httpReq *http.Request, preflight *projectCreatePreflight) (*aiv1alpha1.Project, error) {
+	if err := validateProjectRepositoryMode(req); err != nil {
+		return nil, err
+	}
 	// Shared services: make sure the workspace's Studio exists so the search
 	// backend is warm before the assistant's first turn. Best-effort.
 	s.ensureStudio(ctx, c, id)
@@ -409,14 +414,11 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	if err != nil {
 		return nil, err
 	}
-	if err := emitProjectCreationStatus(onStatus, "Configuring repository"); err != nil {
-		return nil, err
-	}
 	var repoPlan projectRepositoryPlan
 	if adoptedPlan != nil {
 		repoPlan = *adoptedPlan
 	} else {
-		repoPlan, err = s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
+		repoPlan, err = s.prepareOptionalProjectRepository(ctx, c, req, repoBase)
 		if err != nil {
 			return nil, err
 		}
@@ -471,16 +473,18 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
 		}
-		if err := claimProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
+		if err := claimProjectRepository(ctx, c, created.Name, string(created.UID), repoPlan); err != nil {
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
 		}
-	} else if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
-		// Non-adopted repositories are created by the Project reconciler
-		// converging spec.repository (autoInit creates the repo on the git
-		// host) — no inline creation here.
-		s.cleanupCreatedProjectSetup(ctx, c, id, created)
-		return nil, err
+	} else if repoPlan.Ref != "" {
+		if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
+			// Non-adopted repositories are created by the Project reconciler
+			// converging spec.repository (autoInit creates the repo on the git
+			// host) — no inline creation here.
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
 	}
 	// Wizard step: attach the template's scaffold so the project opens on a
 	// runnable placeholder. Skipped for adopted repos (they hydrate from the
@@ -1138,15 +1142,16 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 	if response.Checkpoint != nil && response.FollowUp != nil {
 		interrupt = projectAssistantUIInterruptRequestFromFollowUpCheckpoint("", *response.FollowUp, *response.Checkpoint)
 	}
-	if response.Status == store.AssistantRunStatusPendingPermission {
+	switch response.Status {
+	case store.AssistantRunStatusPendingPermission:
 		if interrupt != nil {
 			metadata[projectMessageMetadataAssistantInterrupt] = interrupt
 		}
-	} else if response.Status == store.AssistantRunStatusPendingInput {
+	case store.AssistantRunStatusPendingInput:
 		if interrupt != nil {
 			metadata[projectMessageMetadataAssistantInterrupt] = interrupt
 		}
-	} else {
+	default:
 		delete(metadata, projectMessageMetadataAssistantInterrupt)
 	}
 	if response.Progress != nil {

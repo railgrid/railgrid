@@ -136,17 +136,15 @@ store:
 # App Studio project workspaces. The provider stores checked-out/generated
 # project files here so the agent can list, read, search, and later mutate them.
 #
-# The workspace is a CACHE of git plus in-flight edits: a replica that adopts
-# a project rebuilds the tree from the last commit, so the default is an
-# ephemeral emptyDir — a replacement pod can rebuild from git. Committed work
-# is always safe in git; a pod crash loses only edits since the last commit.
-# Set emptyDir=false (PVC) to retain the old durable-volume behavior. App Studio
-# remains single-replica with either workspace mode because of the shared
-# Playwright Browser boundary described above.
+# Project source must survive provider pod replacement, including projects
+# without Git. Use the default PVC or an existingClaim. Explicit emptyDir=true
+# is suitable only for disposable development: replacing the pod loses files.
+# Before upgrading an ephemeral installation, migrate its workspace tree to
+# the PVC as described in README.md; changing this value does not copy data.
 workspace:
   path: /var/lib/faros-app-studio/workspaces
   existingClaim: ""
-  emptyDir: true
+  emptyDir: false
   persistence:
     enabled: true
     size: 1Gi

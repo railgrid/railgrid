@@ -143,11 +143,9 @@ dev_agent_image = 'ghcr.io/faroshq/faros-dev-agent:latest'
 dev_agent_image_repository = 'ghcr.io/faroshq/faros-dev-agent'
 universal_dev_image = 'ghcr.io/faroshq/faros-universal-dev:latest'
 universal_dev_image_repository = 'ghcr.io/faroshq/faros-universal-dev'
-# The local loop keeps the historical force default, while allowing an
-# explicit off/byo-only mode to avoid constructing any platform sandbox
-# resources. Keep this in Starlark as well as the shell fallback below so the
-# effective mode controls Tilt's resource graph (not only the provider env).
-app_studio_sandbox_mode = os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower() or 'force'
+# Universal sandbox is opt-in locally. Use the same resolved mode for Tilt's
+# resource graph and the provider process so they cannot disagree.
+app_studio_sandbox_mode = os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower() or 'off'
 app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 # Host address as seen FROM INSIDE the faros-kro containers. Resolve
 # host.docker.internal inside the node first: on Docker Desktop/OrbStack the
@@ -360,9 +358,9 @@ local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     serve_cmd=('APP_STUDIO_HUB_PUBLIC_URL=%s ' +
-               'APP_STUDIO_RUN_SANDBOX_MODE=${APP_STUDIO_RUN_SANDBOX_MODE:-force} ' +
+               'APP_STUDIO_RUN_SANDBOX_MODE=%s ' +
                'APP_STUDIO_DEVELOPMENT_MODE=true APP_STUDIO_REPLICA_COUNT=1 ' +
-               'make run-provider-app-studio') % preview_hub_public_url,
+               'make run-provider-app-studio') % (preview_hub_public_url, app_studio_sandbox_mode),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/assets.go',

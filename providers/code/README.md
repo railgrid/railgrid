@@ -389,3 +389,26 @@ Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See
 [docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
 [deploy/chart/README.md](deploy/chart/README.md) for every chart value.
+
+### Create-only repositories
+
+Clients creating a new repository without importing an existing remote must set
+`metadata.annotations["code.faros.sh/create-only"]: "true"`. App Studio sets this
+on newly created repositories, including when connecting Git to an existing
+storage-backed project. That connect-later flow also reserves a fresh suffixed
+name instead of reusing the project name verbatim.
+
+The GitHub backend rejects an existing name unless its remote ID matches the
+repository's recorded `status.repoID`. Creation races fail rather than falling
+back to import. Commits and deletion also check the recorded identity; deleting
+a failed creation with no recorded ID leaves the remote untouched. Explicit
+imports without this annotation retain their existing behavior.
+
+If remote creation succeeds but recording its ID fails, reconciliation fails
+closed. App Studio offers **Create a new repository** in project Git settings for
+this conflict. It reserves a fresh name and uploads the project source, leaving
+the uncertain Repository resource and GitHub repository untouched for inspection.
+Requests are fenced to the current project UID and failed binding; confirmed or
+imported repositories cannot be replaced through recovery. A name match is not
+evidence that Faros created a remote. This contract does not retroactively change
+repositories already attached before create-only intent was introduced.

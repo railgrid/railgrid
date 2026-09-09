@@ -26,6 +26,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -40,6 +41,9 @@ type Credential struct {
 	// Token is the PAT (or, later, a minted installation/oauth token).
 	Token string
 }
+
+// ErrRepositoryIdentityConflict means an existing remote cannot be proven to belong to this resource.
+var ErrRepositoryIdentityConflict = errors.New("repository identity conflict")
 
 // RepositoryResult is what EnsureRepository reports back; the reconciler
 // mirrors it onto Repository.status.
@@ -238,7 +242,8 @@ type GitBackend interface {
 	ValidateConnection(ctx context.Context, conn *codev1alpha1.Connection, cred Credential) (login string, scopes []string, err error)
 
 	// EnsureRepository creates the repository if absent and returns its host
-	// identifiers. Idempotent: an existing repo returns its current identifiers.
+	// identifiers. With code.faros.sh/create-only="true", an existing remote
+	// must match status.repoID; a name match alone must never adopt it.
 	EnsureRepository(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) (RepositoryResult, error)
 	// DeleteRepository removes the repository. Idempotent: a missing repo is success.
 	DeleteRepository(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) error

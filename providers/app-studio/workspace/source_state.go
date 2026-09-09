@@ -51,6 +51,34 @@ type workspaceCommitSettlement struct {
 	Paths           []string `json:"paths"`
 }
 
+// RetainsSource reports whether this project incarnation has a local tree at
+// least as current as the last revision recorded by its owner. An empty tree
+// counts: its files may have been deliberately deleted. Revision metadata alone
+// does not count, since adoption can seed a floor before any source is hydrated.
+func (s *FileStore) RetainsSource(ctx context.Context, scope Scope, floor uint64) (bool, error) {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("workspace source is not a directory")
+	}
+	revision, err := s.sourceRevision(ctx, scope)
+	return revision >= floor, err
+}
+
 // UncommittedPaths returns the project source paths changed by App Studio
 // since the last successful repository commit. The state follows the
 // ProjectUID-scoped workspace rather than an individual assistant run.
@@ -526,4 +554,42 @@ func sortedWorkspaceSourcePaths(pathSet map[string]struct{}) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+// InitializeRepositorySource queues the complete source tree once for an
+// explicitly attached repository. The receipt lives with project metadata,
+// outside the public file tree, and survives provider restarts.
+func (s *FileStore) InitializeRepositorySource(ctx context.Context, scope Scope, repositoryRef string) error {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	dir, _, err := s.sourceStatePath(scope)
+	if err != nil {
+		return err
+	}
+	receipt := filepath.Join(dir, "initial-repository")
+	raw, err := os.ReadFile(receipt)
+	if err == nil && string(raw) == repositoryRef {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tree, err := s.scopeDir(scope)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	if err := s.walkFiles(ctx, tree, func(file FileInfo) error {
+		paths = append(paths, file.Path)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if _, err := s.addUncommittedPaths(ctx, scope, paths); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomically(dir, receipt, []byte(repositoryRef), 0o600, false)
 }

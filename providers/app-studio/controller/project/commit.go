@@ -82,6 +82,12 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, token string, p *aiv1a
 		return false, nil // legacy project without identity annotations
 	}
 
+	if p.Annotations["ai.faros.sh/initialize-repository"] == b.RepositoryRef {
+		if err := r.Workspace.InitializeRepositorySource(ctx, scope, b.RepositoryRef); err != nil {
+			return true, fmt.Errorf("initialize repository source: %w", err)
+		}
+	}
+
 	// Heal a settlement another writer recorded but could not reconcile
 	// (e.g. the assistant crashed between commit and ledger settle).
 	if _, err := r.Workspace.ReconcileCommitSettlement(ctx, scope); err != nil {

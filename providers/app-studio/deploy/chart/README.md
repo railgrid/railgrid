@@ -77,10 +77,10 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `store.attachmentWorkspaceQuotaBytes` | `1073741824` | Maximum attachment bytes across all Projects in a workspace. Bound attachments remain counted while their owning conversation exists; `0` disables this workspace limit. Draft-only per-project abuse limits remain provider defaults. |
 | `store.messageEncryptionKeysSecretRef.name` | `""` |  |
 | `store.messageEncryptionKeysSecretRef.key` | `keys` |  |
-| `workspace` |  | App Studio project workspaces. The provider stores checked-out/generated project files here so the agent can list, read, search, and later mutate them. The workspace is a CACHE of git plus in-flight edits: a replica that adopts a project rebuilds the tree from the last commit, so the default is a… |
+| `workspace` |  | Persistent project source storage, including projects without Git. Uses a PVC by default. |
 | `workspace.path` | `/var/lib/faros-app-studio/workspaces` |  |
 | `workspace.existingClaim` | `""` |  |
-| `workspace.emptyDir` | `true` |  |
+| `workspace.emptyDir` | `false` | Use ephemeral storage only for disposable projects; pod replacement loses local source. |
 | `workspace.persistence.enabled` | `true` |  |
 | `workspace.persistence.size` | `1Gi` |  |
 | `workspace.persistence.storageClassName` | `""` |  |
@@ -102,3 +102,34 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
+
+## Workspace persistence and upgrades
+
+Git is optional in App Studio. The default workspace PVC retains project files
+and source metadata across provider pod replacement. Configure a storage class
+or `workspace.existingClaim` when your cluster has no default provisioner. A PVC
+is not an external backup; follow your organization's volume backup policy.
+Explicit `workspace.emptyDir: true` or `workspace.persistence.enabled: false`
+uses ephemeral storage unless an existing claim is supplied.
+
+**Before upgrading an installation that uses ephemeral storage:**
+
+1. Pause App Studio traffic and wait for active assistant runs and writes to stop.
+2. While the old pod still exists, copy the complete directory at `workspace.path`
+   to an operator-controlled backup. Include hidden files and source metadata;
+   copying only repository files loses uncommitted work and settlement state.
+3. Provision the destination PVC. Mount it in a temporary maintenance pod and
+   restore the backup, preserving file ownership and permissions for the App
+   Studio security context. Verify file counts and checksums before proceeding.
+4. Upgrade with `workspace.emptyDir=false`, `workspace.persistence.enabled=true`,
+   and `workspace.existingClaim` naming that populated PVC. The chart uses a
+   Recreate strategy; schedule this interruption with users.
+5. Verify representative projects, including projects without Git, can read
+   their existing files. Replace the provider pod once and verify again before
+   reopening traffic. Retain the backup until these checks pass.
+
+Changing Helm values does not migrate files. Do not remove the old ephemeral
+pod until its files have been backed up and verified on the destination volume.
+If validation fails, keep traffic paused and restore the verified backup onto
+the retained PVC before restarting the previous application version. Do not
+roll back to an empty ephemeral workspace.
