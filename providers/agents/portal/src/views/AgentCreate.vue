@@ -217,20 +217,20 @@ async function submit(): Promise<void> {
             <fieldset class="agents-cap-fs">
               <legend>Can do <span class="agents-hint">— changeable later</span></legend>
               <div class="agents-cap-row">
-                <label class="agents-cap">
+                <label class="agents-cap k-checkbox-hit">
                   <input v-model="web" type="checkbox" :disabled="busy" />
                   <span><strong>Read the web</strong> <span class="muted">— fetch pages; search needs a websearch tool</span></span>
                 </label>
-                <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
+                <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
                   <input v-model="webBackground" type="checkbox" :disabled="busy || !web" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
                 </label>
               </div>
               <div class="agents-cap-row">
-                <label class="agents-cap">
+                <label class="agents-cap k-checkbox-hit">
                   <input v-model="fanOut" type="checkbox" :disabled="busy" />
                   <span><strong>Research fan-out</strong> <span class="muted">— work independent parts in parallel</span></span>
                 </label>
-                <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
+                <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
                   <input v-model="fanOutBackground" type="checkbox" :disabled="busy || !fanOut" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
                 </label>
               </div>

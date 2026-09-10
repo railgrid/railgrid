@@ -178,9 +178,9 @@ function dismiss(): void {
     </div>
   </template>
   <div v-else-if="visibleCard" class="agents-assist">
-    <span class="agents-assist-ic"><Sparkles :stroke-width="1.75" /></span>
+    <span class="agents-assist-ic" aria-hidden="true"><Sparkles :stroke-width="1.75" aria-hidden="true" /></span>
     <div class="agents-assist-body"><strong>Set up self-hosted search with an agent</strong><span class="muted">One of your agents can provision the SearXNG instance for you — instead of you hopping to Infrastructure and back.</span></div>
     <button type="button" class="k-btn k-btn--ghost secondary" @click="emit('navigate', { kind: 'create', resource: 'connection', type: 'assisted-search' })">Set it up</button>
-    <button type="button" class="k-icon-action" aria-label="Dismiss this suggestion" data-k-tip="Dismiss — you can still add a web-search connection above" @click="dismiss"><X :stroke-width="1.75" /></button>
+    <button type="button" class="k-icon-action" aria-label="Dismiss this suggestion" data-k-tip="Dismiss — you can still add a web-search connection above" @click="dismiss"><X :stroke-width="1.75" aria-hidden="true" /></button>
   </div>
 </template>

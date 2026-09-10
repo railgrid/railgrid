@@ -948,6 +948,20 @@ describe('chat streaming', () => {
 })
 
 describe('chat read ownership', () => {
+  it('announces a settled empty transcript as a polite status', async () => {
+    const api = stubApi({ listSessions: () => Promise.resolve([]), listMessages: () => Promise.resolve([]) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(4)
+
+    const empty = [...view.element.querySelectorAll<HTMLElement>('[role="status"]')]
+      .find(element => text(element).includes('No messages yet'))
+    expect(empty).not.toBeUndefined()
+    expect(empty?.getAttribute('aria-live')).toBe('polite')
+  })
+
   it('does not present failed initial reads as an empty chat', async () => {
     const api = stubApi({ listSessions: () => Promise.reject(new Error('sessions unavailable')) })
     const store = makeStore(api)

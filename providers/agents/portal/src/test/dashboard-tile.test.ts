@@ -71,6 +71,30 @@ describe('agents dashboard tile refresh resilience', () => {
     expect(load).toHaveBeenCalledOnce()
   })
 
+  it('announces an initial failure and offers a retry', async () => {
+    let allowRetry = false
+    const listAgents = vi.fn().mockImplementation(() => allowRetry
+      ? Promise.resolve([])
+      : Promise.reject(new Error('provider unavailable')))
+    const tile = await mountTile(stubApi({
+      listAgents,
+      listRuns: () => Promise.resolve({ items: [], nextCursor: '' }),
+      listSchedules: () => Promise.resolve([]),
+    }))
+
+    const error = tile.querySelector<HTMLElement>('[role="alert"]')
+    expect(error).not.toBeNull()
+    expect(text(error)).toContain('Failed to load: provider unavailable')
+    expect(error?.querySelector<HTMLButtonElement>('button')?.textContent).toContain('Retry')
+    allowRetry = true
+    error?.querySelector<HTMLButtonElement>('button')?.click()
+    await settle(tile)
+
+    expect(listAgents.mock.calls.length).toBeGreaterThan(1)
+    expect(tile.querySelector('[role="alert"]')).toBeNull()
+    tile.remove()
+  })
+
   it('retains populated and empty snapshots when a later poll fails', async () => {
     const populated = await mountTile(stubApi({
       listAgents: vi.fn().mockResolvedValue([agentFixture('scout')]),

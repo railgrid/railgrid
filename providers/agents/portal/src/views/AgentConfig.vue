@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import {
   ArrowLeftRight,
   Check,
@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { validateBudgetInputs } from '../budget-validation'
+import ConfigSaveFeedback, { type ConfigSaveStatus } from '../components/ConfigSaveFeedback.vue'
 import SecretHandoff from '../components/SecretHandoff.vue'
 import { channelInbound } from '../conn-defs'
 import { mutate } from '../mutate'
@@ -26,7 +27,7 @@ import type { Route } from '../router'
 import type { AppStore } from '../store'
 import type { Agent, AgentChannel, AgentPatch, Autonomy } from '../types'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
-import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
 import Automation from './Automation.vue'
 
 const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
@@ -36,6 +37,35 @@ const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
 ]
 
 interface ChannelRow extends AgentChannel { key: number }
+
+type SaveRegion = 'persona' | 'model' | 'policy' | 'tools' | 'channels' | 'delegates'
+type ManualSaveRegion = Exclude<SaveRegion, 'tools' | 'delegates'>
+
+interface PersonaSnapshot {
+  displayName: string
+  description: string
+  systemPrompt: string
+}
+
+interface ModelSnapshot {
+  modelCredential: string
+  modelFallbacks: string[]
+}
+
+interface PolicySnapshot {
+  autonomy: Autonomy
+  budgetUSD: string
+  budgetTokens: string
+  maxToolTurns: number
+  timeoutSeconds: number
+}
+
+interface SaveRegionState {
+  status: ConfigSaveStatus
+  error: string
+  sequence: number
+  submitted: unknown | null
+}
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -68,7 +98,28 @@ const slackRequestURL = ref('')
 
 let hydratedStore: AppStore | null = null
 let hydratedName = ''
+let hydratedApi: ApiClient | null = null
 let rowKey = 0
+let authorityGeneration = 0
+
+const baselines = reactive<{
+  persona: PersonaSnapshot | null
+  model: ModelSnapshot | null
+  policy: PolicySnapshot | null
+  channels: AgentChannel[] | null
+}>({ persona: null, model: null, policy: null, channels: null })
+
+// The queue applies optimistic specs immediately, so dirty state compares the
+// draft with the last acknowledged section baseline rather than the live
+// agent object. This keeps edits made during an in-flight write visible.
+const saveState = reactive<Record<SaveRegion, SaveRegionState>>({
+  persona: { status: 'idle', error: '', sequence: 0, submitted: null },
+  model: { status: 'idle', error: '', sequence: 0, submitted: null },
+  policy: { status: 'idle', error: '', sequence: 0, submitted: null },
+  tools: { status: 'idle', error: '', sequence: 0, submitted: null },
+  channels: { status: 'idle', error: '', sequence: 0, submitted: null },
+  delegates: { status: 'idle', error: '', sequence: 0, submitted: null },
+})
 
 const agent = computed(() => {
   revision.value
@@ -128,6 +179,123 @@ function inboundState(connectionRef: string): { found: boolean; on: boolean; can
   return { found: true, ...channelInbound(connection) }
 }
 
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function same(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function personaSnapshot(source: Agent): PersonaSnapshot {
+  return {
+    displayName: (source.spec?.displayName || source.metadata.name).trim(),
+    description: (source.spec?.description || '').trim(),
+    systemPrompt: source.spec?.systemPrompt || '',
+  }
+}
+
+function modelSnapshot(source: Agent): ModelSnapshot {
+  return {
+    modelCredential: source.spec?.models?.chat || '',
+    modelFallbacks: [...(source.spec?.modelFallbacks || [])],
+  }
+}
+
+function policySnapshot(source: Agent): PolicySnapshot {
+  return {
+    autonomy: (source.spec?.autonomy as Autonomy) || 'ask',
+    budgetUSD: source.spec?.budget?.usdLimit || '',
+    budgetTokens: source.spec?.budget?.tokenLimit ? String(source.spec.budget.tokenLimit) : '',
+    maxToolTurns: source.spec?.limits?.maxToolTurns || 0,
+    timeoutSeconds: source.spec?.limits?.timeoutSeconds || 0,
+  }
+}
+
+function channelSnapshot(rows: AgentChannel[]): AgentChannel[] {
+  return rows
+    .map(row => ({ name: row.name.trim(), connectionRef: row.connectionRef.trim(), primary: Boolean(row.primary) }))
+    .filter(row => row.name || row.connectionRef)
+}
+
+const personaDraft = computed<PersonaSnapshot>(() => ({
+  displayName: displayName.value.trim(),
+  description: description.value.trim(),
+  systemPrompt: systemPrompt.value,
+}))
+const modelDraft = computed<ModelSnapshot>(() => ({
+  modelCredential: modelCredential.value,
+  modelFallbacks: [...fallbacks.value],
+}))
+const policyDraft = computed<PolicySnapshot>(() => {
+  const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
+  return {
+    autonomy: autonomy.value,
+    budgetUSD: budget.usdError ? budgetUSD.value.trim() : budget.budgetUSD,
+    budgetTokens: budget.tokenError ? budgetTokens.value.trim() : budget.budgetTokens ? String(budget.budgetTokens) : '',
+    maxToolTurns: intOrZero(maxToolTurns.value),
+    timeoutSeconds: intOrZero(timeoutSeconds.value),
+  }
+})
+const channelsDraft = computed(() => channelSnapshot(channels.value))
+const personaDirty = computed(() => !same(personaDraft.value, baselines.persona))
+const modelDirty = computed(() => !same(modelDraft.value, baselines.model))
+const policyDirty = computed(() => !same(policyDraft.value, baselines.policy))
+const channelsDirty = computed(() => !same(channelsDraft.value, baselines.channels))
+
+function resetSaveState(): void {
+  for (const region of Object.keys(saveState) as SaveRegion[]) {
+    saveState[region].status = 'idle'
+    saveState[region].error = ''
+    saveState[region].submitted = null
+    saveState[region].sequence += 1
+  }
+}
+
+function beginSave(region: SaveRegion, submitted: unknown = null): number {
+  const state = saveState[region]
+  state.sequence += 1
+  state.status = 'pending'
+  state.error = ''
+  state.submitted = submitted === null ? null : clone(submitted)
+  return state.sequence
+}
+
+function updateBaseline(region: ManualSaveRegion, snapshot: PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]): void {
+  if (region === 'persona') baselines.persona = clone(snapshot as PersonaSnapshot)
+  if (region === 'model') baselines.model = clone(snapshot as ModelSnapshot)
+  if (region === 'policy') baselines.policy = clone(snapshot as PolicySnapshot)
+  if (region === 'channels') baselines.channels = clone(snapshot as AgentChannel[])
+}
+
+function draftFor(region: ManualSaveRegion): PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[] {
+  if (region === 'persona') return personaDraft.value
+  if (region === 'model') return modelDraft.value
+  if (region === 'policy') return policyDraft.value
+  return channelsDraft.value
+}
+
+function feedbackStatus(region: SaveRegion, dirty = false): ConfigSaveStatus {
+  const state = saveState[region]
+  if (state.status === 'pending') return 'pending'
+  if (state.status === 'error') return 'error'
+  if (dirty) return 'dirty'
+  return state.status
+}
+
+function feedbackError(region: SaveRegion): string | undefined {
+  return saveState[region].error || undefined
+}
+
+function newerEdits(region: ManualSaveRegion): boolean {
+  const state = saveState[region]
+  return state.status === 'pending' && state.submitted !== null && !same(state.submitted, draftFor(region))
+}
+
+function feedbackDescription(region: SaveRegion, dirty = false): string | undefined {
+  return feedbackStatus(region, dirty) === 'idle' ? undefined : `agent-${region}-save-feedback`
+}
+
 function hydrate(source: Agent): void {
   displayName.value = source.spec?.displayName || source.metadata.name
   description.value = source.spec?.description || ''
@@ -144,22 +312,34 @@ function hydrate(source: Agent): void {
   channels.value = (source.spec?.channels || []).map(channel => ({ ...channel, key: ++rowKey }))
   channelError.value = ''
   channelErrorTarget.value = null
+  baselines.persona = personaSnapshot(source)
+  baselines.model = modelSnapshot(source)
+  baselines.policy = policySnapshot(source)
+  baselines.channels = channelSnapshot(source.spec?.channels || [])
+  resetSaveState()
+  authorityGeneration += 1
 }
 
 // Store refreshes invalidate the computed values but never overwrite a draft.
 // A new store authority or agent identity is a new form and hydrates once.
 watchEffect(() => {
   const source = agent.value
-  if (!source || (hydratedStore === props.store && hydratedName === props.name)) return
+  if (!source || (hydratedStore === props.store && hydratedName === props.name && hydratedApi === props.api)) return
   hydrate(source)
   hydratedStore = props.store
   hydratedName = props.name
+  hydratedApi = props.api
 })
 
-function save(patch: AgentPatch, apply: (spec: Agent['spec']) => void, success: string): Promise<boolean> {
+function save(
+  patch: AgentPatch,
+  apply: (spec: Agent['spec']) => void,
+  success: string,
+  authority: AuthoritySnapshot = captureAuthority(),
+): Promise<boolean> {
   return queueAgentConfigSave({
-    store: props.store,
-    api: props.api,
+    store: authority.store,
+    api: authority.api,
     name: props.name,
     patch,
     apply,
@@ -167,11 +347,47 @@ function save(patch: AgentPatch, apply: (spec: Agent['spec']) => void, success: 
   })
 }
 
+function saveRegion<T extends PersonaSnapshot | ModelSnapshot | PolicySnapshot | AgentChannel[]>(
+  region: ManualSaveRegion,
+  snapshot: T,
+  patch: AgentPatch,
+  apply: (spec: Agent['spec']) => void,
+  success: string,
+  action: string,
+): Promise<boolean> {
+  if (saveState[region].status === 'pending') return Promise.resolve(false)
+  const authority = captureAuthority()
+  const agentName = props.name
+  const authorityEpoch = props.authorityEpoch
+  const generation = authorityGeneration
+  const sequence = beginSave(region, snapshot)
+  return save(patch, apply, success, authority).then(saved => {
+    // A result from another store, agent, route epoch, or component lifetime
+    // can never rewrite this form's feedback or baseline.
+    if (!authorityIsCurrent(authority) || generation !== authorityGeneration || props.name !== agentName || props.authorityEpoch !== authorityEpoch) return saved
+    if (sequence !== saveState[region].sequence) return saved
+    if (saved) {
+      updateBaseline(region, snapshot)
+      saveState[region].status = same(snapshot, draftFor(region)) ? 'saved' : 'dirty'
+      saveState[region].error = ''
+      saveState[region].submitted = null
+    } else {
+      saveState[region].status = 'error'
+      saveState[region].error = `Could not save ${action}. Try again.`
+      saveState[region].submitted = null
+    }
+    return saved
+  })
+}
+
 function savePersona(): void {
+  if (saveState.persona.status === 'pending') return
   const nextName = displayName.value.trim()
   const nextDescription = description.value.trim()
   const nextPrompt = systemPrompt.value
-  void save(
+  void saveRegion(
+    'persona',
+    { displayName: nextName, description: nextDescription, systemPrompt: nextPrompt },
     { displayName: nextName, description: nextDescription, systemPrompt: nextPrompt },
     spec => {
       spec.displayName = nextName
@@ -179,6 +395,7 @@ function savePersona(): void {
       spec.systemPrompt = nextPrompt
     },
     'Persona saved.',
+    'persona',
   )
 }
 
@@ -193,19 +410,24 @@ function removeFallback(index: number): void {
 }
 
 function saveModel(): void {
+  if (saveState.model.status === 'pending') return
   const credential = modelCredential.value
   const nextFallbacks = [...fallbacks.value]
-  void save(
+  void saveRegion(
+    'model',
+    { modelCredential: credential, modelFallbacks: nextFallbacks },
     { modelCredential: credential, modelFallbacks: nextFallbacks },
     spec => {
       spec.models = { ...(spec.models || {}), chat: credential }
       spec.modelFallbacks = nextFallbacks
     },
     'Model saved.',
+    'model',
   )
 }
 
 function savePolicy(): void {
+  if (saveState.policy.status === 'pending') return
   const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
   budgetUSDError.value = budget.usdError
   budgetTokensError.value = budget.tokenError
@@ -215,7 +437,15 @@ function savePolicy(): void {
   const timeout = intOrZero(timeoutSeconds.value)
   const usd = budget.budgetUSD
   const mode = autonomy.value
-  void save(
+  void saveRegion(
+    'policy',
+    {
+      autonomy: mode,
+      budgetUSD: usd,
+      budgetTokens: tokens ? String(tokens) : '',
+      maxToolTurns: turns,
+      timeoutSeconds: timeout,
+    },
     { autonomy: mode, budgetUSD: usd, budgetTokens: tokens, maxToolTurns: turns, timeoutSeconds: timeout },
     spec => {
       spec.autonomy = mode
@@ -223,6 +453,7 @@ function savePolicy(): void {
       spec.limits = { maxToolTurns: turns, timeoutSeconds: timeout }
     },
     'Autonomy, budget and limits saved.',
+    'autonomy, budget and limits',
   )
 }
 
@@ -246,25 +477,49 @@ function hasSearchTool(source: Agent): boolean {
   return (source.spec?.tools?.interactive?.connections || []).some(name => props.store.connectionType(name) === 'websearch')
 }
 
+function saveImmediate(
+  region: 'tools' | 'delegates',
+  patch: AgentPatch,
+  apply: (spec: Agent['spec']) => void,
+  success: string,
+  action: string,
+): void {
+  const authority = captureAuthority()
+  const agentName = props.name
+  const authorityEpoch = props.authorityEpoch
+  const generation = authorityGeneration
+  const sequence = beginSave(region)
+  void save(patch, apply, success, authority).then(saved => {
+    if (!authorityIsCurrent(authority) || generation !== authorityGeneration || props.name !== agentName || props.authorityEpoch !== authorityEpoch) return
+    if (sequence !== saveState[region].sequence) return
+    saveState[region].status = saved ? 'saved' : 'error'
+    saveState[region].error = saved ? '' : `Could not save ${action}. Try again.`
+  })
+}
+
 function setToolsetLinked(source: Agent, toolset: string, on: boolean): void {
   const interactive = source.spec?.tools?.interactive?.toolsets || []
   const background = source.spec?.tools?.background?.toolsets || []
   const nextInteractive = on ? [...new Set([...interactive, toolset])] : interactive.filter(name => name !== toolset)
   const nextBackground = on ? background : background.filter(name => name !== toolset)
-  void save(
+  saveImmediate(
+    'tools',
     { interactiveToolsets: nextInteractive, backgroundToolsets: nextBackground },
     spec => setGrants(spec, { interactiveToolsets: nextInteractive, backgroundToolsets: nextBackground }),
     on ? 'Toolset linked.' : 'Toolset unlinked.',
+    'tool access',
   )
 }
 
 function setToolsetBackground(source: Agent, toolset: string, on: boolean): void {
   const background = source.spec?.tools?.background?.toolsets || []
   const next = on ? [...new Set([...background, toolset])] : background.filter(name => name !== toolset)
-  void save(
+  saveImmediate(
+    'tools',
     { backgroundToolsets: next },
     spec => setGrants(spec, { backgroundToolsets: next }),
     on ? 'Toolset enabled for background runs.' : 'Toolset is now interactive-only.',
+    'tool access',
   )
 }
 
@@ -279,7 +534,7 @@ function setToolLinked(source: Agent, connection: string, on: boolean): void {
     interactiveFamilies: props.store.familiesFor(nextInteractive, source.spec?.tools?.interactive?.families),
     backgroundFamilies: props.store.familiesFor(nextBackground, source.spec?.tools?.background?.families),
   }
-  void save(patch, spec => setGrants(spec, patch), on ? 'Tool granted.' : 'Tool removed.')
+  saveImmediate('tools', patch, spec => setGrants(spec, patch), on ? 'Tool granted.' : 'Tool removed.', 'tool access')
 }
 
 function setToolBackground(source: Agent, connection: string, on: boolean): void {
@@ -289,10 +544,12 @@ function setToolBackground(source: Agent, connection: string, on: boolean): void
     backgroundConnections: next,
     backgroundFamilies: props.store.familiesFor(next, source.spec?.tools?.background?.families),
   }
-  void save(
+  saveImmediate(
+    'tools',
     patch,
     spec => setGrants(spec, patch),
     on ? 'Tool enabled for background runs.' : 'Tool is now interactive-only.',
+    'tool access',
   )
 }
 
@@ -314,7 +571,7 @@ function setFamily(source: Agent, family: string, label: string, on: boolean, ba
   const message = background
     ? on ? `${label} enabled for background runs.` : `${label} is now interactive-only.`
     : on ? `${label} enabled.` : `${label} disabled.`
-  void save(patch, spec => setGrants(spec, patch), message)
+  saveImmediate('tools', patch, spec => setGrants(spec, patch), message, 'tool access')
 }
 
 function patchChannelRow(key: number, patch: Partial<AgentChannel>): void {
@@ -352,6 +609,7 @@ function addChannel(): void {
 }
 
 async function saveChannels(): Promise<void> {
+  if (saveState.channels.status === 'pending') return
   const trimmed = channels.value.map(row => ({
     key: row.key,
     name: row.name.trim(),
@@ -383,7 +641,7 @@ async function saveChannels(): Promise<void> {
   channelError.value = ''
   channelErrorTarget.value = null
   const payload = rows.map(row => ({ name: row.name, connectionRef: row.connectionRef, primary: row.primary }))
-  await save({ channels: payload }, spec => { spec.channels = payload }, 'Channels saved.')
+  await saveRegion('channels', payload, { channels: payload }, spec => { spec.channels = payload }, 'Channels saved.', 'channels')
 }
 
 async function enableInbound(name: string): Promise<void> {
@@ -402,8 +660,16 @@ async function enableInbound(name: string): Promise<void> {
   }
 }
 
+watch(() => props.authorityEpoch, (epoch, previous) => {
+  if (epoch === previous) return
+  authorityGeneration += 1
+  resetSaveState()
+})
 watch(() => [props.store, props.authorityEpoch, props.name], () => { slackRequestURL.value = '' })
-onBeforeUnmount(() => { slackRequestURL.value = '' })
+onBeforeUnmount(() => {
+  authorityGeneration += 1
+  slackRequestURL.value = ''
+})
 
 async function testChannel(name: string): Promise<void> {
   const authority = captureAuthority()
@@ -418,7 +684,7 @@ function setDelegate(source: Agent, delegate: string, on: boolean): void {
   const next = on
     ? [...new Set([...(source.spec?.delegates || []), delegate])]
     : (source.spec?.delegates || []).filter(name => name !== delegate)
-  void save({ delegates: next }, spec => { spec.delegates = next }, 'Delegates saved.')
+  saveImmediate('delegates', { delegates: next }, spec => { spec.delegates = next }, 'Delegates saved.', 'delegates')
 }
 
 function intOrZero(value: string): number {
@@ -446,7 +712,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <label>Display name<input v-model="displayName" class="k-input" /></label>
       <label>Description<input v-model="description" class="k-input" placeholder="What this agent is for — shown to you, not to the model." /></label>
       <label>System prompt<textarea v-model="systemPrompt" class="k-input" rows="6" placeholder="You are a concise assistant that…"></textarea></label>
-      <div class="agents-form-actions"><button class="k-btn k-btn--primary" type="button" @click="savePersona"><Check :stroke-width="1.75" aria-hidden="true" /> Save persona</button></div>
+      <div class="agents-form-actions">
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.persona.status === 'pending'" :aria-busy="saveState.persona.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('persona', personaDirty)" @click="savePersona"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.persona.status === 'pending' ? 'Saving persona…' : 'Save persona' }}</button>
+        <ConfigSaveFeedback id="agent-persona-save-feedback" action="persona" :status="feedbackStatus('persona', personaDirty)" :newer-edits="newerEdits('persona')" :error="feedbackError('persona')" />
+      </div>
     </ResourceSectionCard>
 
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
@@ -476,8 +745,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" labelledby="agent-fallbacks-label" @update:model-value="addFallback" />
       </div>
       <div v-if="credentialSlice.hasSnapshot" class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> Save model</button>
-        <span v-if="agent.spec?.models?.chat !== modelCredential" class="agents-hint">unsaved change</span>
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending'" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
+        <ConfigSaveFeedback id="agent-model-save-feedback" action="model" :status="feedbackStatus('model', modelDirty)" :newer-edits="newerEdits('model')" :error="feedbackError('model')" />
       </div>
     </ResourceSectionCard>
 
@@ -502,12 +771,16 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <label>Run timeout (seconds)<input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" /><span class="agents-hint">Wall-clock bound on a run — it is aborted when this elapses.</span></label>
         </div>
       </div>
-      <div class="agents-form-actions"><button class="k-btn k-btn--primary" type="button" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> Save policy</button></div>
+      <div class="agents-form-actions">
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending'" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('policy', policyDirty)" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
+        <ConfigSaveFeedback id="agent-policy-save-feedback" action="autonomy, budget and limits" :status="feedbackStatus('policy', policyDirty)" :newer-edits="newerEdits('policy')" :error="feedbackError('policy')" />
+      </div>
     </ResourceSectionCard>
 
     <Teleport to="#agents-workbench-panel-tools" defer :disabled="!workbenchSections">
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
       <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
+      <ConfigSaveFeedback id="agent-tools-save-feedback" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
       <fieldset class="agents-wire-fs">
         <legend><Puzzle :stroke-width="1.75" aria-hidden="true" /> Toolsets</legend>
         <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
@@ -521,8 +794,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
           </div>
           <div v-for="toolset in toolsets" :key="toolset.metadata.name" class="agents-tool-row">
-            <label class="agents-check"><input type="checkbox" :checked="linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ toolset.spec.displayName || toolset.metadata.name }}</label>
-            <label class="agents-check agents-bg-toggle" title="Background runs have no human watching, so tools stay interactive-only unless opted in here."><input type="checkbox" :checked="backgroundToolsets(agent).has(toolset.metadata.name)" :disabled="!linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
+            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ toolset.spec.displayName || toolset.metadata.name }}</label>
+            <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so tools stay interactive-only unless opted in here."><input type="checkbox" :checked="backgroundToolsets(agent).has(toolset.metadata.name)" :disabled="!linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
           </div>
           <p v-if="toolsets.length === 0" class="agents-hint">No toolsets yet — create one in the <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button> tab.</p>
         </template>
@@ -532,12 +805,12 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <legend><Globe2 :stroke-width="1.75" aria-hidden="true" /> Built-in capabilities</legend>
         <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
         <div class="agents-tool-row">
-          <label class="agents-check"><input type="checkbox" :checked="familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)" /> Read the web <span class="muted">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></label>
-          <label class="agents-check agents-bg-toggle"><input type="checkbox" :checked="familyEnabled(agent, 'web', true)" :disabled="!familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)" /> Read the web <span class="muted">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></label>
+          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web', true)" :disabled="!familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
         <div class="agents-tool-row">
-          <label class="agents-check"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /> Research fan-out <span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></label>
-          <label class="agents-check agents-bg-toggle"><input type="checkbox" :checked="familyEnabled(agent, 'spawn', true)" :disabled="!familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /> Research fan-out <span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></label>
+          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn', true)" :disabled="!familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
         <p v-if="familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web')" class="agents-hint agents-warn-inline"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent can spawn workers but has no web access, so a worker inherits none either — a fan-out would answer from the model alone. Turn on <strong>Read the web</strong>, and wire a websearch tool for real searching.</p>
       </fieldset>
@@ -555,8 +828,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
           </div>
           <div v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-tool-row">
-            <label class="agents-check"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.spec.displayName || connection.metadata.name }} <span class="muted">{{ connection.spec.type }}</span></label>
-            <label class="agents-check agents-bg-toggle"><input type="checkbox" :checked="backgroundTools(agent).has(connection.metadata.name)" :disabled="!linkedTools(agent).has(connection.metadata.name)" @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
+            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.spec.displayName || connection.metadata.name }} <span class="muted">{{ connection.spec.type }}</span></label>
+            <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="backgroundTools(agent).has(connection.metadata.name)" :disabled="!linkedTools(agent).has(connection.metadata.name)" @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
           </div>
           <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
         </template>
@@ -581,14 +854,15 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <input class="k-input agents-chan-name" placeholder="primary" aria-label="Channel role name" :value="row.name || ''" :aria-invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'true' : undefined" :aria-describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'agent-channels-error' : undefined" @input="patchChannelRow(row.key, { name: ($event.target as HTMLInputElement).value })" />
           <FormSelect class="agents-chan-conn" :model-value="row.connectionRef" :options="channelOptions" :labelledby="`agent-channel-${row.key}-label`" :invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection'" :describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection' ? 'agent-channels-error' : undefined" @update:model-value="patchChannelRow(row.key, { connectionRef: $event })" />
           <span :id="`agent-channel-${row.key}-label`" class="sr-only">Channel connection</span>
-          <label class="agents-chan-primary" title="Default channel for output with no channel set"><input type="radio" name="chan-primary" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
+          <label class="agents-chan-primary k-checkbox-hit" title="Default channel for output with no channel set"><input type="radio" name="chan-primary" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
           <button class="k-icon-action agents-iconbtn-danger" type="button" :aria-label="`Remove channel ${row.name || ''}`" title="Remove channel" @click="removeChannel(row.key)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button>
         </div>
       </div>
       <div v-if="connectionSlice.hasSnapshot && channelError" id="agent-channels-error" class="agents-fielderr" role="alert">{{ channelError }}</div>
       <div v-if="connectionSlice.hasSnapshot" class="agents-form-actions">
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="channelConnections.length === 0" @click="addChannel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add channel</button>
-        <button class="k-btn k-btn--primary" type="button" :aria-describedby="channelError ? 'agent-channels-error' : undefined" @click="saveChannels"><Check :stroke-width="1.75" aria-hidden="true" /> Save channels</button>
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.channels.status === 'pending'" :aria-busy="saveState.channels.status === 'pending' ? 'true' : undefined" :aria-describedby="[channelError ? 'agent-channels-error' : '', feedbackDescription('channels', channelsDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveChannels"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.channels.status === 'pending' ? 'Saving channels…' : 'Save channels' }}</button>
+        <ConfigSaveFeedback id="agent-channels-save-feedback" action="channels" :status="feedbackStatus('channels', channelsDirty)" :newer-edits="newerEdits('channels')" :error="feedbackError('channels')" />
       </div>
       <div v-if="connectionSlice.hasSnapshot && agent.spec?.channels?.length" class="agents-chan-inbound">
         <div v-for="bound in agent.spec.channels" :key="`${bound.name}-${bound.connectionRef}`" class="agents-inbound-line">
@@ -616,8 +890,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
     <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" heading-id="agent-delegates-heading" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
-        <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
+        <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
+      <ConfigSaveFeedback id="agent-delegates-save-feedback" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
     </ResourceSectionCard>
 
     <slot name="destructive-actions" />

@@ -314,7 +314,9 @@ describe('agent resource detail conformance', () => {
     const staleStore = makeStore(api)
     Object.assign(staleStore.agents, { loaded: true, hasSnapshot: true, error: 'refresh timed out' })
     const staleMounted = await mountVue(AgentDetail, { store: staleStore, api, name: 'scout', tab: 'config', authorityEpoch: 1 })
-    expect(text(staleMounted.element.querySelector('.k-resource-page__stale'))).toContain('refresh timed out')
+    const staleMessage = staleMounted.element.querySelector('.k-resource-page__stale')
+    expect(text(staleMessage)).toContain('refresh timed out')
+    expect(text(staleMessage)).not.toContain('Showing the last loaded agent')
     expect(text(staleMounted.element.querySelector('.agents-state-empty'))).toContain('last loaded workspace snapshot')
 
     const staleAgentStore = makeStore(api)
@@ -323,7 +325,9 @@ describe('agent resource detail conformance', () => {
     const staleAgentMounted = await mountVue(AgentDetail, { store: staleAgentStore, api, name: 'scout', tab: 'config', authorityEpoch: 1 })
     expect(staleAgentMounted.element.querySelector('.k-resource-page__header')).toBeNull()
     expect(staleAgentMounted.element.querySelector('.agents-agent-heading')).not.toBeNull()
-    expect(text(staleAgentMounted.element.querySelector('.k-resource-page__stale'))).toContain('refresh timed out')
+    const staleAgentMessage = staleAgentMounted.element.querySelector('.k-resource-page__stale')
+    expect(text(staleAgentMessage)).toContain('refresh timed out')
+    expect(text(staleAgentMessage)).not.toContain('Showing the last loaded agent')
   })
 
   it('keeps agent deletion in Config with confirmation, busy state, and navigation', async () => {

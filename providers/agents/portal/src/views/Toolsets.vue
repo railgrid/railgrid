@@ -153,7 +153,7 @@ function cancelCreate(): void {
 
 <template>
   <div v-if="createRoute" class="agents-menu agents-create-page k-create-page">
-    <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" /> Connections</button>
+    <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
     <header class="k-create-header"><h1 class="k-create-title">Create toolset</h1><p class="k-create-description">Bundle reusable tools once, then attach the toolset to any agent.</p></header>
     <form class="agents-toolset-form agents-guided-form k-create-surface k-create-surface--guided" :aria-busy="createBusy" @submit.prevent="save">
       <div class="k-create-body k-create-body--guided">
@@ -163,7 +163,7 @@ function cancelCreate(): void {
             <label>Display name<input v-model="draftDisplay" class="k-input" placeholder="optional" :disabled="createBusy" /></label>
           </div>
           <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">
-            <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
+            <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
             <span v-if="!toolConnections.length" class="muted">No tools yet — create MCP/GitHub/web tools above. Cluster edges are always on.</span>
           </div><span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span></fieldset>
         </div>
@@ -195,7 +195,7 @@ function cancelCreate(): void {
             <div class="k-create-body k-create-fields">
               <label>Display name<input v-model="draftDisplay" class="k-input" :placeholder="currentEditItem.metadata.name" :disabled="createBusy" /></label>
               <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">
-                <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
+                <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.metadata.name }} <span class="agents-hint">{{ connection.spec.type }}</span></label>
                 <span v-if="!toolConnections.length" class="muted">No tools yet — create MCP/GitHub/web tools first. Cluster edges are always on.</span>
               </div><span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span></fieldset>
             </div>
@@ -207,8 +207,8 @@ function cancelCreate(): void {
   </div>
   <div v-else class="agents-panel k-card agents-route-panel">
     <div class="agents-panel-head">
-      <h3 tabindex="-1" data-toolsets-heading><Package :stroke-width="1.75" /> Toolsets</h3>
-      <button v-if="!showFirstRun" class="k-btn k-btn--ghost secondary" @click="openCreate"><Plus :stroke-width="1.75" /> New toolset</button>
+      <h3 tabindex="-1" data-toolsets-heading><Package :stroke-width="1.75" aria-hidden="true" /> Toolsets</h3>
+      <button v-if="!showFirstRun" class="k-btn k-btn--ghost secondary" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New toolset</button>
     </div>
     <p class="muted">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
     <template v-if="showFirstRun">
@@ -227,7 +227,7 @@ function cancelCreate(): void {
         :current-step="hasToolConnections ? 1 : 0" journey-label="Toolset setup path"
         @primary="emit('navigate', { kind: 'create', resource: 'toolset' })"
         @secondary="emit('navigate', { kind: 'create', resource: 'connection' })"
-      ><template #icon><Package :stroke-width="1.75" /></template></FirstRunGuide>
+      ><template #icon><Package :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>
     </template>
     <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'tools', label: 'Tools' }, { key: 'usedBy', label: 'Used by' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Toolsets" :loaded="slice.hasSnapshot" :loading="slice.loading" :error="slice.error" :stale="slice.hasSnapshot && !!slice.error" retryable searchable search-placeholder="Search toolsets…" :search-keys="['name', 'tools']" :filters="filters" :filter-values="tableFilters" paginated :interactive="false" @update:filter-values="tableFilters = $event" @retry="store.load('toolsets')">
       <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code></template>

@@ -49,6 +49,27 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+async function mountDeferredConfig(spec: Record<string, unknown> = {}, credentials: Array<{ name: string; model?: string }> = []) {
+  const pending = deferred<ReturnType<typeof agentFixture>>()
+  let store!: ReturnType<typeof makeStore>
+  const patchAgent = vi.fn().mockImplementation(() => pending.promise)
+  const api = stubApi({
+    patchAgent,
+    listAgents: () => Promise.resolve(store.agents.data.map(item => structuredClone(item))),
+  })
+  store = makeStore(api)
+  store.agents.data = [agentFixture('scout', spec)]
+  Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+  store.credentials.data = credentials
+  Object.assign(store.credentials, { loaded: true, hasSnapshot: true })
+  Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+  Object.assign(store.connections, { loaded: true, hasSnapshot: true })
+  const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+  mounted.push(view)
+  await settle()
+  return { pending, patchAgent, store, view, el: view.element }
+}
+
 describe('agent config', () => {
   it('uses the PortalKit form selector for primary and fallback models', async () => {
     const { el, patchAgent } = await mountConfig(
@@ -84,6 +105,167 @@ describe('agent config', () => {
     expect(remove.classList.contains('k-icon-action')).toBe(true)
     expect(remove.type).toBe('button')
     expect(remove.getAttribute('aria-label')).toBe('Remove fallback backup')
+  })
+
+  it('keeps newer persona edits dirty while an older save is pending', async () => {
+    const pending = deferred<ReturnType<typeof agentFixture>>()
+    let store!: ReturnType<typeof makeStore>
+    const patchAgent = vi.fn().mockImplementation(() => pending.promise)
+    const api = stubApi({
+      patchAgent,
+      listAgents: () => Promise.resolve(store.agents.data.map(item => structuredClone(item))),
+    })
+    store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { description: 'original' })]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle()
+
+    const description = [...view.element.querySelectorAll<HTMLInputElement>('input')]
+      .find(input => input.value === 'original')!
+    description.value = 'first draft'
+    description.dispatchEvent(new Event('input'))
+    sectionButton(view.element, 'Save persona').click()
+    await settle()
+
+    const saveButton = sectionButton(view.element, 'Saving persona')
+    expect(saveButton.disabled).toBe(true)
+    const pendingFeedback = view.element.querySelector('[data-config-save-status="pending"]')
+    expect(pendingFeedback).not.toBeNull()
+    expect(text(pendingFeedback)).not.toContain('Newer edits remain unsaved')
+
+    description.value = 'newer draft'
+    description.dispatchEvent(new Event('input'))
+    await settle()
+    expect(text(view.element.querySelector('[data-config-save-status="pending"]'))).toContain('Newer edits remain unsaved')
+
+    pending.resolve(agentFixture('scout', { description: 'first draft' }))
+    await settle(6)
+
+    expect(description.value).toBe('newer draft')
+    expect(text(view.element.querySelector('[data-config-save-status="dirty"]'))).toContain('Unsaved changes')
+    expect(view.element.querySelector('[data-config-save-status="saved"]')).toBeNull()
+    expect(patchAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a persona save failure beside the controls and permits a retry', async () => {
+    const pending = deferred<ReturnType<typeof agentFixture>>()
+    const patchAgent = vi.fn()
+      .mockImplementationOnce(() => Promise.reject(new Error('conflict')))
+      .mockImplementationOnce(() => pending.promise)
+    let store!: ReturnType<typeof makeStore>
+    const api = stubApi({
+      patchAgent,
+      listAgents: () => Promise.resolve(store.agents.data.map(item => structuredClone(item))),
+    })
+    store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { description: 'original' })]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle()
+
+    const description = [...view.element.querySelectorAll<HTMLInputElement>('input')]
+      .find(input => input.value === 'original')!
+    description.value = 'changed'
+    description.dispatchEvent(new Event('input'))
+    sectionButton(view.element, 'Save persona').click()
+    await settle(6)
+
+    const failure = view.element.querySelector('[data-config-save-status="error"]')
+    expect(failure).not.toBeNull()
+    expect(text(failure)).toContain('Could not save persona. Try again.')
+
+    sectionButton(view.element, 'Save persona').click()
+    await settle()
+    expect(sectionButton(view.element, 'Saving persona').disabled).toBe(true)
+    pending.resolve(agentFixture('scout', { description: 'changed' }))
+    await settle(6)
+    expect(text(view.element.querySelector('[data-config-save-status="saved"]'))).toContain('Persona saved.')
+    expect(patchAgent).toHaveBeenCalledTimes(2)
+  })
+
+  it('marks a fallback-only model edit as dirty', async () => {
+    const { el } = await mountConfig({ models: { chat: 'main' }, modelFallbacks: ['backup'] }, [
+      { name: 'main', model: 'gpt-5' },
+      { name: 'backup', model: 'claude' },
+    ])
+    el.querySelector<HTMLButtonElement>('.agents-chip-x')!.click()
+    await settle()
+
+    expect(text(el.querySelector('[data-config-save-status="dirty"]'))).toContain('Unsaved changes')
+    expect(sectionButton(el, 'Save model').disabled).toBe(false)
+  })
+
+  it('only announces newer model edits made after submitting the draft', async () => {
+    const { el, pending } = await mountDeferredConfig(
+      { models: { chat: 'main' }, modelFallbacks: ['backup'] },
+      [{ name: 'main', model: 'gpt-5' }, { name: 'backup', model: 'claude' }],
+    )
+    el.querySelector<HTMLButtonElement>('.agents-chip-x')!.click()
+    await settle()
+    sectionButton(el, 'Save model').click()
+    await settle()
+
+    const feedback = el.querySelector('#agent-model-save-feedback')!
+    expect(text(feedback)).not.toContain('Newer edits remain unsaved')
+
+    const trigger = el.querySelectorAll<HTMLElement>('[data-form-select]')[0].querySelector<HTMLButtonElement>('[role="combobox"]')!
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await settle()
+    expect(text(feedback)).toContain('Newer edits remain unsaved')
+
+    pending.resolve(agentFixture('scout', { models: { chat: 'main' }, modelFallbacks: [] }))
+    await settle(8)
+  })
+
+  it('only announces newer policy edits made after submitting the draft', async () => {
+    const { el, pending } = await mountDeferredConfig({ autonomy: 'ask' })
+    const auto = [...el.querySelectorAll<HTMLInputElement>('input[type="radio"]')]
+      .find(input => input.value === 'auto')!
+    auto.click()
+    await settle()
+    sectionButton(el, 'Save policy').click()
+    await settle()
+
+    const feedback = el.querySelector('#agent-policy-save-feedback')!
+    expect(text(feedback)).not.toContain('Newer edits remain unsaved')
+
+    const budget = el.querySelector<HTMLInputElement>('input[inputmode="decimal"]')!
+    budget.value = '5'
+    budget.dispatchEvent(new Event('input'))
+    await settle()
+    expect(text(feedback)).toContain('Newer edits remain unsaved')
+
+    pending.resolve(agentFixture('scout', { autonomy: 'auto' }))
+    await settle(8)
+  })
+
+  it('only announces newer channel edits made after submitting the draft', async () => {
+    const { el, pending } = await mountDeferredConfig({ channels: [{ name: 'primary', connectionRef: 'slack' }] })
+    expect(el.querySelector('.agents-chan-primary')?.classList.contains('k-checkbox-hit')).toBe(true)
+    const role = el.querySelector<HTMLInputElement>('.agents-chan-name')!
+    role.value = 'alerts'
+    role.dispatchEvent(new Event('input'))
+    await settle()
+    sectionButton(el, 'Save channels').click()
+    await settle()
+
+    const feedback = el.querySelector('#agent-channels-save-feedback')!
+    expect(text(feedback)).not.toContain('Newer edits remain unsaved')
+
+    role.value = 'incidents'
+    role.dispatchEvent(new Event('input'))
+    await settle()
+    expect(text(feedback)).toContain('Newer edits remain unsaved')
+
+    pending.resolve(agentFixture('scout', { channels: [{ name: 'alerts', connectionRef: 'slack' }] }))
+    await settle(8)
   })
 
   it('saves an editable description with the persona section', async () => {
@@ -666,7 +848,80 @@ describe('agent config', () => {
 
     const description = [...view.element.querySelectorAll<HTMLInputElement>('input')].find(input => input.value === 'new authority')
     expect(description).toBeDefined()
+    expect(newStore.agent('scout')?.spec.description).toBe('new authority')
+    expect(view.element.querySelector('[data-config-save-status]')).toBeNull()
     expect(text(view.element)).not.toContain('old authority')
+  })
+
+  it('ignores a deferred save after switching agents in the same store', async () => {
+    const pendingSave = deferred<ReturnType<typeof agentFixture>>()
+    let store!: ReturnType<typeof makeStore>
+    const api = stubApi({
+      patchAgent: () => pendingSave.promise,
+      listAgents: () => Promise.resolve(store.agents.data.map(item => structuredClone(item))),
+    })
+    store = makeStore(api)
+    store.agents.data = [
+      agentFixture('scout', { description: 'old agent' }),
+      agentFixture('planner', { description: 'current agent' }),
+    ]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle()
+
+    const oldDescription = [...view.element.querySelectorAll<HTMLInputElement>('input')].find(input => input.value === 'old agent')!
+    oldDescription.value = 'old save in flight'
+    oldDescription.dispatchEvent(new Event('input'))
+    sectionButton(view.element, 'Save persona').click()
+    await settle()
+
+    await view.setProps({ name: 'planner' })
+    const currentDescription = [...view.element.querySelectorAll<HTMLInputElement>('input')].find(input => input.value === 'current agent')!
+    expect(currentDescription).toBeDefined()
+
+    pendingSave.resolve(agentFixture('scout', { description: 'old save in flight' }))
+    await settle(8)
+
+    expect(currentDescription.value).toBe('current agent')
+    expect(store.agent('planner')?.spec.description).toBe('current agent')
+    expect(view.element.querySelector('[data-config-save-status]')).toBeNull()
+  })
+
+  it('ignores a deferred save after the route authority epoch changes', async () => {
+    const pendingSave = deferred<ReturnType<typeof agentFixture>>()
+    let store!: ReturnType<typeof makeStore>
+    const api = stubApi({
+      patchAgent: () => pendingSave.promise,
+      listAgents: () => Promise.resolve(store.agents.data.map(item => structuredClone(item))),
+    })
+    store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { description: 'current authority' })]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const view = await mountVue(AgentConfig, { store, api, name: 'scout', authorityEpoch: 1 })
+    mounted.push(view)
+    await settle()
+
+    const description = [...view.element.querySelectorAll<HTMLInputElement>('input')]
+      .find(input => input.value === 'current authority')!
+    description.value = 'old epoch save'
+    description.dispatchEvent(new Event('input'))
+    sectionButton(view.element, 'Save persona').click()
+    await settle()
+    expect(view.element.querySelector('[data-config-save-status="pending"]')).not.toBeNull()
+
+    await view.setProps({ authorityEpoch: 2 })
+    await settle()
+    expect(view.element.querySelector('[data-config-save-status="dirty"]')).not.toBeNull()
+
+    pendingSave.resolve(agentFixture('scout', { description: 'old epoch save' }))
+    await settle(8)
+
+    expect(view.element.querySelector('[data-config-save-status="dirty"]')).not.toBeNull()
+    expect(view.element.querySelector('[data-config-save-status="saved"]')).toBeNull()
+    expect(text(view.element)).not.toContain('Persona saved.')
   })
 })
 

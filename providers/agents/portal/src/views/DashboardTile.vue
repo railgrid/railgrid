@@ -157,8 +157,11 @@ defineExpose({ load, api, applyContext })
 </script>
 
 <template>
-  <div v-if="loading && !hasSnapshot" class="agents-tile-msg">Loading agents…</div>
-  <div v-else-if="error && !hasSnapshot" class="agents-tile-err">Failed to load: {{ error }}</div>
+  <div v-if="loading && !hasSnapshot" class="agents-tile-msg" role="status" aria-live="polite">Loading agents…</div>
+  <div v-else-if="error && !hasSnapshot" class="agents-tile-err" role="alert" aria-live="assertive">
+    <span>Failed to load: {{ error }}</span>
+    <button class="k-btn k-btn--ghost secondary" type="button" :disabled="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
+  </div>
   <div v-else class="agents-tile">
     <div v-if="error" class="agents-tile-err" role="status" aria-live="polite">
       Could not refresh. Showing the last loaded data. {{ error }}

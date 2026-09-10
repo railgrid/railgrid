@@ -1282,7 +1282,7 @@ defineExpose({
               @view-run="emit('navigate', { kind: 'run', id: $event })"
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
-            <p v-if="messagesHasSnapshot && messages.length === 0" class="muted">No messages yet. Say hi.</p>
+            <p v-if="messagesHasSnapshot && messages.length === 0" class="muted" role="status" aria-live="polite" aria-atomic="true">No messages yet. Say hi.</p>
           </AITranscript>
         </div>
 

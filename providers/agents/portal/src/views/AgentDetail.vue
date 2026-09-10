@@ -65,9 +65,9 @@ const title = computed(() => agent.value?.spec.displayName || agent.value?.metad
 const subtitle = computed(() => agent.value?.spec.description || '')
 const readError = computed(() => {
   if (!slice.value.error) return null
-  return agent.value
-    ? `Showing the last loaded agent. ${slice.value.error}`
-    : `Could not load this agent. ${slice.value.error}`
+  return !slice.value.hasSnapshot
+    ? `Could not load this agent. ${slice.value.error}`
+    : slice.value.error
 })
 function isMobileViewport(): boolean {
   if (typeof window === 'undefined') return false
@@ -214,7 +214,7 @@ async function remove(): Promise<void> {
       :loaded="slice.hasSnapshot"
       :loading="slice.loading"
       :error="readError"
-      :stale="slice.hasSnapshot"
+      :stale="slice.hasSnapshot && !!slice.error"
       retryable
       @retry="store.load('agents')"
     >

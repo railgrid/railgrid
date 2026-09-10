@@ -442,7 +442,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </div>
         <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" /><span class="agents-hint">Where output is delivered</span></label>
-        <label class="agents-check"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
+        <label class="agents-check k-checkbox-hit"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToAutomation">Cancel</button>
