@@ -154,8 +154,9 @@ test('renders persisted annotations as one Codex-style thread attachment outside
     disclosureID: 'history-annotations',
   }))
   assert.match(html, />1 annotation</)
-  assert.match(html, /aria-describedby="history-annotations-panel"/)
-  assert.match(html, /role="tooltip"/)
+  assert.match(html, /aria-controls="history-annotations-panel"/)
+  assert.match(html, /role="dialog"/)
+  assert.doesNotMatch(html, /role="tooltip"/)
   assert.doesNotMatch(html, /aria-label="Clear annotations"/)
   assert.match(html, /Federated MCP &lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   assert.match(html, /Prefer humans and agents\./)

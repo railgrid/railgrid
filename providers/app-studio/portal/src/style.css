@@ -27,12 +27,13 @@
 
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
+@tailwind utilities source(none);
 
-@source "./ProjectIntegrations.vue";
-@source "./portalkit/StatusBadge.vue";
-@source "./ProjectHistory.vue";
-@source "./DevelopmentPreviewToolbar.vue";
+/* The provider is self-contained: the host deliberately does not scan App
+   Studio sources. Include every shipped runtime component and helper while
+   source(none) keeps tests and other non-runtime files out of the scan. */
+@source "./**/*.vue";
+@source "./**/*.ts";
 
 @theme inline {
   /* Sharp radius scale — plain values (not host pointers), mirroring the host

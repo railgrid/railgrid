@@ -17,13 +17,16 @@ test('renders the current response mode as an accessible composer control', asyn
     mode: 'default',
   }))
   assert.match(html, /Response mode: Default/)
-  assert.match(html, /aria-haspopup="dialog"/)
+  assert.match(html, /aria-haspopup="menu"/)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, />Default</)
 })
 
 test('provides explicit default, plan, and review choices in one responsive popover', async () => {
-  const source = await readFile(new URL('./ResponseModePicker.vue', import.meta.url), 'utf8')
+  const [source, menuSource] = await Promise.all([
+    readFile(new URL('./ResponseModePicker.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./useModePickerMenu.ts', import.meta.url), 'utf8'),
+  ])
   assert.match(source, /How should App Studio respond\?/)
   assert.match(source, /chooseMode\('default'\)/)
   assert.match(source, /chooseMode\('plan'\)/)
@@ -32,12 +35,17 @@ test('provides explicit default, plan, and review choices in one responsive popo
 	assert.match(source, /report prioritized findings without changing it/)
   assert.doesNotMatch(source, /chooseMode\('build'\)/)
   assert.doesNotMatch(source, /chooseMode\('auto'\)/)
-  assert.match(source, /if \(!open\.value \|\| event\.key !== 'Escape'\) return/)
-  assert.match(source, /fixed inset-x-2 bottom-2/)
-  assert.match(source, /md:w-\[360px\]/)
-  assert.match(source, /rounded-md px-1\.5 py-1\.5/)
+  assert.match(menuSource, /useAnchoredPopover\(/)
+  assert.match(source, /class="k-menu[^"]*overflow-y-auto"/)
+  assert.match(source, /role="menu"/)
+  assert.match(source, /role="menuitemradio"/)
+  assert.match(menuSource, /closeMenuAfterTab\(\)/)
+  assert.match(menuSource, /event\.key === 'Home'/)
+  assert.match(menuSource, /event\.key === 'End'/)
+  assert.match(menuSource, /event\.key === 'ArrowDown'/)
+  assert.match(menuSource, /event\.key === 'ArrowUp'/)
   assert.match(source, /overflow-y-auto/)
-  assert.match(source, /md:absolute/)
+  assert.match(source, /max-h-\[calc\(100dvh-1rem\)\]/)
 })
 
 test('composer mounts both current settings', async () => {

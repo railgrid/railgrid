@@ -17,26 +17,32 @@ test('renders the current approval mode as an accessible composer control', asyn
     mode: 'on_request',
   }))
   assert.match(html, /Approval mode: Ask when needed/)
-  assert.match(html, /aria-haspopup="dialog"/)
+  assert.match(html, /aria-haspopup="menu"/)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, />Ask when needed</)
 })
 
 test('provides the Codex-style choices and responsive popover placement', async () => {
-  const source = await readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8')
+  const [source, menuSource] = await Promise.all([
+    readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./useModePickerMenu.ts', import.meta.url), 'utf8'),
+  ])
   assert.match(source, /How should App Studio actions be approved\?/)
   assert.match(source, /choose\('on_request'\)/)
   assert.match(source, /choose\('always_ask'\)/)
   assert.match(source, /choose\('never'\)/)
   assert.match(source, /Run routine workspace, build, test, and lint actions automatically/)
-  assert.match(source, /role="dialog"/)
-  assert.match(source, /:aria-pressed="mode === 'always_ask'"/)
-  assert.match(source, /if \(!open\.value \|\| event\.key !== 'Escape'\) return/)
-  assert.match(source, /fixed inset-x-2 bottom-2/)
-  assert.match(source, /md:w-\[360px\]/)
+  assert.match(source, /role="menu"/)
+  assert.match(source, /role="menuitemradio"/)
+  assert.match(source, /:aria-checked="mode === 'always_ask'"/)
+  assert.match(menuSource, /useAnchoredPopover\(/)
+  assert.match(menuSource, /closeMenuAfterTab\(\)/)
+  assert.match(menuSource, /event\.key === 'Home'/)
+  assert.match(menuSource, /event\.key === 'End'/)
+  assert.match(menuSource, /event\.key === 'ArrowDown'/)
+  assert.match(menuSource, /event\.key === 'ArrowUp'/)
   assert.match(source, /overflow-y-auto/)
-  assert.match(source, /rounded-md px-1\.5 py-1\.5/)
-  assert.match(source, /md:absolute/)
+  assert.match(source, /max-h-\[calc\(100dvh-1rem\)\]/)
 })
 
 test('defaults the App Studio composer to ask when needed', async () => {

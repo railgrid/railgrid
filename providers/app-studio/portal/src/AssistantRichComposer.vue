@@ -257,6 +257,8 @@ function createChip(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 
   chip.setAttribute('role', 'button')
   chip.setAttribute('tabindex', '0')
   chip.setAttribute('aria-label', `${chipKind(part)} ${chipLabel(part)}`)
+  chip.setAttribute('aria-keyshortcuts', 'Enter Space')
+  chip.addEventListener('keydown', handleChipKeydown)
   const icon = document.createElement('span')
   icon.className = 'assistant-composer-chip-icon'
   icon.textContent = chipKind(part) === 'skill' ? '@' : '#'
@@ -265,6 +267,14 @@ function createChip(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 
   label.textContent = chipLabel(part)
   chip.append(icon, label)
   return chip
+}
+
+function handleChipKeydown(event: KeyboardEvent): void {
+  if (!['Enter', ' ', 'Spacebar'].includes(event.key)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const chip = event.currentTarget
+  if (chip instanceof HTMLElement) removeChip(chip, true)
 }
 
 function renderParts(

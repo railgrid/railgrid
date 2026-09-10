@@ -8165,6 +8165,15 @@ async function mountActiveProviderTool() {
   }
 }
 
+function retryActiveProviderTool(): void {
+  if (activeWorkbenchTab.value?.kind !== 'provider' || !activeProviderTool.value) return
+  toolLoadSerial += 1
+  toolState.value = 'loading'
+  toolError.value = null
+  detachMountedTool()
+  void nextTick(() => void mountActiveProviderTool())
+}
+
 async function ensureProviderScript(tool: ProviderTool) {
   const tag = tagForProvider(tool.providerName)
   if (customElements.get(tag)) return
@@ -9193,7 +9202,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 ref="assistantThreadTitleInput"
                 v-model="assistantThreadTitleDraft"
                 type="text"
-                class="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                class="app-studio-touch-target h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 aria-label="Rename thread"
                 :disabled="threadMutationBusy"
                 @keydown.enter.exact.prevent="commitAssistantThreadTitleRename"
@@ -9203,7 +9212,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <button
                 v-else
                 type="button"
-                class="flex max-w-full min-w-0 items-center rounded-sm text-left text-[13px] font-semibold text-text-primary transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                class="app-studio-touch-target flex max-w-full min-w-0 items-center rounded-sm text-left text-[13px] font-semibold text-text-primary transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!activeAssistantThread || threadActionsDisabled"
                 :title="activeAssistantThread ? `Rename thread: ${activeAssistantThreadTitle}` : undefined"
                 aria-label="Rename thread"
@@ -9219,7 +9228,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <span aria-hidden="true">·</span>
                 <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
                 <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-                <button v-else type="button" class="text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
+                <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
               </div>
             </template>
           </AIConversationIdentity>
@@ -9277,11 +9286,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               archive: 'Archive thread',
               pinned: 'Pinned',
               threads: 'Threads',
-              pinMenu: 'Pin',
-              unpinMenu: 'Unpin',
-              markRead: 'Mark read',
-              markUnread: 'Mark unread',
-              archiveMenu: 'Archive',
+              pinMenu: 'Pin thread',
+              unpinMenu: 'Unpin thread',
+              markRead: 'Mark thread read',
+              markUnread: 'Mark thread unread',
+              archiveMenu: 'Archive thread',
               resize: 'Resize thread panel',
               empty: 'No threads yet.',
               emptySearch: 'No threads match this search.',
@@ -9309,7 +9318,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
-          <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+          <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
             connect to a Git account
           </a>
           before you can continue.
@@ -9382,12 +9391,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </p>
                   <div v-if="llmSettingsError" class="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
                     <span>{{ llmSettingsError }}</span>
-                    <button type="button" class="font-medium underline underline-offset-2" @click="loadLLMSettings">Retry</button>
+                    <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadLLMSettings">Retry</button>
                   </div>
                   <div v-else-if="!llmSettingsLoading && !llmSettings?.configured" class="mt-3">
                     <button
                       type="button"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      class="app-studio-touch-target inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
                       @click="openSettings"
                     >
                       <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -9404,7 +9413,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     type="button"
                     v-for="starterPrompt in starterPrompts"
                     :key="starterPrompt"
-                    class="flex min-h-[72px] items-start justify-between gap-3 rounded-md border border-border-subtle bg-surface px-3 py-2 text-left text-[12px] text-text-secondary transition hover:border-accent/30 hover:bg-surface-hover hover:text-text-primary"
+                    class="app-studio-touch-target flex min-h-[72px] items-start justify-between gap-3 rounded-md border border-border-subtle bg-surface px-3 py-2 text-left text-[12px] text-text-secondary transition hover:border-accent/30 hover:bg-surface-hover hover:text-text-primary"
                     @click="applyStarterPrompt(starterPrompt)"
                   >
                     <span class="line-clamp-3">{{ starterPrompt }}</span>
@@ -9542,7 +9551,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <button
                     v-if="canImplementPlan(message)"
                     type="button"
-                    class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    class="app-studio-touch-target mt-3 inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                     @click="implementPlan(message)"
                   >
                     Implement plan
@@ -9659,7 +9668,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     v-for="option in question.options"
                     :key="option.label"
                     type="button"
-                    class="rounded-md border px-3 py-2 text-left transition"
+                    class="app-studio-touch-target rounded-md border px-3 py-2 text-left transition"
                     :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
                     :disabled="followUpBusyState(pendingFollowUp.interrupt)"
                     @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
@@ -9670,7 +9679,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </div>
                 <input
                   v-if="question.isOther !== false"
-                  class="mt-2 h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  class="app-studio-touch-target mt-2 h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
                   :aria-label="`${question.header || 'Clarification'} other answer`"
                   placeholder="Other..."
                   :value="followUpAnswer(pendingFollowUp.interrupt, question)"
@@ -9682,12 +9691,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <template #actions>
               <button
                 type="button"
-                class="k-btn k-btn--primary"
+                class="app-studio-touch-target k-btn k-btn--primary"
                 :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
                 @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
               >
-                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 Continue
               </button>
             </template>
@@ -9711,7 +9720,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <template #actions>
               <button
                 type="button"
-                class="k-btn k-btn--primary"
+                class="app-studio-touch-target k-btn k-btn--primary"
                 :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
                 :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
                 @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
@@ -9720,13 +9729,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
                   class="h-3.5 w-3.5 animate-spin"
                   :stroke-width="1.75"
+                  aria-hidden="true"
                 />
-                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 Allow
               </button>
               <button
                 type="button"
-                class="k-btn k-btn--ghost"
+                class="app-studio-touch-target k-btn k-btn--ghost"
                 :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
                 @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
               >
@@ -9734,8 +9744,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
                   class="h-3.5 w-3.5 animate-spin"
                   :stroke-width="1.75"
+                  aria-hidden="true"
                 />
-                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 Deny
               </button>
             </template>
@@ -10074,7 +10085,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 					v-model="developmentPreviewAnnotationDraft.comment"
 					maxlength="2048"
 					rows="3"
-					class="min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
+						class="app-studio-touch-target min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
 					placeholder="What should change?"
 					@keydown.meta.enter.prevent="commitDevelopmentPreviewAnnotation"
 					@keydown.ctrl.enter.prevent="commitDevelopmentPreviewAnnotation"
@@ -10192,7 +10203,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     v-for="option in question.options"
                     :key="option.label"
                     type="button"
-                    class="rounded-lg border px-3 py-2 text-left transition"
+                    class="app-studio-touch-target rounded-lg border px-3 py-2 text-left transition"
                     :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
                     :disabled="followUpBusyState(pendingFollowUp.interrupt)"
                     @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
@@ -10203,7 +10214,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </div>
                 <input
                   v-if="question.isOther !== false"
-                  class="mt-2 h-9 w-full rounded-lg border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  class="app-studio-touch-target mt-2 h-9 w-full rounded-lg border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
                   :aria-label="`${question.header || 'Clarification'} other answer`"
                   placeholder="Other..."
                   :value="followUpAnswer(pendingFollowUp.interrupt, question)"
@@ -10283,8 +10294,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
           <input
             v-model="providerQuery"
-            class="h-8 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+            class="app-studio-touch-target h-8 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
             placeholder="Search provider views..."
+            aria-label="Search provider views"
           />
           <button
             v-if="providerQuery"
@@ -10297,7 +10309,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
         <div v-if="providerCatalogError" class="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
           <span>{{ providerCatalogError }}</span>
-          <button type="button" class="font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
+          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
         <div v-if="providersLoading && !providerCatalogLoaded" class="flex min-h-40 items-center justify-center gap-2 rounded-md border border-dashed border-border-subtle p-3 text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
@@ -10311,7 +10323,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <button
             v-for="tool in filteredProviderTools"
             :key="tool.id"
-            class="group flex min-h-[54px] w-full items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
+            class="app-studio-touch-target group flex min-h-[54px] w-full items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
             @click="openTool(tool)"
           >
             <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
@@ -10358,7 +10370,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           role="alert"
         >
           <span>{{ providerCatalogError }}</span>
-          <button type="button" class="font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
+          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
         <div
           v-else-if="!providerCatalogLoaded && providersLoading"
@@ -10376,20 +10388,28 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           role="alert"
         >
           <span>{{ providerCatalogError }}</span>
-          <button type="button" class="font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
+          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
         <div
           v-if="toolState === 'loading'"
           class="absolute inset-0 z-10 flex items-center justify-center bg-surface/80 text-[13px] text-text-muted"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          aria-atomic="true"
         >
-          <Loader2 class="mr-2 h-4 w-4 animate-spin" :stroke-width="1.75" />
+          <Loader2 class="mr-2 h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
           Loading {{ activeWorkbenchTab.title }}...
         </div>
         <div
           v-if="toolState === 'error'"
           class="absolute inset-3 z-10 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
         >
-          {{ toolError }}
+          <div>{{ toolError || 'Provider view is unavailable.' }}</div>
+          <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="retryActiveProviderTool">Retry provider view</button>
         </div>
         <div ref="toolHostRef" class="h-full min-h-0 w-full overflow-auto p-3" />
       </div>
