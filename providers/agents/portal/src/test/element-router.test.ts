@@ -365,7 +365,7 @@ describe('context and create-session routing fences', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     expect(location.hash).toBe('#/models')
     await settleVue()
-    buttonWithText(element, 'New model').click()
+    buttonWithText(element, 'Connect model').click()
     await settleVue()
     expect(location.hash).toBe('#/create/model')
 

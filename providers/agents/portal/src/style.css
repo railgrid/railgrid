@@ -117,7 +117,7 @@ faros-provider-agents .agents-panel form, faros-provider-agents .agents-obj-form
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 faros-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
-faros-provider-agents label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+:where(faros-provider-agents) label:not(.agents-model-create label) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 faros-provider-agents .agents-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 faros-provider-agents .agents-check { flex-direction: row !important; align-items: center; gap: 8px !important; font-size: 13px; }
 faros-provider-agents .agents-check input { width: auto; }
@@ -471,11 +471,11 @@ faros-provider-agents .agents-inbound-actions button { font-size: 12.5px; paddin
 /* --- models: dashboard + credential cards --- */
 faros-provider-agents .agents-section-h { margin: 8px 0 0; font-size: 15px; font-weight: 600; }
 faros-provider-agents .agents-dash {
-  display: flex; flex-direction: column; gap: 12px; padding: 16px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 faros-provider-agents .agents-dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 faros-provider-agents .agents-dash-head h3 { margin: 0; }
-faros-provider-agents .agents-dash-loading { padding: 24px; text-align: center; }
+faros-provider-agents .agents-dash-loading { padding: 0; text-align: center; }
 faros-provider-agents .agents-seg { display: inline-flex; background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-radius: 4px; padding: 2px; }
 faros-provider-agents .agents-seg button { border: 0; background: transparent; color: var(--color-text-secondary, #8a8ca6); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 3px; cursor: pointer; }
 faros-provider-agents .agents-seg button.on { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); box-shadow: none; }
@@ -527,7 +527,6 @@ faros-provider-agents .agents-chip-current { background: var(--color-accent-subt
 faros-provider-agents .agents-model-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; flex-wrap: wrap; }
 faros-provider-agents .agents-model-actions button.secondary { font-size: 12.5px; }
 faros-provider-agents .agents-rotate-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
-faros-provider-agents .agents-model-create { margin-top: 4px; }
 faros-provider-agents .agents-health { white-space: nowrap; }
 
 /* --- misc --- */
@@ -649,3 +648,8 @@ faros-dashboard-tile-agents .agents-tile-empty {
 }
 faros-dashboard-tile-agents .agents-tile-msg { font-size: 11px; color: var(--color-text-muted, #5d5f78); }
 faros-dashboard-tile-agents .agents-tile-err { font-size: 11px; color: var(--color-danger); }
+
+faros-provider-agents .agents-usage-disclosure { align-self: flex-start; }
+
+/* Collection spacing follows Databricks: the host owns the outer inset. */
+faros-provider-agents .agents-panel.agents-models-page { padding: 0; gap: 16px; }

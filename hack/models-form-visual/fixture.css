@@ -1,0 +1,40 @@
+/* Host parity: use the real portal reset, typography, tokens, and PortalKit.
+ * The explicit provider source globs make this fixture render the App Studio
+ * model route's utility classes even when this Vite root is outside the portal.
+ */
+@import "../../portal/src/assets/main.css";
+@source "../../providers/app-studio/portal/src/**/*.{vue,ts}";
+@source "../../providers/agents/portal/src/**/*.{vue,ts}";
+@source "../../providers/databricks/portal/src/**/*.{vue,ts}";
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 0;
+  padding: 24px;
+}
+
+#root {
+  width: 100%;
+  min-height: 0;
+}
+
+/* The real shell gives provider frames a fluid block. The fixture keeps the
+ * same boundary while leaving the page available for full-page screenshots. */
+faros-provider-app-studio,
+faros-provider-agents,
+faros-provider-databricks {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 620px) {
+  body {
+    padding: 12px;
+  }
+}

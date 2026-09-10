@@ -487,6 +487,7 @@ export interface ProjectRepositoryCommit {
 }
 
 export interface ProjectLLMModelSettings {
+  catalog?: { inputPer1M: number; outputPer1M: number; contextWindow?: number; vision?: boolean; toolCall?: boolean; reasoning?: boolean }
   id: string
   name: string
   provider: string

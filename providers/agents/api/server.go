@@ -192,6 +192,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/credentials/{name}", s.deleteCredential)
 	// Health-check a credential (real API probe → latency + served models).
 	mux.HandleFunc("POST /api/credentials/{name}/test", s.testCredential)
+	mux.HandleFunc("POST /api/credentials/test", s.testCredentialDraft)
+	mux.HandleFunc("POST /api/credentials/discover", s.discoverCredentialDraft)
 	// Curated model catalog: pricing + capabilities for the Models UI.
 	mux.HandleFunc("GET /api/catalog", s.modelCatalog)
 	// Usage / observability rollups over a window (cost, tokens, latency, errors).

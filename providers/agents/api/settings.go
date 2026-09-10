@@ -147,10 +147,8 @@ type credentialTestResult struct {
 	Models    []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
 }
 
-// testCredential health-checks a named credential by calling the provider's
-// GET {baseURL}/models with the stored key. This is a cheap, token-free probe
-// that both verifies the key works and discovers the models the endpoint serves
-// (returned for the "pick a model" UX). Reports latency either way.
+// testCredential verifies that the configured model responds to a small chat request.
+// Model discovery is a separate operation and cannot mark a connection verified.
 func (s *Server) testCredential(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.requireClient(w, r)
 	if !ok {
@@ -162,12 +160,7 @@ func (s *Server) testCredential(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: "credential not configured: " + err.Error()})
 		return
 	}
-	models, latency, perr := probeOpenAIModels(r.Context(), profile.BaseURL, profile.APIKey)
-	if perr != nil {
-		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, LatencyMS: latency.Milliseconds(), Error: perr.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, credentialTestResult{OK: true, LatencyMS: latency.Milliseconds(), Models: models})
+	writeJSON(w, http.StatusOK, verifyCredentialModel(r.Context(), profile))
 }
 
 // probeOpenAIModels calls GET {baseURL}/models and returns the served model ids

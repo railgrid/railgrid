@@ -1,7 +1,25 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
+
+// Nested lazy routes must not cause Rollup to export Vite's shared preload
+// helper from the classic bootstrap. Give the bootstrap its own helper module;
+// page chunks can then share the normal helper without importing main.js.
+function isolateBootstrapPreload(): Plugin {
+  const helper = '\0vite/preload-helper.js'
+  const isolated = '\0app-studio/bootstrap-preload.js'
+  return {
+    name: 'app-studio-bootstrap-preload',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (source === helper && importer?.endsWith('/src/element.ts')) return isolated
+    },
+    async load(id) {
+      if (id === isolated) return (await this.load({ id: helper })).code
+    },
+  }
+}
 
 function isolateClassicBootstrap() {
   return {
@@ -25,6 +43,7 @@ function isolateClassicBootstrap() {
 export default defineConfig({
   base: '/ui/providers/app-studio/',
   plugins: [
+    isolateBootstrapPreload(),
     vue(),
     tailwindcss(),
     isolateClassicBootstrap(),

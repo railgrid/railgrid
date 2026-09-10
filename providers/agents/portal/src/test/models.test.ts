@@ -2,7 +2,7 @@
 //   1. An empty workspace crashed the Models view. Go marshals a nil slice as
 //      JSON null, so /api/usage returned "byModel": null and the dashboard's
 //      .map() threw during render — taking the whole view down, including the
-//      "New model" button.
+//      "Connect model" button.
 //   2. The nav showed "reconnecting" forever on a healthy stream, because
 //      liveness was only set when a parsed event arrived and the server sends
 //      nothing but comment frames until something happens.
@@ -39,7 +39,7 @@ const usageWithNulls = {
 describe('models view on an empty workspace', () => {
   beforeEach(() => toast.mockReset())
 
-  it('renders the dashboard and the New model button when usage arrays are null', async () => {
+  it('renders the dashboard and the Connect model button when usage arrays are null', async () => {
     const api = stubApi({
       catalog: () => Promise.resolve([]),
       // Deliberately the raw (unnormalized) shape a pre-fix server sends.
@@ -50,7 +50,7 @@ describe('models view on an empty workspace', () => {
     await settleVue()
 
     const text = el.textContent || ''
-    expect(text).toContain('New model')
+    expect(text).toContain('Connect model')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
     expect(el.querySelector('.agents-panel.agents-route-panel')).toBeTruthy()
@@ -97,14 +97,14 @@ describe('models view on an empty workspace', () => {
     await settleVue()
 
     expect(el.textContent).toContain('$5.00')
-    expect(el.textContent).toContain('$2/$8 per 1M')
+    expect(el.textContent).toContain('$2 input · $8 output')
     await Promise.all([exposed.value!.loadCatalog(), exposed.value!.loadUsage()])
     await settleVue()
 
     expect(el.textContent).toContain('Could not refresh usage. Showing usage from the last successful read.')
     expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
     expect(el.textContent).toContain('$5.00')
-    expect(el.textContent).toContain('$2/$8 per 1M')
+    expect(el.textContent).toContain('$2 input · $8 output')
   })
 
   it('clears snapshots when the store and API authority change', async () => {
@@ -121,7 +121,7 @@ describe('models view on an empty workspace', () => {
     const view = await mountVue(Models, { store: firstStore, api: first })
     await settleVue()
     expect(view.element.textContent).toContain('$5.00')
-    expect(view.element.textContent).toContain('$2/$8 per 1M')
+    expect(view.element.textContent).toContain('$2 input · $8 output')
 
     const secondStore = makeStore(second)
     secondStore.credentials.data = [{ name: 'main', model: 'gpt-5' }]
@@ -131,20 +131,20 @@ describe('models view on an empty workspace', () => {
     expect(view.element.textContent).toContain('Loading usage…')
     expect(view.element.textContent).toContain('Loading model catalog…')
     expect(view.element.textContent).not.toContain('$5.00')
-    expect(view.element.textContent).not.toContain('$2/$8 per 1M')
+    expect(view.element.textContent).not.toContain('$2 input · $8 output')
 
     nextCatalog.resolve([])
     nextUsage.resolve(usageWithNulls)
     await settleVue()
   })
 
-  it('opens the create form when New model is clicked', async () => {
+  it('opens the create form when Connect model is clicked', async () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
     const store = makeStore(api)
     const { element: el } = await mountVue(Models, { store, api })
 
-    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('New model'))
-    expect(btn, 'New model button should be present').toBeTruthy()
+    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Connect model'))
+    expect(btn, 'Connect model button should be present').toBeTruthy()
     btn!.click()
     await settleVue()
 
@@ -152,108 +152,6 @@ describe('models view on an empty workspace', () => {
     const provider = el.querySelector<HTMLButtonElement>('.agents-model-create .k-form-select__trigger')!
     expect(provider.getAttribute('aria-labelledby')?.split(' ')).toContain('agents-model-provider-label')
     expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
-  })
-
-  it('preserves model create and credential-edit drafts across store refreshes', async () => {
-    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
-    const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5', baseURL: 'https://old.example.com/v1' }]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-    await settleVue()
-
-    const rotate = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Rotate / model'))!
-    rotate.click()
-    await settleVue()
-    const editBaseURL = el.querySelector<HTMLInputElement>('.agents-rotate-form input[name="baseURL"]')!
-    editBaseURL.value = 'https://draft.example.com/v1'
-    editBaseURL.dispatchEvent(new InputEvent('input', { bubbles: true }))
-
-    store.credentials.data = [{ name: 'main', model: 'gpt-5.1', baseURL: 'https://server.example.com/v1' }]
-    store.dispatchEvent(new Event('change'))
-    await settleVue()
-    expect(el.querySelector<HTMLInputElement>('.agents-rotate-form input[name="baseURL"]')!.value).toBe('https://draft.example.com/v1')
-
-    const routed = await mountVue(Models, { store, api, routeOwned: true, createRoute: true, createSession: 1 })
-    await settleVue()
-    const createName = routed.element.querySelector<HTMLInputElement>('form.agents-model-create input[name="name"]')!
-    createName.value = 'draft-model'
-    createName.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    store.credentials.data = [...store.credentials.data]
-    store.dispatchEvent(new Event('change'))
-    await settleVue()
-    expect(routed.element.querySelector<HTMLInputElement>('form.agents-model-create input[name="name"]')!.value).toBe('draft-model')
-  })
-
-  it('locks a credential draft while saving and coalesces duplicate submits', async () => {
-    const request = deferred<{ name: string; model: string; baseURL: string }>()
-    const saveCredential = vi.fn(() => request.promise)
-    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), saveCredential })
-    const store = makeStore(api)
-    store.credentials.data = [
-      { name: 'main', model: 'gpt-5', baseURL: 'https://old.example.com/v1' },
-      { name: 'backup', model: 'gpt-4o', baseURL: 'https://backup.example.com/v1' },
-    ]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-
-    const rotateButtons = [...el.querySelectorAll<HTMLButtonElement>('.agents-model-actions button')]
-      .filter(button => button.textContent?.includes('Rotate / model'))
-    rotateButtons[0].click()
-    await settleVue()
-    expect(rotateButtons[1].disabled, 'opening another editor must not silently replace this draft').toBe(true)
-
-    const form = el.querySelector<HTMLFormElement>('.agents-rotate-form')!
-    const baseURL = form.querySelector<HTMLInputElement>('input[name="baseURL"]')!
-    baseURL.value = 'https://draft.example.com/v1'
-    baseURL.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
-    await settleVue()
-
-    expect(saveCredential).toHaveBeenCalledTimes(1)
-    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', baseURL: 'https://draft.example.com/v1' }))
-    expect([...form.querySelectorAll<HTMLInputElement>('input')].every(input => input.disabled)).toBe(true)
-    expect([...form.querySelectorAll<HTMLButtonElement>('button')].every(button => button.disabled)).toBe(true)
-    expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toContain('Saving…')
-    expect(el.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')?.disabled).toBe(true)
-    expect(el.querySelector<HTMLButtonElement>('[aria-label="Delete backup"]')?.disabled).toBe(false)
-
-    request.resolve({ name: 'main', model: 'gpt-5', baseURL: 'https://draft.example.com/v1' })
-    await settleVue(8)
-    expect(el.querySelector('.agents-rotate-form')).toBeNull()
-  })
-
-  it('makes served-model switches single-flight per credential', async () => {
-    const request = deferred<{ name: string; model: string }>()
-    const saveCredential = vi.fn(() => request.promise)
-    const api = stubApi({
-      catalog: () => Promise.resolve([]),
-      usage: () => Promise.resolve(usageWithNulls),
-      testCredential: () => Promise.resolve({ ok: true, latencyMS: 12, models: ['gpt-5', 'gpt-5.1'] }),
-      saveCredential,
-    })
-    const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test')!.click()
-    await settleVue()
-    const nextModel = [...el.querySelectorAll<HTMLButtonElement>('.agents-chip-btn')]
-      .find(button => button.textContent?.trim() === 'gpt-5.1')!
-    nextModel.click()
-    nextModel.click()
-    await settleVue()
-
-    expect(saveCredential).toHaveBeenCalledTimes(1)
-    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'gpt-5.1' }))
-    expect(nextModel.disabled).toBe(true)
-    expect(nextModel.getAttribute('aria-busy')).toBe('true')
-    expect(el.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')?.disabled).toBe(true)
-
-    request.resolve({ name: 'main', model: 'gpt-5.1' })
-    await settleVue(8)
   })
 
   it('locks credential actions before confirmation and during deletion', async () => {
@@ -275,80 +173,10 @@ describe('models view on an empty workspace', () => {
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
     expect(deleting.disabled).toBe(true)
     expect(deleting.getAttribute('aria-busy')).toBe('true')
-    expect([...el.querySelectorAll<HTMLButtonElement>('.agents-model-actions button')].every(button => button.disabled)).toBe(true)
+    expect([...el.querySelectorAll<HTMLButtonElement>('.k-model-connection__actions button')].every(button => button.disabled)).toBe(true)
 
     request.resolve()
     await settleVue(8)
-  })
-
-  it('ignores an endpoint probe that resolves after a credential rotation starts', async () => {
-    const probe = deferred<{ ok: boolean; latencyMS: number; models: string[] }>()
-    const save = deferred<{ name: string; model: string; baseURL: string }>()
-    const api = stubApi({
-      catalog: () => Promise.resolve([]),
-      usage: () => Promise.resolve(usageWithNulls),
-      testCredential: () => probe.promise,
-      saveCredential: () => save.promise,
-    })
-    const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5', baseURL: 'https://old.example.com/v1' }]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test')!.click()
-    await settleVue()
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Rotate / model'))!.click()
-    await settleVue()
-    const form = el.querySelector<HTMLFormElement>('.agents-rotate-form')!
-    const baseURL = form.querySelector<HTMLInputElement>('input[name="baseURL"]')!
-    baseURL.value = 'https://new.example.com/v1'
-    baseURL.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
-    await settleVue()
-
-    probe.resolve({ ok: true, latencyMS: 7, models: ['stale-model'] })
-    await settleVue(8)
-    expect(el.textContent).not.toContain('stale-model')
-    expect(el.textContent).not.toContain('healthy · 7ms')
-    expect(toast).not.toHaveBeenCalledWith('ok', expect.stringContaining('healthy'))
-
-    save.resolve({ name: 'main', model: 'gpt-5', baseURL: 'https://new.example.com/v1' })
-    await settleVue(8)
-  })
-
-  it('clears endpoint discovery and its filter after a successful rotation', async () => {
-    const models = Array.from({ length: 13 }, (_, index) => `served-${index + 1}`)
-    const saveCredential = vi.fn().mockResolvedValue({ name: 'main', model: 'gpt-5', baseURL: 'https://new.example.com/v1' })
-    const api = stubApi({
-      catalog: () => Promise.resolve([]),
-      usage: () => Promise.resolve(usageWithNulls),
-      testCredential: () => Promise.resolve({ ok: true, latencyMS: 5, models }),
-      saveCredential,
-    })
-    const store = makeStore(api)
-    vi.spyOn(store, 'load').mockResolvedValue()
-    store.credentials.data = [{ name: 'main', model: 'gpt-5', baseURL: 'https://old.example.com/v1' }]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test')!.click()
-    await settleVue()
-    const filter = el.querySelector<HTMLInputElement>('.agents-discovered-filter')!
-    filter.value = 'served-1'
-    filter.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Rotate / model'))!.click()
-    await settleVue()
-    const form = el.querySelector<HTMLFormElement>('.agents-rotate-form')!
-    const baseURL = form.querySelector<HTMLInputElement>('input[name="baseURL"]')!
-    baseURL.value = 'https://new.example.com/v1'
-    baseURL.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
-    await settleVue(8)
-
-    expect(saveCredential).toHaveBeenCalledTimes(1)
-    expect(el.querySelector('.agents-model-discovered')).toBeNull()
-    expect(el.querySelector('.agents-discovered-filter')).toBeNull()
-    expect(el.textContent).toContain('untested')
   })
 
   it('ignores an endpoint probe that resolves after credential deletion starts', async () => {
@@ -365,7 +193,7 @@ describe('models view on an empty workspace', () => {
     store.credentials.loaded = store.credentials.hasSnapshot = true
     const { element: el } = await mountVue(Models, { store, api })
 
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test')!.click()
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.click()
     await settleVue()
     el.querySelector<HTMLButtonElement>('[aria-label="Delete main"]')!.click()
     resolveConfirm(true)
@@ -381,27 +209,6 @@ describe('models view on an empty workspace', () => {
     await settleVue(8)
   })
 
-  it('names the served-model filter and exposes the current model state', async () => {
-    const models = Array.from({ length: 13 }, (_, index) => `gpt-${index + 1}`)
-    const api = stubApi({
-      catalog: () => Promise.resolve([]),
-      usage: () => Promise.resolve(usageWithNulls),
-      testCredential: () => Promise.resolve({ ok: true, latencyMS: 12, models }),
-    })
-    const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-1' }]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
-
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test')!.click()
-    await settleVue()
-
-    expect(el.querySelector<HTMLInputElement>('.agents-discovered-filter')?.getAttribute('aria-label')).toBe('Filter served models for main')
-    const served = [...el.querySelectorAll<HTMLButtonElement>('.agents-chip-btn')]
-    expect(served.find(button => button.textContent?.trim() === 'gpt-1')?.getAttribute('aria-pressed')).toBe('true')
-    expect(served.find(button => button.textContent?.trim() === 'gpt-2')?.getAttribute('aria-pressed')).toBe('false')
-  })
-
   it('describes daily-spend endpoint values, peak, and trend', async () => {
     const usage = {
       ...usageWithNulls,
@@ -415,6 +222,8 @@ describe('models view on an empty workspace', () => {
     }
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
     const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
+    await settleVue()
     const label = el.querySelector<SVGElement>('.agents-spark')?.getAttribute('aria-label') || ''
 
     expect(label).toContain('$1.00 on 2026-09-01')

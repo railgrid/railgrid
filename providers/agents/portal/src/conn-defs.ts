@@ -9,7 +9,7 @@ export const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; mod
   { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },
   { id: 'anthropic', label: 'Anthropic (Claude, OpenAI-compat)', baseURL: 'https://api.anthropic.com/v1', modelHint: 'claude-sonnet-4-20250514' },
   { id: 'openrouter', label: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', modelHint: 'anthropic/claude-sonnet-4' },
-  { id: 'custom', label: 'Custom (OpenAI-compatible)', baseURL: '', modelHint: 'model-name' },
+  { id: 'custom', label: 'Custom OpenAI-compatible', baseURL: '', modelHint: 'model-name' },
 ]
 
 export interface ConnField {

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const root = new URL('../', import.meta.url)
+const modelForm = 'provider-sdk/portalkit-vue/ModelConnectionForm.vue'
 
 async function source(path) {
   return readFile(new URL(path, root), 'utf8')
@@ -110,7 +111,7 @@ test('Vue route-owned create flows use the shared skeleton', async () => {
     ['Edges service', ['providers/edges/portal/src/ServiceCreate.vue'], true],
     ['Edges workload', ['providers/edges/portal/src/WorkloadCreate.vue'], true],
     ['Infrastructure provision', ['providers/infrastructure/portal/src/views/ProvisionPage.vue'], true],
-    ['App Studio model', ['providers/app-studio/portal/src/App.vue', 'providers/app-studio/portal/src/ModelsSettings.vue'], true],
+    ['App Studio model', ['providers/app-studio/portal/src/App.vue', 'providers/app-studio/portal/src/ModelsSettings.vue', modelForm], true],
   ]
   for (const [name, paths, wide] of cases) {
     expectSkeleton(name, (await Promise.all(paths.map(source))).join('\n'), { wide })
@@ -127,7 +128,9 @@ test('Agents route-owned create flows use the shared skeleton without obsolete m
     ['automation', 'providers/agents/portal/src/views/Automation.vue'],
   ]
   for (const [name, path] of cases) {
-    const text = await source(path)
+    const text = await source(path) + (name === 'model'
+      ? await source('providers/agents/portal/src/views/ModelConnectionEditor.vue') + await source(modelForm)
+      : '')
     expectSkeleton(`Agents ${name}`, text)
   }
   const [agent, assistedSearch] = await Promise.all([
@@ -144,8 +147,9 @@ test('App Studio removes collection tabs and nested settings chrome from model c
     source('providers/app-studio/portal/src/ModelsSettings.vue'),
   ])
   assert.match(app, /<Tabs[\s\S]*v-if="!isCreateModelRoute"/)
-  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute"/)
-  assert.match(settings, /v-if="!creationRoute" class="flex flex-wrap items-start/)
+  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
+  assert.match(settings, /:wide="routePage \|\| creationRoute"/)
+  assert.match(settings, /<template v-if="!routePage && !creationRoute" #before-name>[\s\S]*<div class="flex flex-wrap items-start/)
 })
 
 test('route-owned Databricks import removes modal close chrome', async () => {

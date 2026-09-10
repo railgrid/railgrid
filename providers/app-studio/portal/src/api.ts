@@ -932,7 +932,7 @@ export const api = {
 
   async testLLMConnection(
     ctx: FarosContext | null,
-    body: { provider?: string; baseURL?: string; model: string; apiKey: string },
+    body: { provider?: string; baseURL?: string; model: string; apiKey: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/test`, body, {
       timeoutMS: 35_000,

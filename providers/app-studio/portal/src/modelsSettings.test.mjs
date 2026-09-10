@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp } from 'vue'
+import { createSSRApp, nextTick, ref, watch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
@@ -27,7 +28,6 @@ const baseProps = {
   creationRoute: false,
   editingModelID: null,
   name: '',
-  provider: 'openai-compatible',
   providerPreset: 'openai',
   credentialMode: 'api-key',
   baseURL: 'https://api.openai.com/v1',
@@ -38,14 +38,12 @@ const baseProps = {
   modelError: '',
   credentialError: '',
   credentialRequired: true,
-  baseURLPlaceholder: 'Base URL',
   apiKeyPlaceholder: 'API key',
   apiKeyHint: '',
   providerGuidance: 'Use an OpenAI-compatible provider.',
   modelHint: 'Use the provider model ID.',
   googleProvider: false,
   googleServiceAccountMode: false,
-  customProvider: false,
   discoveredModels: [],
   discoveryLoading: false,
   discoveryError: null,
@@ -79,10 +77,10 @@ test('presents multiple workspace models with explicit default and readiness sta
 
   assert.match(html, /aria-label="Model GPT High"/)
   assert.match(html, /aria-label="Model Gemini Fast"/)
-  assert.match(html, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,280px\),360px\)\)\] justify-start/)
+  assert.match(html, /k-model-grid/)
   assert.match(html, /gpt-5\.4/)
   assert.match(html, /Default/)
-  assert.match(html, /Credential saved/)
+  assert.match(html, /Credential stored/)
   assert.match(html, /Needs credential/)
   assert.match(html, /Make default/)
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
@@ -94,6 +92,27 @@ test('uses an explicit empty state before opening the model form', async () => {
   assert.match(html, /No models configured/)
   assert.match(html, /Connect model/)
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
+})
+
+test('renders the Models collection heading and an explicit unavailable usage card', async () => {
+  const html = await render({
+    routePage: true,
+    settings: {
+      provider: 'openai-compatible',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-5.4',
+      configured: true,
+      defaultModelID: 'gpt-high',
+      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+    },
+  })
+
+  assert.match(html, /<h2[^>]*>Models<\/h2>/)
+  assert.match(html, /Configure the model credentials App Studio uses/)
+  assert.match(html, /class="k-model-usage" aria-label="Usage and cost"/)
+  assert.match(html, /class="k-model-usage__unavailable"/)
+  assert.match(html, /Usage reporting isn’t available yet/)
+  assert.match(html, /Spend will appear here when reporting is available/)
 })
 
 test('route-owned model creation keeps the collection out of the form surface', async () => {
@@ -125,7 +144,7 @@ test('route-owned model creation keeps the form actionable when settings load fa
   assert.match(html, /Could not load model settings\./)
   assert.match(html, />Retry</)
   assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, /Display name/)
+  assert.match(html, />\s*Name\s*</)
   assert.doesNotMatch(html, />New model</)
   assert.doesNotMatch(html, /No models configured/)
 })
@@ -134,7 +153,6 @@ test('renders a guided provider, endpoint, and credential form', async () => {
   const html = await render({
     editorOpen: true,
     name: 'Gemini Fast',
-    provider: 'google-ai-studio',
     providerPreset: 'google',
     credentialMode: 'service-account-json',
     baseURL: 'https://aiplatform.googleapis.com',
@@ -150,7 +168,7 @@ test('renders a guided provider, endpoint, and credential form', async () => {
   assert.match(html, /aria-label="Model configuration form"/)
   assert.match(html, /id="model-provider"/)
   assert.match(html, /Use a Gemini API key for Google AI Studio/)
-  assert.match(html, /Display name/)
+  assert.match(html, />\s*Name\s*</)
   assert.match(html, /Credential method/)
   assert.match(html, /Vertex AI service account/)
   assert.match(html, /Find models/)
@@ -168,7 +186,6 @@ test('offers known provider endpoints and keeps custom endpoints editable', asyn
   const custom = await render({
     editorOpen: true,
     providerPreset: 'custom',
-    customProvider: true,
     baseURL: 'https://gateway.example/v1',
   })
   assert.match(custom, /Custom OpenAI-compatible/)
@@ -224,9 +241,22 @@ test('editing replaces the collection with one focused form', async () => {
 
   assert.match(html, /Edit model/)
   assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, /class="k-create-surface"/)
+  assert.match(html, /class="k-create-surface k-model-form"/)
   assert.match(html, /Save changes/)
   assert.doesNotMatch(html, /aria-label="Model GPT High"/)
+})
+
+test('Models-route editing uses the wide full-page form without an inner editor heading', async () => {
+  const html = await render({
+    routePage: true,
+    editorOpen: true,
+    editingModelID: 'gpt-high',
+    name: 'GPT High',
+  })
+
+  assert.match(html, /class="k-create-surface k-model-form k-create-surface--wide"/)
+  assert.match(html, /aria-label="Model configuration form"/)
+  assert.doesNotMatch(html, /<h4[^>]*>Edit model<\/h4>/)
 })
 
 test('associates field guidance and validation errors with their controls', async () => {
@@ -272,8 +302,8 @@ test('announces the active model mutation and disables competing card actions', 
 test('first-time setup requires a verified model response before save and finish', async () => {
   const html = await render({ creationRoute: true, name: 'OpenAI', apiKey: 'test-key', requireConnectionTest: true })
   assert.match(html, /Test connection/)
-  assert.match(html, /Save and finish/)
-  assert.match(html, /<button class="k-btn k-btn--primary" disabled>[\s\S]*Save and finish/)
+  assert.match(html, /Connect model/)
+  assert.match(html, /<button[^>]*class="k-btn k-btn--primary"[^>]*disabled[^>]*>[\s\S]*Connect model/)
 
   const verified = await render({
     creationRoute: true,
@@ -291,6 +321,7 @@ test('App Studio owns save state while the extracted surface owns presentation',
 
   assert.match(app, /const CREATE_MODEL_ROUTE = 'create\/model'/)
   assert.match(app, /const isCreateModelRoute = computed\(\(\) => routePath\.value === CREATE_MODEL_ROUTE\)/)
+  assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && llmEditorOpen\.value\)\)/)
   assert.match(app, /const routePath = computed\(\(\) => \(props\.ctx\?\.subPath \?\? ''\)\.split\('\/'\)\.filter\(Boolean\)\.join\('\/'\)\)/)
   assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
   assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
@@ -377,4 +408,77 @@ test('uses the stored project-creation destination and Models fallback for route
   const saveEnd = app.indexOf('\nasync function deleteLLMModel', saveStart)
   assert.match(app.slice(cancelStart, saveStart), /const returnRoute = routeOwnedCreation[\s\S]*modelsReturnRoute\.value = ''[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
   assert.match(app.slice(saveStart, saveEnd), /const returnRoute = routeOwnedCreation[\s\S]*modelsReturnRoute\.value = ''[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
+})
+
+
+test('refreshing settings allows retry and ignores old saved-model completions', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>') + 1, app.indexOf('</script>'))
+  const parsed = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = ['invalidateLLMModelMutationState', 'llmModelMutationIsCurrent', 'testSavedLLMModel']
+  const functions = names.map(name => {
+    const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, `${name} exists`)
+    return declaration.getText(parsed)
+  }).join('\n')
+  for (const name of ['openLLMEditor', 'cancelLLMEditor']) {
+    const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.match(declaration.getText(parsed), /invalidateLLMModelMutationState\(\)/)
+  }
+  const { outputText } = ts.transpileModule(`
+    export function harness(api, dependencies) {
+      let llmModelMutationGeneration = 0;
+      const appComponentMounted = true;
+      const props = { ctx: 'workspace' };
+      const appContextFingerprint = ctx => ctx;
+      const routePath = { value: '/models' };
+      const llmSaving = { value: false };
+      const llmModelTests = dependencies.llmModelTests;
+      const llmSettings = dependencies.llmSettings;
+      let llmModelTestRequestSerial = 0;
+      ${functions}
+      return { states: llmModelTests, test: testSavedLLMModel, invalidate: invalidateLLMModelMutationState };
+    }
+  `, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
+  const { harness } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+  for (const reset of ['refresh', 'invalidate']) {
+    for (const oldFail of [false, true]) {
+      for (const retryFail of [false, true]) {
+        const requests = []
+        const states = ref({})
+        const settings = ref({ models: [{ id: 'main', configured: true, provider: 'openai-compatible', baseURL: 'https://example.test/v1', model: 'chat' }] })
+        const stopWatchingSettings = watch(settings, () => { states.value = {} })
+        const state = harness(
+          { testLLMConnection: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
+          { llmModelTests: states, llmSettings: settings },
+        )
+        const oldTest = state.test('main')
+        assert.equal(state.states.value.main.state, 'Testing…')
+        if (reset === 'refresh') {
+          settings.value = { models: [{ id: 'main', configured: true, provider: 'openai-compatible', baseURL: 'https://example.test/v1', model: 'chat' }] }
+          await nextTick()
+        } else {
+          state.invalidate() // Opening and cancelling the editor invalidate the same generation.
+          state.invalidate()
+        }
+        assert.equal(state.states.value.main, undefined)
+        const retry = state.test('main')
+        assert.equal(requests.length, 2)
+        if (oldFail) requests[0].reject(new Error('Old request failed'))
+        else requests[0].resolve({ ok: true })
+        await oldTest
+        assert.equal(state.states.value.main.state, 'Testing…', 'old completion cannot overwrite the retry')
+        if (retryFail) requests[1].reject(new Error('Retry failed'))
+        else requests[1].resolve({ ok: true })
+        await retry
+        if (retryFail) {
+          assert.equal(state.states.value.main.state, 'Test failed')
+          assert.equal(state.states.value.main.error, 'Retry failed')
+        } else {
+          assert.equal(state.states.value.main.state, 'Test passed')
+        }
+        stopWatchingSettings()
+      }
+    }
+  }
 })

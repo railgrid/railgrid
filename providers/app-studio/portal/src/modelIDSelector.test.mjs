@@ -34,7 +34,7 @@ test('renders a Faros-owned combobox trigger instead of a native datalist', asyn
 })
 
 test('implements the filter-selector search and full-catalog interaction pattern', async () => {
-  const source = await readFile(new URL('./ModelIDSelector.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./portalkit/ModelIDSelector.vue', import.meta.url), 'utf8')
 
   assert.match(source, /query\.value = ''[\s\S]*open\.value = true/)
   assert.match(source, /modelSelectorOptions\(props\.models, query\.value\)/)

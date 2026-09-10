@@ -1,4 +1,4 @@
-.PHONY: sync-portalkit verify-portalkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal-settings-conformance test-create-flow-conformance build-portal
+.PHONY: sync-portalkit verify-portalkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
@@ -463,6 +463,16 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
+
+serve-model-form-visual: ## Serve the manual App Studio/Agents Models visual fixture
+	MODEL_FORM_FONT_NODE_MODULES="$(if $(MODEL_FORM_FONT_NODE_MODULES),$(MODEL_FORM_FONT_NODE_MODULES),$(CURDIR)/portal/node_modules)" \
+	providers/app-studio/portal/node_modules/.bin/vite --config hack/models-form-visual/vite.config.mjs --host "$(if $(MODEL_FORM_HOST),$(MODEL_FORM_HOST),127.0.0.1)" --port "$(if $(MODEL_FORM_PORT),$(MODEL_FORM_PORT),5198)"
+
+test-model-form-visual: ## Compare the App Studio and Agents Models forms at the supported visual matrix
+	PLAYWRIGHT_MODULE="$(PLAYWRIGHT_MODULE)" \
+	MODEL_FORM_FIXTURE_URL="$(if $(MODEL_FORM_FIXTURE_URL),$(MODEL_FORM_FIXTURE_URL),http://127.0.0.1:5198)" \
+	MODEL_FORM_OUTPUT="$(MODEL_FORM_OUTPUT)" \
+	node hack/models-form-visual-regression.mjs
 
 verify-design-docs: ## Validate structured design-document metadata and emit its JSON catalog
 	@node hack/verify-design-docs.test.mjs
@@ -2607,3 +2617,28 @@ e2e-all: build ## Run all e2e suites
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"
+
+.PHONY: test-model-connections test-model-connections-api lint-model-connections fix-lint-model-connections
+# The providers remain standalone; run each contract in its owning module.
+test-model-connections: ## Verify the shared Models UX and provider adapters
+	cd providers/agents/portal && npm run typecheck && npm test
+	cd providers/app-studio/portal && npm run typecheck && node --test --test-concurrency=1 src/modelsSettings.test.mjs src/modelIDSelector.test.mjs src/modelIDSelection.test.mjs src/llmSettingsValidation.test.mjs
+
+test-model-connections-api: ## Verify model connection APIs and catalog behavior
+	cd providers/agents && go test -count=1 ./api ./llm
+	cd providers/app-studio && go test -count=1 ./api
+	cd provider-sdk && go test -count=1 ./modelcatalog
+
+lint-model-connections: $(GOLANGCI_LINT) ## Lint the model connection implementation in its owning modules
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./api/... ./llm/...
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./api/...
+	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./modelcatalog/...
+
+fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes with the pinned formatter
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt api/model_connection.go api/settings.go llm/catalog.go api/model_connection_test.go
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) fmt api/llm_registry.go api/model_connection_test.go
+	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) fmt modelcatalog/catalog.go
+
+.PHONY: test-app-studio-portal
+test-app-studio-portal: ## Run the App Studio portal regression suite
+	cd providers/app-studio/portal && npm test

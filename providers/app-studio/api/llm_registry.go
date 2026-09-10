@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/faroshq/provider-sdk/modelcatalog"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,13 +47,14 @@ const (
 var projectLLMModelIDInvalid = regexp.MustCompile(`[^a-z0-9]+`)
 
 type ProjectLLMModelView struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Provider   string `json:"provider"`
-	BaseURL    string `json:"baseURL"`
-	Model      string `json:"model"`
-	Configured bool   `json:"configured"`
-	Default    bool   `json:"default,omitempty"`
+	Catalog    *modelcatalog.ModelInfo `json:"catalog,omitempty"`
+	ID         string                  `json:"id"`
+	Name       string                  `json:"name"`
+	Provider   string                  `json:"provider"`
+	BaseURL    string                  `json:"baseURL"`
+	Model      string                  `json:"model"`
+	Configured bool                    `json:"configured"`
+	Default    bool                    `json:"default,omitempty"`
 }
 
 type CreateProjectLLMModelRequest struct {
@@ -64,10 +66,11 @@ type CreateProjectLLMModelRequest struct {
 }
 
 type TestProjectLLMConnectionRequest struct {
-	Provider string `json:"provider,omitempty"`
-	BaseURL  string `json:"baseURL,omitempty"`
-	Model    string `json:"model"`
-	APIKey   string `json:"apiKey"`
+	ExistingModelID string `json:"existingModelID,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	BaseURL         string `json:"baseURL,omitempty"`
+	Model           string `json:"model"`
+	APIKey          string `json:"apiKey"`
 }
 
 type PatchProjectLLMModelRequest struct {
@@ -193,7 +196,12 @@ func (r projectLLMRegistry) view() ProjectLLMSettingsView {
 		if model.Archived {
 			continue
 		}
+		var catalog *modelcatalog.ModelInfo
+		if entry, ok := modelcatalog.LookupModel(model.Settings.Model); ok {
+			catalog = &entry
+		}
 		views = append(views, ProjectLLMModelView{
+			Catalog:    catalog,
 			ID:         model.ID,
 			Name:       model.Name,
 			Provider:   model.Settings.Provider,
@@ -530,12 +538,40 @@ func (s *Server) createProjectLLMModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireProjectClient(w, r); !ok {
+	c, _, ok := s.requireProjectClient(w, r)
+	if !ok {
 		return
 	}
 	var request TestProjectLLMConnectionRequest
 	if !decodeStrictJSON(w, r, &request) {
 		return
+	}
+	if strings.TrimSpace(request.APIKey) == "" && request.ExistingModelID != "" {
+		registry, err := readProjectLLMRegistry(r.Context(), c)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		stored, found := registry.model(request.ExistingModelID)
+		if !found {
+			writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
+			return
+		}
+		base, err := normalizeLLMBaseURL(request.BaseURL)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		storedBase, err := normalizeLLMBaseURL(stored.Settings.BaseURL)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		if !strings.EqualFold(strings.TrimSpace(request.Provider), strings.TrimSpace(stored.Settings.Provider)) || base != storedBase {
+			writeProjectError(w, newValidationError("enter a credential before testing a changed provider or endpoint"))
+			return
+		}
+		request.APIKey = stored.Settings.APIKey
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()

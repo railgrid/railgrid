@@ -219,22 +219,34 @@ describe('route-owned creation surfaces', () => {
     expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'dev-tools', connections: [], families: ['core'] }))
   })
 
-  it('renders model creation separately and retains the credential payload', async () => {
+  it('renders model creation separately and retains the verified credential payload', async () => {
     const saveCredential = vi.fn().mockResolvedValue({ name: 'main', provider: 'openai-compatible', model: 'gpt-5' })
-    const api = stubApi({ saveCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
+    const api = stubApi({ saveCredential, testCredentialDraft: () => Promise.resolve({ ok: true }), catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
     const store = makeStore(api)
     const el = await mount<Models>('agents-models', { store, api, routeOwned: true, createRoute: true })
-    expect(el.querySelector('.agents-model-create')).not.toBeNull()
-    expect(el.querySelector('.k-create-surface--guided .k-create-guidance')).not.toBeNull()
-    const values: Record<string, string> = { name: 'main', model: 'gpt-5', apiKey: 'secret' }
-    for (const [field, value] of Object.entries(values)) {
+    expect(el.querySelector('.k-create-page')).not.toBeNull()
+    expect(el.querySelectorAll('.k-back-action')).toHaveLength(1)
+    expect(el.querySelector('.k-create-header .k-create-title')?.textContent).toContain('Connect model')
+    expect(el.querySelector('.k-create-surface')).not.toBeNull()
+    expect(el.querySelector('.k-model-grid')).toBeNull()
+    for (const [field, value] of Object.entries({ name: 'main', apiKey: 'secret' })) {
       const input = el.querySelector<HTMLInputElement>(`[name=${field}]`)!
       input.value = value
       input.dispatchEvent(new InputEvent('input', { bubbles: true }))
     }
+    el.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settle(el)
+    const search = document.querySelector<HTMLInputElement>('.k-table__filter-search input')!
+    search.value = 'gpt-5'
+    search.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settle(el)
+    document.querySelector<HTMLElement>('[role="option"]')!.click()
+    await settle(el)
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.click()
+    await settle(el)
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
-    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining(values))
+    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'gpt-5', apiKey: 'secret' }))
   })
 })
 

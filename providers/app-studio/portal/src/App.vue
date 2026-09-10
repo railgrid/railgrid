@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import MarkdownIt from 'markdown-it'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
+import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import {
   AppWindow,
   ArrowLeft,
@@ -227,7 +227,12 @@ import {
 import StatusBadge from './portalkit/StatusBadge.vue'
 import ReleasePipeline from './ReleasePipeline.vue'
 import ProjectHistory from './ProjectHistory.vue'
-import ModelsSettings from './ModelsSettings.vue'
+const ModelsSettings = defineAsyncComponent({
+  loader: () => import('./ModelsSettings.vue'),
+  delay: 0,
+  loadingComponent: { render: () => h('div', { role: 'status' }, 'Loading model settings…') },
+  errorComponent: { render: () => h('div', { role: 'alert' }, 'Could not load model settings. Reload this page to retry.') },
+})
 import ProductionForm from './ProductionForm.vue'
 import ProductionSettingsLoadingShell from './ProductionSettingsLoadingShell.vue'
 import { productionFormValuesFromSchema, type ProductionFormValues } from './productionForm'
@@ -501,7 +506,6 @@ const OPENAI_DEFAULT_MODEL = 'gpt-5.4'
 const GEMINI_DEFAULT_MODEL = 'gemini-3.5-flash'
 const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
-const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MODELS_ROUTE = '~models'
 const CREATE_MODEL_ROUTE = 'create/model'
@@ -959,6 +963,8 @@ const llmSaving = ref(false)
 const llmTesting = ref(false)
 const llmTestStatus = ref<string | null>(null)
 const llmTestError = ref<string | null>(null)
+const llmModelTests = ref<Record<string, { state: string; tone: 'success' | 'danger' | 'muted'; error?: string; requestID: number }>>({})
+let llmModelTestRequestSerial = 0
 const llmTestedFingerprint = ref('')
 let llmConnectionTestSerial = 0
 const llmStatus = ref<string | null>(null)
@@ -1393,6 +1399,7 @@ async function retryPreProjectAttachment(clientID: string) {
 
 function invalidateLLMModelMutationState() {
   llmModelMutationGeneration += 1
+  llmModelTests.value = {}
   // A route/context transition owns the replacement busy state. The previous
   // request remains in flight, but its finalizer is no longer allowed to
   // touch this value.
@@ -1400,6 +1407,7 @@ function invalidateLLMModelMutationState() {
 }
 
 function beginLLMModelMutation(): LLMModelMutationGuard {
+  llmModelTests.value = {}
   return {
     generation: ++llmModelMutationGeneration,
     contextFingerprint: appContextFingerprint(props.ctx),
@@ -1938,6 +1946,8 @@ const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
 const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
 const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE)
+const isModelEditorPage = computed(() => isCreateModelRoute.value || (isModelsRoute.value && llmEditorOpen.value))
+const modelCreateHeadingRef = ref<HTMLHeadingElement | null>(null)
 const projectIndexRoutePending = computed(() =>
   isProjectIndexRoute.value &&
   projects.value.length === 0 &&
@@ -1957,9 +1967,6 @@ function shouldKeepProjectBoundFirstSubmission(): boolean {
 
 const modelsReturnRoute = ref('')
 const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : 'Models')
-const llmCreateDescription = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE
-  ? 'Connect and verify the model App Studio will use for project creation and chat.'
-  : 'Configure the model credentials App Studio uses when creating and chatting in projects.')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
   (
@@ -2195,15 +2202,11 @@ const productionSummaryTarget = computed(() => {
   return previewURL || 'Project has no deployable preview URL yet.'
 })
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
-const isCustomLLMProvider = computed(() => llmProviderPreset.value === 'custom')
 const isGoogleServiceAccountMode = computed(() =>
   isGoogleGeminiProvider.value && llmCredentialMode.value === 'service-account-json',
 )
 const llmCredentialRequired = computed(() =>
   !llmEditingModelID.value || llmSettings.value?.models.find((saved) => saved.id === llmEditingModelID.value)?.configured === false,
-)
-const llmBaseURLPlaceholder = computed(() =>
-  isGoogleServiceAccountMode.value ? GOOGLE_CLOUD_BASE_URL : isGoogleGeminiProvider.value ? GEMINI_BASE_URL : 'Base URL',
 )
 const llmApiKeyPlaceholder = computed(() =>
   isGoogleServiceAccountMode.value ? 'Service account JSON' : isGoogleGeminiProvider.value ? 'Gemini API key' : 'API key',
@@ -3101,7 +3104,7 @@ watch(
 
 watch(llmProvider, () => {
   llmBaseURL.value = normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value)
-  llmModel.value = normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value)
+  llmModel.value = normalizeLLMModelForEditor(llmProvider.value, llmModel.value, llmCredentialMode.value)
 })
 
 watch(llmApiKey, (value) => {
@@ -3112,7 +3115,7 @@ watch(llmApiKey, (value) => {
 
 watch(llmCredentialMode, () => {
   llmBaseURL.value = normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value)
-  llmModel.value = normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value)
+  llmModel.value = normalizeLLMModelForEditor(llmProvider.value, llmModel.value, llmCredentialMode.value)
 })
 
 watch(settingsProject, (project, previousProject) => {
@@ -4429,7 +4432,7 @@ function selectLLMProvider(preset: LLMProviderPreset) {
     llmModel.value = GEMINI_DEFAULT_MODEL
     return
   }
-  llmModel.value = preset === 'openai' ? OPENAI_DEFAULT_MODEL : ''
+  llmModel.value = preset === 'openai' && llmEditingModelID.value ? OPENAI_DEFAULT_MODEL : ''
 }
 
 function updateLLMCredentialMode(mode: LLMCredentialMode) {
@@ -4463,7 +4466,7 @@ function openLLMEditor(modelID?: string) {
   llmProviderPreset.value = inferLLMProviderPreset(provider, saved?.baseURL ?? 'https://api.openai.com/v1')
   llmCredentialMode.value = isGoogleCloudBaseURL(saved?.baseURL ?? '') ? 'service-account-json' : 'api-key'
   llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? '', llmCredentialMode.value)
-  llmModel.value = normalizeLLMModelInput(provider, saved?.model ?? '', llmCredentialMode.value)
+  llmModel.value = saved ? normalizeLLMModelInput(provider, saved.model ?? '', llmCredentialMode.value) : ''
   llmApiKey.value = ''
   llmValidationAttempted.value = false
   clearLLMDiscovery()
@@ -4572,6 +4575,14 @@ watch(
   { immediate: true, flush: 'sync' },
 )
 
+watch(
+  isModelEditorPage,
+  (active) => {
+    if (active) void nextTick(() => modelCreateHeadingRef.value?.focus({ preventScroll: true }))
+  },
+  { immediate: true, flush: 'post' },
+)
+
 async function applyStarterPrompt(value: string) {
   replaceAssistantComposerText(value)
   await nextTick()
@@ -4644,11 +4655,20 @@ function normalizeLLMModelInput(provider: string, model: string, credentialMode:
   return credentialMode === 'service-account-json' ? GOOGLE_CLOUD_DEFAULT_MODEL : GEMINI_DEFAULT_MODEL
 }
 
+function normalizeLLMModelForEditor(provider: string, model: string, credentialMode: LLMCredentialMode): string {
+  // A new OpenAI-compatible/custom connection starts with an honest empty
+  // model so the shared form asks the user to choose one. Google keeps its
+  // provider-specific default because the credential mode determines the
+  // Vertex/Gemini model namespace.
+  if (!llmEditingModelID.value && !model.trim() && provider.trim().toLowerCase() !== GOOGLE_AI_STUDIO_PROVIDER) return ''
+  return normalizeLLMModelInput(provider, model, credentialMode)
+}
+
 const llmConnectionFingerprint = computed(() => JSON.stringify([
-  llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmApiKey.value.trim(),
+  llmEditingModelID.value, llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmApiKey.value.trim(),
 ]))
 const llmConnectionTested = computed(() => Boolean(llmTestedFingerprint.value) && llmTestedFingerprint.value === llmConnectionFingerprint.value)
-const llmConnectionTestRequired = computed(() => isCreateModelRoute.value && modelsReturnRoute.value === CREATE_PROJECT_ROUTE && setupSessionActive.value)
+const llmConnectionTestRequired = computed(() => llmEditorOpen.value || isCreateModelRoute.value)
 
 function invalidateLLMConnectionTest() {
   llmConnectionTestSerial += 1
@@ -4721,7 +4741,7 @@ async function testLLMConnection() {
     llmTestError.value = 'Enter a model ID before testing the connection.'
     return
   }
-  if (!llmApiKey.value.trim()) {
+  if (!llmApiKey.value.trim() && llmCredentialRequired.value) {
     llmTestError.value = 'Enter a credential before testing the connection.'
     return
   }
@@ -4734,6 +4754,7 @@ async function testLLMConnection() {
       baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
       apiKey: llmApiKey.value.trim(),
+      existingModelID: llmEditingModelID.value || undefined,
     })
     if (serial !== llmConnectionTestSerial || fingerprint !== llmConnectionFingerprint.value) return
     if (!result.ok) throw new Error('The provider did not confirm this connection.')
@@ -4746,6 +4767,25 @@ async function testLLMConnection() {
     if (serial === llmConnectionTestSerial) llmTesting.value = false
   }
 }
+
+async function testSavedLLMModel(modelID: string) {
+  const saved = llmSettings.value?.models.find(model => model.id === modelID)
+  if (!saved?.configured || llmSaving.value || llmModelTests.value[modelID]?.state === 'Testing…') return
+  const guard: LLMModelMutationGuard = { generation: llmModelMutationGeneration, contextFingerprint: appContextFingerprint(props.ctx), routePath: routePath.value }
+  const requestID = ++llmModelTestRequestSerial
+  const token = { state: 'Testing…', tone: 'muted' as const, requestID }
+  llmModelTests.value = { ...llmModelTests.value, [modelID]: token }
+  try {
+    const result = await api.testLLMConnection(props.ctx, { provider: saved.provider, baseURL: saved.baseURL, model: saved.model, apiKey: '', existingModelID: modelID })
+    if (!llmModelMutationIsCurrent(guard) || llmModelTests.value[modelID]?.requestID !== requestID) return
+    if (!result.ok) throw new Error('The provider did not confirm this connection.')
+    llmModelTests.value = { ...llmModelTests.value, [modelID]: { state: 'Test passed', tone: 'success', requestID } }
+  } catch (error) {
+    if (!llmModelMutationIsCurrent(guard) || llmModelTests.value[modelID]?.requestID !== requestID) return
+    llmModelTests.value = { ...llmModelTests.value, [modelID]: { state: 'Test failed', tone: 'danger', error: error instanceof Error ? error.message : String(error), requestID } }
+  }
+}
+watch([() => appContextFingerprint(props.ctx), routePath, llmSettings], () => { llmModelTests.value = {} })
 
 async function deleteLLMModel(modelID: string) {
   const confirmationGuard: LLMModelMutationGuard = {
@@ -9088,13 +9128,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </main>
       </div>
 
-      <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isCreateModelRoute ? 'k-create-page pb-6' : 'min-h-0 pb-6'">
-        <button v-if="isCreateModelRoute" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
+      <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isModelEditorPage ? 'k-create-page' : 'min-h-0 pb-6'">
+        <button v-if="isModelEditorPage" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
           <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ llmCreateReturnLabel }}
         </button>
-        <header v-if="isCreateModelRoute" class="k-create-header">
-          <h1 class="k-create-title">{{ llmConnectionTestRequired ? 'Connect an AI model' : 'Connect model' }}</h1>
-          <p class="k-create-description">{{ llmConnectionTestRequired ? llmCreateDescription : 'Add a credentialed model connection for project creation and chat.' }}</p>
+        <header v-if="isModelEditorPage" class="k-create-header">
+          <h1 ref="modelCreateHeadingRef" class="k-create-title" tabindex="-1">{{ llmEditingModelID ? 'Edit model' : 'Connect model' }}</h1>
+          <p class="k-create-description">Configure a workspace model connection.</p>
         </header>
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
@@ -10515,10 +10555,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           : isCreateModelRoute
             ? ''
           : isModelsRoute
-            ? 'rounded-lg border border-border-subtle'
+            ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
-        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
+        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <Cpu v-if="isModelsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
@@ -10540,7 +10580,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : 'min-h-0 overflow-auto p-4'">
+        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : 'min-h-0 overflow-auto p-4'">
           <div class="grid gap-4">
           <div
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -10982,6 +11022,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
           <ModelsSettings
             v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"
+            :route-page="isModelsRoute"
+            :model-tests="llmModelTests"
             :settings="llmSettings"
             :loading="llmSettingsLoading"
             :load-error="llmSettingsError"
@@ -10992,7 +11034,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :creation-route="isCreateModelRoute"
             :editing-model-i-d="llmEditingModelID"
             :name="llmName"
-            :provider="llmProvider"
             :provider-preset="llmProviderPreset"
             :credential-mode="llmCredentialMode"
             :base-u-r-l="llmBaseURL"
@@ -11003,14 +11044,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :model-error="llmModelError"
             :credential-error="llmCredentialError"
             :credential-required="llmCredentialRequired"
-            :base-u-r-l-placeholder="llmBaseURLPlaceholder"
             :api-key-placeholder="llmApiKeyPlaceholder"
             :api-key-hint="llmApiKeyHint"
             :provider-guidance="llmProviderGuidance"
             :model-hint="llmModelHint"
             :google-provider="isGoogleGeminiProvider"
             :google-service-account-mode="isGoogleServiceAccountMode"
-            :custom-provider="isCustomLLMProvider"
             :discovered-models="llmDiscoveredModels"
             :discovery-loading="llmDiscoveryLoading"
             :discovery-error="llmDiscoveryError"
@@ -11026,6 +11065,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @cancel-editor="cancelLLMEditor"
             @save="saveLLMSettings"
             @test="testLLMConnection"
+            @test-saved="testSavedLLMModel"
             @delete="deleteLLMModel"
             @set-default="setDefaultLLMModel"
             @select-provider="selectLLMProvider"

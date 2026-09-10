@@ -207,6 +207,8 @@ export class ApiClient {
   saveCredential = (body: CredentialWrite): Promise<Credential> => this.send('POST', '/api/credentials', body)
   deleteCredential = (name: string): Promise<void> => this.send('DELETE', `/api/credentials/${enc(name)}`)
   testCredential = (name: string): Promise<CredentialTestResult> => this.send('POST', `/api/credentials/${enc(name)}/test`)
+  testCredentialDraft = (body: { provider: string; baseURL: string; model: string; apiKey: string; existingName?: string }): Promise<CredentialTestResult> => this.send('POST', '/api/credentials/test', body)
+  discoverCredentialDraft = (body: { provider: string; baseURL: string; model: string; apiKey: string; existingName?: string }): Promise<CredentialTestResult> => this.send('POST', '/api/credentials/discover', body)
   catalog = (): Promise<ModelInfo[]> => this.list<ModelInfo>('/api/catalog')
   // Collections are normalized to arrays here rather than guarded at every use
   // site: Go marshals a nil slice as null, so an empty workspace would
