@@ -32,12 +32,16 @@ import (
 )
 
 // ExecAction is the lifecycle operation requested by an exec call. Commands
-// are intentionally asynchronous: the provider dispatches them to the live
-// component agent without holding an HTTP request open for the whole workload.
+// are asynchronous at the coordinator: start/poll/cancel dispatch to the live
+// component agent without holding an HTTP request open for the whole
+// workload. Run is the synchronous convenience over the same lifecycle: the
+// provider starts the command and polls it until it reaches a terminal state
+// or the bounded wait budget expires.
 type ExecAction string
 
 const (
 	ExecActionStart  ExecAction = "start"
+	ExecActionRun    ExecAction = "run"
 	ExecActionPoll   ExecAction = "poll"
 	ExecActionCancel ExecAction = "cancel"
 )
@@ -59,9 +63,11 @@ const (
 )
 
 // ExecRequest is the JSON body accepted by the component /exec route. Start
-// carries the durable source revision/digest applied by /sync; the persistent
-// executor runs against that live component workspace. Poll and cancel carry
-// only a session ID.
+// and run carry the durable source revision/digest applied by /sync; the
+// persistent executor runs against that live component workspace. When both
+// are omitted the handler resolves the component's currently applied
+// revision/digest from the dev agent's /status. Poll and cancel carry only a
+// session ID.
 type ExecRequest struct {
 	Action         ExecAction `json:"action"`
 	SessionID      string     `json:"sessionID,omitempty"`
@@ -75,14 +81,19 @@ type ExecRequest struct {
 
 // ExecResult is the bounded response returned by an Executor. Output is
 // truncated by the data-plane handler to the declared capability ceiling.
+// SourceRevision/SourceDigest are stamped by the handler on start and run
+// responses so callers know which applied workspace revision the command runs
+// against (explicitly supplied or resolved from the component status).
 type ExecResult struct {
-	SessionID string `json:"sessionID,omitempty"`
-	RequestID string `json:"requestID,omitempty"`
-	State     string `json:"state"`
-	ExitCode  *int32 `json:"exitCode,omitempty"`
-	Stdout    string `json:"stdout,omitempty"`
-	Stderr    string `json:"stderr,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	SessionID      string `json:"sessionID,omitempty"`
+	RequestID      string `json:"requestID,omitempty"`
+	State          string `json:"state"`
+	ExitCode       *int32 `json:"exitCode,omitempty"`
+	Stdout         string `json:"stdout,omitempty"`
+	Stderr         string `json:"stderr,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
+	SourceDigest   string `json:"sourceDigest,omitempty"`
 }
 
 // ExecCall is the executor-facing request. It includes the already-authorized
@@ -204,8 +215,8 @@ func decodeExecRequest(w http.ResponseWriter, r *http.Request, capability *infra
 	}
 
 	action := req.Action
-	if action != ExecActionStart && action != ExecActionPoll && action != ExecActionCancel {
-		return ExecRequest{}, "", fmt.Errorf("action must be %q, %q, or %q", ExecActionStart, ExecActionPoll, ExecActionCancel)
+	if action != ExecActionStart && action != ExecActionRun && action != ExecActionPoll && action != ExecActionCancel {
+		return ExecRequest{}, "", fmt.Errorf("action must be %q, %q, %q, or %q", ExecActionStart, ExecActionRun, ExecActionPoll, ExecActionCancel)
 	}
 	if len(req.SessionID) > execMaxIdentifierBytes || len(req.RequestID) > execMaxIdentifierBytes {
 		return ExecRequest{}, "", fmt.Errorf("sessionID and requestID must be at most %d bytes", execMaxIdentifierBytes)
@@ -229,7 +240,21 @@ func decodeExecRequest(w http.ResponseWriter, r *http.Request, capability *infra
 	if len(key) > execMaxIdentifierBytes || strings.IndexByte(key, 0) >= 0 {
 		return ExecRequest{}, "", fmt.Errorf("Idempotency-Key must be at most %d bytes and contain no NUL", execMaxIdentifierBytes)
 	}
-	if action == ExecActionStart {
+	if action == ExecActionStart || action == ExecActionRun {
+		if key == "" && action == ExecActionRun {
+			// Run is a one-shot convenience: a caller that does not intend to
+			// retry need not mint a key. A body requestID doubles as the key;
+			// otherwise a random 128-bit key is generated. Start keeps the key
+			// mandatory because its caller must be able to retry idempotently.
+			key = req.RequestID
+			if key == "" {
+				generated, err := newExecIdempotencyKey()
+				if err != nil {
+					return ExecRequest{}, "", err
+				}
+				key = generated
+			}
+		}
 		if key == "" {
 			return ExecRequest{}, "", fmt.Errorf("Idempotency-Key is required for start")
 		}
@@ -238,21 +263,24 @@ func decodeExecRequest(w http.ResponseWriter, r *http.Request, capability *infra
 		}
 		req.RequestID = key
 		if req.SessionID != "" {
-			return ExecRequest{}, "", fmt.Errorf("sessionID is not accepted for start")
+			return ExecRequest{}, "", fmt.Errorf("sessionID is not accepted for %s", action)
 		}
 		if len(req.Argv) == 0 || len(req.Argv) > execMaxArgv {
-			return ExecRequest{}, "", fmt.Errorf("start argv must contain between 1 and %d arguments", execMaxArgv)
+			return ExecRequest{}, "", fmt.Errorf("%s argv must contain between 1 and %d arguments", action, execMaxArgv)
 		}
 		for i, arg := range req.Argv {
 			if arg == "" || len(arg) > execMaxArgBytes || strings.IndexByte(arg, 0) >= 0 {
-				return ExecRequest{}, "", fmt.Errorf("start argv[%d] must be non-empty, at most %d bytes, and contain no NUL", i, execMaxArgBytes)
+				return ExecRequest{}, "", fmt.Errorf("%s argv[%d] must be non-empty, at most %d bytes, and contain no NUL", action, i, execMaxArgBytes)
 			}
 		}
-		if req.SourceDigest == "" {
-			return ExecRequest{}, "", fmt.Errorf("sourceDigest is required for start")
+		// Omitting BOTH selects the component's currently applied revision
+		// (resolved by the handler from the dev agent status). Supplying only
+		// one is ambiguous and rejected.
+		if req.SourceRevision != 0 && req.SourceDigest == "" {
+			return ExecRequest{}, "", fmt.Errorf("sourceDigest is required for %s when sourceRevision is set (omit both to use the applied revision)", action)
 		}
-		if req.SourceRevision == 0 {
-			return ExecRequest{}, "", fmt.Errorf("sourceRevision is required for start")
+		if req.SourceRevision == 0 && req.SourceDigest != "" {
+			return ExecRequest{}, "", fmt.Errorf("sourceRevision is required for %s when sourceDigest is set (omit both to use the applied revision)", action)
 		}
 		if req.TimeoutSeconds < 0 || req.TimeoutSeconds > limits.timeoutSeconds {
 			return ExecRequest{}, "", fmt.Errorf("timeoutSeconds must be between 0 and %d", limits.timeoutSeconds)

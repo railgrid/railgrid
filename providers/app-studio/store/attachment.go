@@ -31,10 +31,13 @@ import (
 )
 
 const (
-	// AttachmentMaxBytes is the hard upper bound for one binary upload. The
-	// HTTP layer applies this limit before reading the request body, while the
-	// store repeats it for non-HTTP callers.
-	AttachmentMaxBytes = 8 << 20
+	// AttachmentMaxBytes is the hard upper bound for one upload of any kind
+	// (a "file" attachment such as a 3D model or font). The HTTP layer applies
+	// this limit before reading the request body, while the store repeats it
+	// for non-HTTP callers.
+	AttachmentMaxBytes = 25 << 20
+	// AttachmentMaxImageBytes bounds images, which are sent to the model.
+	AttachmentMaxImageBytes = 8 << 20
 	// AttachmentMaxTextBytes keeps text attachments suitable for prompt
 	// selection and prevents a text upload from becoming an unbounded transcript.
 	AttachmentMaxTextBytes     = 1 << 20
@@ -48,7 +51,7 @@ const (
 	// DefaultAttachmentDraftProjectMaxCount protect one project from abandoned
 	// upload drafts. Bound attachments are governed only by the workspace
 	// quota, because their lifetime is tied to a durable conversation turn.
-	DefaultAttachmentDraftProjectMaxBytes = 64 << 20
+	DefaultAttachmentDraftProjectMaxBytes = 128 << 20
 	DefaultAttachmentDraftProjectMaxCount = 64
 	// AttachmentProjectMaxBytes and AttachmentProjectMaxCount are retained as
 	// source-compatible aliases for callers that used the former project-wide
@@ -301,8 +304,33 @@ func validateAttachmentReceipt(attachment Attachment, receipt AttachmentReceipt,
 	return nil
 }
 
-// NormalizeAttachmentContentType strips parameters and validates the small
-// media-type allowlist supported by the MVP upload contract.
+// Attachment kinds. Images and text are model-visible content; any other
+// file is stored as opaque bytes and reaches the model as metadata only (it
+// can be placed into the project workspace with import_attachment).
+const (
+	AttachmentKindImage = "image"
+	AttachmentKindText  = "text"
+	AttachmentKindFile  = "file"
+)
+
+// AttachmentMaxContentTypeBytes bounds a stored media type.
+const AttachmentMaxContentTypeBytes = 127
+
+// AttachmentKind classifies a normalized content type.
+func AttachmentKind(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/png", "image/jpeg", "image/webp":
+		return AttachmentKindImage
+	case "text/plain", "text/markdown":
+		return AttachmentKindText
+	default:
+		return AttachmentKindFile
+	}
+}
+
+// NormalizeAttachmentContentType strips parameters and validates a
+// "type/subtype" media type. Image and text types keep their dedicated
+// validation; every other type is an opaque "file" attachment.
 func NormalizeAttachmentContentType(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -313,11 +341,33 @@ func NormalizeAttachmentContentType(raw string) (string, error) {
 		return "", fmt.Errorf("invalid attachment content type: %w", err)
 	}
 	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	switch contentType {
-	case "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown":
-		return contentType, nil
-	default:
+	major, minor, ok := strings.Cut(contentType, "/")
+	if !ok || major == "" || minor == "" || len(contentType) > AttachmentMaxContentTypeBytes {
 		return "", fmt.Errorf("unsupported attachment content type %q", contentType)
+	}
+	return contentType, nil
+}
+
+// AttachmentKindFor classifies an attachment by type and size: an image or
+// text attachment beyond its model-visible bound is an opaque "file" (for
+// example a 12 MiB hero image meant for public/), up to AttachmentMaxBytes.
+func AttachmentKindFor(contentType string, size int64) string {
+	kind := AttachmentKind(contentType)
+	if kind != AttachmentKindFile && size > int64(AttachmentMaxBytesFor(kind)) {
+		return AttachmentKindFile
+	}
+	return kind
+}
+
+// AttachmentMaxBytesFor returns the per-attachment bound for one kind.
+func AttachmentMaxBytesFor(kind string) int {
+	switch kind {
+	case AttachmentKindImage:
+		return AttachmentMaxImageBytes
+	case AttachmentKindText:
+		return AttachmentMaxTextBytes
+	default:
+		return AttachmentMaxBytes
 	}
 }
 
@@ -341,6 +391,8 @@ func ValidateAttachmentID(id string) error {
 // ValidateAttachmentContent applies the format and size contract independently
 // of HTTP. Image magic bytes prevent a mislabeled executable from becoming a
 // downloadable image; text must be valid UTF-8 and use a .txt/.md filename.
+// Any other ("file") type is opaque bytes: only its name and size are
+// checked, because it is never interpreted — only stored and copied.
 func ValidateAttachmentContent(filename, contentType string, data []byte) error {
 	contentType, err := NormalizeAttachmentContentType(contentType)
 	if err != nil {
@@ -359,12 +411,13 @@ func ValidateAttachmentContent(filename, contentType string, data []byte) error 
 	if len(data) == 0 {
 		return fmt.Errorf("attachment data is required")
 	}
-	maxBytes := AttachmentMaxBytes
-	if strings.HasPrefix(contentType, "text/") {
-		maxBytes = AttachmentMaxTextBytes
-	}
+	kind := AttachmentKindFor(contentType, int64(len(data)))
+	maxBytes := AttachmentMaxBytesFor(kind)
 	if len(data) > maxBytes {
 		return fmt.Errorf("attachment is %d bytes; maximum is %d", len(data), maxBytes)
+	}
+	if kind == AttachmentKindFile {
+		return nil
 	}
 
 	switch contentType {

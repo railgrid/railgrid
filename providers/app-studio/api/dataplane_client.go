@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -45,6 +46,10 @@ const (
 	dataPlaneVerbWorkspace = "workspace"
 
 	dataPlaneCallTimeout = 30 * time.Second
+	// dataPlaneMaxResponseBytes bounds control-verb responses. It is sized
+	// like the development agent's /sync body cap (base64 bundles); a larger
+	// response is an error rather than a silently truncated body.
+	dataPlaneMaxResponseBytes = 96 << 20
 )
 
 // dataPlaneRef addresses one data-plane target: an instance of a resource,
@@ -128,14 +133,14 @@ func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
 // status code. The caller maps non-2xx to an error so the runtime's own
 // response surfaces to the UI.
 func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte) ([]byte, int, error) {
-	return s.dataPlanePostBounded(ctx, id, ref, verb, payload, 16<<20)
+	return s.dataPlanePostBounded(ctx, id, ref, verb, payload, dataPlaneMaxResponseBytes)
 }
 
 // dataPlanePostWithTimeout gives long-running, explicitly bounded operations
 // such as dependency-installing workspace syncs their own deadline without
 // weakening the ordinary data-plane timeout used by logs, restarts, and env.
 func (s *Server) dataPlanePostWithTimeout(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, timeout time.Duration) ([]byte, int, error) {
-	return s.dataPlanePostBoundedWithHeadersAndTimeout(ctx, id, ref, verb, payload, 16<<20, nil, timeout)
+	return s.dataPlanePostBoundedWithHeadersAndTimeout(ctx, id, ref, verb, payload, dataPlaneMaxResponseBytes, nil, timeout)
 }
 
 // dataPlanePostBounded sends a POST verb while applying a caller-selected
@@ -155,7 +160,7 @@ func (s *Server) dataPlanePostBoundedWithHeadersAndTimeout(ctx context.Context, 
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := s.newDataPlaneRequest(callCtx, http.MethodPost, id, ref, verb, "", strings.NewReader(string(payload)))
+	req, err := s.newDataPlaneRequest(callCtx, http.MethodPost, id, ref, verb, "", bytes.NewReader(payload))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -171,11 +176,14 @@ func (s *Server) dataPlanePostBoundedWithHeadersAndTimeout(ctx context.Context, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if maxBytes <= 0 {
-		maxBytes = 16 << 20
+		maxBytes = dataPlaneMaxResponseBytes
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, resp.StatusCode, fmt.Errorf("development data plane %s: response exceeds %d bytes", verb, maxBytes)
 	}
 	return body, resp.StatusCode, nil
 }

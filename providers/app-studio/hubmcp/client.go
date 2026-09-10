@@ -35,8 +35,13 @@ import (
 )
 
 const (
-	callTimeout = 30 * time.Second
-	maxResponse = 16 << 20
+	// callTimeout outlasts code__commit_files, which blocks up to 75 s for
+	// the RepositoryCommit it creates; a shorter client deadline would abandon
+	// commits the provider is about to settle.
+	callTimeout = 120 * time.Second
+	// maxResponse is sized for base64 file bundles (48 MiB decoded). A larger
+	// response is an error, never a silent truncation.
+	maxResponse = 96 << 20
 )
 
 // Client reaches the hub's aggregate MCP endpoint as one identity for one
@@ -85,66 +90,70 @@ type rpcResponse struct {
 	} `json:"error"`
 }
 
-// CallCodeTool invokes one code__-namespaced tool via the hub aggregate.
-func (c *Client) CallCodeTool(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
-	// apiurl.MCPServerPath pattern (hub module): /services/mcpserver/{cluster}/
-	// apis/faros.sh/v1alpha1/mcpservers/{name}/mcp — "default" is the
-	// per-tenant aggregate the hub bootstraps.
-	endpoint := fmt.Sprintf("%s/services/mcpserver/%s/apis/faros.sh/v1alpha1/mcpservers/default/mcp",
+// endpoint is the apiurl.MCPServerPath pattern (hub module):
+// /services/mcpserver/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
+// — "default" is the per-tenant aggregate the hub bootstraps.
+func (c *Client) endpoint() string {
+	return fmt.Sprintf("%s/services/mcpserver/%s/apis/faros.sh/v1alpha1/mcpservers/default/mcp",
 		c.HubBase, c.ClusterID)
+}
 
-	post := func(sessionID string, req rpcRequest) (json.RawMessage, string, error) {
-		body, err := json.Marshal(req)
-		if err != nil {
-			return nil, "", err
-		}
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return nil, "", err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "application/json, text/event-stream")
-		if c.Token != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+c.Token)
-		}
-		if sessionID != "" {
-			httpReq.Header.Set("Mcp-Session-Id", sessionID)
-		}
-		resp, err := c.http.Do(httpReq)
-		if err != nil {
-			return nil, "", fmt.Errorf("code mcp %s: %w", req.Method, err)
-		}
-		defer resp.Body.Close()
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
-		if err != nil {
-			return nil, "", err
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, "", fmt.Errorf("code mcp %s: status %d: %s", req.Method, resp.StatusCode, strings.TrimSpace(string(raw)))
-		}
-		// Streamable-HTTP servers may answer as a single SSE event; unwrap.
-		payload := raw
-		if strings.HasPrefix(strings.TrimSpace(string(raw)), "event:") || strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-			for _, line := range strings.Split(string(raw), "\n") {
-				if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
-					payload = []byte(strings.TrimSpace(data))
-					break
-				}
+func (c *Client) post(ctx context.Context, sessionID string, req rpcRequest) (json.RawMessage, string, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, "", err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
+	if err != nil {
+		return nil, "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if c.Token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if sessionID != "" {
+		httpReq.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, "", fmt.Errorf("code mcp %s: %w", req.Method, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(raw) > maxResponse {
+		return nil, "", fmt.Errorf("code mcp %s: response exceeds %d bytes", req.Method, maxResponse)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("code mcp %s: status %d: %s", req.Method, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	// Streamable-HTTP servers may answer as a single SSE event; unwrap.
+	payload := raw
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), "event:") || strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
+				payload = []byte(strings.TrimSpace(data))
+				break
 			}
 		}
-		var rpc rpcResponse
-		if err := json.Unmarshal(payload, &rpc); err != nil {
-			return nil, "", fmt.Errorf("code mcp %s: bad response: %w", req.Method, err)
-		}
-		if rpc.Error != nil {
-			return nil, "", fmt.Errorf("code mcp %s: %s", req.Method, rpc.Error.Message)
-		}
-		return rpc.Result, resp.Header.Get("Mcp-Session-Id"), nil
 	}
+	var rpc rpcResponse
+	if err := json.Unmarshal(payload, &rpc); err != nil {
+		return nil, "", fmt.Errorf("code mcp %s: bad response: %w", req.Method, err)
+	}
+	if rpc.Error != nil {
+		return nil, "", fmt.Errorf("code mcp %s: %s", req.Method, rpc.Error.Message)
+	}
+	return rpc.Result, resp.Header.Get("Mcp-Session-Id"), nil
+}
 
-	// Initialize (best effort — stateless servers accept the call regardless;
-	// stateful ones hand back a session id we echo).
-	_, sessionID, err := post("", rpcRequest{
+// initialize opens a session (best effort — stateless servers accept calls
+// regardless; stateful ones hand back a session id we echo).
+func (c *Client) initialize(ctx context.Context) (string, error) {
+	_, sessionID, err := c.post(ctx, "", rpcRequest{
 		JSONRPC: "2.0", ID: 1, Method: "initialize",
 		Params: map[string]any{
 			"protocolVersion": "2025-03-26",
@@ -152,11 +161,41 @@ func (c *Client) CallCodeTool(ctx context.Context, tool string, args map[string]
 			"capabilities":    map[string]any{},
 		},
 	})
+	return sessionID, err
+}
+
+// Tool is one entry of the aggregate's tools/list.
+type Tool struct {
+	Name        string          `json:"name"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+// ListTools returns the aggregate's tool catalog (provider-namespaced names).
+func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
+	sessionID, err := c.initialize(ctx)
 	if err != nil {
 		return nil, err
 	}
+	result, _, err := c.post(ctx, sessionID, rpcRequest{JSONRPC: "2.0", ID: 2, Method: "tools/list", Params: map[string]any{}})
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Tools []Tool `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &list); err != nil {
+		return nil, fmt.Errorf("code mcp tools/list: bad result: %w", err)
+	}
+	return list.Tools, nil
+}
 
-	result, _, err := post(sessionID, rpcRequest{
+// CallCodeTool invokes one code__-namespaced tool via the hub aggregate.
+func (c *Client) CallCodeTool(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
+	sessionID, err := c.initialize(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, _, err := c.post(ctx, sessionID, rpcRequest{
 		JSONRPC: "2.0", ID: 2, Method: "tools/call",
 		Params: map[string]any{"name": tool, "arguments": args},
 	})

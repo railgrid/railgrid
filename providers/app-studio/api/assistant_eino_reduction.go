@@ -120,7 +120,8 @@ func projectEinoAssistantSuccessfulWorkspaceMutationGroup(toolCallMessage *schem
 
 func projectEinoAssistantWorkspaceMutationTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		return true
 	default:
 		return false

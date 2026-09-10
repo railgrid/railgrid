@@ -24,13 +24,18 @@ package mcpaggregate
 // register the same way every other provider does.
 //
 // Flow (per MCP request):
-//   1. buildServer calls registerProviderTools
-//   2. the enumerator returns the live Ready set from the hub's provider Registry
+//   1. the handler verifies the bearer and resolves the caller's tenant
+//   2. buildServer calls the enumerator with that verified Caller; it returns
+//      the live Ready set visible to the caller's Org (see RegistryEnumerator)
 //   3. for each provider with an MCP URL:
-//      a. POST tools/list to {MCPURL} with the caller's bearer
+//      a. POST tools/list to {MCPURL} — a platform provider with the caller's
+//         bearer; an org-owned provider through its Transport, which carries a
+//         delegated token instead and never the caller's bearer
 //      b. for each tool, register a proxy tool "<provider>__<original>" whose
-//         handler POSTs tools/call back to {MCPURL}
-//   4. name collisions across providers are prevented by the slug prefix.
+//         handler POSTs tools/call back to {MCPURL} the same way
+//   4. name collisions across providers are prevented by the slug prefix, and
+//      within one Org by shadowing: an org's own provider replaces the
+//      platform provider of the same name, so at most one of them is listed.
 
 import (
 	"bytes"
@@ -59,11 +64,25 @@ type ProviderTarget struct {
 	Name        string
 	DisplayName string
 	MCPURL      string
+
+	// OrgUUID is the owning Org of an org-owned ("bring your own") provider;
+	// empty for a platform provider. An org-owned target is only ever reached
+	// through Transport: one without a Transport is not contacted at all.
+	OrgUUID string
+	// Transport, when set, carries every request to this target and owns its
+	// authorization: the federation client never attaches the caller's bearer
+	// to a request that goes through it. Org-owned targets get one from
+	// providers.ProviderProxy.OrgProviderRoute (edge hop + delegated token).
+	// Nil for a platform provider, which is dialled directly with the caller's
+	// bearer as before.
+	Transport http.RoundTripper
 }
 
 // ProviderEnumerator returns the live set of Ready providers exposing an MCP
-// endpoint. Called once per MCP request from registerProviderTools.
-type ProviderEnumerator func(ctx context.Context) []ProviderTarget
+// endpoint that the verified caller may see. Called once per MCP request from
+// buildServer with the Caller its BearerVerifier returned, never with anything
+// taken from request headers.
+type ProviderEnumerator func(ctx context.Context, caller Caller) []ProviderTarget
 
 // providerDiscoveryTimeout bounds how long the aggregate waits on ONE
 // provider's tools/list. Discovery runs in parallel, so a slow or hung
@@ -82,6 +101,12 @@ const (
 	// example, a warehouse-backed query) without allowing one call to hang the
 	// aggregate indefinitely. It remains below the App Studio request budget.
 	providerMCPCallTimeout = 90 * time.Second
+	// providerMCPMaxResponseBytes caps one provider MCP response body. It is
+	// sized for tool results that carry base64-encoded binary files (a 48 MiB
+	// checkout grows by 4/3 when base64-encoded, plus JSON framing), so the
+	// cap is 96 MiB. A response over the cap is a loud error, never a
+	// silently truncated body that later fails to decode.
+	providerMCPMaxResponseBytes int64 = 96 << 20
 )
 
 // FederatedProvider is the introspection view of one federation target: a Ready
@@ -132,6 +157,11 @@ func DiscoverFederation(ctx context.Context, targets []ProviderTarget, bearerTok
 			out[i].Error = "provider exposes no MCP endpoint"
 			continue
 		}
+		tc, ok := cli.forTarget(p)
+		if !ok {
+			out[i].Error = "org-owned provider has no delegated transport"
+			continue
+		}
 		wg.Add(1)
 		go func(i int, p ProviderTarget) {
 			defer wg.Done()
@@ -142,7 +172,7 @@ func DiscoverFederation(ctx context.Context, targets []ProviderTarget, bearerTok
 			}()
 			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
 			defer cancel()
-			tools, err := cli.listTools(dctx, p.MCPURL)
+			tools, err := tc.listTools(dctx, p.MCPURL)
 			if err != nil {
 				if errors.Is(err, errNoMCPEndpoint) {
 					out[i].noMCP = true
@@ -189,13 +219,17 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 		if p.MCPURL == "" {
 			continue
 		}
+		tc, ok := cli.forTarget(p)
+		if !ok {
+			continue
+		}
 		wg.Add(1)
 		go func(i int, p ProviderTarget) {
 			defer wg.Done()
 			defer func() { _ = recover() }()
 			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
 			defer cancel()
-			instr := strings.TrimSpace(cli.fetchInstructions(dctx, p.MCPURL))
+			instr := strings.TrimSpace(tc.fetchInstructions(dctx, p.MCPURL))
 			if instr == "" {
 				return
 			}
@@ -259,6 +293,11 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 		if p.MCPURL == "" {
 			continue
 		}
+		tc, ok := cli.forTarget(p)
+		if !ok {
+			log.V(1).Info("provider federation: org-owned provider has no delegated transport (skipping)", "provider", p.Name, "org", p.OrgUUID)
+			continue
+		}
 		wg.Add(1)
 		go func(i int, p ProviderTarget) {
 			defer wg.Done()
@@ -269,16 +308,16 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 			}()
 			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
 			defer cancel()
-			tools, err := cli.listTools(dctx, p.MCPURL)
+			tools, err := tc.listTools(dctx, p.MCPURL)
 			if err != nil {
 				if errors.Is(err, errNoMCPEndpoint) {
 					log.V(2).Info("provider federation: no MCP endpoint (skipping)", "provider", p.Name)
 				} else {
-					log.Info("provider federation: tools/list failed (skipping)", "provider", p.Name, "mcpURL", p.MCPURL, "err", err.Error())
+					log.Info("provider federation: tools/list failed (skipping)", "provider", p.Name, "org", p.OrgUUID, "mcpURL", p.MCPURL, "err", err.Error())
 				}
 				return
 			}
-			results[i] = &providerTools{provider: p, tools: tools}
+			results[i] = &providerTools{provider: p, tools: tools, client: tc}
 		}(i, p)
 	}
 	wg.Wait()
@@ -298,7 +337,7 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 						log.Info("provider federation: AddTool panic recovered", "provider", r.provider.Name, "tool", t.Name, "panic", fmt.Sprint(rec))
 					}
 				}()
-				registerOneProxyTool(srv, cli, r.provider, t)
+				registerOneProxyTool(srv, r.client, r.provider, t)
 			}()
 		}
 	}
@@ -309,6 +348,9 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 type providerTools struct {
 	provider ProviderTarget
 	tools    []discoveredTool
+	// client is the per-target federation client discovery used; tools/call
+	// goes out the same way (same transport, same credential rule).
+	client *providerMCPClient
 }
 
 // registerOneProxyTool installs a single proxy tool on srv, named
@@ -357,6 +399,9 @@ type providerMCPClient struct {
 	clusterID        string // forwarded as X-Faros-Cluster
 	discoveryTimeout time.Duration
 	callTimeout      time.Duration
+	// maxResponseBytes bounds one response body; see
+	// providerMCPMaxResponseBytes. A field so tests can lower it.
+	maxResponseBytes int64
 }
 
 func newProviderMCPClient(bearerToken, tenantPath, clusterID string) *providerMCPClient {
@@ -381,7 +426,33 @@ func newProviderMCPClientWithTimeouts(bearerToken, tenantPath, clusterID string,
 		clusterID:        clusterID,
 		discoveryTimeout: discoveryTimeout,
 		callTimeout:      callTimeout,
+		maxResponseBytes: providerMCPMaxResponseBytes,
 	}
+}
+
+// forTarget returns the client to use for one target. A platform target
+// (no OrgUUID, no Transport) gets c unchanged: dialled directly with the
+// caller's bearer, exactly as before org-owned providers were federated.
+//
+// A target with a Transport gets a copy whose bearer is cleared and whose HTTP
+// client uses that Transport, so the caller's credential is not even present
+// on the request the transport sees — the transport sets the delegated token
+// itself. An org-owned target WITHOUT a Transport is refused (ok=false): the
+// only way to reach one is the edge route with a delegated token, and the
+// alternative — the default transport with the caller's bearer, aimed at an
+// address inside a tenant's cluster — is the leak this whole path exists to
+// prevent.
+func (c *providerMCPClient) forTarget(p ProviderTarget) (*providerMCPClient, bool) {
+	if p.Transport == nil {
+		if p.OrgUUID != "" {
+			return nil, false
+		}
+		return c, true
+	}
+	tc := *c
+	tc.bearerToken = ""
+	tc.http = &http.Client{Transport: p.Transport}
+	return &tc, true
 }
 
 // discoveredTool is the subset of mcp.Tool we keep from tools/list. InputSchema
@@ -473,7 +544,13 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		return nil, fmt.Errorf("POST %s: %w", mcpURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	limit := c.maxResponseBytes
+	if limit <= 0 {
+		limit = providerMCPMaxResponseBytes
+	}
+	// Read one byte past the cap so an oversized body is detected instead of
+	// being truncated into a confusing JSON decode error.
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
@@ -483,6 +560,9 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		// streamable-HTTP POST (e.g. app-studio's mux). Not an error — the
 		// provider contributes no tools and is dropped silently.
 		return nil, errNoMCPEndpoint
+	}
+	if int64(len(respBytes)) > limit {
+		return nil, fmt.Errorf("provider %s response exceeds the %s limit; the result is too large to federate", method, formatByteLimit(limit))
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("provider returned %d: %s", resp.StatusCode, snippet(respBytes))
@@ -510,6 +590,15 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		return nil, fmt.Errorf("provider error %d: %s", env.Error.Code, env.Error.Message)
 	}
 	return env.Result, nil
+}
+
+// formatByteLimit renders a byte cap for error messages ("96 MiB", or plain
+// bytes when the cap is not a whole number of MiB).
+func formatByteLimit(n int64) string {
+	if n >= 1<<20 && n%(1<<20) == 0 {
+		return fmt.Sprintf("%d MiB", n>>20)
+	}
+	return fmt.Sprintf("%d-byte", n)
 }
 
 func firstSSEData(body []byte) (json.RawMessage, bool) {

@@ -194,7 +194,7 @@ func (t *sharedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if throttled {
 		_ = resp.Body.Close()
-		return nil, &backend.RateLimitError{RetryAt: s.until, Err: fmt.Errorf("github: rate limited (HTTP %d)", resp.StatusCode)}
+		return nil, &backend.RateLimitError{RetryAt: s.until, Err: fmt.Errorf("HTTP %d", resp.StatusCode)}
 	}
 	if resp.StatusCode == 200 && req.Method == http.MethodGet && ttl > 0 && len(body) <= maxCachedBytes {
 		s.store(key, cachedResponse{resp.StatusCode, resp.Header.Clone(), body, c.now().Add(ttl)})

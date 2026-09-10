@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -397,6 +398,12 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		req.DisplayName = generated.Naming.DisplayName
 		repoBase = generated.Naming.RepositoryName
 	}
+	if req.Name != "" {
+		// An explicit project name is the caller's chosen identity: the
+		// repository follows it instead of the preflight's suggestion, and a
+		// collision is reported rather than silently suffixed.
+		repoBase = req.Name
+	}
 	if req.DisplayName == "" {
 		return nil, newValidationError("displayName is required")
 	}
@@ -611,6 +618,42 @@ func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Cli
 	}
 }
 
+// projectRepositoryForDeletion returns the Code Repository an opt-in
+// deleteRepository request may delete: the one App Studio created for this
+// project and that this project incarnation still claims. It returns "" when
+// there is nothing to delete (no binding, or the Repository is already gone)
+// and a Conflict when the repository is adopted or not owned by the project —
+// adopted repositories are never deleted by App Studio.
+func projectRepositoryForDeletion(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (string, error) {
+	if p == nil || p.Spec.Repository == nil {
+		return "", nil
+	}
+	ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef)
+	if ref == "" {
+		return "", nil
+	}
+	adoptedConflict := newConflictError(fmt.Sprintf("repository %q was adopted (imported) into this project and App Studio never deletes adopted repositories; delete the project without deleteRepository, and remove the repository through the Code provider if needed", ref))
+	if p.Spec.Repository.Adopted {
+		return "", adoptedConflict
+	}
+	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, ref, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", codeProviderRequestError("get Code repository", err)
+	}
+	if repositoryAdopted(repo) {
+		return "", adoptedConflict
+	}
+	claimedBy := strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel])
+	claimedUID := strings.TrimSpace(repo.GetAnnotations()[projectRepositoryUIDAnnotation])
+	if claimedBy != strings.TrimSpace(p.Name) || (claimedUID != "" && claimedUID != string(p.UID)) {
+		return "", newConflictError(fmt.Sprintf("repository %q is not owned by project %q; it was not deleted", ref, p.Name))
+	}
+	return ref, nil
+}
+
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -775,6 +818,15 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "project UID is required; refresh the project list and try again")
 		return
 	}
+	deleteRepository := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("deleteRepository")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "deleteRepository must be true or false")
+			return
+		}
+		deleteRepository = parsed
+	}
 	p, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		writeProjectError(w, err)
@@ -783,6 +835,16 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	if string(p.UID) != expectedUID {
 		writeStatus(w, http.StatusConflict, "Conflict", "project identity changed; refresh the project list before deleting")
 		return
+	}
+	// Validate an opt-in repository deletion before any side effect, so a
+	// refusal (adopted or foreign repository) leaves the project untouched.
+	deletableRepository := ""
+	if deleteRepository {
+		deletableRepository, err = projectRepositoryForDeletion(r.Context(), c, p)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
 	}
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
 	s.forgetProjectThumbnailCapture(id, p)
@@ -804,11 +866,22 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	// CR below is deleted (ownerReferences cover the no-controller case).
 	// App-access RBAC grants reference the instance by name only and become
 	// inert once it is gone; the share dialog can always clean strays.
-	// Repositories deliberately SURVIVE project deletion — git is the durable
-	// source of truth, and deleting a workspace UI concept must never destroy
-	// the user's code. Deletion only releases the claim on a repository this
-	// project owns, so the repository becomes importable again.
-	if p.Spec.Repository != nil {
+	// Repositories deliberately SURVIVE project deletion by default — git is
+	// the durable source of truth, and deleting a workspace UI concept must
+	// never destroy the user's code. Deletion only releases the claim on a
+	// repository this project owns, so the repository becomes importable
+	// again. With deleteRepository=true the caller explicitly asks to delete
+	// the repository App Studio created for this project: the Code
+	// Repository is deleted as the caller through the Code provider's
+	// APIExport, and its finalizer deletes the git-host repository. It is
+	// deleted before the Project so a failure leaves the project in place
+	// and the request retryable.
+	if deletableRepository != "" {
+		if err := c.Resource(codeRepositoryResource, "").Delete(r.Context(), deletableRepository, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			writeProjectError(w, codeProviderRequestError(fmt.Sprintf("delete Code repository %q", deletableRepository), err))
+			return
+		}
+	} else if p.Spec.Repository != nil {
 		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
 			if repo, err := c.Resource(codeRepositoryResource, "").Get(r.Context(), ref, metav1.GetOptions{}); err == nil &&
 				strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]) == strings.TrimSpace(p.Name) {

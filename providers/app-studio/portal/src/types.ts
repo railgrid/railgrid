@@ -614,10 +614,20 @@ export interface ProjectFileList {
 export interface ProjectFileContent {
   path: string
   content?: string
+  /** Decoded file size in bytes; for truncated or binary files this is the full size. */
   size: number
+  /** "sha256:<hex>" of the file bytes; pass as If-Match to guard replace/delete. */
   version?: string
   binary?: boolean
   truncated?: boolean
+}
+
+/** Result of a workspace file write (PUT content or multipart upload). */
+export interface ProjectFileWriteResult {
+  path: string
+  size: number
+  version?: string
+  binary?: boolean
 }
 
 export interface ProjectPlanScaffold {

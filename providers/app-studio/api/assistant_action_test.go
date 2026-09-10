@@ -38,6 +38,17 @@ func TestAssistantThreadTurnPublicModeRejectsReview(t *testing.T) {
 			t.Fatalf("public thread mode %q = %q, %v; want accepted", mode, got, err)
 		}
 	}
+	for raw, want := range map[string]store.AssistantRunMode{
+		"":         store.AssistantRunModeDefault,
+		"Default":  store.AssistantRunModeDefault,
+		" PLAN ":   store.AssistantRunModePlan,
+		"\tplan\n": store.AssistantRunModePlan,
+	} {
+		got, err := (assistantThreadTurnCreateRequest{CollaborationMode: store.AssistantRunMode(raw)}).publicAssistantThreadTurnMode()
+		if err != nil || got != want {
+			t.Fatalf("public thread mode %q = %q, %v; want normalized %q", raw, got, err, want)
+		}
+	}
 }
 
 func TestAssistantCollaborationModeForRunAcceptsPersistedReview(t *testing.T) {

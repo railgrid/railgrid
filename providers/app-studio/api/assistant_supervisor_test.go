@@ -1701,7 +1701,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	createAssistantThreadForHTTPTest(t, memoryStore, scope, "thread-1", "test-user")
 	router := mux.NewRouter()
 	server.Register(router)
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"finish the plan","clientUserMessageID":"plan-request","collaborationMode":"plan"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"finish the plan","clientUserMessageID":"plan-request","collaborationMode":" Plan "}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
@@ -1758,6 +1758,9 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	}
 	if terminal.Status != store.AssistantRunStatusCompleted || !reflect.DeepEqual(message.Metadata[projectAssistantMetadataPlan], latestPlan) {
 		t.Fatalf("terminal run = %#v, message = %#v, want completed latest plan", terminal, message)
+	}
+	if terminal.Mode != store.AssistantRunModePlan {
+		t.Fatalf("terminal run mode = %q, want mixed-case request normalized to %q", terminal.Mode, store.AssistantRunModePlan)
 	}
 	if terminal.Revision <= live.Run.Revision {
 		t.Fatalf("terminal revision = %d, want greater than live revision %d", terminal.Revision, live.Run.Revision)

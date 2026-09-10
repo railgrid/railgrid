@@ -45,7 +45,27 @@ const (
 	webSearchTimeout     = 20 * time.Second
 )
 
-// webDialGuard rejects non-public dial targets.
+// webBlockedNetworks are non-public ranges beyond the net.IP predicates:
+// carrier-grade NAT (often a cluster's pod/service space), benchmarking,
+// "this network", reserved/broadcast, IPv6 site-local, and NAT64.
+var webBlockedNetworks = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, cidr := range []string{
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4",
+		"fec0::/10", "64:ff9b::/96", "64:ff9b:1::/48",
+	} {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, network)
+	}
+	return out
+}()
+
+// webDialGuard rejects non-public dial targets. It runs on the resolved
+// address of every connection (redirects included), so DNS cannot smuggle
+// an internal target past a hostname check.
 func webDialGuard(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -55,13 +75,30 @@ func webDialGuard(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("unparseable dial address %q", host)
 	}
-	// Link-local carries cloud instance-metadata endpoints; loopback and
-	// private ranges are the platform's own network.
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
+	if webNonPublicIP(ip) {
 		return fmt.Errorf("refusing to connect to non-public address %s", ip)
 	}
 	return nil
+}
+
+// webNonPublicIP reports addresses a model-supplied URL must never reach.
+// Link-local carries cloud instance-metadata endpoints; loopback, private
+// (including IPv6 ULA fc00::/7), and CGNAT ranges are the platform's own
+// network; multicast and reserved ranges are never a download source.
+func webNonPublicIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
+		return true
+	}
+	for _, network := range webBlockedNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // webGuardedClient reaches public destinations only. It is the only client a

@@ -35,6 +35,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/hubmcp"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -123,6 +124,20 @@ type Server struct {
 	// sandbox; logging it alone made that invisible to the user AND to the
 	// model, which would then diagnose a stale runtime as a code bug.
 	developmentSyncFailures map[string]string
+	// developmentSyncRevisionOffsets holds, per development component, how
+	// far a plain (non-App Studio) sync pushed the agent's applied revision
+	// ahead of the FileStore revision. See developmentSyncRevision.
+	developmentSyncRevisionOffsets map[string]uint64
+	// codeCommitBinary / codeCheckoutBinary cache, per workspace cluster,
+	// whether the Code provider's commit_files / checkout_repository tools
+	// advertise base64 binaries. syncBinary caches, per development
+	// component, whether its agent's /status advertises base64 sync.
+	codeCommitBinary   hubmcp.CapabilityCache
+	codeCheckoutBinary hubmcp.CapabilityCache
+	syncBinary         hubmcp.CapabilityCache
+	// syncBinaryNotices remembers components already told (in the log) that
+	// binaries are skipped, so the notice is not repeated on every sync.
+	syncBinaryNotices map[string]bool
 	// workspaceRebuilds records, per project, that this replica rebuilt the
 	// workspace from git after taking the project over while the claim still
 	// carried uncommitted source revisions. The tree on disk then no longer
@@ -382,6 +397,10 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/files", s.listProjectFiles).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/files/content", s.readProjectFile).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/files/content", s.writeProjectFile).Methods(http.MethodPut)
+	r.HandleFunc("/api/projects/{project}/files/content", s.deleteProjectFile).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/{project}/files/raw", s.readProjectFileRaw).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/files/upload", s.uploadProjectFiles).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions", s.createProjectPreviewBridgeSession).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-bridge/sessions/{session}", s.deleteProjectPreviewBridgeSession).Methods(http.MethodDelete)

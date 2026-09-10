@@ -53,6 +53,9 @@ centralKro:
 application:
   # Zone apps are served under, e.g. "apps.example.com". Each app gets
   # <prefix|name>-<tenantHash>.<baseDomain>. Empty → feature disabled.
+  # TLS: below the Cloudflare zone apex, Universal SSL does not cover app
+  # hosts — add a *.<baseDomain> edge cert (ACM / Total TLS) or new URLs fail
+  # TLS for minutes. See docs/application-template-architecture.md.
   baseDomain: ""
   # Gateway API parent the generated Application HTTPRoutes attach to
   # (substituted into Application RGDs as ${faros.gatewayName} /
@@ -70,6 +73,10 @@ application:
 # app traffic enters through it in every mode. Public apps never contact the
 # hub; private apps use the hub sign-in flow once per visitor session.
 publishing:
+  # App host zone (wins over application.baseDomain). TLS: below the
+  # Cloudflare zone apex, Universal SSL does not cover app hosts — add a
+  # *.<baseDomain> edge cert (ACM / Total TLS) or new URLs fail TLS for
+  # minutes. See docs/application-template-architecture.md.
   baseDomain: ""
   accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
   # Internal hub address used for the app-access protocol. Empty falls back to
@@ -312,7 +319,8 @@ operator:
   application:
     # DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable
     # app exposure — the Application instance controller stays disabled until this
-    # is set. Empty → feature off.
+    # is set. Empty → feature off. TLS: below the Cloudflare zone apex, add a
+    # *.<baseDomain> edge cert (ACM / Total TLS) — see the top-level note.
     baseDomain: ""
     # Gateway API parent the generated HTTPRoutes attach to. Empty fields →
     # "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults).
@@ -321,6 +329,8 @@ operator:
       namespace: ""
 
   publishing:
+    # App host zone (wins over operator.application.baseDomain). TLS: below the
+    # Cloudflare zone apex, add a *.<baseDomain> edge cert (ACM / Total TLS).
     baseDomain: ""
     accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
     hubURL: ""

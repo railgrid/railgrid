@@ -10,7 +10,8 @@ You may obtain a copy of the License at
 
 // Workspace hydration: repo → workspace, the missing half of the code
 // lifecycle (docs/app-studio-template-sandboxes.md §5). The Code provider's
-// checkout tool reads the repository's text tree; this endpoint writes it
+// checkout tool reads the repository's tree (text, plus base64 binaries when
+// the provider supports them); this endpoint writes it
 // into the project workspace, making the git repository the durable source
 // of truth — the workspace filesystem becomes recoverable, template switches
 // can re-hydrate, and existing repositories become importable.
@@ -56,14 +57,13 @@ type projectHydrateResponse struct {
 }
 
 // checkoutToolResult mirrors the Code provider's checkout_repository output.
+// Binaries arrive base64-encoded only when App Studio opted in
+// (binaryEncoding) against a provider that advertises it.
 type checkoutToolResult struct {
-	Ref       string `json:"ref"`
-	CommitSHA string `json:"commitSHA"`
-	Files     []struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	} `json:"files"`
-	Skipped []string `json:"skipped"`
+	Ref       string             `json:"ref"`
+	CommitSHA string             `json:"commitSHA"`
+	Files     []checkoutToolFile `json:"files"`
+	Skipped   []string           `json:"skipped"`
 }
 
 // hydrateWorkspaceFromRepository is the shared repo→workspace core used by
@@ -92,6 +92,7 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 	if ref = strings.TrimSpace(ref); ref != "" {
 		args["ref"] = ref
 	}
+	args = s.checkoutArgs(ctx, httpReq, id, args)
 	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
 	if err != nil {
 		return projectHydrateResponse{}, fmt.Errorf("checkout repository: %w", err)
@@ -109,7 +110,12 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 		Skipped:       checkout.Skipped,
 	}
 	for _, f := range checkout.Files {
-		if _, err := s.workspaces.WriteFile(ctx, scope, workspace.WriteOptions{Path: f.Path, Content: f.Content}); err != nil {
+		data, err := f.bytes()
+		if err != nil {
+			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (checkout: %v)", f.Path, err))
+			continue
+		}
+		if _, err := s.workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: f.Path, Data: data}); err != nil {
 			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (workspace: %v)", f.Path, err))
 			continue
 		}

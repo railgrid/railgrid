@@ -42,11 +42,18 @@ import type {
   ProjectPlan,
   ProjectFileList,
   ProjectFileContent,
+  ProjectFileWriteResult,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
+import {
+  classifyProjectFileError,
+  projectFileErrorMessage,
+  type ProjectFileErrorReason,
+  type ProjectFileWriteIntent,
+} from './projectFiles'
 
 interface TenantSelection {
   orgUUID: string | null
@@ -231,6 +238,57 @@ async function requestAssistantAttachmentUpload(
   )
   if (!receipt) throw new ProjectAPIRequestError('attachment upload returned an invalid receipt', 502)
   return receipt
+}
+
+/** A workspace file request failed; reason drives recovery (overwrite, refresh). */
+export class ProjectFileRequestError extends ProjectAPIRequestError {
+  constructor(message: string, status: number, readonly reason: ProjectFileErrorReason, readonly detail: string) {
+    super(message, status)
+    this.name = 'ProjectFileRequestError'
+  }
+}
+
+export function isProjectFileRequestError(err: unknown): err is ProjectFileRequestError {
+  return err instanceof ProjectFileRequestError
+}
+
+function projectFileContentURL(ctx: FarosContext | null, name: string, path: string): string {
+  return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`
+}
+
+async function projectFileResponseError(res: Response, intent: ProjectFileWriteIntent): Promise<Error> {
+  let text = ''
+  try {
+    text = await res.text()
+  } catch {
+    // keep the status text
+  }
+  let detail = text || res.statusText
+  let reason = ''
+  try {
+    const parsed = JSON.parse(text) as { message?: string; reason?: string }
+    if (parsed.message) detail = parsed.message
+    if (parsed.reason) reason = parsed.reason
+  } catch {
+    // keep raw text
+  }
+  if (isProjectAPIInitializingResponse(res.status, reason, detail)) return new ProjectAPIInitializingError(detail)
+  const fileReason = classifyProjectFileError(res.status, detail, intent)
+  return new ProjectFileRequestError(projectFileErrorMessage(fileReason, detail), res.status, fileReason, detail)
+}
+
+function projectFileWriteResult(text: string, path: string): ProjectFileWriteResult {
+  try {
+    const value = text ? JSON.parse(text) as Partial<ProjectFileWriteResult> : {}
+    return {
+      path: typeof value.path === 'string' ? value.path : path,
+      size: typeof value.size === 'number' ? value.size : 0,
+      ...(typeof value.version === 'string' ? { version: value.version } : {}),
+      ...(typeof value.binary === 'boolean' ? { binary: value.binary } : {}),
+    }
+  } catch {
+    return { path, size: 0 }
+  }
 }
 
 function assistantAttachmentReceipts(value: unknown): ProjectAssistantAttachmentReceipt[] {
@@ -567,13 +625,118 @@ export const api = {
     return request<ProjectFileList>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/files`)
   },
 
-  // readProjectFile returns one workspace file's bounded content.
+  // readProjectFile returns one workspace file's bounded content plus its full
+  // size and version. Binary files return empty content with binary=true.
   async readProjectFile(ctx: FarosContext | null, name: string, path: string): Promise<ProjectFileContent> {
-    return request<ProjectFileContent>(
+    const body = await request<ProjectFileContent>(
       ctx,
       'GET',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
     )
+    return { ...body, size: typeof body?.size === 'number' ? body.size : new TextEncoder().encode(body?.content ?? '').byteLength }
+  },
+
+  // rawProjectFileURL is the files/raw address. Auth is header-based, so this
+  // URL is only for providerFetch — never an <img src> or <a href>; use
+  // fetchProjectFileRaw and an object URL instead.
+  rawProjectFileURL(ctx: FarosContext | null, name: string, path: string, options: { download?: boolean } = {}): string {
+    const query = new URLSearchParams({ path })
+    if (options.download) query.set('download', '1')
+    return `${baseURL(ctx)}/${encodeURIComponent(name)}/files/raw?${query}`
+  },
+
+  // fetchProjectFileRaw returns a workspace file's raw bytes for previews and
+  // downloads.
+  async fetchProjectFileRaw(
+    ctx: FarosContext | null,
+    name: string,
+    path: string,
+    options: { download?: boolean; signal?: AbortSignal } = {},
+  ): Promise<Blob> {
+    const res = await providerFetch(ctx)(api.rawProjectFileURL(ctx, name, path, options), {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { ...tenantHeaders({}), Accept: '*/*' },
+      cache: 'no-cache',
+      signal: options.signal,
+    })
+    if (!res.ok) throw await projectFileResponseError(res, {})
+    return res.blob()
+  },
+
+  // putProjectFile creates or replaces one workspace file with a raw body.
+  // createOnly sends If-None-Match: * (412 when the path exists); ifMatch
+  // replaces only an unchanged version (412 when it changed).
+  async putProjectFile(
+    ctx: FarosContext | null,
+    name: string,
+    path: string,
+    body: Blob | string,
+    options: { ifMatch?: string; createOnly?: boolean } = {},
+  ): Promise<ProjectFileWriteResult> {
+    const headers = tenantHeaders({})
+    headers['Content-Type'] = typeof body === 'string'
+      ? 'text/plain; charset=utf-8'
+      : body.type || 'application/octet-stream'
+    if (options.createOnly) headers['If-None-Match'] = '*'
+    else if (options.ifMatch) headers['If-Match'] = options.ifMatch
+    const res = await providerFetch(ctx)(projectFileContentURL(ctx, name, path), {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers,
+      body,
+    })
+    if (!res.ok) throw await projectFileResponseError(res, options)
+    return projectFileWriteResult(await res.text(), path)
+  },
+
+  // deleteProjectFile removes one workspace file (204); ifMatch guards against
+  // deleting a file that changed since it was loaded.
+  async deleteProjectFile(ctx: FarosContext | null, name: string, path: string, options: { ifMatch?: string } = {}): Promise<void> {
+    const headers = tenantHeaders({})
+    if (options.ifMatch) headers['If-Match'] = options.ifMatch
+    const res = await providerFetch(ctx)(projectFileContentURL(ctx, name, path), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers,
+    })
+    if (!res.ok) throw await projectFileResponseError(res, options)
+  },
+
+  // uploadProjectFiles sends one multipart request with a `file` part per file
+  // into dir ("" = workspace root). Without overwrite an existing path fails
+  // the request (reason "exists").
+  async uploadProjectFiles(
+    ctx: FarosContext | null,
+    name: string,
+    files: File[],
+    options: { dir?: string; overwrite?: boolean; signal?: AbortSignal } = {},
+  ): Promise<ProjectFileWriteResult[]> {
+    const form = new FormData()
+    for (const file of files) form.append('file', file, file.name || 'upload')
+    form.append('dir', options.dir ?? '')
+    if (options.overwrite) form.append('overwrite', 'true')
+    const res = await providerFetch(ctx)(`${baseURL(ctx)}/${encodeURIComponent(name)}/files/upload`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: tenantHeaders({}),
+      body: form,
+      signal: options.signal,
+    })
+    if (!res.ok) throw await projectFileResponseError(res, { upload: !options.overwrite })
+    const text = await res.text()
+    let value: unknown
+    try {
+      value = text ? JSON.parse(text) : null
+    } catch {
+      throw new ProjectAPIRequestError('file upload returned invalid JSON', 502)
+    }
+    const entries = value && typeof value === 'object' && Array.isArray((value as { files?: unknown }).files)
+      ? (value as { files: unknown[] }).files
+      : []
+    return entries
+      .filter((entry): entry is ProjectFileWriteResult => !!entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string')
+      .map((entry) => ({ ...entry, size: typeof entry.size === 'number' ? entry.size : 0 }))
   },
 
   async listDevelopmentTemplates(ctx: FarosContext | null): Promise<DevelopmentTemplate[]> {
@@ -1028,10 +1191,19 @@ export const api = {
     return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },
 
-  async deleteProject(ctx: FarosContext | null, name: string, uid: string): Promise<void> {
+  // deleteRepository opts in to deleting the Git repository App Studio
+  // created for the project (never an adopted one; the server answers 409).
+  // By default the repository survives and only its project claim is released.
+  async deleteProject(
+    ctx: FarosContext | null,
+    name: string,
+    uid: string,
+    options: { deleteRepository?: boolean } = {},
+  ): Promise<void> {
     const expectedUID = uid.trim()
     if (!expectedUID) throw new ProjectAPIRequestError('project UID is required before deleting', 400)
     const query = new URLSearchParams({ uid: expectedUID })
+    if (options.deleteRepository) query.set('deleteRepository', 'true')
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}?${query}`)
   },
 

@@ -41,6 +41,7 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"github.com/faroshq/provider-app-studio/api"
 	"github.com/faroshq/provider-app-studio/bindings"
 	"github.com/faroshq/provider-app-studio/controller/project"
 	"github.com/faroshq/provider-app-studio/controller/session"
@@ -212,9 +213,25 @@ type controllerDeps struct {
 	Workspace   *workspace.FileStore
 	Busy        func(workspace.Scope) bool
 	Owns        func(workspace.Scope) bool
+	OnCommitted func(context.Context, workspace.Scope, project.CommitResult)
 	Store       store.Store
 	HubBase     string
 	HubInsecure bool
+}
+
+// projectCommitNotifier adapts the API server's commit notification to the
+// Project reconciler's OnCommitted hook, keeping the api package free of
+// controller types.
+func projectCommitNotifier(notify func(context.Context, workspace.Scope, api.ProjectCommit)) func(context.Context, workspace.Scope, project.CommitResult) {
+	return func(ctx context.Context, scope workspace.Scope, commit project.CommitResult) {
+		notify(ctx, scope, api.ProjectCommit{
+			RepositoryRef: commit.RepositoryRef,
+			CommitSHA:     commit.CommitSHA,
+			CommitURL:     commit.CommitURL,
+			Branch:        commit.Branch,
+			Files:         commit.Files,
+		})
+	}
 }
 
 // startControllerManager builds the multicluster manager, starts the Project
@@ -265,6 +282,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 		Workspace:   deps.Workspace,
 		Busy:        deps.Busy,
 		Owns:        deps.Owns,
+		OnCommitted: deps.OnCommitted,
 		Attachments: attachments,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,

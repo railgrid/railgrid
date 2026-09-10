@@ -412,10 +412,7 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// Same boundary as serveOverEdge: the caller's hub token
 				// stops here. The provider receives the delegated token,
 				// or nothing for an anonymous probe.
-				req.Header.Del("Authorization")
-				if delegated != "" {
-					req.Header.Set("Authorization", "Bearer "+delegated)
-				}
+				setDelegatedAuthorization(req.Header, delegated)
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

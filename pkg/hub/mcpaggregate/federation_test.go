@@ -231,3 +231,44 @@ func jsonResponse(body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
+
+func TestProviderMCPClientResponseCap(t *testing.T) {
+	if got, want := newProviderMCPClient("", "", "").maxResponseBytes, int64(96<<20); got != want {
+		t.Fatalf("default response cap = %d, want %d (96 MiB, sized for base64 binary payloads)", got, want)
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + strings.Repeat("x", 512) + `"}]}}`
+	for _, tc := range []struct {
+		name    string
+		limit   int64
+		wantErr bool
+	}{
+		{name: "exactly at cap", limit: int64(len(body))},
+		{name: "one byte over cap", limit: int64(len(body)) - 1, wantErr: true},
+		{name: "well over cap", limit: 64, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newProviderMCPClient("", "", "")
+			client.maxResponseBytes = tc.limit
+			client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return jsonResponse(body), nil
+			})
+			_, err := client.callTool(context.Background(), "http://provider.invalid/mcp", "big", nil)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("callTool error = %v, want success at the cap", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("callTool succeeded, want an over-limit error")
+			}
+			if !strings.Contains(err.Error(), "exceeds the") || !strings.Contains(err.Error(), "limit") {
+				t.Fatalf("callTool error = %v, want an explicit over-limit error (not a decode error)", err)
+			}
+			if strings.Contains(err.Error(), "decode") {
+				t.Fatalf("callTool error = %v, oversized body must not surface as a decode error", err)
+			}
+		})
+	}
+}

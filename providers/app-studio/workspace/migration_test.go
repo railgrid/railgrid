@@ -612,7 +612,7 @@ func seedLegacyMigrationFixture(t *testing.T, root string) Scope {
 	return legacyScope
 }
 
-func TestFileStoreUnifiedDeleteRejectsOversizedTarget(t *testing.T) {
+func TestFileStoreUnifiedDeleteOversizedTargetRequiresCurrentVersion(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
@@ -629,10 +629,19 @@ func TestFileStoreUnifiedDeleteRejectsOversizedTarget(t *testing.T) {
 	}
 	_, err = store.DeleteFile(ctx, scope, DeleteOptions{Path: "large.txt", ExpectedVersion: "sha256:test"})
 	var mutationErr *MutationError
-	if !errors.As(err, &mutationErr) || mutationErr.Code != MutationErrorInvalid {
-		t.Fatalf("oversized delete error = %v (%T), want invalid_mutation", err, err)
+	if !errors.As(err, &mutationErr) || mutationErr.Code != MutationErrorStale {
+		t.Fatalf("oversized delete error = %v (%T), want stale_source", err, err)
 	}
-	if _, err := store.ReadFile(ctx, scope, ReadOptions{Path: "large.txt", MaxBytes: MaxWriteBytes}); err != nil {
+	read, err := store.ReadFile(ctx, scope, ReadOptions{Path: "large.txt", MaxBytes: MaxWriteBytes})
+	if err != nil {
 		t.Fatalf("oversized target disappeared after rejected delete: %v", err)
+	}
+	// NUL-filled content is binary, so the read carries a whole-file version
+	// that authorizes the delete regardless of size.
+	if !read.Binary || read.Version != fileVersion([]byte(content)) {
+		t.Fatalf("oversized read = %#v, want binary with whole-file version", read)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "large.txt", ExpectedVersion: read.Version}); err != nil {
+		t.Fatalf("delete with current version: %v", err)
 	}
 }

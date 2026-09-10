@@ -6,7 +6,7 @@ spec:
   displayName: "Scheduled job"
   description: "A container that runs on a cron schedule and exits — CronJob only, no Service, no URL. Reports, cleanups, periodic syncs."
   category: Workloads
-  version: 0.1.0
+  version: 0.2.0
   # exposure: what the platform tells callers about reaching an instance.
   # A schedule, not a server. Nothing to reach.
   exposure: internal
@@ -40,11 +40,27 @@ spec:
 
       This template has NO development mode — develop and test the image
       elsewhere, then provision it here. No network exposure; durable state
-      belongs in a database template instance.
+      belongs in a database template instance, connected as below.
+
+      CONNECTIONS (the connections input):
+        • connections.database: <values.name of a database instance in this
+          workspace> → DATABASE_URL =
+          `postgres://appuser:<password>@<name>-db:5432/appdb`. The URI has
+          NO sslmode and the in-cluster Postgres has TLS disabled, so connect
+          with sslmode=disable (append `?sslmode=disable` / set it if your
+          driver defaults to TLS, e.g. Node `pg`, JDBC).
+        • connections.cache: <values.name of a redis-cache instance> →
+          REDIS_URL = `redis://:<password>@<name>:6379`.
+        • Unset (default "") = not connected; the variable is left unset. A
+          name that is set makes each run wait until that instance's Secret
+          exists, so it must name a real instance in THIS workspace.
+        • Retry the first connection briefly before failing the run, and run
+          schema creation/migrations idempotently inside that retry loop.
 
       INPUTS you set when provisioning: name, image (both required);
-      schedule, env (env-var map; not for secrets). All except name can be
-      changed later with update_instance.
+      schedule, env (env-var map; not for secrets), connections.database /
+      connections.cache (see CONNECTIONS). All except name can be changed
+      later with update_instance.
     outputs:
       - "status.schedule — the active cron schedule."
   # ── Portal presentation ───────────────────────────────────────────────
@@ -85,7 +101,26 @@ spec:
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Values are stored world-readable — not for secrets."
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). DATABASE_URL / REDIS_URL from a set connection win on name conflicts. Values are stored world-readable — not for secrets; use connections for database/cache credentials."
+      # Fixed connection slots rendered as literal secretKeyRef env entries —
+      # same shape and rationale as simple-webapp's connections input.
+      connections:
+        type: object
+        default: {}
+        description: "Sibling instances in this workspace whose credentials are injected as env, read from their Secret (never templated in clear). Empty = not connected."
+        properties:
+          database:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "values.name of a database instance in this workspace; its connection URI is injected as DATABASE_URL (no sslmode; in-cluster TLS is off, so use sslmode=disable). Each run waits until that instance's Secret exists."
+          cache:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 63
+            description: "values.name of a redis-cache instance in this workspace; its connection URI is injected as REDIS_URL. Each run waits until that instance's Secret exists."
     required:
       - name
       - image
@@ -131,6 +166,24 @@ spec:
                     containers:
                       - name: job
                         image: ${schema.spec.image}
+                        # connections.* → credentials from the sibling
+                        # instance's Secret in this runtime namespace.
+                        # Unconnected: a placeholder name + optional=true
+                        # leaves the var unset. Connected: the run waits for
+                        # the Secret and its uri key.
+                        env:
+                          - name: DATABASE_URL
+                            valueFrom:
+                              secretKeyRef:
+                                name: '${schema.spec.connections.database == "" ? schema.spec.name + "-unbound-db" : schema.spec.connections.database + "-db-credentials"}'
+                                key: uri
+                                optional: '${schema.spec.connections.database == ""}'
+                          - name: REDIS_URL
+                            valueFrom:
+                              secretKeyRef:
+                                name: '${schema.spec.connections.cache == "" ? schema.spec.name + "-unbound-cache" : schema.spec.connections.cache + "-credentials"}'
+                                key: uri
+                                optional: '${schema.spec.connections.cache == ""}'
                         envFrom:
                           - configMapRef:
                               name: ${jobEnv.metadata.name}

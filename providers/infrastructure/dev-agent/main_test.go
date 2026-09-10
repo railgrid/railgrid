@@ -13,7 +13,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -502,6 +504,222 @@ func TestSyncWritesFilesAndRunsReloadRules(t *testing.T) {
 	})
 	if resp.Restarted || len(resp.ReloadRuns) != 0 {
 		t.Errorf("plain source sync restarted: %+v", resp)
+	}
+}
+
+func agentStatus(t *testing.T, srv *agentServer) processStatusResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set(controlTokenHeader, "test-token")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got processStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	return got
+}
+
+// diskDigest hashes the given workspace files as they are on disk now.
+func diskDigest(t *testing.T, workdir string, paths ...string) string {
+	t.Helper()
+	files := make([]syncFile, 0, len(paths))
+	for _, p := range paths {
+		content, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(p)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, syncFile{Path: p, Content: string(content)})
+	}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func TestPlainSyncStampsRevisionUsableByExecAndStatus(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+
+	rec, resp := doSync(t, srv, syncRequest{Files: []syncFile{{Path: "main.sh", Content: "echo 1\n"}, {Path: "lib/util.sh", Content: "u\n"}}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plain sync status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	firstDigest := diskDigest(t, workdir, "lib/util.sh", "main.sh")
+	if resp.SourceRevision != 1 || resp.SourceDigest != firstDigest {
+		t.Fatalf("first plain sync evidence = %d/%q, want 1/%q", resp.SourceRevision, resp.SourceDigest, firstDigest)
+	}
+	if status := agentStatus(t, srv); status.SourceRevision != 1 || status.SourceDigest != firstDigest {
+		t.Fatalf("status after plain sync = %d/%q, want the stamped revision", status.SourceRevision, status.SourceDigest)
+	}
+	if result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
+		Argv: []string{"/bin/sh", "main.sh"}, SourceRevision: resp.SourceRevision, SourceDigest: resp.SourceDigest,
+	}); err != nil || result.ExitCode != 0 || result.Stdout != "1\n" {
+		t.Fatalf("exec after plain sync = %+v err=%v", result, err)
+	}
+
+	// Re-syncing identical content keeps the revision.
+	_, resp = doSync(t, srv, syncRequest{Files: []syncFile{{Path: "main.sh", Content: "echo 1\n"}}})
+	if resp.SourceRevision != 1 || resp.SourceDigest != firstDigest {
+		t.Fatalf("unchanged plain sync evidence = %d/%q, want 1/%q", resp.SourceRevision, resp.SourceDigest, firstDigest)
+	}
+
+	// A content change bumps it, and the managed set keeps unsent files.
+	_, resp = doSync(t, srv, syncRequest{Files: []syncFile{{Path: "main.sh", Content: "echo 2\n"}}})
+	secondDigest := diskDigest(t, workdir, "lib/util.sh", "main.sh")
+	if resp.SourceRevision != 2 || resp.SourceDigest != secondDigest {
+		t.Fatalf("changed plain sync evidence = %d/%q, want 2/%q", resp.SourceRevision, resp.SourceDigest, secondDigest)
+	}
+	manifest, found, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
+	if err != nil || !found || !slices.Equal(manifest.Files, []string{"lib/util.sh", "main.sh"}) {
+		t.Fatalf("manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestPlainSyncAfterAuthoritativeSyncKeepsManifestVerifiable(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	files := []syncFile{
+		{Path: "keep.txt", Content: "keep\n"},
+		{Path: "src/a.js", Content: "a\n"},
+		{Path: "src/b.js", Content: "b\n"},
+	}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := doSync(t, srv, syncRequest{Files: files, SourceRevision: 5, SourceDigest: "sha256:" + digest}); rec.Code != http.StatusOK {
+		t.Fatalf("authoritative sync status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Edit a managed file, add new ones (one under a reserved directory), and
+	// delete a managed directory.
+	rec, resp := doSync(t, srv, syncRequest{
+		Files: []syncFile{
+			{Path: "keep.txt", Content: "edited\n"},
+			{Path: "new.txt", Content: "new\n"},
+			{Path: "node_modules/pkg/index.js", Content: "runtime\n"},
+		},
+		DeletePaths: []string{"src"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plain sync status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	wantDigest := diskDigest(t, workdir, "keep.txt", "new.txt")
+	if resp.SourceRevision != 6 || resp.SourceDigest != wantDigest {
+		t.Fatalf("plain sync evidence = %d/%q, want 6/%q", resp.SourceRevision, resp.SourceDigest, wantDigest)
+	}
+	root := mustOpenWorkspaceRoot(t, workdir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !slices.Equal(manifest.Files, []string{"keep.txt", "new.txt"}) {
+		t.Fatalf("manifest = %+v found=%t err=%v, want reserved and deleted paths excluded", manifest, found, err)
+	}
+	if err := verifyWorkspaceManifest(root, manifest); err != nil {
+		t.Fatalf("manifest verification after plain sync = %v", err)
+	}
+	if status := agentStatus(t, srv); status.SourceRevision != 6 {
+		t.Fatalf("status revision = %d, want 6", status.SourceRevision)
+	}
+
+	// Authoritative writers must continue from the returned revision: reusing
+	// the (now superseded) revision with other content is a conflict.
+	next := []syncFile{{Path: "keep.txt", Content: "authoritative\n"}}
+	nextDigest, err := digestSyncFiles(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := doSync(t, srv, syncRequest{Files: next, SourceRevision: 6, SourceDigest: nextDigest}); rec.Code != http.StatusConflict {
+		t.Fatalf("authoritative sync at the plain-sync revision = %d, want 409", rec.Code)
+	}
+	if rec, resp := doSync(t, srv, syncRequest{Files: next, SourceRevision: 7, SourceDigest: nextDigest}); rec.Code != http.StatusOK || resp.SourceRevision != 7 {
+		t.Fatalf("authoritative sync after the returned revision = %d %+v", rec.Code, resp)
+	}
+}
+
+func TestPlainSyncCarriesPendingReloadCommandsUntilTheyRun(t *testing.T) {
+	workdir := t.TempDir()
+	marker := filepath.Join(workdir, "installed")
+	command := "touch " + marker
+	srv := newTestAgent(t, &agentConfig{
+		WorkDir:        workdir,
+		ReloadStrategy: "process",
+		ReloadRules:    []reloadRule{{Paths: []string{"package.json"}, Command: command}},
+	})
+
+	// No restart requested: the matching rule does not run and stays pending,
+	// so the revision is not reported as current.
+	rec, resp := doSync(t, srv, syncRequest{Files: []syncFile{{Path: "package.json", Content: "{}"}}})
+	if rec.Code != http.StatusOK || len(resp.ReloadRuns) != 0 || resp.SourceRevision != 1 {
+		t.Fatalf("no-restart plain sync = %d %+v", rec.Code, resp)
+	}
+	manifest, _, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
+	if err != nil || !slices.Equal(manifest.PendingReloadCommands, []string{command}) {
+		t.Fatalf("pending after no-restart sync = %+v err=%v", manifest.PendingReloadCommands, err)
+	}
+	if status := agentStatus(t, srv); status.SourceRevision != 0 {
+		t.Fatalf("status reported revision %d while a reload is pending", status.SourceRevision)
+	}
+
+	// A later plain sync of an unrelated file carries and runs the command.
+	rec, resp = doSync(t, srv, syncRequest{Files: []syncFile{{Path: "app.js", Content: "x"}}, Restart: "always"})
+	if rec.Code != http.StatusOK || !slices.Equal(resp.ReloadRuns, []string{command}) || resp.ReloadError != "" {
+		t.Fatalf("carrying plain sync = %d %+v", rec.Code, resp)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("carried reload command did not run: %v", err)
+	}
+	manifest, _, err = readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
+	if err != nil || len(manifest.PendingReloadCommands) != 0 || resp.SourceRevision != 2 {
+		t.Fatalf("manifest after successful reload = %+v err=%v resp=%+v", manifest, err, resp)
+	}
+	if status := agentStatus(t, srv); status.SourceRevision != 2 || status.SourceDigest != resp.SourceDigest {
+		t.Fatalf("status after reload = %d/%q, want %d/%q", status.SourceRevision, status.SourceDigest, resp.SourceRevision, resp.SourceDigest)
+	}
+}
+
+func TestPlainSyncKeepsFailedReloadPending(t *testing.T) {
+	workdir := t.TempDir()
+	command := "exit 7"
+	srv := newTestAgent(t, &agentConfig{
+		WorkDir:        workdir,
+		ReloadStrategy: "process",
+		ReloadRules:    []reloadRule{{Paths: []string{"package.json"}, Command: command}},
+	})
+	rec, resp := doSync(t, srv, syncRequest{Files: []syncFile{{Path: "package.json", Content: "{}"}}, Restart: "always"})
+	if rec.Code != http.StatusOK || resp.ReloadError == "" || resp.SourceRevision != 1 {
+		t.Fatalf("failed-reload plain sync = %d %+v", rec.Code, resp)
+	}
+	manifest, _, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
+	if err != nil || !slices.Equal(manifest.PendingReloadCommands, []string{command}) {
+		t.Fatalf("pending after failed reload = %+v err=%v", manifest.PendingReloadCommands, err)
+	}
+}
+
+func TestPlainSyncWithoutManagedFilesDoesNotStamp(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	rec, resp := doSync(t, srv, syncRequest{Files: []syncFile{{Path: "node_modules/x.js", Content: "x"}}})
+	if rec.Code != http.StatusOK || resp.SourceRevision != 0 || resp.SourceDigest != "" {
+		t.Fatalf("reserved-only plain sync = %d %+v, want no revision", rec.Code, resp)
+	}
+	if _, found, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir)); err != nil || found {
+		t.Fatalf("manifest found=%t err=%v, want none", found, err)
+	}
+}
+
+func TestPlainSyncRebuildsCorruptManifest(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	if err := os.WriteFile(filepath.Join(workdir, workspaceManifestName), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, resp := doSync(t, srv, syncRequest{Files: []syncFile{{Path: "main.go", Content: "package main\n"}}})
+	if rec.Code != http.StatusOK || resp.SourceRevision != 1 || resp.SourceDigest != diskDigest(t, workdir, "main.go") {
+		t.Fatalf("plain sync over corrupt manifest = %d %+v", rec.Code, resp)
 	}
 }
 
@@ -1075,4 +1293,173 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met in time")
+}
+
+// syncDigestOf computes the documented workspace source digest independently
+// of the agent: sha256 over entries sorted by path, each `path \0 bytes \0`.
+func syncDigestOf(files map[string][]byte) string {
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	hash := sha256.New()
+	for _, p := range paths {
+		hash.Write([]byte(p))
+		hash.Write([]byte{0})
+		hash.Write(files[p])
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// binaryFixture returns n deterministic bytes that are not UTF-8 text: they
+// start with NUL and an invalid UTF-8 byte and cycle through every value.
+func binaryFixture(n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = byte(i*7 + 3)
+	}
+	if n > 1 {
+		out[0], out[1] = 0x00, 0xff
+	}
+	return out
+}
+
+func base64File(path string, content []byte) syncFile {
+	return syncFile{Path: path, Content: base64.StdEncoding.EncodeToString(content), Encoding: syncEncodingBase64}
+}
+
+func TestSyncBase64BinaryRoundTripAndDigestParity(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	model := binaryFixture(3<<20 + 17)
+	logo := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe}
+	page := "<html>ok</html>\n"
+	want := syncDigestOf(map[string][]byte{"index.html": []byte(page), "assets/model.glb": model, "assets/logo.png": logo})
+	files := []syncFile{
+		{Path: "index.html", Content: page},
+		base64File("assets/model.glb", model),
+		base64File("assets/logo.png", logo),
+	}
+	if got, err := digestSyncFiles(files); err != nil || got != want {
+		t.Fatalf("digestSyncFiles = %q, %v; want %q (decoded bytes)", got, err, want)
+	}
+	rec, resp := doSync(t, srv, syncRequest{Files: files, SourceRevision: 1, SourceDigest: want})
+	if rec.Code != http.StatusOK || resp.SourceDigest != want {
+		t.Fatalf("authoritative binary sync = %d %s", rec.Code, rec.Body.String())
+	}
+	for p, content := range map[string][]byte{"assets/model.glb": model, "assets/logo.png": logo, "index.html": []byte(page)} {
+		got, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(p)))
+		if err != nil || !bytes.Equal(got, content) {
+			t.Fatalf("%s on disk differs from the decoded bytes (err %v, %d vs %d bytes)", p, err, len(got), len(content))
+		}
+	}
+	// /status re-hashes the disk: the streamed disk digest must equal the
+	// digest of the decoded request bytes.
+	status := agentStatus(t, srv)
+	if status.SourceRevision != 1 || status.SourceDigest != want {
+		t.Fatalf("status evidence = %d %q, want 1 %q", status.SourceRevision, status.SourceDigest, want)
+	}
+
+	// Text digests are unchanged by the encoding field.
+	textOnly := syncDigestOf(map[string][]byte{"index.html": []byte(page)})
+	for _, encoding := range []string{"", syncEncodingUTF8} {
+		if got, err := digestSyncFiles([]syncFile{{Path: "index.html", Content: page, Encoding: encoding}}); err != nil || got != textOnly {
+			t.Fatalf("text digest with encoding %q = %q, %v; want %q", encoding, got, err, textOnly)
+		}
+	}
+
+	// A plain sync decodes too and stamps a manifest over the disk bytes.
+	font := binaryFixture(4096)
+	rec, resp = doSync(t, srv, syncRequest{Files: []syncFile{base64File("assets/font.woff2", font)}})
+	wantPlain := syncDigestOf(map[string][]byte{"index.html": []byte(page), "assets/model.glb": model, "assets/logo.png": logo, "assets/font.woff2": font})
+	if rec.Code != http.StatusOK || resp.SourceRevision != 2 || resp.SourceDigest != wantPlain {
+		t.Fatalf("plain binary sync = %d %+v, want revision 2 digest %q", rec.Code, resp, wantPlain)
+	}
+	if got, err := os.ReadFile(filepath.Join(workdir, "assets", "font.woff2")); err != nil || !bytes.Equal(got, font) {
+		t.Fatalf("plain-synced binary differs (err %v)", err)
+	}
+}
+
+func TestStatusAdvertisesSyncEncodings(t *testing.T) {
+	status := agentStatus(t, newTestAgent(t, &agentConfig{}))
+	if !slices.Equal(status.SyncEncodings, []string{"utf-8", "base64"}) {
+		t.Fatalf("syncEncodings = %v, want [utf-8 base64]", status.SyncEncodings)
+	}
+}
+
+func TestSyncRejectsInvalidEncodings(t *testing.T) {
+	srv := newTestAgent(t, &agentConfig{})
+	textWithNUL := []syncFile{{Path: "a.txt", Content: "a\x00b"}}
+	nulDigest, err := digestSyncFiles(textWithNUL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		req  syncRequest
+		want string
+	}{
+		"unknown encoding":       {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "00ff", Encoding: "hex"}}}, "unsupported encoding"},
+		"uppercase encoding":     {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "AA==", Encoding: "BASE64"}}}, "unsupported encoding"},
+		"invalid base64":         {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "@@@@", Encoding: "base64"}}}, "invalid base64"},
+		"unpadded base64":        {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "AA", Encoding: "base64"}}}, "invalid base64"},
+		"non-canonical base64":   {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "QR==", Encoding: "base64"}}}, "invalid base64"},
+		"base64 with line break": {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "AAAA\nAAAA", Encoding: "base64"}}}, "line breaks"},
+		"authoritative NUL text": {syncRequest{Files: textWithNUL, SourceRevision: 1, SourceDigest: nulDigest}, "UTF-8 text without NUL"},
+	} {
+		rec, _ := doSync(t, srv, tc.req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%s: status=%d body=%q, want 400 containing %q", name, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}
+
+// fillReader yields an endless stream of one byte.
+type fillReader byte
+
+func (f fillReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(f)
+	}
+	return len(p), nil
+}
+
+func TestSyncOversizedBodyReturns413InsteadOfTruncating(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	body := io.MultiReader(
+		strings.NewReader(`{"files":[{"path":"big.bin","encoding":"base64","content":"`),
+		io.LimitReader(fillReader('A'), syncRequestMaxBytes),
+		strings.NewReader(`"}]}`),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/sync", body)
+	req.Header.Set(controlTokenHeader, "test-token")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "exceeds") {
+		t.Fatalf("oversized sync = %d %q, want 413", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "big.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized sync wrote a file: %v", err)
+	}
+}
+
+func TestSyncDecodedLimitsReturn413(t *testing.T) {
+	srv := newTestAgent(t, &agentConfig{})
+	tooMany := make([]syncFile, syncMaxFiles+1)
+	for i := range tooMany {
+		tooMany[i] = syncFile{Path: fmt.Sprintf("f%d.txt", i), Content: "x"}
+	}
+	half := strings.Repeat("a", syncMaxTotalBytes/2)
+	for name, files := range map[string][]syncFile{
+		"file count":        tooMany,
+		"binary file bytes": {base64File("big.glb", make([]byte, syncMaxFileBytes+1))},
+		"total bytes":       {{Path: "a.txt", Content: half}, {Path: "b.txt", Content: half}, {Path: "c.txt", Content: "x"}},
+	} {
+		rec, _ := doSync(t, srv, syncRequest{Files: files})
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status=%d body=%q, want 413", name, rec.Code, rec.Body.String())
+		}
+	}
 }

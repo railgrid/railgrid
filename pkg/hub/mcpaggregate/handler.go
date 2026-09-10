@@ -24,9 +24,10 @@ limitations under the License.
 //
 // Per request the handler parses the tenant cluster + MCPServer name out of the
 // path, verifies the caller's bearer against that tenant (see BearerVerifier),
-// builds a fresh stateless mcp.Server, federates every Ready provider's own
-// /mcp endpoint into it, and serves the MCP protocol over streamable HTTP.
-// Nothing is federated for a bearer that fails verification.
+// builds a fresh stateless mcp.Server, federates the /mcp endpoint of every
+// Ready provider visible to the verified tenant (see ProviderEnumerator) into
+// it, and serves the MCP protocol over streamable HTTP. Nothing is federated
+// for a bearer that fails verification.
 package mcpaggregate
 
 import (
@@ -48,8 +49,9 @@ import (
 	"github.com/faroshq/faros/pkg/apiurl"
 )
 
-// DefaultVerifyCacheTTL is how long a successful bearer verification is
-// reused for the same (bearer, cluster, MCPServer) before it is re-checked.
+// DefaultVerifyCacheTTL is how long a successful bearer verification — and the
+// tenant context it resolved — is reused for the same (bearer, cluster,
+// MCPServer) before it is re-checked.
 const DefaultVerifyCacheTTL = 60 * time.Second
 
 // RateLimiter admits or rejects a pre-authentication verification attempt
@@ -67,7 +69,8 @@ var impl = &mcp.Implementation{
 
 // Options configures the aggregate handler.
 type Options struct {
-	// Providers enumerates the live Ready providers to federate. Required.
+	// Providers enumerates the live Ready providers to federate for a
+	// verified caller. Required.
 	Providers ProviderEnumerator
 	// ExternalURL is the hub's externally reachable base URL, used only to
 	// self-describe the endpoint in the faros://about resource. Optional.
@@ -94,7 +97,7 @@ type Options struct {
 // handler expects the prefix to have been stripped, so it sees
 // /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
-	h := &handler{opts: opts, verified: make(map[string]time.Time)}
+	h := &handler{opts: opts, verified: make(map[string]verifiedEntry)}
 	if h.opts.VerifyCacheTTL <= 0 {
 		h.opts.VerifyCacheTTL = DefaultVerifyCacheTTL
 	}
@@ -108,7 +111,16 @@ type handler struct {
 	opts Options
 
 	mu       sync.Mutex
-	verified map[string]time.Time // verification cache key -> expiry
+	verified map[string]verifiedEntry // verification cache key -> entry
+}
+
+// verifiedEntry is one cached verification: the tenant context the verifier
+// resolved for the bearer, and when it must be re-checked. The key binds it to
+// the exact (bearer digest, cluster, MCPServer) it was verified for, so a
+// cached Caller can never be served for a different tenant.
+type verifiedEntry struct {
+	caller    Caller
+	expiresAt time.Time
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +134,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if !h.authorize(w, r, token, cluster, name) {
+	caller, ok := h.authorize(w, r, token, cluster, name)
+	if !ok {
 		return
 	}
 
@@ -134,6 +147,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				cluster:     cluster,
 				name:        name,
 				token:       token,
+				caller:      caller,
 				externalURL: h.opts.ExternalURL,
 				enumerate:   h.opts.Providers,
 				log:         h.opts.Logger,
@@ -145,25 +159,27 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorize verifies the bearer for (cluster, name), writing the rejection
-// and returning false on failure. Successful verifications are cached by
+// and returning false on failure. On success it returns the verified Caller.
+// Successful verifications are cached, with their Caller, by
 // sha256(bearer)+cluster+name for VerifyCacheTTL; only uncached attempts are
 // counted against the per-address rate limit, so the pre-auth path is what
 // gets throttled, never an already-verified client.
-func (h *handler) authorize(w http.ResponseWriter, r *http.Request, token, cluster, name string) bool {
+func (h *handler) authorize(w http.ResponseWriter, r *http.Request, token, cluster, name string) (Caller, bool) {
 	key := verifyCacheKey(token, cluster, name)
-	if h.cached(key) {
-		return true
+	if caller, ok := h.cached(key); ok {
+		return caller, true
 	}
 	if h.opts.RateLimiter != nil && !h.opts.RateLimiter.Allow(h.opts.ClientIP(r)) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded - too many requests", http.StatusTooManyRequests)
-		return false
+		return Caller{}, false
 	}
 	if h.opts.Verifier == nil {
 		http.Error(w, "bearer verification is not configured", http.StatusServiceUnavailable)
-		return false
+		return Caller{}, false
 	}
-	if err := h.opts.Verifier.Verify(r, token, cluster, name); err != nil {
+	caller, err := h.opts.Verifier.Verify(r, token, cluster, name)
+	if err != nil {
 		status, msg := http.StatusServiceUnavailable, "bearer verification unavailable"
 		switch {
 		case errors.Is(err, ErrUnauthenticated):
@@ -174,24 +190,24 @@ func (h *handler) authorize(w http.ResponseWriter, r *http.Request, token, clust
 		h.opts.Logger.Info("mcp aggregate: bearer rejected",
 			"cluster", cluster, "mcpserver", name, "client", h.opts.ClientIP(r), "status", status, "reason", err.Error())
 		http.Error(w, msg, status)
-		return false
+		return Caller{}, false
 	}
-	h.remember(key)
-	return true
+	h.remember(key, caller)
+	return caller, true
 }
 
-func (h *handler) cached(key string) bool {
+func (h *handler) cached(key string) (Caller, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	exp, ok := h.verified[key]
+	e, ok := h.verified[key]
 	if !ok {
-		return false
+		return Caller{}, false
 	}
-	if time.Now().After(exp) {
+	if time.Now().After(e.expiresAt) {
 		delete(h.verified, key)
-		return false
+		return Caller{}, false
 	}
-	return true
+	return e.caller, true
 }
 
 // maxVerifiedEntries bounds the cache; expired entries are swept once it is
@@ -201,13 +217,13 @@ func (h *handler) cached(key string) bool {
 // that client through online verification and the per-IP budget).
 const maxVerifiedEntries = 4096
 
-func (h *handler) remember(key string) {
+func (h *handler) remember(key string, caller Caller) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
 	if _, ok := h.verified[key]; !ok && len(h.verified) >= maxVerifiedEntries {
-		for k, exp := range h.verified {
-			if now.After(exp) {
+		for k, e := range h.verified {
+			if now.After(e.expiresAt) {
 				delete(h.verified, k)
 			}
 		}
@@ -215,14 +231,14 @@ func (h *handler) remember(key string) {
 	if _, ok := h.verified[key]; !ok && len(h.verified) >= maxVerifiedEntries {
 		var victim string
 		var soonest time.Time
-		for k, exp := range h.verified {
-			if victim == "" || exp.Before(soonest) {
-				victim, soonest = k, exp
+		for k, e := range h.verified {
+			if victim == "" || e.expiresAt.Before(soonest) {
+				victim, soonest = k, e.expiresAt
 			}
 		}
 		delete(h.verified, victim)
 	}
-	h.verified[key] = now.Add(h.opts.VerifyCacheTTL)
+	h.verified[key] = verifiedEntry{caller: caller, expiresAt: now.Add(h.opts.VerifyCacheTTL)}
 }
 
 // verifyCacheKey never stores the bearer itself: only its digest, bound to
@@ -246,6 +262,7 @@ type buildParams struct {
 	cluster     string
 	name        string
 	token       string
+	caller      Caller
 	externalURL string
 	enumerate   ProviderEnumerator
 	log         logr.Logger
@@ -268,7 +285,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 
 	var targets []ProviderTarget
 	if p.enumerate != nil {
-		targets = p.enumerate(ctx)
+		targets = p.enumerate(ctx, p.caller)
 	}
 
 	// Merge each provider's own instructions (e.g. a Home Assistant Service's

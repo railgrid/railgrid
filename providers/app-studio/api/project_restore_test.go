@@ -46,7 +46,7 @@ func TestExactRestoreFilesRejectsWrongOrIncompleteCheckout(t *testing.T) {
 		want     string
 	}{
 		{name: "wrong commit", checkout: checkoutToolResult{CommitSHA: strings.Repeat("b", 40)}, want: "instead of requested commit"},
-		{name: "skipped path", checkout: checkoutToolResult{CommitSHA: requested, Skipped: []string{"asset.png"}}, want: "checkout omitted 1 path"},
+		{name: "bad encoding", checkout: checkoutToolResult{CommitSHA: requested, Files: []checkoutToolFile{{Path: "a.bin", Content: "x", Encoding: "hex"}}}, want: "unsupported file encoding"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := exactRestoreFiles(requested, test.checkout); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -74,10 +74,7 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 
 	upstream := restoreCheckoutServer(t, checkoutToolResult{
 		CommitSHA: commitSHA,
-		Files: []struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-		}{{Path: "app.txt", Content: "restored\n"}},
+		Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
 	}, nil)
 	defer upstream.Close()
 
@@ -142,10 +139,7 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	}
 	upstream := restoreCheckoutServer(t, checkoutToolResult{
 		CommitSHA: commitSHA,
-		Files: []struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-		}{{Path: "app.txt", Content: "old commit\n"}},
+		Files:     []checkoutToolFile{{Path: "app.txt", Content: "old commit\n"}},
 	}, func() {
 		if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "newer edit\n"}); err != nil {
 			t.Errorf("concurrent edit: %v", err)
@@ -216,6 +210,7 @@ func restoreCheckoutServer(t *testing.T, checkout checkoutToolResult, beforeResp
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
+			Method string `json:"method"`
 			Params struct {
 				Name      string         `json:"name"`
 				Arguments map[string]any `json:"arguments"`
@@ -223,6 +218,11 @@ func restoreCheckoutServer(t *testing.T, checkout checkoutToolResult, beforeResp
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode MCP request: %v", err)
+		}
+		if request.Method == "tools/list" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}}})
+			return
 		}
 		if request.Params.Name != projectToolCodeCheckoutRepository || request.Params.Arguments["ref"] != checkout.CommitSHA {
 			t.Errorf("checkout request = %#v", request.Params)

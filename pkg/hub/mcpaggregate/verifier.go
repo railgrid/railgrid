@@ -42,20 +42,48 @@ import (
 // path. It runs before any federation, so a rejected bearer never reaches a
 // provider.
 //
-// Implementations return nil to allow, ErrUnauthenticated when the bearer is
-// not a credential the hub recognises, ErrForbidden when it is a valid
-// credential for a different tenant or identity, and any other error when
-// verification itself could not be performed (the handler answers 503).
+// Implementations return the verified Caller and a nil error to allow,
+// ErrUnauthenticated when the bearer is not a credential the hub recognises,
+// ErrForbidden when it is a valid credential for a different tenant or
+// identity, and any other error when verification itself could not be
+// performed (the handler answers 503).
 type BearerVerifier interface {
-	Verify(r *http.Request, token, cluster, mcpServerName string) error
+	Verify(r *http.Request, token, cluster, mcpServerName string) (Caller, error)
 }
 
 // BearerVerifierFunc adapts a function to BearerVerifier.
-type BearerVerifierFunc func(r *http.Request, token, cluster, mcpServerName string) error
+type BearerVerifierFunc func(r *http.Request, token, cluster, mcpServerName string) (Caller, error)
 
 // Verify implements BearerVerifier.
-func (f BearerVerifierFunc) Verify(r *http.Request, token, cluster, mcpServerName string) error {
+func (f BearerVerifierFunc) Verify(r *http.Request, token, cluster, mcpServerName string) (Caller, error) {
 	return f(r, token, cluster, mcpServerName)
+}
+
+// Caller is the verified tenant context of one aggregate request. Only a
+// BearerVerifier produces it — from the cluster named in the request path, the
+// cluster's own kcp.io/path, and an online check of the bearer — never from
+// anything the client asserts in headers. It is what the ProviderEnumerator
+// scopes federation to.
+type Caller struct {
+	// OrgUUID and WorkspaceUUID are the tenant the request's cluster belongs
+	// to. WorkspaceUUID is empty for an org-scope cluster; both are empty for
+	// a ServiceAccount bearer in a cluster outside the tenants tree, which
+	// federates the platform catalog only.
+	OrgUUID       string
+	WorkspaceUUID string
+	// User is the hub User name for a human bearer whose membership in the
+	// tenant was verified. Empty for a ServiceAccount bearer.
+	User string
+	// ServiceAccount is the TokenReview username for a ServiceAccount bearer.
+	// Empty for a human.
+	ServiceAccount string
+}
+
+// IsServiceAccount reports whether the bearer was a ServiceAccount token. Such
+// a caller has no human to delegate for, so org-owned providers are never
+// federated for it (see RegistryEnumerator).
+func (c Caller) IsServiceAccount() bool {
+	return c.ServiceAccount != ""
 }
 
 var (
@@ -100,10 +128,11 @@ var logicalClusterGVR = schema.GroupVersionResource{
 //     the cluster belongs to, per the UserMembershipIndex.
 //  3. Other tenant ServiceAccounts with explicit RBAC permission to use the
 //     named MCPServer. TokenReview authenticates them before SubjectAccessReview
-//     authorizes access; downstream calls retain the original bearer.
+//     authorizes access; platform providers still receive the original bearer.
 //
 // Signatures and claims are never trusted offline; both paths are online
-// checks against kcp.
+// checks against kcp. Either way the result carries the tenant (Org and
+// Workspace) the cluster belongs to, which is what federation is scoped to.
 type Verifier struct {
 	// clusterConfig returns a rest.Config addressing the named tenant cluster.
 	clusterConfig func(cluster string) *rest.Config
@@ -172,12 +201,12 @@ func (v *Verifier) SetUserIdentity(
 }
 
 // Verify implements BearerVerifier.
-func (v *Verifier) Verify(r *http.Request, token, cluster, mcpServerName string) error {
+func (v *Verifier) Verify(r *http.Request, token, cluster, mcpServerName string) (Caller, error) {
 	if v == nil || r == nil {
-		return errors.New("bearer verifier unavailable")
+		return Caller{}, errors.New("bearer verifier unavailable")
 	}
 	if strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") {
-		return ErrUnauthenticated
+		return Caller{}, ErrUnauthenticated
 	}
 	ctx := r.Context()
 
@@ -188,43 +217,71 @@ func (v *Verifier) Verify(r *http.Request, token, cluster, mcpServerName string)
 	v.mu.RUnlock()
 	if identify != nil && membership != nil {
 		user, err := identify(r)
-		if err == nil && !strings.HasPrefix(user, serviceAccountPrefix) {
+		if err == nil && user != "" && !strings.HasPrefix(user, serviceAccountPrefix) {
 			return v.verifyMember(ctx, user, cluster)
 		}
 	}
 
-	return v.verifyServiceAccount(ctx, token, cluster, mcpServerName)
+	username, err := v.verifyServiceAccount(ctx, token, cluster, mcpServerName)
+	if err != nil {
+		return Caller{}, err
+	}
+	return v.serviceAccountCaller(ctx, username, cluster)
 }
 
-// verifyServiceAccount runs a TokenReview in the tenant cluster. The server's
-// own identity is accepted; other ServiceAccounts require explicit use access.
-// No audience
-// is requested: the controller mints legacy Secret-backed tokens, which carry
-// the API server's implicit audience only.
-func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcpServerName string) error {
+// serviceAccountCaller resolves the tenant a verified ServiceAccount bearer
+// acts in. It runs only after TokenReview and the use check have passed, so an
+// unauthenticated bearer never costs a LogicalCluster read. The tenant decides
+// which Org's catalog is federated — including which platform providers the
+// Org has shadowed with its own copy — so a lookup outage fails closed (503)
+// rather than guessing the platform catalog.
+func (v *Verifier) serviceAccountCaller(ctx context.Context, username, cluster string) (Caller, error) {
+	caller := Caller{ServiceAccount: username}
+	path, err := v.resolvePath(ctx, cluster)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return Caller{}, fmt.Errorf("%w: cluster %q does not exist", ErrForbidden, cluster)
+		}
+		return Caller{}, err
+	}
+	// A cluster outside the tenants tree is not an error for a ServiceAccount
+	// (TokenReview already proved it is a real identity there); it simply has
+	// no Org, and gets the platform catalog.
+	if orgUUID, wsUUID, ok := TenantFromPath(path); ok {
+		caller.OrgUUID, caller.WorkspaceUUID = orgUUID, wsUUID
+	}
+	return caller, nil
+}
+
+// verifyServiceAccount runs a TokenReview in the tenant cluster and returns
+// the reviewed username. The server's own identity is accepted; other
+// ServiceAccounts require explicit use access. No audience is requested: the
+// controller mints legacy Secret-backed tokens, which carry the API server's
+// implicit audience only.
+func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcpServerName string) (string, error) {
 	cfg := v.clusterConfig(cluster)
 	if cfg == nil {
-		return fmt.Errorf("no kcp configuration for cluster %q", cluster)
+		return "", fmt.Errorf("no kcp configuration for cluster %q", cluster)
 	}
 	cs, err := v.newKube(cfg)
 	if err != nil {
-		return fmt.Errorf("building TokenReview client for cluster %q: %w", cluster, err)
+		return "", fmt.Errorf("building TokenReview client for cluster %q: %w", cluster, err)
 	}
 	review, err := cs.AuthenticationV1().TokenReviews().Create(ctx, &authnv1.TokenReview{
 		Spec: authnv1.TokenReviewSpec{Token: token},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return fmt.Errorf("reviewing bearer in cluster %q: %w", cluster, err)
+		return "", fmt.Errorf("reviewing bearer in cluster %q: %w", cluster, err)
 	}
 	if !review.Status.Authenticated {
-		return ErrUnauthenticated
+		return "", ErrUnauthenticated
 	}
 	user := review.Status.User
 	if user.Username == ServiceAccountUsername(mcpServerName) {
-		return nil
+		return user.Username, nil
 	}
 	if !strings.HasPrefix(user.Username, serviceAccountPrefix) {
-		return ErrForbidden
+		return "", ErrForbidden
 	}
 	extra := make(map[string]authorizationv1.ExtraValue, len(user.Extra))
 	for key, values := range user.Extra {
@@ -239,21 +296,23 @@ func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcp
 		},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return fmt.Errorf("authorizing MCPServer use in cluster %q: %w", cluster, err)
+		return "", fmt.Errorf("authorizing MCPServer use in cluster %q: %w", cluster, err)
 	}
 	if access.Status.EvaluationError != "" {
-		return fmt.Errorf("evaluating MCPServer use: %s", access.Status.EvaluationError)
+		return "", fmt.Errorf("evaluating MCPServer use: %s", access.Status.EvaluationError)
 	}
 	if !access.Status.Allowed || access.Status.Denied {
-		return fmt.Errorf("%w: reviewed identity %q cannot use MCPServer %q", ErrForbidden, user.Username, mcpServerName)
+		return "", fmt.Errorf("%w: reviewed identity %q cannot use MCPServer %q", ErrForbidden, user.Username, mcpServerName)
 	}
-	return nil
+	return user.Username, nil
 }
 
 // verifyMember requires user to hold a live Membership covering the tenant
 // the cluster belongs to. An org-scope entry covers every child workspace;
-// a workspace-scope entry covers only that workspace.
-func (v *Verifier) verifyMember(ctx context.Context, user, cluster string) error {
+// a workspace-scope entry covers only that workspace. On success the returned
+// Caller names that tenant and the user — the tuple a delegated token for an
+// org-owned provider is minted from.
+func (v *Verifier) verifyMember(ctx context.Context, user, cluster string) (Caller, error) {
 	v.mu.RLock()
 	membership := v.membership
 	v.mu.RUnlock()
@@ -265,17 +324,17 @@ func (v *Verifier) verifyMember(ctx context.Context, user, cluster string) error
 			// verification outage: the bearer is a real hub user asking for
 			// a tenant that does not exist. 403, not 503, so a typo in a
 			// client config does not show up as an availability incident.
-			return fmt.Errorf("%w: cluster %q does not exist", ErrForbidden, cluster)
+			return Caller{}, fmt.Errorf("%w: cluster %q does not exist", ErrForbidden, cluster)
 		}
-		return err
+		return Caller{}, err
 	}
-	orgUUID, wsUUID, ok := tenantFromPath(path)
+	orgUUID, wsUUID, ok := TenantFromPath(path)
 	if !ok {
-		return fmt.Errorf("%w: cluster %q is not a tenant workspace", ErrForbidden, cluster)
+		return Caller{}, fmt.Errorf("%w: cluster %q is not a tenant workspace", ErrForbidden, cluster)
 	}
 	idx, err := membership(ctx, user)
 	if err != nil {
-		return fmt.Errorf("reading membership index for %q: %w", user, err)
+		return Caller{}, fmt.Errorf("reading membership index for %q: %w", user, err)
 	}
 	if idx != nil {
 		for _, e := range idx.Spec.Entries {
@@ -283,11 +342,11 @@ func (v *Verifier) verifyMember(ctx context.Context, user, cluster string) error
 				continue
 			}
 			if e.WorkspaceUUID == "" || e.WorkspaceUUID == wsUUID {
-				return nil
+				return Caller{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, User: user}, nil
 			}
 		}
 	}
-	return fmt.Errorf("%w: user %q has no membership in (org=%s, workspace=%s)", ErrForbidden, user, orgUUID, wsUUID)
+	return Caller{}, fmt.Errorf("%w: user %q has no membership in (org=%s, workspace=%s)", ErrForbidden, user, orgUUID, wsUUID)
 }
 
 // resolvePath returns the workspace path for cluster. A cluster containing
@@ -336,11 +395,11 @@ func (v *Verifier) lookupClusterPath(ctx context.Context, cluster string) (strin
 	return path, nil
 }
 
-// tenantFromPath splits a tenant workspace path into its Organization UUID
+// TenantFromPath splits a tenant workspace path into its Organization UUID
 // and optional child Workspace UUID. Paths outside root:faros:tenants, or
 // nested deeper than one child workspace, are not tenant workspaces users
 // can hold Memberships in.
-func tenantFromPath(path string) (orgUUID, wsUUID string, ok bool) {
+func TenantFromPath(path string) (orgUUID, wsUUID string, ok bool) {
 	if !strings.HasPrefix(path, tenantPathRoot) {
 		return "", "", false
 	}

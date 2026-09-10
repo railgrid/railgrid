@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/hubmcp"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -106,9 +108,13 @@ func (t projectDevelopmentSyncTargetInfo) componentWorkspacePathSummary() string
 	return strings.Join(parts, ", ")
 }
 
+// projectSandboxSyncFile is one /sync file entry. Encoding is omitted for
+// UTF-8 text and "base64" for a binary, sent only to an agent whose /status
+// advertises base64 in syncEncodings.
 type projectSandboxSyncFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Encoding string `json:"encoding,omitempty"`
 }
 
 type projectSandboxSyncRequest struct {
@@ -120,7 +126,12 @@ type projectSandboxSyncRequest struct {
 }
 
 type projectWorkspaceSyncSnapshot struct {
-	Files          []projectSandboxSyncFile
+	// Files are the UTF-8 text files every agent accepts.
+	Files []projectSandboxSyncFile
+	// BinaryFiles are base64 entries, read only when the caller asked for
+	// them; BinaryPaths always lists every binary in the workspace.
+	BinaryFiles    []projectSandboxSyncFile
+	BinaryPaths    []string
 	DeletedPaths   []string
 	SourceRevision uint64
 }
@@ -263,9 +274,18 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if s.workspaces == nil {
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
-	snapshot, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p))
+	scope := projectWorkspaceScope(id, p)
+	snapshot, err := s.projectWorkspaceSyncFiles(ctx, scope)
 	if err != nil {
 		return nil, err
+	}
+	// Binaries go only to components whose agent accepts base64; read their
+	// bytes (inside the same revision fence) only when one does.
+	binaryComponents := s.projectSyncBinaryComponents(ctx, id, target, snapshot.BinaryPaths)
+	if len(binaryComponents) > 0 {
+		if snapshot, err = s.projectWorkspaceSyncFilesWithBinaries(ctx, scope, true); err != nil {
+			return nil, err
+		}
 	}
 	// Mirror the monotonic source-revision fence onto the durable project
 	// claim so it survives the project moving between replicas — the sandbox
@@ -282,6 +302,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
+	routedBinaries := routeProjectSyncFiles(snapshot.BinaryFiles, target.Components)
 	routedDeleted := routeProjectSyncDeletedPaths(snapshot.DeletedPaths, target.Components)
 	// A populated workspace whose files all fall outside every component
 	// directory would "succeed" while shipping nothing to the sandbox — the
@@ -301,21 +322,17 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
 		componentFiles := routed[component]
-		payload, err := json.Marshal(projectSandboxSyncRequest{
-			Files:          componentFiles,
-			DeletedPaths:   routedDeleted[component],
-			SourceRevision: snapshot.SourceRevision,
-			SourceDigest:   projectSandboxSyncDigest(componentFiles),
-			Restart:        "auto",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
+		if binaryComponents[component] {
+			componentFiles = appendProjectSyncBinaries(p.Name, component, componentFiles, routedBinaries[component])
 		}
-		body, status, err := s.dataPlanePostWithTimeout(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbSync, payload, projectSandboxComponentSyncTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("component %s: %w", component, err)
+		request := projectSandboxSyncRequest{
+			Files:        componentFiles,
+			DeletedPaths: routedDeleted[component],
+			SourceDigest: projectSandboxSyncDigest(componentFiles),
+			Restart:      "auto",
 		}
-		if err := validateProjectComponentSyncResponse(component, status, body); err != nil {
+		body, err := s.postProjectComponentSync(ctx, id, target.dataPlaneRefFor(component), component, snapshot.SourceRevision, request)
+		if err != nil {
 			return nil, err
 		}
 		results[component] = json.RawMessage(body)
@@ -325,6 +342,109 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, err
 	}
 	return aggregated, nil
+}
+
+// postProjectComponentSync sends one component's authoritative sync. The
+// development agent also stamps revisions on plain syncs (the faros CLI, MCP
+// dev_sync), which can move its applied revision past App Studio's FileStore
+// revision; the agent then rejects the next authoritative sync with a 409.
+// On such a conflict App Studio reads the applied revision from the
+// component's status, continues numbering from applied+1, and retries once.
+func (s *Server) postProjectComponentSync(ctx context.Context, id identity, ref dataPlaneRef, component string, workspaceRevision uint64, request projectSandboxSyncRequest) ([]byte, error) {
+	request.SourceRevision = s.developmentSyncRevision(id, ref, workspaceRevision)
+	post := func() ([]byte, int, error) {
+		payload, err := json.Marshal(request)
+		if err != nil {
+			return nil, 0, fmt.Errorf("encode %s sync payload: %w", component, err)
+		}
+		body, status, err := s.dataPlanePostWithTimeout(ctx, id, ref, dataPlaneVerbSync, payload, projectSandboxComponentSyncTimeout)
+		if err != nil {
+			return nil, 0, fmt.Errorf("component %s: %w", component, err)
+		}
+		return body, status, nil
+	}
+	body, status, err := post()
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusConflict && projectDevelopmentSyncRevisionConflict(body) {
+		if applied, ok := s.projectComponentAppliedRevision(ctx, id, ref); ok && applied >= request.SourceRevision {
+			request.SourceRevision = applied + 1
+			s.adoptDevelopmentSyncRevision(id, ref, workspaceRevision, request.SourceRevision)
+			if body, status, err = post(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := validateProjectComponentSyncResponse(component, status, body); err != nil {
+		return nil, err
+	}
+	var synced struct {
+		SourceRevision uint64 `json:"sourceRevision"`
+	}
+	if json.Unmarshal(body, &synced) == nil && synced.SourceRevision > request.SourceRevision {
+		s.adoptDevelopmentSyncRevision(id, ref, workspaceRevision, synced.SourceRevision)
+	}
+	return body, nil
+}
+
+// projectDevelopmentSyncRevisionConflict recognizes the development agent's
+// two revision-fence rejections, the only 409s a renumbered retry can fix.
+func projectDevelopmentSyncRevisionConflict(body []byte) bool {
+	detail := strings.ToLower(string(body))
+	return strings.Contains(detail, "older than the applied revision") ||
+		strings.Contains(detail, "already applied with a different digest")
+}
+
+// projectComponentAppliedRevision reads the component's applied source
+// revision from its status endpoint (the "process" data-plane verb). ok is
+// false when the status is unreadable or reports no verified revision.
+func (s *Server) projectComponentAppliedRevision(ctx context.Context, id identity, ref dataPlaneRef) (uint64, bool) {
+	body, status, err := s.dataPlaneGet(ctx, id, ref, dataPlaneVerbProcess, 16<<10)
+	if err != nil || status < 200 || status >= 300 {
+		return 0, false
+	}
+	var process struct {
+		SourceRevision uint64 `json:"sourceRevision"`
+	}
+	if json.Unmarshal(body, &process) != nil || process.SourceRevision == 0 {
+		return 0, false
+	}
+	return process.SourceRevision, true
+}
+
+func developmentSyncRevisionKey(id identity, ref dataPlaneRef) string {
+	return strings.Join([]string{id.clusterID, ref.Resource, ref.Name, ref.Component}, "/")
+}
+
+// developmentSyncRevision maps a FileStore revision onto the revision the
+// component's development agent expects. The offset only grows, so the
+// mapped revision stays monotonic with the FileStore's. Every caller that
+// sends or compares a development agent revision must go through it.
+func (s *Server) developmentSyncRevision(id identity, ref dataPlaneRef, workspaceRevision uint64) uint64 {
+	if s == nil || workspaceRevision == 0 {
+		return workspaceRevision
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return workspaceRevision + s.developmentSyncRevisionOffsets[developmentSyncRevisionKey(id, ref)]
+}
+
+// adoptDevelopmentSyncRevision records that workspaceRevision now maps to
+// agentRevision, raising (never lowering) the component's offset.
+func (s *Server) adoptDevelopmentSyncRevision(id identity, ref dataPlaneRef, workspaceRevision, agentRevision uint64) {
+	if s == nil || agentRevision <= workspaceRevision {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncRevisionOffsets == nil {
+		s.developmentSyncRevisionOffsets = map[string]uint64{}
+	}
+	key := developmentSyncRevisionKey(id, ref)
+	if offset := agentRevision - workspaceRevision; offset > s.developmentSyncRevisionOffsets[key] {
+		s.developmentSyncRevisionOffsets[key] = offset
+	}
 }
 
 // projectDevelopmentSyncHTTPError preserves the upstream status so the
@@ -393,8 +513,9 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 		for _, f := range files {
 			if strings.HasPrefix(f.Path, prefix) {
 				out[component] = append(out[component], projectSandboxSyncFile{
-					Path:    strings.TrimPrefix(f.Path, prefix),
-					Content: f.Content,
+					Path:     strings.TrimPrefix(f.Path, prefix),
+					Content:  f.Content,
+					Encoding: f.Encoding,
 				})
 			}
 		}
@@ -577,13 +698,21 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 	return s.templateDevelopmentPreview(ctx, c, target)
 }
 
+// projectWorkspaceSyncFiles snapshots the workspace's text files (and the
+// paths of its binaries) under the source-revision fence.
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) (projectWorkspaceSyncSnapshot, error) {
+	return s.projectWorkspaceSyncFilesWithBinaries(ctx, scope, false)
+}
+
+// projectWorkspaceSyncFilesWithBinaries also reads binaries as base64
+// entries when includeBinary is set.
+func (s *Server) projectWorkspaceSyncFilesWithBinaries(ctx context.Context, scope workspace.Scope, includeBinary bool) (projectWorkspaceSyncSnapshot, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		revisionBefore, err := s.workspaces.SourceRevision(ctx, scope)
 		if err != nil {
 			return projectWorkspaceSyncSnapshot{}, err
 		}
-		snapshot, err := s.projectWorkspaceSyncFilesOnce(ctx, scope, revisionBefore)
+		snapshot, err := s.projectWorkspaceSyncFilesOnce(ctx, scope, revisionBefore, includeBinary)
 		if err != nil {
 			return projectWorkspaceSyncSnapshot{}, err
 		}
@@ -598,18 +727,32 @@ func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.
 	return projectWorkspaceSyncSnapshot{}, errors.New("workspace changed while preparing development synchronization")
 }
 
-func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope workspace.Scope, revision uint64) (projectWorkspaceSyncSnapshot, error) {
+func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope workspace.Scope, revision uint64, includeBinary bool) (projectWorkspaceSyncSnapshot, error) {
 	list, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
 	if err != nil {
 		return projectWorkspaceSyncSnapshot{}, err
 	}
 	files := make([]projectSandboxSyncFile, 0, len(list.Files))
+	var binaryFiles []projectSandboxSyncFile
+	var binaryPaths []string
 	for _, f := range list.Files {
 		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
 		if err != nil {
 			return projectWorkspaceSyncSnapshot{}, err
 		}
-		if read.Binary || read.Truncated {
+		if read.Binary {
+			binaryPaths = append(binaryPaths, read.Path)
+			if !includeBinary || read.Size > hubmcp.BinaryFileMaxBytes {
+				continue
+			}
+			data, err := s.workspaces.ReadFileBytes(ctx, scope, read.Path, hubmcp.BinaryFileMaxBytes)
+			if err != nil {
+				return projectWorkspaceSyncSnapshot{}, err
+			}
+			binaryFiles = append(binaryFiles, projectSandboxSyncFile{Path: read.Path, Content: base64.StdEncoding.EncodeToString(data), Encoding: hubmcp.EncodingBase64})
+			continue
+		}
+		if read.Truncated {
 			continue
 		}
 		files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
@@ -627,23 +770,128 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 		}
 	}
 	sort.Strings(deleted)
-	return projectWorkspaceSyncSnapshot{Files: files, DeletedPaths: deleted, SourceRevision: revision}, nil
+	return projectWorkspaceSyncSnapshot{Files: files, BinaryFiles: binaryFiles, BinaryPaths: binaryPaths, DeletedPaths: deleted, SourceRevision: revision}, nil
 }
 
 // projectSandboxSyncDigest is the component-local source identity shared with
-// the infrastructure development agent: sorted path\0content\0 entries,
-// without the App Studio workspacePath prefix.
+// the infrastructure development agent: sorted path\0bytes\0 entries over the
+// decoded file bytes (so a base64 entry hashes its binary content), without
+// the App Studio workspacePath prefix.
 func projectSandboxSyncDigest(files []projectSandboxSyncFile) string {
 	entries := append([]projectSandboxSyncFile(nil), files...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	hash := sha256.New()
 	for _, file := range entries {
+		content := []byte(file.Content)
+		if decoded, err := hubmcp.DecodeWireContent(file.Content, file.Encoding); err == nil {
+			content = decoded
+		}
 		_, _ = hash.Write([]byte(file.Path))
 		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(file.Content))
+		_, _ = hash.Write(content)
 		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// projectSyncBinaryComponents returns the components that receive at least
+// one binary and whose development agent accepts base64 sync. Components
+// that cannot are logged once and keep receiving text only.
+func (s *Server) projectSyncBinaryComponents(ctx context.Context, id identity, target projectDevelopmentSyncTargetInfo, binaryPaths []string) map[string]bool {
+	if len(binaryPaths) == 0 {
+		return nil
+	}
+	routed := routeProjectSyncFiles(projectSyncPathEntries(binaryPaths), target.Components)
+	out := map[string]bool{}
+	for _, component := range target.sortedComponents() {
+		if len(routed[component]) == 0 {
+			continue
+		}
+		ref := target.dataPlaneRefFor(component)
+		if s.developmentAgentSupportsBase64(ctx, id, ref) {
+			out[component] = true
+			continue
+		}
+		s.noteSyncBinariesSkipped(id, ref, component, len(routed[component]))
+	}
+	return out
+}
+
+func projectSyncPathEntries(paths []string) []projectSandboxSyncFile {
+	entries := make([]projectSandboxSyncFile, 0, len(paths))
+	for _, p := range paths {
+		entries = append(entries, projectSandboxSyncFile{Path: p})
+	}
+	return entries
+}
+
+// developmentAgentSupportsBase64 reads the component agent's /status (the
+// "process" verb) for syncEncodings and caches the answer per component. An
+// unreadable status answers false without caching, so a starting agent is
+// asked again on the next sync.
+func (s *Server) developmentAgentSupportsBase64(ctx context.Context, id identity, ref dataPlaneRef) bool {
+	key := developmentSyncRevisionKey(id, ref)
+	if supported, ok := s.syncBinary.Get(key); ok {
+		return supported
+	}
+	body, status, err := s.dataPlaneGet(ctx, id, ref, dataPlaneVerbProcess, 64<<10)
+	if err != nil || status < 200 || status >= 300 {
+		return false
+	}
+	var agent struct {
+		SyncEncodings []string `json:"syncEncodings"`
+	}
+	if json.Unmarshal(body, &agent) != nil {
+		return false
+	}
+	supported := false
+	for _, encoding := range agent.SyncEncodings {
+		if strings.EqualFold(strings.TrimSpace(encoding), hubmcp.EncodingBase64) {
+			supported = true
+		}
+	}
+	s.syncBinary.Set(key, supported)
+	return supported
+}
+
+func (s *Server) noteSyncBinariesSkipped(id identity, ref dataPlaneRef, component string, count int) {
+	key := developmentSyncRevisionKey(id, ref)
+	s.mu.Lock()
+	if s.syncBinaryNotices == nil {
+		s.syncBinaryNotices = map[string]bool{}
+	}
+	seen := s.syncBinaryNotices[key]
+	s.syncBinaryNotices[key] = true
+	s.mu.Unlock()
+	if !seen {
+		klog.Infof("development sync: component %s of %s/%s does not accept binary files (no base64 in its syncEncodings); %d binary file(s) are not synced to it", component, ref.Resource, ref.Name, count)
+	}
+}
+
+// appendProjectSyncBinaries adds base64 entries to one component's text
+// files within the agent's bounds (48 MiB decoded, 500 files per request).
+// A binary past the bounds is left out (and logged) rather than failing the
+// whole sync, so text edits always reach the sandbox.
+func appendProjectSyncBinaries(project, component string, files, binaries []projectSandboxSyncFile) []projectSandboxSyncFile {
+	var total int64
+	for _, file := range files {
+		total += int64(len(file.Content))
+	}
+	out := append([]projectSandboxSyncFile(nil), files...)
+	var dropped []string
+	for _, binary := range binaries {
+		size := int64(base64.StdEncoding.DecodedLen(len(binary.Content)))
+		if len(out) >= hubmcp.BundleMaxFiles || total+size > hubmcp.BundleMaxBytes {
+			dropped = append(dropped, binary.Path)
+			continue
+		}
+		total += size
+		out = append(out, binary)
+	}
+	if len(dropped) > 0 {
+		klog.Warningf("development sync for project %s component %s: %d binary file(s) exceed one sync's bounds and were not sent: %s", project, component, len(dropped), strings.Join(dropped, ", "))
+	}
+	return out
 }
 
 func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {
@@ -653,7 +901,8 @@ func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ works
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
 	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
-		projectToolSelectTemplate, projectActionWorkspaceSync, projectActionRestoreWorkspace:
+		projectToolImportAttachment, projectToolDownloadFile,
+		projectToolSelectTemplate, projectActionWorkspaceSync, projectActionRestoreWorkspace, projectActionWorkspaceFileWrite:
 		return true
 	default:
 		return false

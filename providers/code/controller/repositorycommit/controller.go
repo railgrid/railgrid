@@ -14,6 +14,7 @@ package repositorycommit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -117,6 +118,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fail(err.Error())
 	}
 	if _, err := gitBackend.EnsureRepository(ctx, conn, cred, repo); err != nil {
+		if retryAt, ok := rateLimitRetry(err, commit.Status.StartedAt, time.Now()); ok {
+			return r.waitForRateLimit(ctx, c, &commit, retryAt)
+		}
 		return ctrl.Result{}, fail(fmt.Sprintf("ensure repository: %v", err))
 	}
 
@@ -131,7 +135,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	files := make([]backend.RepositoryCommitFile, 0, len(bundle.Files))
 	fileStatus := make([]codev1alpha1.RepositoryCommitFileStatus, 0, len(bundle.Files))
 	for _, f := range bundle.Files {
-		files = append(files, backend.RepositoryCommitFile{Path: f.Path, Content: f.Content, Delete: f.Delete})
+		files = append(files, backend.RepositoryCommitFile{Path: f.Path, Content: f.Content, Encoding: f.Encoding, Delete: f.Delete})
 		fileStatus = append(fileStatus, codev1alpha1.RepositoryCommitFileStatus{
 			Path:   f.Path,
 			Size:   f.Size,
@@ -146,6 +150,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		Files:          files,
 	})
 	if err != nil {
+		// Retrying is safe: the idempotency trailer lets the backend find a
+		// commit that landed before the limit hit instead of writing it twice.
+		if retryAt, ok := rateLimitRetry(err, commit.Status.StartedAt, time.Now()); ok {
+			return r.waitForRateLimit(ctx, c, &commit, retryAt)
+		}
 		return ctrl.Result{}, fail(err.Error())
 	}
 
@@ -172,6 +181,38 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	logger.V(3).Info("repository commit succeeded", "repository", commit.Spec.RepositoryRef, "commitSHA", res.CommitSHA)
 	return ctrl.Result{}, nil
+}
+
+// rateLimitRetry returns when to retry a commit that failed on a host rate
+// limit. ok is false for other errors, and once the retry would land outside
+// RepositoryCommitRateLimitWindow after startedAt; the commit then fails.
+func rateLimitRetry(err error, startedAt *metav1.Time, now time.Time) (time.Time, bool) {
+	var limited *backend.RateLimitError
+	if !errors.As(err, &limited) || startedAt == nil {
+		return time.Time{}, false
+	}
+	retryAt := limited.RetryAt
+	if earliest := now.Add(time.Second); retryAt.Before(earliest) {
+		retryAt = earliest
+	}
+	if retryAt.After(startedAt.Add(codev1alpha1.RepositoryCommitRateLimitWindow)) {
+		return time.Time{}, false
+	}
+	return retryAt, true
+}
+
+// waitForRateLimit keeps the commit Running with its bundle and schedules the
+// retry, reporting the wait on the Ready condition.
+func (r *Reconciler) waitForRateLimit(ctx context.Context, c client.Client, commit *codev1alpha1.RepositoryCommit, retryAt time.Time) (ctrl.Result, error) {
+	wait := max(time.Until(retryAt), time.Second)
+	next := commit.DeepCopy()
+	message := fmt.Sprintf("GitHub rate limit; retrying in %ds", int(wait.Round(time.Second)/time.Second))
+	shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonRateLimited, message, commit.Generation)
+	if err := updateStatusIfChanged(ctx, c, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	klog.FromContext(ctx).V(3).Info("repository commit rate limited, requeuing", "repositorycommit", commit.Name, "retryAt", retryAt)
+	return ctrl.Result{RequeueAfter: wait}, nil
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, commit *codev1alpha1.RepositoryCommit, message string) error {

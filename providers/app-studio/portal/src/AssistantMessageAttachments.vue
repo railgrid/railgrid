@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { FileText, Image, Loader2 } from 'lucide-vue-next'
+import { File as FileIcon, FileText, Image, Loader2 } from 'lucide-vue-next'
 import type { FarosContext, ProjectAssistantAttachmentReceipt } from './types'
 import { api } from './api'
+import { assistantAttachmentContentTypeKind, assistantAttachmentSizeLabel } from './assistantAttachments'
 
 const props = defineProps<{
   attachments: ProjectAssistantAttachmentReceipt[]
@@ -133,8 +134,10 @@ onBeforeUnmount(() => {
         class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm border border-border-subtle bg-surface-raised px-2 py-1 text-[11px] font-mono text-text-secondary"
         :title="`${attachment.contentType} · ${attachment.sizeBytes} bytes`"
       >
-        <FileText class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+        <FileIcon v-if="assistantAttachmentContentTypeKind(attachment.contentType) === 'file'" class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+        <FileText v-else class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
         <span class="max-w-56 truncate">{{ attachment.filename }}</span>
+        <span v-if="assistantAttachmentContentTypeKind(attachment.contentType) === 'file'" class="shrink-0 text-[10px] text-text-muted">{{ assistantAttachmentSizeLabel(attachment.sizeBytes) }}</span>
       </div>
     </template>
   </div>

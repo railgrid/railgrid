@@ -12,8 +12,10 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 
@@ -136,40 +138,106 @@ func (p *ProviderProxy) delegatedAuthorization(w http.ResponseWriter, r *http.Re
 		return "", false
 	}
 	orgUUID, wsUUID := splitTenantPath(tenantPath)
-	if orgUUID == "" {
-		http.Error(w, "caller has no tenant workspace to act from for provider: "+prov.Name, http.StatusForbidden)
+	token, refusal := issueDelegatedToken(r.Context(), p.delegatedIssuer, prov,
+		DelegatedCaller{User: user, OrgUUID: orgUUID, WorkspaceUUID: wsUUID})
+	if refusal != nil {
+		if refusal.err != nil {
+			p.log.Error(refusal.err, "issuing delegated user token",
+				"provider", prov.Name, "org", prov.OrgUUID, "workspace", wsUUID, "user", user)
+		} else if refusal.status == http.StatusServiceUnavailable {
+			p.log.Info("refusing provider request: "+refusal.reason,
+				"provider", prov.Name, "org", prov.OrgUUID)
+		}
+		http.Error(w, refusal.message, refusal.status)
 		return "", false
 	}
-	if prov.OrgUUID != "" && orgUUID != prov.OrgUUID {
-		// resolveProvider picked this provider from the same resolution, so a
-		// mismatch means the memo is not what routed us. Refuse. A platform
-		// provider has no owning org; the caller's own is where the token
-		// is minted.
-		http.Error(w, "caller is not in the organization that owns provider: "+prov.Name, http.StatusForbidden)
-		return "", false
+	return token, true
+}
+
+// DelegatedCaller is the verified human a delegated token is minted for: the
+// hub User name plus the tenant workspace the token will be scoped to. Callers
+// must have authenticated the user and verified their membership in
+// (OrgUUID, WorkspaceUUID) before building one — issuance mints on the hub's
+// own authority and re-checks neither.
+type DelegatedCaller struct {
+	User          string
+	OrgUUID       string
+	WorkspaceUUID string
+}
+
+// delegationRefusal says why no delegated token was issued. status and message
+// are what the backend proxy answers with; reason and err are for the log.
+type delegationRefusal struct {
+	status  int
+	message string
+	reason  string
+	err     error
+}
+
+func (d *delegationRefusal) Error() string {
+	if d.err != nil {
+		return d.reason + ": " + d.err.Error()
 	}
-	if wsUUID == "" {
+	return d.reason
+}
+
+// issueDelegatedToken is the single decision point for replacing a caller's
+// bearer with a delegated token. The backend proxy (delegatedAuthorization)
+// and hub-originated requests to org-owned providers (OrgProviderRoute, used
+// by the MCP aggregate) both go through it, so the rules cannot drift between
+// the two paths. It never returns a token for a tuple it has not checked, and
+// there is no fallback: a refusal means the request does not go out.
+func issueDelegatedToken(ctx context.Context, issuer DelegatedTokenIssuer, prov Provider, caller DelegatedCaller) (string, *delegationRefusal) {
+	if caller.User == "" {
+		return "", &delegationRefusal{status: http.StatusForbidden, reason: "caller identity unresolved",
+			message: "caller identity could not be established for provider: " + prov.Name}
+	}
+	if caller.OrgUUID == "" {
+		return "", &delegationRefusal{status: http.StatusForbidden, reason: "caller has no tenant workspace",
+			message: "caller has no tenant workspace to act from for provider: " + prov.Name}
+	}
+	if prov.OrgUUID != "" && caller.OrgUUID != prov.OrgUUID {
+		// Resolution picked this provider from the caller's own org, so a
+		// mismatch means something other than that resolution routed us.
+		// Refuse. A platform provider has no owning org; the caller's own is
+		// where the token is minted.
+		return "", &delegationRefusal{status: http.StatusForbidden, reason: "caller is outside the owning organization",
+			message: "caller is not in the organization that owns provider: " + prov.Name}
+	}
+	if caller.WorkspaceUUID == "" {
 		// The delegated account lives in a team workspace; an org-scope
 		// resolution (no X-Faros-Workspace) has nowhere to mint it. The portal
 		// sends the workspace header on provider calls whenever a workspace
 		// is selected.
-		http.Error(w, "a workspace selection (X-Faros-Workspace) is required to reach provider: "+prov.Name, http.StatusForbidden)
-		return "", false
+		return "", &delegationRefusal{status: http.StatusForbidden, reason: "no team workspace to mint in",
+			message: "a workspace selection (X-Faros-Workspace) is required to reach provider: " + prov.Name}
 	}
-	if p.delegatedIssuer == nil {
-		p.log.Info("refusing provider request: no delegated token issuer wired",
-			"provider", prov.Name, "org", prov.OrgUUID)
-		http.Error(w, "delegated identity unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
-		return "", false
+	if issuer == nil {
+		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "no delegated token issuer wired",
+			message: "delegated identity unavailable for provider: " + prov.Name}
 	}
-	token, _, err := p.delegatedIssuer.IssueDelegatedUserToken(r.Context(), orgUUID, wsUUID, serviceaccounts.Identity{User: user}, prov.Name)
+	token, _, err := issuer.IssueDelegatedUserToken(ctx, caller.OrgUUID, caller.WorkspaceUUID, serviceaccounts.Identity{User: caller.User}, prov.Name)
 	if err != nil {
-		p.log.Error(err, "issuing delegated user token",
-			"provider", prov.Name, "org", prov.OrgUUID, "workspace", wsUUID, "user", user)
-		http.Error(w, "delegated identity unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
-		return "", false
+		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "issuing delegated user token", err: err,
+			message: "delegated identity unavailable for provider: " + prov.Name}
 	}
-	return token, true
+	if strings.TrimSpace(token) == "" {
+		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "issuer returned an empty token",
+			message: "delegated identity unavailable for provider: " + prov.Name}
+	}
+	return token, nil
+}
+
+// setDelegatedAuthorization replaces whatever Authorization h carries with the
+// delegated token, or removes it when token is empty (an anonymous probe).
+// Every path that talks to a provider on a caller's behalf without forwarding
+// their bearer ends here, so "the bearer that arrived never crosses" is one
+// line rather than one line per path.
+func setDelegatedAuthorization(h http.Header, token string) {
+	h.Del("Authorization")
+	if token != "" {
+		h.Set("Authorization", "Bearer "+token)
+	}
 }
 
 func errString(err error) string {
@@ -177,6 +245,52 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+var (
+	// errEdgeRouteUnusable: the provider's edge route is recorded but not yet
+	// resolvable (no workspace cluster ID), or absent.
+	errEdgeRouteUnusable = errors.New("provider backend is not routable yet")
+	// errEdgeTransportUnavailable: the platform edges provider, which carries
+	// the tunnel, has no backend.
+	errEdgeTransportUnavailable = errors.New("edge transport unavailable")
+)
+
+// edgeHop is where an org-owned provider's backend is reached from the hub:
+// the PLATFORM edges provider's backend, at the edge-proxy path of the
+// hub-owned Service fronting the provider in the tenant's cluster.
+type edgeHop struct {
+	target url.URL
+	route  EdgeRoute
+}
+
+// resolveEdgeHop finds the edge hop for prov. It never falls back to
+// BackendURL: that address lives in the tenant's cluster, and dialling it from
+// here is exactly the confusion the edge route exists to remove.
+//
+// The tunnel is platform infrastructure, so the edges provider is resolved from
+// the PLATFORM registry, never org-scoped: an org supplying the transport for
+// its own traffic would sit on both ends of the trust boundary.
+func resolveEdgeHop(reg *Registry, prov Provider) (edgeHop, error) {
+	if !prov.EdgeRoute.Usable() {
+		return edgeHop{}, errEdgeRouteUnusable
+	}
+	edges, ok := reg.Get(EdgesProviderName)
+	if !ok || edges.BackendURL == nil {
+		return edgeHop{}, errEdgeTransportUnavailable
+	}
+	return edgeHop{target: *edges.BackendURL, route: *prov.EdgeRoute}, nil
+}
+
+// url returns the edges-provider URL that carries rest (a path relative to the
+// provider's backend root) through the tunnel. The query is left to the caller.
+func (h edgeHop) url(rest string) *url.URL {
+	u := h.target
+	u.Path = singleJoiningSlash(h.target.Path, h.route.EdgeProxyPath(rest))
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return &u
 }
 
 // serveOverEdge forwards one request to an org-owned provider through the
@@ -192,24 +306,17 @@ func errString(err error) string {
 // never a fallback to BackendURL — so the bearer substitution in
 // delegatedAuthorization covers every request such a provider can receive.
 func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, prov Provider, rest string) {
-	route := prov.EdgeRoute
-	if !route.Usable() {
+	hop, err := resolveEdgeHop(p.reg, prov)
+	switch {
+	case errors.Is(err, errEdgeRouteUnusable):
 		// Recorded but not yet resolvable — the workspace's cluster ID is
 		// missing, so there is no address to build. 503 rather than falling
-		// back to BackendURL: that address lives in the tenant's cluster, and
-		// dialling it from here is exactly the confusion this path exists to
-		// remove.
+		// back to BackendURL (see resolveEdgeHop).
 		p.log.Info("org-owned provider has no usable edge route yet",
 			"provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "provider backend is not routable yet: "+prov.Name, http.StatusServiceUnavailable)
 		return
-	}
-
-	// The tunnel is platform infrastructure. Resolve the edges provider from
-	// the PLATFORM registry, never org-scoped: an org supplying the transport
-	// for its own traffic would sit on both ends of the trust boundary.
-	edges, ok := p.reg.Get(EdgesProviderName)
-	if !ok || edges.BackendURL == nil {
+	case err != nil:
 		p.log.Info("edge transport unavailable: the platform edges provider has no backend",
 			"provider", prov.Name, "org", prov.OrgUUID)
 		http.Error(w, "edge transport unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
@@ -221,8 +328,7 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	target := *edges.BackendURL
-	edgePath := route.EdgeProxyPath(rest)
+	dst := hop.url(rest)
 	basePath := p.pathPrefix + "/" + prov.Name
 
 	rp := &httputil.ReverseProxy{
@@ -231,11 +337,11 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 		// tunnel turns "tail my logs" into "hang". See E-7.
 		FlushInterval: -1,
 		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = singleJoiningSlash(target.Path, edgePath)
+			req.URL.Scheme = dst.Scheme
+			req.URL.Host = dst.Host
+			req.URL.Path = dst.Path
 			req.URL.RawPath = ""
-			req.Host = target.Host
+			req.Host = dst.Host
 			// Identity is injected under the ORG provider's name, not the
 			// edges provider's: the headers describe who is calling the
 			// provider at the far end of the tunnel, and the agent forwards
@@ -244,18 +350,15 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 			// The caller's hub token stops here. What the tenant's cluster
 			// receives is the delegated ServiceAccount token, or nothing for
 			// an anonymous probe — never the bearer that arrived.
-			req.Header.Del("Authorization")
-			if delegated != "" {
-				req.Header.Set("Authorization", "Bearer "+delegated)
-			}
+			setDelegatedAuthorization(req.Header, delegated)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "edge upstream error",
-				"provider", prov.Name, "org", prov.OrgUUID, "edge", route.EdgeName, "service", route.ServiceName)
+				"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "service", hop.route.ServiceName)
 			http.Error(w, "provider upstream error", http.StatusBadGateway)
 		},
 	}
 	p.log.V(4).Info("forwarding provider request over edge",
-		"provider", prov.Name, "org", prov.OrgUUID, "edge", route.EdgeName, "path", edgePath)
+		"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "path", dst.Path)
 	rp.ServeHTTP(w, r)
 }

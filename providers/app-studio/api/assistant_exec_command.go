@@ -38,6 +38,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
 
+	"github.com/faroshq/provider-app-studio/hubmcp"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -595,7 +596,8 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 			if syncStatus != "succeeded" {
 				break
 			}
-			_, digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision)
+			includeBinary := projectAssistantExecBinaryInclusion(ctx, server, id, target.dataPlaneRefFor(component))
+			_, digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision, includeBinary)
 			if !errors.Is(err, errProjectAssistantExecRevisionChanged) {
 				break
 			}
@@ -613,7 +615,10 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because the durable workspace revision could not be read.", Component: component, SourceRevision: revision, SourceDigest: digest, SyncStatus: syncStatus, Blockers: []string{"project workspace source revision is unavailable"}}, nil
 		}
 		requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
-		start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: sourceRevision, SourceDigest: digest}
+		// The agent fences exec on its own applied revision, which plain
+		// syncs may have renumbered ahead of the FileStore's.
+		agentRevision := server.developmentSyncRevision(id, target.dataPlaneRefFor(component), sourceRevision)
+		start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: agentRevision, SourceDigest: digest}
 		started, err := retryProjectAssistantExecStart(ctx, start, func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 			return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
 		})
@@ -1005,7 +1010,47 @@ func projectAssistantExecSyncEvidence(ctx context.Context, runCtx projectAssista
 	return revision, status, failure
 }
 
-func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWorkflowRunContext, component projectTemplateComponent, expectedRevision uint64) ([]projectSandboxExecFile, string, uint64, error) {
+// projectAssistantExecBinaryInclusion reports, on first need, whether the
+// component's agent received binaries through development sync (its /status
+// advertises base64). The exec digest must cover exactly what sync sent.
+func projectAssistantExecBinaryInclusion(ctx context.Context, server *Server, id identity, ref dataPlaneRef) func() bool {
+	var decided, include bool
+	return func() bool {
+		if !decided {
+			decided = true
+			include = server != nil && server.developmentAgentSupportsBase64(ctx, id, ref)
+		}
+		return include
+	}
+}
+
+// projectAssistantExecSnapshotEntryFor reads one component file the way
+// development sync ships it: bounded text as-is, binaries (as raw bytes)
+// only when the agent receives them, and nothing for text beyond the sync
+// bound. included is false for a file sync leaves out; textBytes counts
+// toward the text snapshot bound.
+func projectAssistantExecSnapshotEntryFor(ctx context.Context, runCtx projectAssistantWorkflowRunContext, clean, relative string, includeBinary func() bool) (projectAssistantExecSnapshotEntry, bool, int, error) {
+	read, err := runCtx.Workspace.ReadFile(ctx, runCtx.WorkspaceScope, workspace.ReadOptions{Path: clean, MaxBytes: workspace.MaxWriteBytes})
+	if err != nil {
+		return projectAssistantExecSnapshotEntry{}, false, 0, err
+	}
+	switch {
+	case read.Binary:
+		if includeBinary == nil || !includeBinary() || read.Size > hubmcp.BinaryFileMaxBytes {
+			return projectAssistantExecSnapshotEntry{}, false, 0, nil
+		}
+		data, err := runCtx.Workspace.ReadFileBytes(ctx, runCtx.WorkspaceScope, clean, hubmcp.BinaryFileMaxBytes)
+		if err != nil {
+			return projectAssistantExecSnapshotEntry{}, false, 0, err
+		}
+		return projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: string(data)}}, true, 0, nil
+	case read.Truncated:
+		return projectAssistantExecSnapshotEntry{}, false, 0, nil
+	}
+	return projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: read.Content}}, true, len([]byte(read.Content)), nil
+}
+
+func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWorkflowRunContext, component projectTemplateComponent, expectedRevision uint64, includeBinary func() bool) ([]projectSandboxExecFile, string, uint64, error) {
 	if runCtx.Workspace == nil {
 		return nil, "", 0, errors.New("project workspace store is not configured")
 	}
@@ -1034,7 +1079,7 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 			if root != "." {
 				relative = strings.TrimPrefix(clean, root+"/")
 			}
-			read, readErr := runCtx.Workspace.ReadFile(ctx, runCtx.WorkspaceScope, workspace.ReadOptions{Path: clean, MaxBytes: workspace.MaxWriteBytes})
+			entry, included, textBytes, readErr := projectAssistantExecSnapshotEntryFor(ctx, runCtx, clean, relative, includeBinary)
 			if readErr != nil {
 				if errors.Is(readErr, fs.ErrNotExist) {
 					retry = true
@@ -1042,14 +1087,14 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 				}
 				return nil, "", 0, readErr
 			}
-			if read.Binary || read.Truncated {
-				return nil, "", 0, fmt.Errorf("workspace file %q is not bounded UTF-8 source", clean)
+			if !included {
+				continue
 			}
-			total += len([]byte(read.Content))
+			total += textBytes
 			if total > projectAssistantExecMaxSnapshot {
 				return nil, "", 0, fmt.Errorf("component snapshot exceeds %d bytes", projectAssistantExecMaxSnapshot)
 			}
-			entries = append(entries, projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: read.Content}})
+			entries = append(entries, entry)
 		}
 		if retry {
 			continue
@@ -1071,7 +1116,7 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 			continue
 		}
 		if len(paths) > 0 {
-			currentDigest, err := projectAssistantExecWorkspaceDigest(ctx, runCtx, paths, root)
+			currentDigest, err := projectAssistantExecWorkspaceDigest(ctx, runCtx, paths, root, includeBinary)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
@@ -1104,24 +1149,20 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 	return nil, "", 0, errors.New("workspace changed while preparing the execution snapshot")
 }
 
-func projectAssistantExecWorkspaceDigest(ctx context.Context, runCtx projectAssistantWorkflowRunContext, paths []string, root string) (string, error) {
+func projectAssistantExecWorkspaceDigest(ctx context.Context, runCtx projectAssistantWorkflowRunContext, paths []string, root string, includeBinary func() bool) (string, error) {
 	entries := make([]projectAssistantExecSnapshotEntry, 0, len(paths))
 	for _, clean := range paths {
-		read, err := runCtx.Workspace.ReadFile(ctx, runCtx.WorkspaceScope, workspace.ReadOptions{Path: clean, MaxBytes: workspace.MaxWriteBytes})
-		if err != nil {
-			return "", err
-		}
-		if read.Binary || read.Truncated {
-			return "", fmt.Errorf("workspace file %q is not bounded UTF-8 source", clean)
-		}
 		relative := clean
 		if root != "." {
 			relative = strings.TrimPrefix(clean, root+"/")
 		}
-		entries = append(entries, projectAssistantExecSnapshotEntry{
-			path: clean,
-			file: projectSandboxExecFile{Path: relative, Content: read.Content},
-		})
+		entry, included, _, err := projectAssistantExecSnapshotEntryFor(ctx, runCtx, clean, relative, includeBinary)
+		if err != nil {
+			return "", err
+		}
+		if included {
+			entries = append(entries, entry)
+		}
 	}
 	_, digest := projectAssistantExecSnapshotDigest(entries)
 	return digest, nil

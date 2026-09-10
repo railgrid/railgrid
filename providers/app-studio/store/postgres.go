@@ -45,6 +45,10 @@ const projectThumbnailVariantSchemaVersion = "project-thumbnail-variant-v4"
 const attachmentSchemaVersion = "project-attachments-v1"
 const attachmentLifecycleSchemaVersion = "project-attachments-lifecycle-v2"
 
+// attachmentFileKindSchemaVersion admits opaque "file" attachments: any
+// media type and up to 25 MiB, replacing the image/text-only checks.
+const attachmentFileKindSchemaVersion = "project-attachments-file-kind-v1"
+
 const lockMessageSchemaMigrations = `SELECT pg_advisory_xact_lock(870408091945886937)`
 const tryLockAssistantLookupIndexes = `SELECT pg_try_advisory_lock(870408091945886938)`
 const unlockAssistantLookupIndexes = `SELECT pg_advisory_unlock(870408091945886938)`
@@ -202,6 +206,9 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, attachmentLifecycleSchemaVersion, attachmentLifecycleSchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersion(ctx, tx, attachmentFileKindSchemaVersion, attachmentFileKindSchemaStatements()...); err != nil {
+		return err
+	}
 	if err := ensureSchemaVersion(ctx, tx, organizationSpendSchemaVersion, organizationSpendSchemaStatements()...); err != nil {
 		return err
 	}
@@ -244,6 +251,29 @@ func attachmentLifecycleSchemaStatements() []string {
 			deleted_at timestamptz NOT NULL DEFAULT now(),
 			PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid)
 		)`,
+	}
+}
+
+// attachmentFileKindSchemaStatements replaces the original inline column
+// checks (a five-type content allowlist and an 8 MiB size bound), whichever
+// names PostgreSQL gave them, with the file-kind contract.
+func attachmentFileKindSchemaStatements() []string {
+	return []string{
+		`DO $$
+		DECLARE constraint_name text;
+		BEGIN
+			FOR constraint_name IN
+				SELECT conname FROM pg_constraint
+				WHERE conrelid = 'app_studio_attachments'::regclass AND contype = 'c'
+					AND (pg_get_constraintdef(oid) LIKE '%content_type%' OR pg_get_constraintdef(oid) LIKE '%size_bytes%')
+			LOOP
+				EXECUTE format('ALTER TABLE app_studio_attachments DROP CONSTRAINT %I', constraint_name);
+			END LOOP;
+			ALTER TABLE app_studio_attachments ADD CONSTRAINT app_studio_attachments_content_type_check
+				CHECK (length(content_type) BETWEEN 3 AND 127 AND position('/' in content_type) > 1);
+			ALTER TABLE app_studio_attachments ADD CONSTRAINT app_studio_attachments_size_bytes_check
+				CHECK (size_bytes > 0 AND size_bytes <= 26214400);
+		END $$`,
 	}
 }
 

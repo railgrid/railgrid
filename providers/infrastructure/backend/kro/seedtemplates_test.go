@@ -244,6 +244,9 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 			t.Fatalf("database status missing %s", field)
 		}
 	}
+	// Workload templates resolve connections.database to this Secret name
+	// and read its uri key (TestSeedTemplatesWorkloadConnectionsRenderSecretEnv).
+	assertCredentialsContract(t, rgd, "${schema.spec.name}-db-credentials")
 }
 
 func TestSeedTemplateBuildWorkflowDeclarations(t *testing.T) {
@@ -321,6 +324,9 @@ func TestSeedTemplatesSimpleWebappIsDevelopmentCapable(t *testing.T) {
 			t.Fatalf("simple-webapp status missing %s", field)
 		}
 	}
+	// A connected database must reach the dev sandbox too.
+	devEnv, _ := envByName(t, connectionsContainer(t, rgd, "appDevDeployment", []string{"spec", "template", "spec"}, "app"))
+	assertSecretEnv(t, devEnv, "DATABASE_URL", connDatabaseSecretName, connDatabaseOptional)
 }
 
 func TestSeedTemplatesDoNotExposeStandaloneSandboxPreviewHTTPRoute(t *testing.T) {

@@ -19,8 +19,11 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -312,8 +315,169 @@ func (s *FileStore) editFile(ctx context.Context, scope Scope, opts EditOptions,
 	return mutationResult("edit_file", clean, before, next, occurrences), nil
 }
 
-// DeleteFile removes one existing regular file while holding the workspace
-// mutation lock. The remove is preceded by a symlink-safe preflight.
+// PutOptions configures a whole-file write of arbitrary bytes (text or
+// binary). With neither CreateOnly nor ExpectedVersion the write is an upsert.
+type PutOptions struct {
+	Path string
+	Data []byte
+	// CreateOnly fails with target_exists when the path already exists.
+	CreateOnly bool
+	// ExpectedVersion, when set, replaces only an existing file whose current
+	// version still matches (stale_source otherwise; target_not_found when
+	// the file is missing).
+	ExpectedVersion string
+}
+
+// PutFile writes one whole file of text or binary bytes atomically. Text is
+// bounded by MaxWriteBytes and binary content by MaxBinaryWriteBytes; an
+// over-bound write returns *FileTooLargeError. An unchanged write does not
+// advance the source revision. The result reports Created and Binary.
+func (s *FileStore) PutFile(ctx context.Context, scope Scope, opts PutOptions) (MutationResult, error) {
+	if s == nil {
+		return MutationResult{}, errors.New("project workspace store is not configured")
+	}
+	clean, err := cleanProjectPath(opts.Path)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if err := validateFileBytes(clean, opts.Data); err != nil {
+		return MutationResult{}, err
+	}
+	expected := strings.TrimSpace(opts.ExpectedVersion)
+	if expected != "" {
+		if err := validateExpectedVersion(clean, expected); err != nil {
+			return MutationResult{}, err
+		}
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+
+	current, err := s.inspectMutationTarget(ctx, scope, clean)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if opts.CreateOnly && current.existed {
+		return MutationResult{}, newMutationError(MutationErrorTargetExists, clean, "target already exists")
+	}
+	if expected != "" {
+		if !current.existed {
+			return MutationResult{}, newMutationError(MutationErrorTargetNotFound, clean, "target file does not exist")
+		}
+		if current.version != expected {
+			return MutationResult{}, newMutationError(MutationErrorStale, clean, "expectedVersion does not match the current file")
+		}
+	}
+	result := putMutationResult(clean, current, opts.Data)
+	if current.existed && current.version == result.Version {
+		result.Changed = false
+		return result, nil
+	}
+	if err := s.writeMutationLocked(ctx, scope, clean, opts.Data, !current.existed); err != nil {
+		return MutationResult{}, err
+	}
+	return result, nil
+}
+
+// putMutationResult renders a whole-file write: a diffed text result when
+// both sides are bounded text, otherwise a binary result without line data.
+func putMutationResult(clean string, current mutationTarget, data []byte) MutationResult {
+	var result MutationResult
+	if !isBinary(data) && (!current.existed || (current.content != nil && !current.binary)) {
+		result = mutationResult("put_file", clean, current.content, string(data), 0)
+	} else {
+		result = binaryMutationResult("put_file", clean, int64(len(data)), fileVersion(data))
+		result.Binary = isBinary(data)
+	}
+	result.Created = !current.existed
+	return result
+}
+
+func binaryMutationResult(operation, filePath string, size int64, version string) MutationResult {
+	return MutationResult{
+		Operation: operation,
+		Changed:   true,
+		Path:      filePath,
+		Size:      size,
+		Version:   version,
+		Binary:    true,
+	}
+}
+
+// FileMetadata describes one workspace file without its content.
+type FileMetadata struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Version string `json:"version"`
+	Binary  bool   `json:"binary"`
+}
+
+// InspectFile returns the size, kind, and whole-file version of one regular
+// file of any size. A missing file wraps fs.ErrNotExist.
+func (s *FileStore) InspectFile(ctx context.Context, scope Scope, rawPath string) (FileMetadata, error) {
+	if s == nil {
+		return FileMetadata{}, errors.New("project workspace store is not configured")
+	}
+	clean, err := cleanProjectPath(rawPath)
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	current, err := s.inspectMutationTarget(ctx, scope, clean)
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	if !current.existed {
+		return FileMetadata{}, fmt.Errorf("inspect %q: %w", clean, fs.ErrNotExist)
+	}
+	return FileMetadata{Path: clean, Size: current.size, Version: current.version, Binary: current.binary}, nil
+}
+
+// mutationTarget describes a file before a mutation without assuming it is
+// small text. content is retained only for bounded text (≤ MaxWriteBytes).
+type mutationTarget struct {
+	existed bool
+	size    int64
+	version string
+	binary  bool
+	content []byte
+}
+
+// inspectMutationTarget streams one regular file to compute its version and
+// classify it, retaining the bytes only when they are bounded text. The
+// caller must hold mutationMu.
+func (s *FileStore) inspectMutationTarget(ctx context.Context, scope Scope, clean string) (mutationTarget, error) {
+	_, f, info, err := s.openRegularFile(ctx, scope, clean)
+	if errors.Is(err, fs.ErrNotExist) {
+		return mutationTarget{}, nil
+	}
+	if err != nil {
+		return mutationTarget{}, err
+	}
+	defer func() { _ = f.Close() }()
+	hash := sha256.New()
+	detector := &textDetector{}
+	var retained bytes.Buffer
+	sinks := []io.Writer{hash, detector}
+	if info.Size() <= MaxWriteBytes {
+		sinks = append(sinks, &retained)
+	}
+	if _, err := io.Copy(io.MultiWriter(sinks...), contextReader{ctx: ctx, r: f}); err != nil {
+		return mutationTarget{}, fmt.Errorf("read %q: %w", clean, err)
+	}
+	target := mutationTarget{
+		existed: true,
+		size:    info.Size(),
+		version: "sha256:" + hex.EncodeToString(hash.Sum(nil)),
+		binary:  !detector.Text(),
+	}
+	if retained.Len() <= MaxWriteBytes && int64(retained.Len()) == info.Size() {
+		target.content = retained.Bytes()
+	}
+	return target, nil
+}
+
+// DeleteFile removes one existing regular file of any size or kind while
+// holding the workspace mutation lock. The remove is preceded by a
+// symlink-safe preflight; the version is computed by streaming the file.
 func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOptions) (MutationResult, error) {
 	if s == nil {
 		return MutationResult{}, errors.New("project workspace store is not configured")
@@ -327,19 +491,15 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	before, existed, err := s.readMutationTargetLimited(ctx, scope, clean, MaxWriteBytes)
+	current, err := s.inspectMutationTarget(ctx, scope, clean)
 	if err != nil {
-		var tooLarge *workspaceFileTooLargeError
-		if errors.As(err, &tooLarge) {
-			return MutationResult{}, newMutationError(MutationErrorInvalid, clean, tooLarge.Error())
-		}
 		return MutationResult{}, err
 	}
-	if !existed {
+	if !current.existed {
 		return MutationResult{}, newMutationError(MutationErrorTargetNotFound, clean, "source file does not exist")
 	}
-	if err := requireExpectedVersion(clean, before, opts.ExpectedVersion); err != nil {
-		return MutationResult{}, err
+	if current.version != strings.TrimSpace(opts.ExpectedVersion) {
+		return MutationResult{}, newMutationError(MutationErrorStale, clean, "expectedVersion does not match the current file")
 	}
 	dir, err := s.scopeDir(scope)
 	if err != nil {
@@ -358,7 +518,12 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	if err := os.Remove(target); err != nil {
 		return MutationResult{}, fmt.Errorf("delete %q: %w", clean, err)
 	}
-	return mutationResult("delete_file", clean, before, "", 0), nil
+	if current.content == nil || current.binary {
+		result := binaryMutationResult("delete_file", clean, 0, "")
+		result.Binary = current.binary
+		return result, nil
+	}
+	return mutationResult("delete_file", clean, current.content, "", 0), nil
 }
 
 // MoveFile moves one regular file to a new project-relative path without
@@ -384,22 +549,15 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
-	before, existed, err := s.readMutationTargetLimited(ctx, scope, source, MaxWriteBytes)
+	current, err := s.inspectMutationTarget(ctx, scope, source)
 	if err != nil {
-		var tooLarge *workspaceFileTooLargeError
-		if errors.As(err, &tooLarge) {
-			return MutationResult{}, newMutationError(MutationErrorInvalid, source, tooLarge.Error())
-		}
 		return MutationResult{}, err
 	}
-	if !existed {
+	if !current.existed {
 		return MutationResult{}, newMutationError(MutationErrorTargetNotFound, source, "source file does not exist")
 	}
-	if err := requireExpectedVersion(source, before, opts.ExpectedVersion); err != nil {
-		return MutationResult{}, err
-	}
-	if !validTextContent(string(before)) {
-		return MutationResult{}, newMutationError(MutationErrorInvalid, source, "source file is not UTF-8 text")
+	if current.version != strings.TrimSpace(opts.ExpectedVersion) {
+		return MutationResult{}, newMutationError(MutationErrorStale, source, "expectedVersion does not match the current file")
 	}
 	destinationExists, err := s.FileExists(ctx, scope, destination)
 	if err != nil {
@@ -441,7 +599,13 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 		}
 		return MutationResult{}, fmt.Errorf("move %q to %q: %w", source, destination, err)
 	}
-	result := mutationResult("move_file", destination, before, string(before), 0)
+	var result MutationResult
+	if current.content == nil || current.binary {
+		result = binaryMutationResult("move_file", destination, current.size, current.version)
+		result.Binary = current.binary
+	} else {
+		result = mutationResult("move_file", destination, current.content, string(current.content), 0)
+	}
 	result.PreviousPath = source
 	result.Paths = []string{source, destination}
 	return result, nil

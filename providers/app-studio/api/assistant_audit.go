@@ -1018,7 +1018,8 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 	base := projectToolBaseName(rawName)
 	switch base {
 	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
-		projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+		projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 	default:
 		return ""
 	}

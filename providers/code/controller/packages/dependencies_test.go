@@ -89,6 +89,46 @@ func TestDependencyEventsEnqueueOnlyTenantRepositories(t *testing.T) {
 	}
 }
 
+func TestSucceededCommitEnqueuesItsRepository(t *testing.T) {
+	commit := func(phase codev1alpha1.RepositoryCommitPhase) *codev1alpha1.RepositoryCommit {
+		return &codev1alpha1.RepositoryCommit{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo-commit"},
+			Spec:       codev1alpha1.RepositoryCommitSpec{RepositoryRef: "demo"},
+			Status:     codev1alpha1.RepositoryCommitStatus{Phase: phase},
+		}
+	}
+	running, succeeded := commit(codev1alpha1.RepositoryCommitPhaseRunning), commit(codev1alpha1.RepositoryCommitPhaseSucceeded)
+	for _, tc := range []struct {
+		name     string
+		old, new *codev1alpha1.RepositoryCommit
+		want     bool
+	}{
+		{"running to succeeded", running, succeeded, true},
+		{"already succeeded", succeeded, succeeded, false},
+		{"still running", running, running, false},
+		{"failed", running, commit(codev1alpha1.RepositoryCommitPhaseFailed), false},
+	} {
+		if got := commitSucceeded.Update(event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new}); got != tc.want {
+			t.Fatalf("%s: predicate = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if commitSucceeded.Create(event.CreateEvent{Object: succeeded}) || commitSucceeded.Delete(event.DeleteEvent{Object: succeeded}) {
+		t.Fatal("create/delete events must not trigger a crawl")
+	}
+
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[mcreconcile.Request]())
+	defer q.ShutDown()
+	commitHandler()("tenant-a", pollingCluster{c: newFakeClient()}).Update(context.Background(), event.UpdateEvent{ObjectOld: running, ObjectNew: succeeded}, q)
+	if q.Len() != 1 {
+		t.Fatalf("queued %d requests, want 1", q.Len())
+	}
+	req, _ := q.Get()
+	defer q.Done(req)
+	if req.ClusterName != "tenant-a" || req.Name != "demo" {
+		t.Fatalf("request = %+v, want tenant-a/demo", req)
+	}
+}
+
 func TestCredentialRotationWakesRepositoryBeforeOldReset(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()

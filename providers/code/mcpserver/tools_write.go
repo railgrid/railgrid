@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,13 @@ import (
 var (
 	deploykeysGVR    = codev1alpha1.SchemeGroupVersion.WithResource("deploykeys")
 	collaboratorsGVR = codev1alpha1.SchemeGroupVersion.WithResource("collaborators")
+)
+
+const (
+	// maxCommitMessageLength matches RepositoryCommit spec.message MaxLength.
+	maxCommitMessageLength = 512
+	// commitWaitTimeout bounds how long commit_files waits for a terminal phase.
+	commitWaitTimeout = 75 * time.Second
 )
 
 // Write tools are CRD-native: they create or delete a CR in the caller's tenant
@@ -61,13 +69,14 @@ type createRepositoryInput struct {
 }
 
 type commitFileInput struct {
-	Path    string `json:"path" jsonschema:"Repository-relative file path"`
-	Content string `json:"content" jsonschema:"Complete UTF-8 text content for the file"`
+	Path     string `json:"path" jsonschema:"Repository-relative file path"`
+	Content  string `json:"content" jsonschema:"Complete file content: the UTF-8 text itself, or the base64 of the file bytes when encoding is base64"`
+	Encoding string `json:"encoding,omitempty" jsonschema:"Content encoding: utf-8 (default) for text, or base64 (RFC 4648 standard alphabet with padding, no line breaks) for binary files such as images. Limits apply to decoded bytes: 2 MiB per utf-8 file, 25 MiB per base64 file, 48 MiB and 500 files per commit"`
 }
 
 type commitFilesInput struct {
 	RepositoryRef string            `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to commit into"`
-	Message       string            `json:"message,omitempty" jsonschema:"Commit message; defaults to a generated update message"`
+	Message       string            `json:"message,omitempty" jsonschema:"Commit message of at most 512 characters including the body; defaults to a generated update message"`
 	Branch        string            `json:"branch,omitempty" jsonschema:"Branch name; defaults to the Repository defaultBranch, then main"`
 	Files         []commitFileInput `json:"files,omitempty" jsonschema:"Files to write in this commit"`
 	DeletePaths   []string          `json:"deletePaths,omitempty" jsonschema:"Repository-relative file paths to delete in this commit"`
@@ -188,7 +197,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "commit_files",
 		Title:       "Commit files to a repository",
-		Description: "Atomically write and delete files in a managed Repository. The tool stores a provider-owned source bundle, creates a RepositoryCommit request in your workspace, and reports the resulting commit status.",
+		Description: "Atomically write and delete files in a managed Repository. Text files are sent as UTF-8; binary files (images, fonts, archives) as base64 with encoding=base64. The tool stores a provider-owned source bundle, creates a RepositoryCommit request in your workspace, and reports the resulting commit status.",
 		Annotations: commitMutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
 		dyn, err := tenantClient(deps, ident)
@@ -296,13 +305,26 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	if len(in.Files) == 0 && len(in.DeletePaths) == 0 {
 		return nil, commitFilesOutput{}, fmt.Errorf("at least one file or delete path is required")
 	}
+	// Mirror the RepositoryCommit spec.message limit, which counts characters,
+	// so an over-long message fails here instead of after the bundle is written.
+	in.Message = strings.TrimSpace(in.Message)
+	if n := utf8.RuneCountInString(in.Message); n > maxCommitMessageLength {
+		return nil, commitFilesOutput{}, fmt.Errorf("commit message is %d characters; the limit is %d — shorten the body", n, maxCommitMessageLength)
+	}
+	// Reject an unknown encoding before any lookup; the bundle store then
+	// strictly decodes base64 and enforces the size limits on decoded bytes.
+	for _, f := range in.Files {
+		if _, err := commitbundle.NormalizeEncoding(f.Encoding); err != nil {
+			return nil, commitFilesOutput{}, fmt.Errorf("file %q: %w", f.Path, err)
+		}
+	}
 	repo, err := getRepository(ctx, dyn, in.RepositoryRef)
 	if err != nil {
 		return nil, commitFilesOutput{}, err
 	}
 	files := make([]commitbundle.File, 0, len(in.Files)+len(in.DeletePaths))
 	for _, f := range in.Files {
-		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content})
+		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content, Encoding: f.Encoding})
 	}
 	for _, path := range in.DeletePaths {
 		files = append(files, commitbundle.File{Path: path, Delete: true})
@@ -350,17 +372,48 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 		Files:         bundleFilePaths(bundle.Files),
 		DeletedPaths:  bundleDeletedPaths(bundle.Files),
 	}
-	waited, err := waitRepositoryCommit(ctx, dyn, created.GetName(), 75*time.Second)
+	waited, err := waitRepositoryCommit(ctx, dyn, created.GetName(), commitWaitTimeout)
 	if err != nil {
 		return nil, out, err
 	}
 	if waited != nil {
 		out = repositoryCommitOutput(waited, out)
-		if out.Phase == string(codev1alpha1.RepositoryCommitPhaseFailed) {
-			return nil, out, fmt.Errorf("RepositoryCommit %q failed: %s", out.Name, repositoryCommitConditionMessage(waited))
+	}
+	switch out.Phase {
+	case string(codev1alpha1.RepositoryCommitPhaseSucceeded):
+		return nil, out, nil
+	case string(codev1alpha1.RepositoryCommitPhaseFailed):
+		return nil, out, fmt.Errorf("RepositoryCommit %q failed: %s", out.Name, repositoryCommitConditionMessage(waited))
+	}
+	return nil, out, unfinishedCommitError(waited, out)
+}
+
+// unfinishedCommitError reports a commit still in progress when the wait ends.
+// It is a tool error so callers do not build or promote files that have not
+// landed; the RepositoryCommit keeps running and names what to watch.
+func unfinishedCommitError(obj *unstructured.Unstructured, out commitFilesOutput) error {
+	if cond := repositoryCommitReadyCondition(obj); cond != nil && cond["reason"] == codev1alpha1.ReasonRateLimited {
+		detail, _ := cond["message"].(string)
+		return fmt.Errorf("RepositoryCommit %q is queued behind a GitHub rate limit (%s); the provider retries it until %s, then marks it Failed. The files are not committed yet: watch RepositoryCommit %q for phase Succeeded before relying on them",
+			out.Name, detail, rateLimitDeadline(obj).UTC().Format(time.RFC3339), out.Name)
+	}
+	return fmt.Errorf("RepositoryCommit %q did not finish within the %s wait (phase %s); the files may not be committed yet: watch RepositoryCommit %q for phase Succeeded or Failed",
+		out.Name, commitWaitTimeout, out.Phase, out.Name)
+}
+
+// rateLimitDeadline is when the controller stops retrying a rate-limited
+// commit: RepositoryCommitRateLimitWindow after status.startedAt.
+func rateLimitDeadline(obj *unstructured.Unstructured) time.Time {
+	start := obj.GetCreationTimestamp().Time
+	if raw, _, _ := unstructured.NestedString(obj.Object, "status", "startedAt"); raw != "" {
+		if startedAt, err := time.Parse(time.RFC3339, raw); err == nil {
+			start = startedAt
 		}
 	}
-	return nil, out, nil
+	if start.IsZero() {
+		start = time.Now()
+	}
+	return start.Add(codev1alpha1.RepositoryCommitRateLimitWindow)
 }
 
 func repositoryCommitBundleStorageScope(tenantScope string, created metav1.Object) string {
@@ -517,20 +570,24 @@ func bundleDeletedPaths(files []commitbundle.FileMeta) []string {
 }
 
 func repositoryCommitConditionMessage(obj *unstructured.Unstructured) string {
-	conds, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if !found {
-		return "unknown error"
-	}
-	for _, raw := range conds {
-		cond, ok := raw.(map[string]any)
-		if !ok || cond["type"] != codev1alpha1.ConditionReady {
-			continue
-		}
-		if msg, ok := cond["message"].(string); ok && msg != "" {
-			return msg
-		}
+	if msg, ok := repositoryCommitReadyCondition(obj)["message"].(string); ok && msg != "" {
+		return msg
 	}
 	return "unknown error"
+}
+
+// repositoryCommitReadyCondition returns the Ready condition, or nil.
+func repositoryCommitReadyCondition(obj *unstructured.Unstructured) map[string]any {
+	if obj == nil {
+		return nil
+	}
+	conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, raw := range conds {
+		if cond, ok := raw.(map[string]any); ok && cond["type"] == codev1alpha1.ConditionReady {
+			return cond
+		}
+	}
+	return nil
 }
 
 func commitObjectName(repositoryRef, digest string, now time.Time) string {

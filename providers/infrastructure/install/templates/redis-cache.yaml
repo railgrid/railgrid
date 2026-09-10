@@ -4,7 +4,7 @@ metadata:
   name: redis-cache
 spec:
   displayName: "Redis cache"
-  description: "A Redis instance for caching workloads — StatefulSet + Service; the size knob picks the memory bucket. Ephemeral: data does not survive a restart."
+  description: "A Redis instance for caching workloads — StatefulSet + Service; the size knob picks the memory bucket. Ephemeral: data does not survive a restart. Workloads (simple-webapp, worker, cron-job) consume it via connections.cache, which injects REDIS_URL."
   category: Databases
   version: 0.2.0
   # exposure: what the platform tells callers about reaching an instance.
@@ -24,11 +24,19 @@ spec:
       standalone cache or ephemeral key-value store, without deploying a new
       web app stack.
 
-      Consumers read the full connection URI from Secret
-      `<name>-credentials`, key `uri`. The URI has the form
-      `redis://:<password>@<name>:6379`. Redis may not be ready the moment a
-      consuming app starts — retry the initial connection. This template does
-      not expose Redis publicly.
+      HOW TO CONSUME IT: provision this instance, then provision (or
+      update_instance) a simple-webapp, worker, or cron-job instance in the
+      SAME workspace with `connections.cache: <this instance's values.name>`.
+      That workload gets env REDIS_URL, sourced from this instance's Secret —
+      app code reads the env var and never the Secret. Instances in one
+      workspace share one runtime namespace; a workload in another workspace
+      cannot connect.
+
+      The full connection URI lives in Secret `<name>-credentials`, key
+      `uri`, in the form `redis://:<password>@<name>:6379` (plain TCP, no
+      TLS). Redis may not be ready the moment a consuming app starts — retry
+      the initial connection instead of exiting. This template does not
+      expose Redis publicly.
 
       Redis is EPHEMERAL here: no persistence is configured, so a pod restart
       loses all data. Treat it strictly as a cache — never as a system of

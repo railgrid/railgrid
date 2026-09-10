@@ -1,10 +1,13 @@
 import type { ProjectAssistantAttachmentReceipt } from './types'
+import { formatByteSize } from './projectFiles'
 
-/** Client-side safety bound for the browser upload path. */
+/** Client-side safety bound for the browser upload path (images). */
 export const MAX_ASSISTANT_ATTACHMENT_BYTES = 8 << 20
 export const MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES = 1 << 20
+/** Any other file is uploaded as a "file" attachment (metadata only to the model). */
+export const MAX_ASSISTANT_FILE_ATTACHMENT_BYTES = 25 << 20
 export const MAX_ASSISTANT_ATTACHMENTS_PER_TURN = 8
-export const MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES = 20 << 20
+export const MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES = 50 << 20
 /** Keep ordinary paste inline; larger content becomes a durable text receipt. */
 export const ASSISTANT_LARGE_PASTE_BYTES = 10 << 10
 /** Read only a small browser-side window when showing a text attachment card. */
@@ -13,7 +16,8 @@ export const ASSISTANT_TEXT_PREVIEW_MAX_BYTES = 4 << 10
 export const ASSISTANT_TEXT_PREVIEW_MAX_CHARS = 180
 export const ASSISTANT_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp'
 export const ASSISTANT_TEXT_ACCEPT = '.md,.txt,text/plain,text/markdown'
-export const ASSISTANT_ATTACHMENT_ACCEPT = `${ASSISTANT_IMAGE_ACCEPT},${ASSISTANT_TEXT_ACCEPT}`
+/** Any file type can be attached; images and text keep their model-visible handling. */
+export const ASSISTANT_ATTACHMENT_ACCEPT = ''
 export const ASSISTANT_ATTACHMENT_RESOLUTION_ERROR = 'Resolve attachment uploads before creating the project (retry or remove the failed attachment).'
 
 const TEXT_FILE_EXTENSIONS = /\.(?:md|txt)$/iu
@@ -21,6 +25,9 @@ const IMAGE_FILE_EXTENSIONS = /\.(?:png|jpe?g|webp)$/iu
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const SUPPORTED_TEXT_TYPES = new Set(['text/plain', 'text/markdown'])
 const FILENAME_FALLBACK_TYPES = new Set(['application/octet-stream', 'binary/octet-stream'])
+const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/u
+
+export type AssistantAttachmentKind = 'image' | 'text' | 'file'
 
 export type AssistantAttachmentStatus = 'staged' | 'uploading' | 'ready' | 'error' | 'deleting'
 
@@ -93,9 +100,23 @@ export function projectAssistantAttachmentReceipt(value: unknown): ProjectAssist
   const sizeBytes = typeof raw.sizeBytes === 'number' && Number.isSafeInteger(raw.sizeBytes) ? raw.sizeBytes : -1
   const sha256 = typeof raw.sha256 === 'string' ? raw.sha256.trim().toLowerCase() : ''
   const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt.trim() : ''
-  const supportedContentType = contentType === 'image/png' || contentType === 'image/jpeg' || contentType === 'image/webp' || contentType === 'text/plain' || contentType === 'text/markdown'
-  if (!id || !filename || !supportedContentType || sizeBytes <= 0 || sizeBytes > MAX_ASSISTANT_ATTACHMENT_BYTES || (contentType.startsWith('text/') && sizeBytes > MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES) || !/^[a-f0-9]{64}$/u.test(sha256) || !createdAt) return null
+  const kind = raw.kind === 'file' ? 'file' : assistantAttachmentContentTypeKind(contentType)
+  const maxBytes = kind === 'image' ? MAX_ASSISTANT_ATTACHMENT_BYTES : kind === 'text' ? MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES : MAX_ASSISTANT_FILE_ATTACHMENT_BYTES
+  if (!id || !filename || !MIME_TYPE_PATTERN.test(contentType) || sizeBytes <= 0 || sizeBytes > maxBytes || !/^[a-f0-9]{64}$/u.test(sha256) || !createdAt) return null
   return { id, filename, contentType, sizeBytes, sha256, createdAt }
+}
+
+/** Receipt kind from its content type: only PNG/JPEG/WebP and plain/markdown text reach the model as content. */
+export function assistantAttachmentContentTypeKind(contentType: string): AssistantAttachmentKind {
+  const normalized = contentType.trim().toLowerCase()
+  if (SUPPORTED_IMAGE_TYPES.has(normalized)) return 'image'
+  if (SUPPORTED_TEXT_TYPES.has(normalized)) return 'text'
+  return 'file'
+}
+
+/** Compact size label for attachment chips ("24.8 MiB"). */
+export function assistantAttachmentSizeLabel(bytes: number | undefined): string {
+  return formatByteSize(bytes)
 }
 
 export function assistantAttachmentIsImage(file: Pick<File, 'name' | 'type'>): boolean {
@@ -108,17 +129,23 @@ export function assistantAttachmentIsText(file: Pick<File, 'name' | 'type'>): bo
   return (SUPPORTED_TEXT_TYPES.has(contentType) || FILENAME_FALLBACK_TYPES.has(contentType) || !contentType) && TEXT_FILE_EXTENSIONS.test(file.name.trim())
 }
 
+/** Images and text become model content; every other file is a "file" attachment. */
+export function assistantAttachmentKind(file: Pick<File, 'name' | 'type'>): AssistantAttachmentKind {
+  if (assistantAttachmentIsImage(file)) return 'image'
+  if (assistantAttachmentIsText(file)) return 'text'
+  return 'file'
+}
+
+/** Every file type can be attached; the per-kind size limit still applies. */
 export function assistantAttachmentIsSupported(file: Pick<File, 'name' | 'type'>): boolean {
-  const contentType = file.type.trim().toLowerCase()
-  if (contentType) {
-    return assistantAttachmentIsImage(file) || assistantAttachmentIsText(file)
-  }
-  const filename = file.name.trim()
-  return IMAGE_FILE_EXTENSIONS.test(filename) || TEXT_FILE_EXTENSIONS.test(filename)
+  return typeof file.name === 'string' && typeof file.type === 'string'
 }
 
 export function assistantAttachmentMaxBytes(file: Pick<File, 'name' | 'type'>): number {
-  return assistantAttachmentIsText(file) ? MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES : MAX_ASSISTANT_ATTACHMENT_BYTES
+  const kind = assistantAttachmentKind(file)
+  if (kind === 'text') return MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES
+  if (kind === 'image') return MAX_ASSISTANT_ATTACHMENT_BYTES
+  return MAX_ASSISTANT_FILE_ATTACHMENT_BYTES
 }
 
 export function assistantAttachmentPart(receipt: ProjectAssistantAttachmentReceipt) {
@@ -167,12 +194,18 @@ export function assistantAttachmentValidationError(
   file: Pick<File, 'name' | 'type' | 'size'>,
   existing: readonly AssistantAttachmentCandidate[] = [],
 ): string | null {
-  if (!assistantAttachmentIsSupported(file)) {
-    return 'Only PNG, JPEG, WebP screenshots and .txt or .md files can be attached.'
+  if (file.size <= 0) {
+    return 'Empty files cannot be attached.'
   }
   const maxBytes = assistantAttachmentMaxBytes(file)
   if (file.size > maxBytes) {
-    return `Attachments must be ${Math.floor(maxBytes / (1024 * 1024)) || 1} MiB or smaller.`
+    const limit = `${Math.floor(maxBytes / (1024 * 1024)) || 1} MiB`
+    const kind = assistantAttachmentKind(file)
+    return kind === 'image'
+      ? `Images must be ${limit} or smaller.`
+      : kind === 'text'
+        ? `Text files must be ${limit} or smaller.`
+        : `Files must be ${limit} or smaller.`
   }
   const active = existing.filter((candidate) => candidate.status !== 'error')
   if (active.length >= MAX_ASSISTANT_ATTACHMENTS_PER_TURN) {
@@ -180,7 +213,7 @@ export function assistantAttachmentValidationError(
   }
   const aggregateBytes = active.reduce((total, candidate) => total + (candidate.file?.size ?? candidate.receipt?.sizeBytes ?? 0), 0)
   if (aggregateBytes + file.size > MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES) {
-    return 'Attachments in one turn must total 20 MiB or less.'
+    return `Attachments in one turn must total ${MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES >> 20} MiB or less.`
   }
   return null
 }

@@ -86,8 +86,23 @@ func newTestVerifier(t *testing.T, opts ...VerifierOption) (*Verifier, *fakeKCP)
 		"sa-tenant-b":    {cluster: "tenant-b", username: ServiceAccountUsername("default")},
 		"user-shaped-sa": {cluster: "tenant-a", username: "alice"},
 	}}
-	all := append([]VerifierOption{WithKubeClientFactory(kcp.newClient)}, opts...)
+	all := append([]VerifierOption{
+		WithKubeClientFactory(kcp.newClient),
+		WithClusterPathResolver(testClusterPaths),
+	}, opts...)
 	return NewVerifier(kcp.clusterConfig, all...), kcp
+}
+
+// testClusterPaths is the default cluster-ID to workspace-path resolver: the
+// two fake tenant clusters are team workspaces of two different Orgs.
+func testClusterPaths(_ context.Context, cluster string) (string, error) {
+	switch cluster {
+	case "tenant-a":
+		return tenantPathRoot + "org-a:ws-a", nil
+	case "tenant-b":
+		return tenantPathRoot + "org-b:ws-b", nil
+	}
+	return "", errors.New("unknown cluster " + cluster)
 }
 
 func request(t *testing.T, bearer string) *http.Request {
@@ -116,9 +131,15 @@ func TestVerifierServiceAccountToken(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v, kcp := newTestVerifier(t)
-			err := v.Verify(request(t, tc.token), tc.token, tc.cluster, tc.mcpName)
+			caller, err := v.Verify(request(t, tc.token), tc.token, tc.cluster, tc.mcpName)
 			if tc.wantErr == nil && err != nil {
 				t.Fatalf("Verify() = %v, want nil", err)
+			}
+			if tc.wantErr == nil {
+				want := Caller{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ServiceAccount: ServiceAccountUsername(tc.mcpName)}
+				if caller != want {
+					t.Fatalf("Verify() caller = %+v, want %+v", caller, want)
+				}
 			}
 			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Verify() = %v, want %v", err, tc.wantErr)
@@ -134,7 +155,7 @@ func TestVerifierServiceAccountToken(t *testing.T) {
 // verification, never a pass-through.
 func TestVerifierFailsClosedWithoutClusterConfig(t *testing.T) {
 	v := NewVerifier(func(string) *rest.Config { return nil })
-	err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default")
+	_, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default")
 	if err == nil || errors.Is(err, ErrUnauthenticated) || errors.Is(err, ErrForbidden) {
 		t.Fatalf("Verify() = %v, want an infrastructure error", err)
 	}
@@ -163,12 +184,13 @@ func TestVerifierHubUserMembership(t *testing.T) {
 		cluster string
 		index   *tenancyv1alpha1.UserMembershipIndex
 		wantErr error
+		wantWS  string // expected Caller.WorkspaceUUID on success
 	}{
-		{name: "workspace member by path", cluster: tenantPathRoot + org + ":" + ws, index: idx},
-		{name: "workspace member by cluster id", cluster: "lc-ws", index: idx},
+		{name: "workspace member by path", cluster: tenantPathRoot + org + ":" + ws, index: idx, wantWS: ws},
+		{name: "workspace member by cluster id", cluster: "lc-ws", index: idx, wantWS: ws},
 		{name: "member of a different workspace", cluster: tenantPathRoot + org + ":" + ws2, index: idx, wantErr: ErrForbidden},
 		{name: "workspace member addressing the org cluster", cluster: tenantPathRoot + org, index: idx, wantErr: ErrForbidden},
-		{name: "org admin covers every workspace", cluster: tenantPathRoot + org + ":" + ws2, index: orgAdmin},
+		{name: "org admin covers every workspace", cluster: tenantPathRoot + org + ":" + ws2, index: orgAdmin, wantWS: ws2},
 		{name: "org admin covers the org cluster", cluster: tenantPathRoot + org, index: orgAdmin},
 		{name: "soft-deleted membership", cluster: tenantPathRoot + gone, index: idx, wantErr: ErrForbidden},
 		{name: "cluster outside the tenants tree", cluster: "root:faros:providers:infra", index: orgAdmin, wantErr: ErrForbidden},
@@ -186,9 +208,15 @@ func TestVerifierHubUserMembership(t *testing.T) {
 				func(*http.Request) (string, error) { return "alice", nil },
 				func(context.Context, string) (*tenancyv1alpha1.UserMembershipIndex, error) { return tc.index, nil },
 			)
-			err := v.Verify(request(t, "user-token"), "user-token", tc.cluster, "default")
+			caller, err := v.Verify(request(t, "user-token"), "user-token", tc.cluster, "default")
 			if tc.wantErr == nil && err != nil {
 				t.Fatalf("Verify() = %v, want nil", err)
+			}
+			if tc.wantErr == nil {
+				want := Caller{OrgUUID: org, WorkspaceUUID: tc.wantWS, User: "alice"}
+				if caller != want {
+					t.Fatalf("Verify() caller = %+v, want %+v", caller, want)
+				}
 			}
 			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Verify() = %v, want %v", err, tc.wantErr)
@@ -212,10 +240,10 @@ func TestVerifierUnknownUserFallsThroughToServiceAccount(t *testing.T) {
 			return nil, nil
 		},
 	)
-	if err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default"); err != nil {
+	if _, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default"); err != nil {
 		t.Fatalf("SA token with user branch enabled: %v, want nil", err)
 	}
-	if err := v.Verify(request(t, "junk"), "junk", "tenant-a", "default"); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := v.Verify(request(t, "junk"), "junk", "tenant-a", "default"); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("junk with user branch enabled: %v, want ErrUnauthenticated", err)
 	}
 	if kcp.reviews != 2 {
@@ -231,7 +259,7 @@ func TestVerifierUnknownUserFallsThroughToServiceAccount(t *testing.T) {
 			return nil, nil
 		},
 	)
-	if err := v.Verify(request(t, "sa-other-a"), "sa-other-a", "tenant-a", "default"); !errors.Is(err, ErrForbidden) {
+	if _, err := v.Verify(request(t, "sa-other-a"), "sa-other-a", "tenant-a", "default"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("SA-shaped user identity: %v, want ErrForbidden", err)
 	}
 }
@@ -252,10 +280,10 @@ func TestVerifierUnknownClusterIsForbiddenNotUnavailable(t *testing.T) {
 		func(*http.Request) (string, error) { return "alice", nil },
 		func(context.Context, string) (*tenancyv1alpha1.UserMembershipIndex, error) { return nil, nil },
 	)
-	if err := v.Verify(request(t, "u"), "u", "no-such-cluster", "default"); !errors.Is(err, ErrForbidden) {
+	if _, err := v.Verify(request(t, "u"), "u", "no-such-cluster", "default"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("nonexistent cluster: Verify() = %v, want ErrForbidden", err)
 	}
-	if err := v.Verify(request(t, "u"), "u", "lc-outage", "default"); err == nil || errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthenticated) {
+	if _, err := v.Verify(request(t, "u"), "u", "lc-outage", "default"); err == nil || errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("lookup outage: Verify() = %v, want an infrastructure error", err)
 	}
 	if kcp.reviews != 0 {
@@ -278,12 +306,55 @@ func TestVerifierCachesClusterPath(t *testing.T) {
 		},
 	)
 	for i := 0; i < 3; i++ {
-		if err := v.Verify(request(t, "u"), "u", "lc-org", "default"); err != nil {
+		if _, err := v.Verify(request(t, "u"), "u", "lc-org", "default"); err != nil {
 			t.Fatalf("Verify #%d: %v", i, err)
 		}
 	}
 	if lookups != 1 {
 		t.Fatalf("cluster path lookups = %d, want 1", lookups)
+	}
+}
+
+// TestVerifierServiceAccountTenant: an SA bearer's tenant is resolved from the
+// cluster only after TokenReview passes; a lookup outage fails closed rather
+// than guessing the platform catalog, and a cluster outside the tenants tree
+// is still admitted with no Org.
+func TestVerifierServiceAccountTenant(t *testing.T) {
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "core.kcp.io", Resource: "logicalclusters"}, "cluster")
+	lookups := 0
+	resolve := func(path string, err error) VerifierOption {
+		return WithClusterPathResolver(func(context.Context, string) (string, error) {
+			lookups++
+			return path, err
+		})
+	}
+
+	v, _ := newTestVerifier(t, resolve("", errors.New("kcp unreachable")))
+	if _, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default"); err == nil || errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("lookup outage: Verify() = %v, want an infrastructure error", err)
+	}
+
+	v, _ = newTestVerifier(t, resolve("", notFound))
+	if _, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("missing LogicalCluster: Verify() = %v, want ErrForbidden", err)
+	}
+
+	v, _ = newTestVerifier(t, resolve("root:faros:system:mcp", nil))
+	caller, err := v.Verify(request(t, "sa-tenant-a"), "sa-tenant-a", "tenant-a", "default")
+	if err != nil {
+		t.Fatalf("non-tenant cluster: Verify() = %v, want nil", err)
+	}
+	if caller.OrgUUID != "" || caller.WorkspaceUUID != "" || !caller.IsServiceAccount() {
+		t.Fatalf("non-tenant cluster: caller = %+v, want an SA with no Org", caller)
+	}
+
+	lookups = 0
+	v, _ = newTestVerifier(t, resolve(tenantPathRoot+"org-a:ws-a", nil))
+	if _, err := v.Verify(request(t, "junk"), "junk", "tenant-a", "default"); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("junk bearer: Verify() = %v, want ErrUnauthenticated", err)
+	}
+	if lookups != 0 {
+		t.Fatalf("an unauthenticated bearer caused %d LogicalCluster lookups, want 0", lookups)
 	}
 }
 
@@ -303,9 +374,9 @@ func TestTenantFromPath(t *testing.T) {
 		{path: ""},
 	}
 	for _, tc := range cases {
-		org, ws, ok := tenantFromPath(tc.path)
+		org, ws, ok := TenantFromPath(tc.path)
 		if org != tc.org || ws != tc.ws || ok != tc.ok {
-			t.Errorf("tenantFromPath(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.path, org, ws, ok, tc.org, tc.ws, tc.ok)
+			t.Errorf("TenantFromPath(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.path, org, ws, ok, tc.org, tc.ws, tc.ok)
 		}
 	}
 }

@@ -6,7 +6,7 @@ spec:
   displayName: "Background worker"
   description: "A long-running background process — Deployment only, no Service, no URL. Queue consumers, bots, pollers. Development-capable: can back an App Studio project with a hot-reload dev process."
   category: Workloads
-  version: 0.1.0
+  version: 0.2.0
   # exposure: what the platform tells callers about reaching an instance.
   # A background consumer. Reachable only through its dataPlane verbs.
   exposure: internal
@@ -33,9 +33,27 @@ spec:
           (crash-looping is treated as failure, not completion).
         • Stateless — no persistent disk. Pods may be restarted or scaled
           (the replicas input). Durable state belongs in a database template
-          instance; read its connection URI from the Secret it publishes.
-        • Configuration comes from your image; there is no platform-injected
-          env.
+          instance, a queue/cache in a redis-cache instance — connect them
+          with the connections input (below); never read their Secret
+          yourself.
+        • Configuration comes from your image, the env input, and the
+          connection env vars below; nothing else is injected.
+
+      CONNECTIONS (the connections input; applies in both modes):
+        • connections.database: <values.name of a database instance in this
+          workspace> → DATABASE_URL =
+          `postgres://appuser:<password>@<name>-db:5432/appdb`. The URI has
+          NO sslmode and the in-cluster Postgres has TLS disabled, so connect
+          with sslmode=disable (append `?sslmode=disable` / set it if your
+          driver defaults to TLS, e.g. Node `pg`, JDBC).
+        • connections.cache: <values.name of a redis-cache instance> →
+          REDIS_URL = `redis://:<password>@<name>:6379`.
+        • Unset (default "") = not connected; the variable is left unset. A
+          name that is set makes the pod wait until that instance's Secret
+          exists, so it must name a real instance in THIS workspace.
+        • The database/cache may not be ready when the worker starts: RETRY
+          the first connection instead of exiting, and run schema
+          creation/migrations idempotently inside that same retry loop.
 
       DEVELOPMENT MODE (provision with farosMode: development): the image
       input is ignored (and may be omitted) — the platform runs a Node.js dev
@@ -46,7 +64,8 @@ spec:
 
       INPUTS you set when provisioning: name (required); image (required in
       production, ignored in development), replicas, env (env-var map; not for
-      secrets). All except name and farosMode can be changed later with
+      secrets), connections.database / connections.cache (see CONNECTIONS).
+      All except name and farosMode can be changed later with
       update_instance.
     outputs:
       - "status.ready — ready replica count for the worker Deployment."
@@ -81,7 +100,26 @@ spec:
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Values are stored world-readable — not for secrets."
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). DATABASE_URL / REDIS_URL from a set connection win on name conflicts. Values are stored world-readable — not for secrets; use connections for database/cache credentials."
+      # Fixed connection slots rendered as literal secretKeyRef env entries —
+      # same shape and rationale as simple-webapp's connections input.
+      connections:
+        type: object
+        default: {}
+        description: "Sibling instances in this workspace whose credentials are injected as env, read from their Secret (never templated in clear). Empty = not connected."
+        properties:
+          database:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "values.name of a database instance in this workspace; its connection URI is injected as DATABASE_URL (no sslmode; in-cluster TLS is off, so use sslmode=disable). The pod waits until that instance's Secret exists."
+          cache:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 63
+            description: "values.name of a redis-cache instance in this workspace; its connection URI is injected as REDIS_URL. The pod waits until that instance's Secret exists."
     required:
       - name
     # The image is only required when the instance actually runs it: production
@@ -184,6 +222,24 @@ spec:
                 containers:
                   - name: worker
                     image: ${schema.spec.image}
+                    # connections.* → credentials from the sibling instance's
+                    # Secret in this runtime namespace. Unconnected: a
+                    # placeholder name + optional=true leaves the var unset.
+                    # Connected: the pod waits for the Secret and its uri key.
+                    # Literal entries so the dev overlay keeps them.
+                    env:
+                      - name: DATABASE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: '${schema.spec.connections.database == "" ? schema.spec.name + "-unbound-db" : schema.spec.connections.database + "-db-credentials"}'
+                            key: uri
+                            optional: '${schema.spec.connections.database == ""}'
+                      - name: REDIS_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: '${schema.spec.connections.cache == "" ? schema.spec.name + "-unbound-cache" : schema.spec.connections.cache + "-credentials"}'
+                            key: uri
+                            optional: '${schema.spec.connections.cache == ""}'
                     envFrom:
                       - configMapRef:
                           name: ${workerEnv.metadata.name}

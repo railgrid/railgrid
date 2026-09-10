@@ -290,6 +290,13 @@ func TestProjectReleaseHandlersReturnAndPromoteExactEvidence(t *testing.T) {
 	if postResponse.Code != http.StatusOK {
 		t.Fatalf("POST promote response = %d %s", postResponse.Code, postResponse.Body.String())
 	}
+	var promotedFields map[string]json.RawMessage
+	if err := json.Unmarshal(postResponse.Body.Bytes(), &promotedFields); err != nil {
+		t.Fatalf("decode POST promote fields: %v", err)
+	}
+	if _, ok := promotedFields["project"]; ok {
+		t.Fatalf("POST promote embeds the full Project; want slim rollout identity only: %s", postResponse.Body.String())
+	}
 	var promoted projectPromoteResponse
 	if err := json.NewDecoder(postResponse.Body).Decode(&promoted); err != nil {
 		t.Fatalf("decode POST promote: %v", err)

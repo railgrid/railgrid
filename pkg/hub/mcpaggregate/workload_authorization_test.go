@@ -76,18 +76,26 @@ func TestWorkloadMCPAuthorization(t *testing.T) {
 					t.Fatalf("wrong review workspace: %s", cfg.Host)
 				}
 				return cs, nil
+			}), WithClusterPathResolver(func(_ context.Context, cluster string) (string, error) {
+				return tenantPathRoot + "org-a:ws-a", nil
 			}))
-			err := v.Verify(request(t, "project-token"), "project-token", "tenant-a", "default")
+			caller, err := v.Verify(request(t, "project-token"), "project-token", "tenant-a", "default")
 			if (err != nil) != tc.wantErr || errors.Is(err, ErrForbidden) != tc.wantForbidden {
 				t.Fatalf("Verify() = %v", err)
 			}
 			if !checked {
 				t.Fatal("workload authorization was skipped")
 			}
+			if !tc.wantErr {
+				want := Caller{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ServiceAccount: user.Username}
+				if caller != want {
+					t.Fatalf("Verify() caller = %+v, want %+v", caller, want)
+				}
+			}
 			// Exercise the real handler gate: a denial or review failure must
 			// not even enumerate providers, let alone forward the credential.
 			if tc.wantErr {
-				h := New(Options{Verifier: v, Providers: func(context.Context) []ProviderTarget {
+				h := New(Options{Verifier: v, Providers: func(context.Context, Caller) []ProviderTarget {
 					t.Fatal("rejected workload reached federation")
 					return nil
 				}})

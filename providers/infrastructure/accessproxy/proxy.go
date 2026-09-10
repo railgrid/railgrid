@@ -62,6 +62,15 @@ type Proxy struct {
 	now    func() time.Time
 	random RandomSource
 
+	// verifyClient is the hub client for bearer verification; unlike the
+	// exchange client it never follows redirects, so a caller's token can
+	// only ever be sent to the configured hub origin.
+	verifyClient *http.Client
+	// bearerRelayAllowed is false when the hub URL would carry a caller's
+	// token in cleartext over the network (plain http to a non-loopback
+	// host); bearer requests then fail closed instead of being relayed.
+	bearerRelayAllowed bool
+
 	mu               sync.Mutex
 	usedStates       map[string]time.Time
 	sessions         map[string]appSession
@@ -83,6 +92,12 @@ type returnStatePayload struct {
 type appSession struct {
 	userID    string
 	expiresAt time.Time
+	// bearer marks a cached bearer verdict (keyed by bearerKey) rather than a
+	// cookie session. denyStatus is the verdict to replay: 0 = allowed,
+	// otherwise the HTTP status (401/403) of a cached refusal. The cookie
+	// path never accepts a bearer entry, whatever its verdict.
+	bearer     bool
+	denyStatus int
 }
 
 // exchangeRequest / exchangeResponse mirror pkg/hub/appauth's wire contract.
@@ -118,6 +133,10 @@ func New(config Config) (*Proxy, error) {
 	if proxy.random == nil {
 		proxy.random = rand.Reader
 	}
+	verifyClient := *normalized.hubClient
+	verifyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	proxy.verifyClient = &verifyClient
+	proxy.bearerRelayAllowed = hubURLProtectsTokens(normalized.hubURL)
 	return proxy, nil
 }
 
@@ -178,8 +197,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.config.Mode == ModePrivate {
 		if _, ok := p.currentSession(r); !ok {
-			p.redirectToAuthorize(w, r, cleanReturnPath(r.URL.RequestURI()))
-			return
+			// A bearer-carrying request is a program, not a browser: it can
+			// never complete a redirect sign-in, so it is answered here —
+			// forwarded, 401 or 403, never a 302.
+			if token, isBearer := bearerCredential(r); isBearer {
+				if !p.authorizeBearer(w, r, token) {
+					return
+				}
+			} else {
+				p.redirectToAuthorize(w, r, cleanReturnPath(r.URL.RequestURI()))
+				return
+			}
 		}
 	}
 	p.forward(w, r, route)
@@ -205,6 +233,11 @@ func (p *Proxy) currentSession(r *http.Request) (appSession, bool) {
 		}
 		key := sessionKey(cookie.Value)
 		session, ok := p.sessions[key]
+		if ok && session.bearer {
+			// Unreachable (bearer keys carry a prefix sessionKey never
+			// produces); refuse rather than let a verdict act as a session.
+			continue
+		}
 		if ok && now.Before(session.expiresAt) {
 			return session, true
 		}

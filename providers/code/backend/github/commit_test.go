@@ -18,6 +18,7 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,7 +50,7 @@ func TestCleanRepositoryPath(t *testing.T) {
 }
 
 func TestGitTreeEntries(t *testing.T) {
-	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	entries, paths, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "b.txt", Content: "b"},
 		{Path: "a.txt", Content: "a"},
 	})
@@ -68,7 +69,7 @@ func TestGitTreeEntries(t *testing.T) {
 }
 
 func TestGitTreeEntriesEncodeDeletion(t *testing.T) {
-	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	entries, paths, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "src/new.ts", Content: "new"},
 		{Path: "src/old.ts", Delete: true},
 	})
@@ -88,13 +89,13 @@ func TestGitTreeEntriesEncodeDeletion(t *testing.T) {
 }
 
 func TestGitTreeEntriesRejectsDeletionContent(t *testing.T) {
-	if _, _, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "old.ts", Content: "stale", Delete: true}}); err == nil {
+	if _, _, _, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "old.ts", Content: "stale", Delete: true}}); err == nil {
 		t.Fatal("gitTreeEntries accepted content on a deletion")
 	}
 }
 
 func TestGitTreeEntriesRejectsDuplicatePaths(t *testing.T) {
-	_, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	_, _, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "src/../app.go", Content: "a"},
 		{Path: "app.go", Content: "b"},
 	})
@@ -103,8 +104,152 @@ func TestGitTreeEntriesRejectsDuplicatePaths(t *testing.T) {
 	}
 }
 
+func TestGitTreeEntriesBinaryBecomesPendingBlob(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', 0x00})
+	entries, paths, blobs, err := gitTreeEntries([]backend.RepositoryCommitFile{
+		{Path: "logo.png", Content: encoded, Encoding: backend.EncodingBase64},
+		{Path: "index.html", Content: "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "index.html,logo.png" {
+		t.Fatalf("paths = %v", paths)
+	}
+	if entries[0].GetContent() != "hello" || entries[0].SHA != nil {
+		t.Fatalf("text entry = %#v, want inline content", entries[0])
+	}
+	if len(blobs) != 1 || blobs[0].entry != entries[1] || blobs[0].content != encoded {
+		t.Fatalf("pending blobs = %#v, want the binary entry", blobs)
+	}
+	if entries[1].Content != nil {
+		t.Fatal("binary entry carries inline content; base64 would be committed as text")
+	}
+
+	for _, tc := range []struct {
+		name string
+		file backend.RepositoryCommitFile
+	}{
+		{"invalid base64", backend.RepositoryCommitFile{Path: "a.bin", Content: "not base64!", Encoding: backend.EncodingBase64}},
+		{"line breaks", backend.RepositoryCommitFile{Path: "a.bin", Content: "aGVs\nbG8=", Encoding: backend.EncodingBase64}},
+		{"unknown encoding", backend.RepositoryCommitFile{Path: "a.bin", Content: "00", Encoding: "hex"}},
+	} {
+		if _, _, _, err := gitTreeEntries([]backend.RepositoryCommitFile{tc.file}); err == nil {
+			t.Errorf("%s: gitTreeEntries accepted %#v", tc.name, tc.file)
+		}
+	}
+}
+
+// TestCommitFilesUploadsBinaryBlobs drives a binary commit through a ref race:
+// the blob is created once, both CreateTree calls reference it by SHA (never
+// as inline content, never as a deletion), and text stays inline.
+func TestCommitFilesUploadsBinaryBlobs(t *testing.T) {
+	const (
+		baseCommitSHA   = "commit-base"
+		concurrentSHA   = "commit-concurrent"
+		orphanCommitSHA = "commit-orphan"
+		retryCommitSHA  = "commit-retry"
+		blobSHA         = "blob-logo"
+	)
+	logo := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff}
+	encoded := base64.StdEncoding.EncodeToString(logo)
+	var getRefCalls, createBlobCalls, createTreeCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main":
+			getRefCalls++
+			sha := baseCommitSHA
+			if getRefCalls > 1 {
+				sha = concurrentSHA
+			}
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, sha)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+baseCommitSHA:
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":"tree-base"}}`, baseCommitSHA)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+concurrentSHA:
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":"tree-concurrent"}}`, concurrentSHA)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/repos/acme/widgets/git/blobs":
+			createBlobCalls++
+			var blob gogithub.Blob
+			if err := json.Unmarshal([]byte(mustReadRequestBody(t, r)), &blob); err != nil {
+				t.Fatal(err)
+			}
+			if blob.GetEncoding() != "base64" || blob.GetContent() != encoded {
+				t.Errorf("CreateBlob body = %#v, want the base64 payload", blob)
+			}
+			_, _ = fmt.Fprintf(w, `{"sha":%q}`, blobSHA)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/repos/acme/widgets/git/trees":
+			createTreeCalls++
+			var body struct {
+				Tree []map[string]any `json:"tree"`
+			}
+			raw := mustReadRequestBody(t, r)
+			if err := json.Unmarshal([]byte(raw), &body); err != nil {
+				t.Fatal(err)
+			}
+			byPath := map[string]map[string]any{}
+			for _, entry := range body.Tree {
+				byPath[entry["path"].(string)] = entry
+			}
+			for _, path := range []string{"public/logo.png", "public/copy.png"} {
+				entry := byPath[path]
+				if entry["sha"] != blobSHA || entry["content"] != nil {
+					t.Errorf("CreateTree #%d entry %s = %v, want sha %s without content", createTreeCalls, path, entry, blobSHA)
+				}
+			}
+			if entry := byPath["index.html"]; entry["content"] != "hello" || entry["sha"] != nil {
+				t.Errorf("CreateTree #%d text entry = %v, want inline content", createTreeCalls, entry)
+			}
+			_, _ = fmt.Fprintf(w, `{"sha":"tree-%d"}`, createTreeCalls)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/repos/acme/widgets/git/commits":
+			if strings.Contains(mustReadRequestBody(t, r), concurrentSHA) {
+				_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":"tree-2"}}`, retryCommitSHA)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":"tree-1"}}`, orphanCommitSHA)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main":
+			if strings.Contains(mustReadRequestBody(t, r), orphanCommitSHA) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Update is not a fast forward"}`))
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, retryCommitSHA)
+		default:
+			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	got, err := New().CommitFiles(context.Background(),
+		&codev1alpha1.Connection{Spec: codev1alpha1.ConnectionSpec{Owner: "acme", BaseURL: srv.URL}},
+		backend.Credential{Token: "token"},
+		&codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets", DefaultBranch: "main"}},
+		backend.RepositoryCommitInput{
+			Message: "Add logo",
+			Files: []backend.RepositoryCommitFile{
+				{Path: "index.html", Content: "hello"},
+				{Path: "public/logo.png", Content: encoded, Encoding: backend.EncodingBase64},
+				{Path: "public/copy.png", Content: encoded, Encoding: backend.EncodingBase64},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitFiles returned error: %v", err)
+	}
+	if got.CommitSHA != retryCommitSHA {
+		t.Fatalf("commit SHA = %q, want retried commit %q", got.CommitSHA, retryCommitSHA)
+	}
+	if createBlobCalls != 1 {
+		t.Fatalf("CreateBlob calls = %d, want one upload shared by identical files and reused by the retry", createBlobCalls)
+	}
+	if createTreeCalls != 2 {
+		t.Fatalf("CreateTree calls = %d, want initial + retry", createTreeCalls)
+	}
+}
+
 func TestFilterNoopGitTreeDeletionsWithoutBaseTree(t *testing.T) {
-	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	entries, paths, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "src/new.ts", Content: "new"},
 		{Path: "src/never-committed.ts", Delete: true},
 	})
@@ -135,7 +280,7 @@ func TestFilterNoopGitTreeDeletionsUsesRemoteBaseTree(t *testing.T) {
 	baseURL := srv.URL + "/api/v3/"
 	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
 	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
-	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	entries, paths, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "src/new.ts", Content: "new"},
 		{Path: "src/missing.ts", Delete: true},
 		{Path: "src/present.ts", Delete: true},
@@ -557,7 +702,7 @@ func TestRecoverConcurrentCommitReevaluatesDeletionWhenRacedBaseAddedPath(t *tes
 	baseURL := srv.URL + "/api/v3/"
 	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
 	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
-	entries, files, err := gitTreeEntries([]backend.RepositoryCommitFile{
+	entries, files, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "new.txt", Content: "new"},
 		{Path: "race.txt", Delete: true},
 	})
@@ -614,7 +759,7 @@ func TestRecoverConcurrentCommitReturnsHeadWhenRacedBaseRemovedDeletion(t *testi
 	baseURL := srv.URL + "/api/v3/"
 	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
 	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
-	entries, files, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "race.txt", Delete: true}})
+	entries, files, _, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "race.txt", Delete: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

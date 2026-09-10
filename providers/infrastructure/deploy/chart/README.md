@@ -51,12 +51,12 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `centralKro.kubeconfigSecretRef.name` | `""` |  |
 | `centralKro.kubeconfigSecretRef.key` | `kubeconfig` |  |
 | `application` |  | The "application" template (3-tier app exposed on an OIDC-guarded URL). The Application instance controller is OFF unless baseDomain is set AND a central kro kubeconfig is configured (the controller bridges secrets onto that runtime cluster). See docs/application-template-architecture.md. |
-| `application.baseDomain` | `""` | Zone apps are served under, e.g. "apps.example.com". Each app gets <prefix\|name>-<tenantHash>.<baseDomain>. Empty → feature disabled. |
+| `application.baseDomain` | `""` | Zone apps are served under, e.g. "apps.example.com". Each app gets <prefix\|name>-<tenantHash>.<baseDomain>. Empty → feature disabled. TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `application.gateway` |  | Gateway API parent the generated Application HTTPRoutes attach to (substituted into Application RGDs as ${faros.gatewayName} / ${faros.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel Gateway in-binary; override to point apps at a different Gateway without touching the template. |
 | `application.gateway.name` | `"cloudflare-tunnel"` |  |
 | `application.gateway.namespace` | `"cfgate-system"` |  |
 | `publishing` |  | Platform-owned access-gate configuration shared by simple-webapp, application, and future publishable templates. Templates render the gate (faros-access-proxy) as a component of their own graph via the ${faros.accessProxyImage}/${faros.hubUrl}/${faros.hubPublicUrl} tokens; all app traffic enters… |
-| `publishing.baseDomain` | `""` |  |
+| `publishing.baseDomain` | `""` | App host zone (wins over `application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `publishing.accessProxyImage` | `ghcr.io/faroshq/faros-access-proxy:latest` |  |
 | `publishing.hubURL` | `""` | Internal hub address used for the app-access protocol. Empty falls back to hub.url. In production, use a trusted cluster CA and keep insecure=false. |
 | `publishing.hubPublicURL` | `""` | Browser-reachable hub origin used for authorization redirects. Empty defaults to hubURL; set it when the provider uses an in-cluster hub URL. |
@@ -123,9 +123,9 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `operator.provider.replicas` | `2` |  |
 | `operator.provider.port` | `8081` |  |
 | `operator.application` |  | Application-template exposure layer (the `application` template's public URL + Gateway API parent). This is the operator-mode equivalent of the top-level `application.*` values: the operator owns the serve Deployment, so these land on the InfrastructureProvider CR (FAROS_APP_BASE_DOMAIN / FAROS_G… |
-| `operator.application.baseDomain` | `""` | DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable app exposure — the Application instance controller stays disabled until this is set. Empty → feature off. |
+| `operator.application.baseDomain` | `""` | DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable app exposure — the Application instance controller stays disabled until this is set. Empty → feature off. TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `operator.application.gateway` |  | Gateway API parent the generated HTTPRoutes attach to. Empty fields → "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults). |
-| `operator.publishing.baseDomain` | `""` |  |
+| `operator.publishing.baseDomain` | `""` | App host zone (wins over `operator.application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `operator.publishing.accessProxyImage` | `ghcr.io/faroshq/faros-access-proxy:latest` |  |
 | `operator.publishing.hubURL` | `""` |  |
 | `operator.publishing.hubPublicURL` | `""` |  |

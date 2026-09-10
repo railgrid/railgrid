@@ -20,6 +20,7 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,12 +56,22 @@ const repositoryCommitIdempotencyTrailer = "Faros-RepositoryCommit:"
 // (Connection.spec.baseURL) targets GitHub Enterprise Server when set; empty
 // uses the public github.com API.
 func (b *Backend) client(ctx context.Context, cred backend.Credential, baseURL string) (*gogithub.Client, error) {
+	return b.clientWithTimeout(ctx, cred, baseURL, githubRequestTimeout)
+}
+
+// blobClient is client with githubBlobRequestTimeout, for moving blobs of up
+// to 25 MiB (CreateBlob, and GetBlobRaw above largeBlobBytes).
+func (b *Backend) blobClient(ctx context.Context, cred backend.Credential, baseURL string) (*gogithub.Client, error) {
+	return b.clientWithTimeout(ctx, cred, baseURL, githubBlobRequestTimeout)
+}
+
+func (b *Backend) clientWithTimeout(ctx context.Context, cred backend.Credential, baseURL string, timeout time.Duration) (*gogithub.Client, error) {
 	if cred.Token == "" {
 		return nil, errors.New("github: empty credential token")
 	}
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: cred.Token})
 	httpClient := oauth2.NewClient(ctx, ts)
-	httpClient.Timeout = githubRequestTimeout
+	httpClient.Timeout = timeout
 	httpClient.Transport = &sharedTransport{base: httpClient.Transport, cache: b.requestCache(), credential: credentialHash(cred.Token)}
 	if baseURL == "" {
 		return gogithub.NewClient(httpClient), nil
@@ -204,13 +215,14 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 		branch = "main"
 	}
 
-	entries, files, err := gitTreeEntries(input.Files)
+	entries, files, blobs, err := gitTreeEntries(input.Files)
 	if err != nil {
 		return backend.RepositoryCommitResult{}, err
 	}
 	// Keep the caller's complete intent separate from the initial filtered
 	// entries. A ref race can change whether a deletion is effective, so the
 	// retry must evaluate the original deletion against the new branch base.
+	// The slices share entry pointers, so blob SHAs set below carry over.
 	requestedEntries := entries
 	requestedFiles := files
 
@@ -249,6 +261,18 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 				Branch:    branch,
 				Files:     files,
 			}, nil
+		}
+	}
+	// Binary entries reference blobs, which must exist before any tree work:
+	// until then those entries carry neither SHA nor content. Uploads of up to
+	// 25 MiB get the long-timeout client; everything else keeps the default.
+	if len(blobs) > 0 {
+		uploader, err := b.blobClient(ctx, cred, conn.Spec.BaseURL)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, err
+		}
+		if err := createPendingBlobs(ctx, uploader, org, repo.Spec.Name, blobs); err != nil {
+			return backend.RepositoryCommitResult{}, err
 		}
 	}
 	var parent *gogithub.Commit
@@ -720,7 +744,10 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 
 	var out []backend.PackageInfo
 	for _, pt := range packageTypes {
-		pkgs, err := cachedPackageListing(ctx, b, c, cred, []string{"packages", org, pt}, func(ctx context.Context) ([]*gogithub.Package, error) {
+		// CI publishes new images to GHCR as "container" packages; only those
+		// listings bypass the cache when the caller asks for fresh images.
+		fresh := pt == "container" && backend.FreshContainerPackages(ctx)
+		pkgs, err := cachedPackageListing(ctx, b, c, cred, []string{"packages", org, pt}, fresh, func(ctx context.Context) ([]*gogithub.Package, error) {
 			return listPackagesOfType(ctx, c, org, pt, asUser)
 		})
 		if err != nil {
@@ -737,7 +764,7 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 			// preserves the last known tags and digests.
 			if pt == "container" || pt == "docker" {
 				info.ImageRepository = "ghcr.io/" + strings.ToLower(org) + "/" + strings.ToLower(p.GetName())
-				versions, err := cachedPackageListing(ctx, b, c, cred, []string{"versions", org, pt, p.GetName()}, func(ctx context.Context) ([]backend.PackageVersion, error) {
+				versions, err := cachedPackageListing(ctx, b, c, cred, []string{"versions", org, pt, p.GetName()}, fresh, func(ctx context.Context) ([]backend.PackageVersion, error) {
 					return listPackageVersions(ctx, c, org, pt, p.GetName(), asUser)
 				})
 				if err != nil {
@@ -855,18 +882,50 @@ func packageInfo(p *gogithub.Package) backend.PackageInfo {
 	}
 }
 
-func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry, []string, error) {
+const (
+	// githubBlobRequestTimeout bounds one blob transfer of up to 25 MiB
+	// (about 33 MiB as base64 JSON on upload); githubRequestTimeout is too
+	// tight for that on a slow link.
+	githubBlobRequestTimeout = 3 * time.Minute
+	// largeBlobBytes is the blob size above which a checkout download uses
+	// the blob client instead of the default one.
+	largeBlobBytes = 1 << 20
+)
+
+// pendingBlob is a base64 file whose tree entry must reference a blob:
+// createPendingBlobs uploads content and points entry at the new blob SHA.
+type pendingBlob struct {
+	entry   *gogithub.TreeEntry
+	content string // RFC 4648 standard padded base64
+}
+
+// gitTreeEntries builds the sorted tree entries for a commit. UTF-8 text is
+// sent inline as entry content; base64 files come back as pending blobs whose
+// entries stay empty until createPendingBlobs sets their SHA, and deletions
+// are entries with neither SHA nor content (serialized as "sha": null).
+func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry, []string, []pendingBlob, error) {
 	byPath := map[string]backend.RepositoryCommitFile{}
 	for _, f := range files {
 		clean, err := cleanRepositoryPath(f.Path)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if _, exists := byPath[clean]; exists {
-			return nil, nil, fmt.Errorf("github: duplicate file path %q", clean)
+			return nil, nil, nil, fmt.Errorf("github: duplicate file path %q", clean)
 		}
 		if f.Delete && f.Content != "" {
-			return nil, nil, fmt.Errorf("github: deleted file %q cannot include content", clean)
+			return nil, nil, nil, fmt.Errorf("github: deleted file %q cannot include content", clean)
+		}
+		switch f.Encoding {
+		case "":
+		case backend.EncodingBase64:
+			if !f.Delete {
+				if err := validBase64(f.Content); err != nil {
+					return nil, nil, nil, fmt.Errorf("github: file %q has invalid base64 content: %w", clean, err)
+				}
+			}
+		default:
+			return nil, nil, nil, fmt.Errorf("github: file %q has unsupported encoding %q", clean, f.Encoding)
 		}
 		f.Path = clean
 		byPath[clean] = f
@@ -877,24 +936,62 @@ func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry
 	}
 	sort.Strings(paths)
 	entries := make([]*gogithub.TreeEntry, 0, len(paths))
+	var blobs []pendingBlob
 	for _, p := range paths {
 		file := byPath[p]
-		if file.Delete {
-			entries = append(entries, &gogithub.TreeEntry{
-				Path: gogithub.String(p),
-				Mode: gogithub.String("100644"),
-				Type: gogithub.String("blob"),
-			})
-			continue
+		entry := &gogithub.TreeEntry{
+			Path: gogithub.String(p),
+			Mode: gogithub.String("100644"),
+			Type: gogithub.String("blob"),
 		}
-		entries = append(entries, &gogithub.TreeEntry{
-			Path:    gogithub.String(p),
-			Mode:    gogithub.String("100644"),
-			Type:    gogithub.String("blob"),
-			Content: gogithub.String(file.Content),
-		})
+		switch {
+		case file.Delete:
+		case file.Encoding == backend.EncodingBase64:
+			blobs = append(blobs, pendingBlob{entry: entry, content: file.Content})
+		default:
+			entry.Content = gogithub.String(file.Content)
+		}
+		entries = append(entries, entry)
 	}
-	return entries, paths, nil
+	return entries, paths, blobs, nil
+}
+
+// validBase64 accepts only canonical standard padded base64 without line
+// breaks, so GitHub decodes exactly the bytes the bundle digest covered.
+func validBase64(content string) error {
+	if strings.ContainsAny(content, "\r\n") {
+		return errors.New("line breaks are not allowed")
+	}
+	_, err := base64.StdEncoding.Strict().DecodeString(content)
+	return err
+}
+
+// createPendingBlobs uploads each base64 file as a git blob and points its
+// tree entry at the blob SHA (clearing any inline content). Identical payloads
+// in one commit are uploaded once. Blobs are repository objects, so a ref-race
+// retry reuses the same entries without uploading again.
+func createPendingBlobs(ctx context.Context, c *gogithub.Client, org, repo string, blobs []pendingBlob) error {
+	uploaded := map[string]string{}
+	for _, blob := range blobs {
+		sha, ok := uploaded[blob.content]
+		if !ok {
+			created, resp, err := c.Git.CreateBlob(ctx, org, repo, &gogithub.Blob{
+				Content:  gogithub.String(blob.content),
+				Encoding: gogithub.String(backend.EncodingBase64),
+			})
+			if err != nil {
+				return classify(resp, fmt.Errorf("create blob %s: %w", blob.entry.GetPath(), err))
+			}
+			if created.GetSHA() == "" {
+				return fmt.Errorf("github: create blob %s returned no SHA", blob.entry.GetPath())
+			}
+			sha = created.GetSHA()
+			uploaded[blob.content] = sha
+		}
+		blob.entry.SHA = gogithub.String(sha)
+		blob.entry.Content = nil
+	}
+	return nil
 }
 
 func cleanRepositoryPath(raw string) (string, error) {
@@ -966,15 +1063,43 @@ func isNotOrg(resp *gogithub.Response) bool {
 	return resp != nil && resp.StatusCode == http.StatusNotFound
 }
 
+// defaultRateLimitRetryAfter is used when a rate limit reports no reset time
+// or Retry-After.
+const defaultRateLimitRetryAfter = time.Minute
+
 // classify turns a go-github error into a clearer message, surfacing auth
-// failures distinctly so the controller's condition is actionable.
+// failures distinctly so the controller's condition is actionable. Rate limits
+// are checked first and always become *backend.RateLimitError: go-github's own
+// preflight check reports them with a synthetic 403 response, which must not
+// read as a scope problem.
 func classify(resp *gogithub.Response, err error) error {
+	var limited *backend.RateLimitError
+	if errors.As(err, &limited) {
+		return err
+	}
+	var primary *gogithub.RateLimitError
+	if errors.As(err, &primary) {
+		// Same one-second margin after reset as the shared transport's deadline.
+		retryAt := primary.Rate.Reset.Add(time.Second)
+		if primary.Rate.Reset.IsZero() {
+			retryAt = time.Now().Add(defaultRateLimitRetryAfter)
+		}
+		return &backend.RateLimitError{RetryAt: retryAt, Err: err}
+	}
+	var secondary *gogithub.AbuseRateLimitError
+	if errors.As(err, &secondary) {
+		retryAfter := defaultRateLimitRetryAfter
+		if secondary.RetryAfter != nil && *secondary.RetryAfter > 0 {
+			retryAfter = *secondary.RetryAfter
+		}
+		return &backend.RateLimitError{RetryAt: time.Now().Add(retryAfter), Err: err}
+	}
 	if resp != nil && resp.Response != nil {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
 			return fmt.Errorf("github: credential rejected (401): %w", err)
 		case http.StatusForbidden:
-			return fmt.Errorf("github: forbidden — token lacks scope or rate-limited (403): %w", err)
+			return fmt.Errorf("github: forbidden — token lacks the required scope (403): %w", err)
 		}
 	}
 	return err

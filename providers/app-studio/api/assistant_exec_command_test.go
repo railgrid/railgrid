@@ -19,6 +19,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -321,7 +322,7 @@ func TestProjectAssistantExecSnapshotRoutesSelectedComponent(t *testing.T) {
 	got, digest, revision, err := projectAssistantExecSnapshot(context.Background(), projectAssistantWorkflowRunContext{
 		Workspace:      files,
 		WorkspaceScope: scope,
-	}, projectTemplateComponent{WorkspacePath: "backend"}, 0)
+	}, projectTemplateComponent{WorkspacePath: "backend"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,6 +332,32 @@ func TestProjectAssistantExecSnapshotRoutesSelectedComponent(t *testing.T) {
 	wantDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "package main\n"}})
 	if digest != wantDigest {
 		t.Fatalf("snapshot digest = %q, component source digest = %q", digest, wantDigest)
+	}
+}
+
+func TestProjectAssistantExecSnapshotMirrorsBinarySync(t *testing.T) {
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "project", ProjectUID: "uid"}
+	model := testPNG(workspace.MaxWriteBytes + 100)
+	for _, file := range []workspace.PutOptions{{Path: "web/index.html", Data: []byte("<!doctype html>\n")}, {Path: "web/public/jeep.glb", Data: model}} {
+		if _, err := files.PutFile(context.Background(), scope, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runCtx := projectAssistantWorkflowRunContext{Workspace: files, WorkspaceScope: scope}
+	text := []projectSandboxSyncFile{{Path: "index.html", Content: "<!doctype html>\n"}}
+	// An agent without base64 sync never received the binary: the exec
+	// digest covers text only (and no longer fails on the binary).
+	_, digest, _, err := projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return false })
+	if err != nil || digest != projectSandboxSyncDigest(text) {
+		t.Fatalf("text-only exec digest = %q, %v", digest, err)
+	}
+	// An agent with base64 sync holds the binary: the digest covers its bytes,
+	// matching the development sync digest.
+	withBinary := append(text, projectSandboxSyncFile{Path: "public/jeep.glb", Content: base64.StdEncoding.EncodeToString(model), Encoding: "base64"})
+	_, digest, _, err = projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return true })
+	if err != nil || digest != projectSandboxSyncDigest(withBinary) {
+		t.Fatalf("binary exec digest = %q, %v", digest, err)
 	}
 }
 
@@ -403,7 +430,7 @@ func TestProjectAssistantExecSnapshotRejectsChangedMutationRevision(t *testing.T
 		Workspace:      files,
 		WorkspaceScope: scope,
 		RunState:       runState,
-	}, projectTemplateComponent{WorkspacePath: "backend"}, 0)
+	}, projectTemplateComponent{WorkspacePath: "backend"}, 0, nil)
 	if !errors.Is(err, errProjectAssistantExecRevisionChanged) {
 		t.Fatalf("snapshot error = %v, want mutation revision change", err)
 	}

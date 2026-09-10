@@ -76,7 +76,8 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 			"`development` block support a live dev loop with no image " +
 			"builds: provision with values.farosMode=\"development\" " +
 			"(image inputs may be omitted), push source with dev_sync " +
-			"(hot reload), read dev server logs with dev_logs, and " +
+			"(hot reload), read dev server logs with dev_logs, run " +
+			"tests or one-off commands in the sandbox with dev_exec, and " +
 			"preview at the instance's status.url; ship for real by " +
 			"provisioning a production instance with built images. " +
 			"To change a live instance (roll a new image tag, scale, " +

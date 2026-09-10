@@ -46,6 +46,31 @@ import (
 // the required sync endpoint supplies the Service and token boundary, while
 // the upstream path is forced to /exec.
 func ResolveComponentExecTarget(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component string) (ResolvedTarget, error) {
+	target, err := resolveComponentSyncTarget(contract, instance, component)
+	if err != nil {
+		return ResolvedTarget{}, err
+	}
+	target.UpstreamPath = "/exec"
+	target.ServicePort = "exec"
+	return target, nil
+}
+
+// ResolveComponentStatusTarget resolves the live development component's
+// control /status endpoint, used by exec to default the source revision to
+// the one the component has applied. Like exec it derives the Service, port,
+// and token boundary from the platform-required sync endpoint rather than
+// from an optional "process"/"status" verb, which not every template
+// declares; only the upstream path is replaced.
+func ResolveComponentStatusTarget(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component string) (ResolvedTarget, error) {
+	target, err := resolveComponentSyncTarget(contract, instance, component)
+	if err != nil {
+		return ResolvedTarget{}, err
+	}
+	target.UpstreamPath = "/status"
+	return target, nil
+}
+
+func resolveComponentSyncTarget(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component string) (ResolvedTarget, error) {
 	if contract == nil || instance == nil {
 		return ResolvedTarget{}, fmt.Errorf("template contract and instance are required")
 	}
@@ -61,8 +86,6 @@ func ResolveComponentExecTarget(contract *infrav1alpha1.TemplateDataPlane, insta
 	if err != nil {
 		return ResolvedTarget{}, err
 	}
-	target.UpstreamPath = "/exec"
-	target.ServicePort = "exec"
 	target.Stream = false
 	target.Upgrade = false
 	return target, nil

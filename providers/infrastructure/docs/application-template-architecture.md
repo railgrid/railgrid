@@ -78,6 +78,28 @@ HTTPRoutes attach to.
 A wildcard DNS record `*.<FAROS_APP_BASE_DOMAIN>` (or per-app records created by
 your Gateway, as Cloudflare Tunnel does) must resolve to your Gateway edge.
 
+### TLS for the app base domain
+
+With the default Cloudflare Tunnel Gateway, TLS terminates at the Cloudflare
+edge (the tunnel gateway), never in the cluster. Every app host has the form
+`<prefix>-<12hex>.<baseDomain>`, so the edge needs a certificate covering
+`*.<baseDomain>`.
+
+Cloudflare Universal SSL covers only the zone apex and one level below it
+(`example.com` and `*.example.com`). When the base domain sits below the zone
+apex — for example `bob.faros.sh` in the `faros.sh` zone — app hosts such as
+`web-3f9c2a1b7d4e.bob.faros.sh` are two levels deep, and Universal SSL does
+not cover them. Each new host then needs its own edge certificate, which
+takes minutes to issue: a freshly provisioned instance is Ready, but its URL
+fails the TLS handshake until the certificate arrives.
+
+To give new apps working TLS immediately, either:
+
+- configure a wildcard edge certificate for `*.<baseDomain>` (Cloudflare
+  Advanced Certificate Manager / Total TLS), or
+- use a base domain that is itself the Cloudflare zone apex (a dedicated
+  zone), so app hosts are one level below it and Universal SSL covers them.
+
 ## Configuring it — by deploy mode
 
 ### Legacy chart mode (`operator.enabled=false`)

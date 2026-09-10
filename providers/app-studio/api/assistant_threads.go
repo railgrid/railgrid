@@ -54,6 +54,9 @@ const (
 	assistantThreadEventDynamicToolCall       = "dynamicToolCall"
 	assistantThreadEventModelInput            = "modelInput"
 	assistantThreadEventPlan                  = "plan"
+	// assistantThreadEventProjectCommitted records a Project reconciler
+	// auto-commit on the turn whose edits it carried (see ProjectCommitted).
+	assistantThreadEventProjectCommitted = "project.committed"
 )
 
 type assistantThreadCreateRequest struct {
@@ -550,10 +553,12 @@ func (s *Server) startProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 	if !decodeStrictJSONWithBodyLimit(w, r, &request, projectAssistantMaxAnnotationRequestBodyBytes) {
 		return
 	}
-	if _, err := request.publicAssistantThreadTurnMode(); err != nil {
+	mode, err := request.publicAssistantThreadTurnMode()
+	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return
 	}
+	request.CollaborationMode = mode
 	s.startProjectAssistantThreadExecution(w, r, c, id, project, thread, request)
 }
 

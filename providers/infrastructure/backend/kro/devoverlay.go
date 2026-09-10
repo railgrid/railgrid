@@ -572,6 +572,19 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	}
 	extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-coordinator-tmp", "emptyDir": map[string]any{}})
 
+	// The executor is built from scratch: it never inherits the app's user
+	// environment (secrets, DATABASE_URL, ...). It gets only non-secret
+	// platform context, including the app port (exposed to commands as PORT)
+	// and the component name, so exec'd commands can reach the dev server.
+	executorEnv := []any{
+		map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
+		map[string]any{"name": "HOME", "value": "/tmp/faros-exec-home"},
+		map[string]any{"name": "TMPDIR", "value": "/tmp"},
+		map[string]any{"name": "FAROS_COMPONENT", "value": name},
+	}
+	if appPort != "" {
+		executorEnv = append(executorEnv, map[string]any{"name": "FAROS_DEV_PORT", "value": appPort})
+	}
 	executor := map[string]any{
 		"name":            "faros-exec-runner",
 		"image":           devImage,
@@ -579,12 +592,8 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"command":         []any{devAgentBinDir + "/faros-dev-agent", "--executor"},
 		"workingDir":      workingDir,
 		"ports":           []any{map[string]any{"name": "exec-runner", "containerPort": int64(devExecRunnerPort)}},
-		"env": []any{
-			map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
-			map[string]any{"name": "HOME", "value": "/tmp/faros-exec-home"},
-			map[string]any{"name": "TMPDIR", "value": "/tmp"},
-		},
-		"resources": devExecutorResources(),
+		"env":             executorEnv,
+		"resources":       devExecutorResources(),
 		"volumeMounts": []any{
 			copyVolumeMount(workspaceMount, workingDir),
 			map[string]any{"name": agentBinMount["name"], "mountPath": devAgentBinDir, "readOnly": true},

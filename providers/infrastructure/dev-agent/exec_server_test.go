@@ -255,6 +255,69 @@ func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *t
 	}
 }
 
+func TestPersistentExecExposesAppPortAndComponentButNotAppEnvironment(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir, ControlToken: "test-token"})
+	executor := &statelessExecutor{workspace: workdir, env: execContext{Port: "5173", Component: "web"}}
+	files := []syncFile{{Path: "env.sh", Content: "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$PORT\" \"$FAROS_COMPONENT\" \"$DATABASE_URL\" \"$FAROS_DEV_PORT\"\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := doSync(t, srv, syncRequest{Files: files, SourceRevision: 1, SourceDigest: digest}); rec.Code != http.StatusOK {
+		t.Fatalf("sync status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	// The executor process itself may carry app-like variables; none of them
+	// may reach the command.
+	t.Setenv("DATABASE_URL", "postgres://must-not-inherit")
+	t.Setenv("FAROS_DEV_PORT", "9999")
+	t.Setenv("PORT", "1111")
+	raw, err := json.Marshal(persistentExecRequest{Argv: []string{"/bin/sh", "env.sh"}, SourceRevision: 1, SourceDigest: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := httptest.NewRecorder()
+	executor.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/internal/exec", bytes.NewReader(raw)))
+	if res.Code != http.StatusOK {
+		t.Fatalf("exec status = %d body=%s", res.Code, res.Body.String())
+	}
+	var got execResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitCode != 0 || got.Stdout != "5173|web||\n" {
+		t.Fatalf("exec env output = %q (exit %d), want only PORT and FAROS_COMPONENT", got.Stdout, got.ExitCode)
+	}
+}
+
+func TestSanitizedExecEnvironmentDropsUnconfiguredOrMalformedContext(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  execContext
+		want []string
+		deny []string
+	}{
+		{name: "unconfigured", deny: []string{"PORT=", "FAROS_COMPONENT="}},
+		{name: "configured", ctx: execContext{Port: "8080", Component: "api"}, want: []string{"PORT=8080", "FAROS_COMPONENT=api"}},
+		{name: "malformed port", ctx: execContext{Port: "${schema.spec.port}"}, deny: []string{"PORT="}},
+		{name: "out of range port", ctx: execContext{Port: "70000"}, deny: []string{"PORT="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := strings.Join(sanitizedExecEnvironment("/workspace", tc.ctx), "\n") + "\n"
+			for _, want := range tc.want {
+				if !strings.Contains(env, want+"\n") {
+					t.Errorf("env lacks %s:\n%s", want, env)
+				}
+			}
+			for _, deny := range tc.deny {
+				if strings.Contains("\n"+env, "\n"+deny) {
+					t.Errorf("env unexpectedly contains %s:\n%s", deny, env)
+				}
+			}
+		})
+	}
+}
+
 func TestPersistentExecBoundsOutputAndKillsTimedOutProcess(t *testing.T) {
 	workdir := t.TempDir()
 	digest, err := digestSyncFiles(nil)

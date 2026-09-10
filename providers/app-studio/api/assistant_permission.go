@@ -308,7 +308,8 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	}
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 	default:
 		return false
 	}
@@ -360,6 +361,10 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 		allowed = map[string]struct{}{"path": {}, "expectedVersion": {}, "recoveryOf": {}}
 	case projectToolMoveFile:
 		allowed = map[string]struct{}{"sourcePath": {}, "destinationPath": {}, "expectedVersion": {}, "recoveryOf": {}}
+	case projectToolImportAttachment:
+		allowed = map[string]struct{}{"attachmentID": {}, "path": {}, "overwrite": {}, "recoveryOf": {}}
+	case projectToolDownloadFile:
+		allowed = map[string]struct{}{"url": {}, "path": {}, "overwrite": {}, "recoveryOf": {}}
 	default:
 		return fmt.Errorf("tool %q cannot use workspace mutation arguments", toolName)
 	}
@@ -370,6 +375,10 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 	}
 	if _, err := projectAssistantWriteTargetPaths(toolName, args); err != nil {
 		return err
+	}
+	switch toolName {
+	case projectToolImportAttachment, projectToolDownloadFile:
+		return projectAssistantValidateBinaryPlacementArguments(toolName, args)
 	}
 	if toolName != projectToolCreateFile && toolName != projectToolEditFile {
 		expectedVersion, ok := projectToolRawString(args["expectedVersion"])
@@ -414,6 +423,29 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 	return nil
 }
 
+// projectAssistantValidateBinaryPlacementArguments checks the bounded shape
+// of import_attachment / download_file. The source (attachment receipt or
+// URL) is validated again at invocation; the workspace path is the grant.
+func projectAssistantValidateBinaryPlacementArguments(toolName string, args map[string]any) error {
+	source := "attachmentID"
+	if toolName == projectToolDownloadFile {
+		source = "url"
+	}
+	value, ok := projectToolRawString(args[source])
+	if !ok || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s requires %s", toolName, source)
+	}
+	if len([]byte(value)) > 4096 {
+		return fmt.Errorf("%s %s is too long", toolName, source)
+	}
+	if raw, ok := args["overwrite"]; ok {
+		if _, isBool := raw.(bool); !isBool {
+			return fmt.Errorf("%s overwrite must be boolean", toolName)
+		}
+	}
+	return nil
+}
+
 func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPlan, capability string) bool {
 	if plan == nil {
 		return false
@@ -429,7 +461,8 @@ func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPla
 
 func projectAssistantWorkspaceMutationTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		return true
 	default:
 		return false
@@ -440,7 +473,8 @@ func projectAssistantWorkspaceMutationTool(name string) bool {
 // path a narrow mutation can affect. Both endpoints of a move are authorized.
 func projectAssistantWriteTargetPaths(toolName string, args map[string]any) ([]string, error) {
 	switch strings.TrimSpace(toolName) {
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		path, ok := projectToolRawString(args["path"])
 		if !ok || strings.TrimSpace(path) == "" {
 			return nil, fmt.Errorf("%s requires path", toolName)

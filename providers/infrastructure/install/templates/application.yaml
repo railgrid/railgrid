@@ -75,7 +75,11 @@ spec:
           default "16"). Database `appdb`, user `appuser`. It starts EMPTY — create
           your schema / run migrations on startup, idempotently.
         • Postgres may not be ready the moment you start (it boots alongside you) —
-          RETRY the initial connection instead of exiting.
+          RETRY the initial connection instead of exiting, and run the schema
+          setup / migrations INSIDE that same retry loop: a fresh Postgres can
+          accept a `select 1` and then drop the next query with ECONNRESET
+          while it finishes initializing, so "connect OK, then migrate once"
+          still crashes on first boot.
         • Listen on apiPort (input, default 8080). Serve your routes under the
           `/api/` prefix; the path is PRESERVED (you receive e.g. `/api/items`, not
           `/items`). A readiness endpoint that pings the DB is recommended.

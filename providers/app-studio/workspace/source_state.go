@@ -19,10 +19,12 @@ package workspace
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -446,8 +448,15 @@ func (s *FileStore) ReconcileCommitSettlement(ctx context.Context, scope Scope) 
 	return true, nil
 }
 
-// WorkspaceDigest binds an ordered path set to its current UTF-8 contents.
-// The digest is computed under the same lock used by workspace mutations.
+// WorkspaceDigest binds an ordered path set to its current contents, text and
+// binary alike. The digest is computed under the same lock used by workspace
+// mutations.
+//
+// Entries are "path \0 body \0". A text body is the file bytes (unchanged
+// from the text-only digest, so settlement receipts stay valid); a deletion is
+// the single byte 0xff; a binary body is 0xfe, the 8-byte big-endian length,
+// and the file's SHA-256. Neither marker byte can start UTF-8 text, so the
+// three forms never collide.
 func (s *FileStore) WorkspaceDigest(ctx context.Context, scope Scope, paths []string) (string, error) {
 	if s == nil {
 		return "", errors.New("project workspace store is not configured")
@@ -469,28 +478,54 @@ func (s *FileStore) workspaceDigest(ctx context.Context, scope Scope, paths []st
 		if err != nil {
 			return "", err
 		}
-		file, err := s.ReadFile(ctx, scope, ReadOptions{Path: clean, MaxBytes: MaxWriteBytes})
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				_, _ = hash.Write([]byte(clean))
-				_, _ = hash.Write([]byte{0})
-				// 0xff cannot occur in a valid UTF-8 workspace file, so a
-				// deletion cannot collide with an upsert of sentinel-like text.
-				_, _ = hash.Write([]byte{0xff})
-				_, _ = hash.Write([]byte{0})
-				continue
-			}
+		if err := s.digestWorkspaceFile(ctx, scope, hash, clean); err != nil {
 			return "", err
 		}
-		if file.Binary || file.Truncated {
-			return "", fmt.Errorf("file %q cannot be committed as bounded UTF-8 source", clean)
-		}
-		_, _ = hash.Write([]byte(clean))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(file.Content))
-		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (s *FileStore) digestWorkspaceFile(ctx context.Context, scope Scope, hash io.Writer, clean string) error {
+	_, f, _, err := s.openRegularFile(ctx, scope, clean)
+	if errors.Is(err, fs.ErrNotExist) {
+		_, _ = hash.Write([]byte(clean))
+		_, _ = hash.Write([]byte{0})
+		// 0xff cannot occur in valid UTF-8 text, so a deletion cannot collide
+		// with an upsert of sentinel-like text.
+		_, _ = hash.Write([]byte{0xff})
+		_, _ = hash.Write([]byte{0})
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	// Classify first (streaming, constant memory), then hash in the chosen
+	// form so text digests stay byte-identical to the text-only encoding.
+	detector := &textDetector{}
+	fileHash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(detector, fileHash), contextReader{ctx: ctx, r: f})
+	if err != nil {
+		return fmt.Errorf("digest %q: %w", clean, err)
+	}
+	_, _ = hash.Write([]byte(clean))
+	_, _ = hash.Write([]byte{0})
+	if detector.Text() {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("digest %q: %w", clean, err)
+		}
+		if _, err := io.Copy(hash, contextReader{ctx: ctx, r: f}); err != nil {
+			return fmt.Errorf("digest %q: %w", clean, err)
+		}
+	} else {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(size))
+		_, _ = hash.Write([]byte{0xfe})
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write(fileHash.Sum(nil))
+	}
+	_, _ = hash.Write([]byte{0})
+	return nil
 }
 
 func (s *FileStore) uncommittedPaths(ctx context.Context, scope Scope) ([]string, error) {

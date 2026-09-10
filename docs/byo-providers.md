@@ -484,9 +484,45 @@ What an Org gets is deliberately narrow.
   issuer unavailable) is refused; it never falls back to forwarding the bearer.
   Anonymous probes carry no credential at all. Platform providers still receive
   the caller's own bearer; moving them to delegated tokens is a separate
-  change (security remediation plan, item 3.3).
+  change (security remediation plan, item 3.3). The aggregate MCP endpoint
+  follows the same rule through the same code — see *Aggregate MCP endpoint*
+  below.
 
 What is **not** yet isolated is the raw kcp `bind` verb — see *Known gaps*.
+
+### Aggregate MCP endpoint
+
+An org-owned provider that serves `/mcp` is federated into its own Org's
+aggregate MCP endpoint (`/services/mcpserver/{cluster}/…/mcp`) alongside the
+platform providers, as `<name>__<tool>`. Details in
+[mcp-architecture.md](./mcp-architecture.md#org-owned-bring-your-own-providers);
+the rules that make it safe:
+
+- **Scoped by the verified tenant.** The aggregate verifies the bearer against
+  the cluster in the URL (Membership for a user, TokenReview + `use` check for
+  a ServiceAccount) and resolves that cluster's Org from its `kcp.io/path`.
+  Enumeration is `ListForOrg(thatOrg)`, so another Org's providers are never
+  listed, never contacted, and cannot collide on the `<name>__` prefix. Nothing
+  in request headers influences the Org.
+- **Shadowing matches the backend proxy.** An Org's copy of a platform provider
+  replaces it in that Org's aggregate. If the Org's copy cannot be reached for a
+  request, the platform copy is **not** substituted.
+- **Same boundary as the backend proxy, same code.** The aggregate reaches the
+  provider through `ProviderProxy.OrgProviderRoute`: the edge hop
+  `serveOverEdge` uses and a delegated user token from the same
+  `issueDelegatedToken` decision `delegatedAuthorization` uses. The caller's
+  bearer is never attached (the federation client drops it for such targets and
+  the transport overwrites `Authorization` regardless), the provider's
+  self-declared `BackendURL` is never dialled, and the transport refuses to send
+  the delegated token anywhere but that provider's edge route.
+- **Skipped, never downgraded.** Where no delegated token can be minted the
+  provider is left out of that request: a **ServiceAccount** bearer (the
+  MCPServer token from the portal's connect snippet, App Studio project
+  identities) has no human to delegate for, and an **org-scope** cluster has no
+  team workspace to mint in. Neither falls back to forwarding the bearer. The
+  MCPServer status controller enumerates as the server's ServiceAccount, so
+  `status.federatedProviders` reflects the Org's shadowing but lists no
+  org-owned providers.
 
 Registry scoping enforces the rest:
 
@@ -644,11 +680,15 @@ in URL paths.
   capped only by what each consuming Workspace accepts at Enable. Same posture
   platform providers have today, but it is the thing to fix before any cross-org
   provider sharing.
-- **Not federated into the aggregate MCP endpoint.** Federation forwards the
-  caller's bearer token to each provider's `/mcp`, and the enumerator in
-  `pkg/hub/server.go` has no verified tenant context, so it is restricted to
-  platform providers. Including org-owned ones would leak one Org's user tokens
-  to another Org's backend. Needs tenant context plumbed through the enumerator.
+- **ServiceAccount bearers get no org-owned MCP tools.** The aggregate federates
+  org-owned providers only for a human bearer in a team workspace (see
+  *Aggregate MCP endpoint*). A client configured with an MCPServer's
+  ServiceAccount token — the portal's connect snippet — or an App Studio
+  project identity sees the Org's shadowing (the platform copy is hidden) but
+  not the Org's own tools. Closing this needs a delegated credential for a
+  workload that carries the workload's own RBAC rather than the member
+  `cluster-admin` binding delegated user tokens get; forwarding the long-lived
+  ServiceAccount token itself to a tenant-run backend is not acceptable.
 - **Deleting a provider leaves tenant APIBindings behind.** They go NotReady per
   kcp's semantics. Disable in each Workspace first for a clean teardown.
 
@@ -663,6 +703,8 @@ in URL paths.
 | Registry scoping | [pkg/hub/providers/registry.go](../pkg/hub/providers/registry.go) |
 | Scope resolution from cluster path | [pkg/hub/providers/controller.go](../pkg/hub/providers/controller.go) |
 | Catalog DTO (`scope`, `ownerOrg`) | [pkg/hub/providers/api.go](../pkg/hub/providers/api.go) |
+| Edge hop + delegated token (backend proxy and MCP aggregate) | [pkg/hub/providers/proxy_edge.go](../pkg/hub/providers/proxy_edge.go), [pkg/hub/providers/org_provider_route.go](../pkg/hub/providers/org_provider_route.go) |
+| Aggregate MCP enumeration | [pkg/hub/mcpaggregate/enumerator.go](../pkg/hub/mcpaggregate/enumerator.go) |
 | Optional tenant context | [pkg/hub/tenant/middleware.go](../pkg/hub/tenant/middleware.go) |
 | Enabled-binding filter | [pkg/hub/kcp/bootstrap.go](../pkg/hub/kcp/bootstrap.go) |
 | Portal catalog section | [portal/src/pages/ProvidersPage.vue](../portal/src/pages/ProvidersPage.vue) |

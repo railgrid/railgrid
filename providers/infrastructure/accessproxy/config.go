@@ -27,14 +27,21 @@ limitations under the License.
 //     the proxy exchanges the returned one-use code server-to-server and
 //     then maintains its own bounded in-memory session for the granted TTL.
 //     A hub outage leaves existing sessions working; only new sign-ins fail.
+//     A non-browser request carrying `Authorization: Bearer <app access
+//     token>` (minted at the hub for this one instance) is never redirected:
+//     the proxy asks the hub to verify it, caches the verdict under the
+//     token's SHA-256 for at most 15 minutes, and answers 401/403 itself (see
+//     bearer.go). Raw hub tokens are refused locally and never relayed; the
+//     app never sees any Authorization header.
 //
 // An in-flight sign-in carries its own state in the browser's return cookie, so
 // it completes against any pod — including one that started after the redirect
 // was issued. Established sessions are still process-local: a restart signs
 // users out and they sign back in, it does not strand them mid-flow.
 //
-// The proxy holds no credentials of any kind: no service-account token, no
-// kubeconfig, no signing keys. Access policy is kcp RBAC evaluated by the hub
+// The proxy holds no credentials of its own: no service-account token, no
+// kubeconfig, no signing keys (a caller's app access token is relayed to the
+// hub once and otherwise kept only as a hash). Access policy is kcp RBAC evaluated by the hub
 // at sign-in time (SubjectAccessReview on the instance's `access`
 // subresource); revocation takes effect within the granted session TTL.
 package accessproxy
@@ -78,6 +85,9 @@ const (
 	// infra module does not import hub Go packages.
 	hubAuthorizePath = "/auth/apps/authorize"
 	hubExchangePath  = "/auth/apps/exchange"
+	// hubVerifyPath authorizes a bearer-carrying (non-browser) request; see
+	// bearer.go and pkg/hub/appauth/verify.go.
+	hubVerifyPath = "/auth/apps/verify"
 
 	// clusterLocalSuffix confines upstream targets to in-cluster Services as
 	// defense in depth; the template contract already renders only

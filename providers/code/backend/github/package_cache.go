@@ -34,7 +34,9 @@ type listingFlight struct {
 // cachedPackageListing publishes only complete successful paginated results.
 // Each HTTP request acquires the credential gate separately so other operations
 // can proceed between pages. No individual page is reused during a refresh.
-func cachedPackageListing[T any](ctx context.Context, b *Backend, client *gogithub.Client, cred backend.Credential, parts []string, fetch func(context.Context) ([]T, error)) ([]T, error) {
+// fresh skips a cached snapshot (an in-flight refresh is still joined) and
+// publishes the refetched result for later callers.
+func cachedPackageListing[T any](ctx context.Context, b *Backend, client *gogithub.Client, cred backend.Credential, parts []string, fresh bool, fetch func(context.Context) ([]T, error)) ([]T, error) {
 	cache := b.requestCache()
 	identity := requestIdentity{credentialHash(cred.Token), client.BaseURL.Scheme + "://" + client.BaseURL.Host}
 	state, err := cache.acquire(ctx, identity)
@@ -46,7 +48,7 @@ func cachedPackageListing[T any](ctx context.Context, b *Backend, client *gogith
 	scope, _ := ctx.Value(cacheScopeKey{}).([32]byte)
 	encodedKey, _ := json.Marshal(append([]string{client.BaseURL.String()}, parts...))
 	key := sha256.Sum256(append(scope[:], encodedKey...))
-	if cached, ok := state.responses[key]; ok {
+	if cached, ok := state.responses[key]; ok && !fresh {
 		cache.release(state)
 		var result []T
 		err := json.Unmarshal(cached.body, &result)

@@ -297,6 +297,15 @@ uses a separate cache and request budget. A shorter controller interval does
 not bypass the two-minute cache. With the default interval and positive jitter,
 a new artifact can take roughly 4.5 minutes to reach a particular Repository's
 Package CRs if another repository refreshed the shared listing just before publish.
+The exception is the ten minutes after a RepositoryCommit for the repository
+succeeds (the commit's success also triggers a crawl at once): the repository is
+crawled every 30 seconds and its container listing and image versions are
+refetched instead of served from the cache, so a freshly built image appears
+within about 30 seconds of publish. Other ecosystems keep using the cache.
+
+A RepositoryCommit that hits a GitHub rate limit stays `Running` with Ready
+reason `RateLimited` and is retried when the limit resets; it is marked `Failed`
+only when the reset falls more than 15 minutes after the commit started.
 
 GitHub API calls through the backend's go-github client, including workflow
 build-status reads, share a serialized request gate per credential and host.

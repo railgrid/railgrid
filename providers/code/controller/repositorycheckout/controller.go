@@ -9,10 +9,10 @@ You may obtain a copy of the License at
 */
 
 // Package repositorycheckout reconciles RepositoryCheckout requests by reading
-// a Repository's text tree through the git backend into a provider-owned
-// source bundle — the RepositoryCommit flow in reverse. The consumer (the
-// checkout MCP tool) reads the bundle and deletes it; contents never land in
-// the CR.
+// a Repository's tree (text verbatim; binaries as base64 when requested)
+// through the git backend into a provider-owned source bundle — the
+// RepositoryCommit flow in reverse. The consumer (the checkout MCP tool) reads the bundle and deletes
+// it; contents never land in the CR.
 package repositorycheckout
 
 import (
@@ -44,13 +44,40 @@ type Reconciler struct {
 
 // Checkout bounds, passed explicitly so every backend behaves consistently
 // (never backend defaults). They mirror the App Studio workspace limits the
-// checked-out tree ultimately lands in: 500 files, 256 KiB per file, 16 MiB
-// total.
+// checked-out tree ultimately lands in: 500 files, 256 KiB per text file and
+// 16 MiB total for a text-only checkout. A checkout annotated with
+// AnnotationCheckoutBinaryEncoding=base64 also keeps binaries of up to 25 MiB
+// each, 48 MiB total (decoded bytes) — the bundle store's own caps, so a
+// checkout that respects them always fits in its bundle.
 const (
-	checkoutMaxFiles      = 500
-	checkoutMaxFileBytes  = 256 << 10
-	checkoutMaxTotalBytes = 16 << 20
+	checkoutMaxFiles                = 500
+	checkoutMaxFileBytes            = 256 << 10
+	checkoutMaxTotalBytes           = 16 << 20
+	checkoutMaxBinaryFileBytes      = commitbundle.MaxBinaryFileBytes
+	checkoutMaxTotalBytesWithBinary = commitbundle.MaxTotalBytes
 )
+
+// checkoutInput derives the backend request from the checkout, opting into
+// binary files only when the requester annotated it.
+func checkoutInput(checkout *codev1alpha1.RepositoryCheckout) (backend.RepositoryCheckoutInput, error) {
+	input := backend.RepositoryCheckoutInput{
+		Ref:           checkout.Spec.Ref,
+		MaxFiles:      checkoutMaxFiles,
+		MaxFileBytes:  checkoutMaxFileBytes,
+		MaxTotalBytes: checkoutMaxTotalBytes,
+	}
+	encoding, set := checkout.Annotations[codev1alpha1.AnnotationCheckoutBinaryEncoding]
+	switch {
+	case !set:
+	case encoding == backend.EncodingBase64:
+		input.IncludeBinary = true
+		input.MaxBinaryFileBytes = checkoutMaxBinaryFileBytes
+		input.MaxTotalBytes = checkoutMaxTotalBytesWithBinary
+	default:
+		return backend.RepositoryCheckoutInput{}, fmt.Errorf("unsupported %s %q: only %q is supported", codev1alpha1.AnnotationCheckoutBinaryEncoding, encoding, backend.EncodingBase64)
+	}
+	return input, nil
+}
 
 // SetupWithManager wires the reconciler into the multicluster manager.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -120,12 +147,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fail(err.Error())
 	}
 
-	res, err := reader.CheckoutFiles(ctx, conn, cred, repo, backend.RepositoryCheckoutInput{
-		Ref:           checkout.Spec.Ref,
-		MaxFiles:      checkoutMaxFiles,
-		MaxFileBytes:  checkoutMaxFileBytes,
-		MaxTotalBytes: checkoutMaxTotalBytes,
-	})
+	input, err := checkoutInput(&checkout)
+	if err != nil {
+		return ctrl.Result{}, fail(err.Error())
+	}
+	res, err := reader.CheckoutFiles(ctx, conn, cred, repo, input)
 	if err != nil {
 		return ctrl.Result{}, fail(err.Error())
 	}
@@ -135,7 +161,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	bundleScope := string(req.ClusterName)
 	files := make([]commitbundle.File, 0, len(res.Files))
 	for _, f := range res.Files {
-		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content})
+		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content, Encoding: f.Encoding})
 	}
 	bundle, err := r.Bundles.Put(ctx, bundleScope, files)
 	if err != nil {

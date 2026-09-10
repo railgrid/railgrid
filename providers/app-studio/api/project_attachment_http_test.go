@@ -21,9 +21,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"testing"
 	"time"
 
@@ -305,5 +307,59 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("delete by stable ID = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProjectAssistantAttachmentHTTPAcceptsFileKind(t *testing.T) {
+	project := publishingTestProject("demo", "project-uid", "")
+	client := asclient.NewFromDynamic(publishingTestDynamic(project))
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), nil, "", false)
+	server.projectClientFor = func(identity) (*asclient.Client, error) { return client, nil }
+	router := mux.NewRouter()
+	server.Register(router)
+	upload := func(filename, contentType string, data []byte) (int, attachmentReceiptResponse, string) {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filename))
+		if contentType != "" {
+			header.Set("Content-Type", contentType)
+		}
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = part.Write(data)
+		_ = writer.Close()
+		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org:workspace")
+		request.Header.Set("X-Faros-Cluster", "cluster")
+		request.Header.Set("X-Faros-User", "alice")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		var receipt attachmentReceiptResponse
+		_ = json.Unmarshal(response.Body.Bytes(), &receipt)
+		return response.Code, receipt, response.Body.String()
+	}
+	model := append([]byte("glTF"), bytes.Repeat([]byte{0, 1, 2, 3}, 3<<20)...) // > 8 MiB image bound
+	status, receipt, body := upload("jeep.glb", "model/gltf-binary", model)
+	if status != http.StatusCreated || receipt.Kind != store.AttachmentKindFile || receipt.ContentType != "model/gltf-binary" || receipt.SizeBytes != int64(len(model)) {
+		t.Fatalf("file upload = %d %s", status, body)
+	}
+	status, receipt, body = upload("data.json", "", []byte(`{"a":1}`))
+	if status != http.StatusCreated || receipt.Kind != store.AttachmentKindFile || receipt.ContentType != "application/json" {
+		t.Fatalf("json upload = %d %s", status, body)
+	}
+	status, receipt, body = upload("screen.png", "image/png", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x02})
+	if status != http.StatusCreated || receipt.Kind != store.AttachmentKindImage {
+		t.Fatalf("image upload = %d %s", status, body)
+	}
+	if status, _, body = upload("fake.png", "image/png", []byte("not a png")); status != http.StatusBadRequest {
+		t.Fatalf("mislabeled image = %d %s, want 400", status, body)
+	}
+	if status, _, body = upload("huge.bin", "application/octet-stream", make([]byte, store.AttachmentMaxBytes+1)); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized file = %d %s, want 413", status, body)
 	}
 }

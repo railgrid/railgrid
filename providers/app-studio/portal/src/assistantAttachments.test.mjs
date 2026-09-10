@@ -27,30 +27,75 @@ test('projects the immutable receipt contract and rejects oversized/malformed re
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, createdAt: '' }), null)
 })
 
-test('accepts screenshot/text inputs while keeping server text limits visible to the portal', async () => {
+test('accepts any file while keeping per-kind limits visible to the portal', async () => {
   const {
+    ASSISTANT_ATTACHMENT_ACCEPT,
     ASSISTANT_LARGE_PASTE_BYTES,
+    MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES,
+    MAX_ASSISTANT_ATTACHMENTS_PER_TURN,
+    MAX_ASSISTANT_ATTACHMENT_BYTES,
+    MAX_ASSISTANT_FILE_ATTACHMENT_BYTES,
     assistantAttachmentIsSupported,
+    assistantAttachmentKind,
     assistantAttachmentMaxBytes,
+    assistantAttachmentValidationError,
     MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES,
   } = await vite.ssrLoadModule('/src/assistantAttachments.ts')
   assert.equal(ASSISTANT_LARGE_PASTE_BYTES, 10 << 10)
-  assert.equal(assistantAttachmentIsSupported({ name: 'screen.png', type: 'image/png' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'screen.webp', type: 'image/webp' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'screen.png', type: 'application/octet-stream' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'screen.JPEG', type: 'binary/octet-stream' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'animation.gif', type: 'image/gif' }), false)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.md', type: 'text/markdown' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.md', type: 'application/octet-stream' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.txt', type: 'binary/octet-stream' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.txt', type: '' }), true)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.html', type: 'text/html' }), false)
-  assert.equal(assistantAttachmentIsSupported({ name: 'data.json', type: 'application/json' }), false)
-  assert.equal(assistantAttachmentIsSupported({ name: 'data.json', type: 'application/octet-stream' }), false)
-  assert.equal(assistantAttachmentIsSupported({ name: 'notes.html', type: 'binary/octet-stream' }), false)
-  assert.equal(assistantAttachmentIsSupported({ name: 'screen.png', type: 'application/x-png' }), false)
+  assert.equal(ASSISTANT_ATTACHMENT_ACCEPT, '')
+  assert.equal(MAX_ASSISTANT_FILE_ATTACHMENT_BYTES, 25 << 20)
+  assert.equal(MAX_ASSISTANT_ATTACHMENT_AGGREGATE_BYTES, 50 << 20)
+  assert.equal(MAX_ASSISTANT_ATTACHMENTS_PER_TURN, 8)
+  assert.equal(assistantAttachmentKind({ name: 'screen.png', type: 'image/png' }), 'image')
+  assert.equal(assistantAttachmentKind({ name: 'screen.webp', type: 'image/webp' }), 'image')
+  assert.equal(assistantAttachmentKind({ name: 'screen.png', type: 'application/octet-stream' }), 'image')
+  assert.equal(assistantAttachmentKind({ name: 'screen.JPEG', type: 'binary/octet-stream' }), 'image')
+  assert.equal(assistantAttachmentKind({ name: 'notes.md', type: 'text/markdown' }), 'text')
+  assert.equal(assistantAttachmentKind({ name: 'notes.md', type: 'application/octet-stream' }), 'text')
+  assert.equal(assistantAttachmentKind({ name: 'notes.txt', type: 'binary/octet-stream' }), 'text')
+  assert.equal(assistantAttachmentKind({ name: 'notes.txt', type: '' }), 'text')
+  assert.equal(assistantAttachmentKind({ name: 'animation.gif', type: 'image/gif' }), 'file')
+  assert.equal(assistantAttachmentKind({ name: 'notes.html', type: 'text/html' }), 'file')
+  assert.equal(assistantAttachmentKind({ name: 'data.json', type: 'application/json' }), 'file')
+  assert.equal(assistantAttachmentKind({ name: 'jeep.glb', type: 'model/gltf-binary' }), 'file')
+  assert.equal(assistantAttachmentKind({ name: 'jeep.glb', type: '' }), 'file')
+  assert.equal(assistantAttachmentIsSupported({ name: 'jeep.glb', type: '' }), true)
   assert.equal(assistantAttachmentMaxBytes({ name: 'notes.txt', type: 'text/plain' }), MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES)
   assert.equal(assistantAttachmentMaxBytes({ name: 'notes.txt', type: '' }), MAX_ASSISTANT_TEXT_ATTACHMENT_BYTES)
+  assert.equal(assistantAttachmentMaxBytes({ name: 'screen.png', type: 'image/png' }), MAX_ASSISTANT_ATTACHMENT_BYTES)
+  assert.equal(assistantAttachmentMaxBytes({ name: 'jeep.glb', type: '' }), MAX_ASSISTANT_FILE_ATTACHMENT_BYTES)
+
+  const glb = { name: 'jeep.glb', type: 'model/gltf-binary', size: 24 << 20 }
+  assert.equal(assistantAttachmentValidationError(glb), null)
+  assert.equal(assistantAttachmentValidationError({ ...glb, size: (25 << 20) + 1 }), 'Files must be 25 MiB or smaller.')
+  assert.equal(assistantAttachmentValidationError({ name: 'screen.png', type: 'image/png', size: (8 << 20) + 1 }), 'Images must be 8 MiB or smaller.')
+  assert.equal(assistantAttachmentValidationError({ ...glb, size: 0 }), 'Empty files cannot be attached.')
+  const existing = [{ file: { size: 24 << 20 }, status: 'ready' }, { file: { size: 20 << 20 }, status: 'ready' }]
+  assert.equal(assistantAttachmentValidationError(glb, existing), 'Attachments in one turn must total 50 MiB or less.')
+})
+
+test('projects file-kind receipts up to the file limit and derives their kind', async () => {
+  const {
+    assistantAttachmentContentTypeKind,
+    assistantAttachmentSizeLabel,
+    projectAssistantAttachmentReceipt,
+    MAX_ASSISTANT_FILE_ATTACHMENT_BYTES,
+  } = await vite.ssrLoadModule('/src/assistantAttachments.ts')
+  const receipt = {
+    id: 'att-glb', filename: 'jeep.glb', contentType: 'model/gltf-binary', sizeBytes: 24 << 20,
+    sha256: 'c'.repeat(64), createdAt: '2026-08-31T00:00:00Z', kind: 'file',
+  }
+  assert.deepEqual(projectAssistantAttachmentReceipt(receipt), {
+    id: 'att-glb', filename: 'jeep.glb', contentType: 'model/gltf-binary', sizeBytes: 24 << 20,
+    sha256: 'c'.repeat(64), createdAt: '2026-08-31T00:00:00Z',
+  })
+  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: MAX_ASSISTANT_FILE_ATTACHMENT_BYTES + 1 }), null)
+  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, contentType: 'not a type' }), null)
+  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, contentType: 'text/plain', kind: undefined }), null)
+  assert.equal(assistantAttachmentContentTypeKind('model/gltf-binary'), 'file')
+  assert.equal(assistantAttachmentContentTypeKind('image/png'), 'image')
+  assert.equal(assistantAttachmentContentTypeKind('text/markdown'), 'text')
+  assert.equal(assistantAttachmentSizeLabel(24 << 20), '24 MiB')
 })
 
 test('text attachment previews stay bounded, use the first meaningful line, and render as escaped text', async () => {

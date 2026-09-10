@@ -104,6 +104,94 @@ denies. Policy is therefore evaluated by kcp's authorizer — the hub never
 reads provider objects, and nothing on the per-request path of any app
 depends on the hub.
 
+## Programmatic access to private apps
+
+CLIs, CI jobs and AI agents cannot follow the browser redirect. Instead they
+trade their hub token, at the hub, for an **app access token**: a short-lived
+credential bound to one app. They then send that token to the app:
+
+```bash
+HUB=https://hub.example.com
+# 1. Get the app's coordinates. The gate's 401 answer to any bearer request
+#    names them, along with the token endpoint.
+curl -s -H "Authorization: Bearer x" https://<app-host>/ | jq .instance
+# 2. Mint an app access token with your hub token.
+TOKEN=$(curl -s -X POST "$HUB/auth/apps/token" \
+  -H "Authorization: Bearer $HUB_TOKEN" -H "Content-Type: application/json" \
+  -d '{"cluster":"<cluster>","group":"infrastructure.faros.sh","resource":"instances","name":"<app>"}' \
+  | jq -r .token)
+# 3. Call the app.
+curl -H "Authorization: Bearer $TOKEN" https://<app-host>/api/health
+```
+
+`$HUB_TOKEN` is any bearer the hub API accepts from you. On a token-only hub,
+that is your static token. On an OIDC hub, it is your OIDC id_token, which is
+the `status.token` that the `faros get-token` exec plugin in your faros
+kubeconfig prints. kcp ServiceAccount tokens are refused.
+
+**`POST /auth/apps/token`** (hub; called with your hub bearer):
+
+- Request: `{"cluster", "group", "resource", "name", "ttlSeconds"?}`. The
+  default TTL is 600 seconds; allowed values are 60 to 900.
+- Response (200): `{"token": "fapp_…", "expiresAt": "<RFC 3339>", "host": "<app host>"}`.
+- Errors: `400` malformed, `401` not a hub user credential, `403` no access
+  to the app, `404` the app has no published host, `429` too many failed
+  attempts, `503` hub dependency unavailable.
+- The hub runs the same SubjectAccessReview as a browser sign-in, on the
+  `access` subresource and as your RBAC identity. A token never outlives the
+  hub token it was minted from.
+
+**At the gate:**
+
+- A request with `Authorization: Bearer fapp_…` is checked once through the
+  hub's `POST /auth/apps/verify`. The hub checks four things:
+  - the token's seal;
+  - that the token is bound to exactly this app (a token minted for app A is
+    refused at app B's gate);
+  - that the token has not expired;
+  - the SubjectAccessReview, re-run so that revoking a grant takes effect.
+- The gate caches the result under the token's SHA-256. It never stores the
+  token. An allow is cached for the shorter of 15 minutes and the token's
+  remaining lifetime; a refusal is cached for 30 seconds.
+- An allowed request is proxied. Otherwise the gate answers without
+  redirecting:
+  - `401` for an invalid, expired or wrong-app token. The JSON body includes
+    `tokenEndpoint` and `instance`.
+  - `403` when the user has no access.
+  - `502` when the hub is unreachable and no cached result exists. Tokens
+    already verified keep working until their cache entry expires, the same
+    as browser sessions.
+- Anything that is not an app access token, including a raw hub token, gets
+  `401` from the gate itself. It is never relayed.
+- The app never sees any token: the gate strips `Authorization` before
+  forwarding. A bearer request never creates an app session cookie.
+- Requests without a Bearer `Authorization` header are handled as browser
+  requests and are redirected to sign in.
+
+**Threat model.** A gate may be operated by someone other than the platform.
+For example, an org's self-hosted infrastructure provider runs its own
+Gateway and gate. Your hub token therefore goes only to the hub. What a gate
+or anyone else in the path sees is an app access token. That token:
+
+- works only at that one app's gate;
+- works only while you still hold access to the app, because the
+  SubjectAccessReview is re-run on each verification;
+- expires within 15 minutes;
+- is sealed (AES-256-GCM), so it does not reveal your identity.
+
+A leaked app token therefore gives someone access to one app, until the
+token expires. They get only what your access grant already allows. Revoking
+a grant takes effect within the gate's cache window, at most 15 minutes. The
+hub limits failed mint and verify attempts per source address.
+
+Tokens are stateless, so any hub replica verifies them. The sealing key is
+HKDF-derived, with its own label, from the hub's cross-replica secret
+(`faros-delegated-user-proof-key` in namespace `faros-hub` of
+`root:faros:system:controllers`). No tenant, provider or user identity can
+read that secret. Deleting it and restarting the hub replicas invalidates
+every outstanding app token, along with the other credentials derived from
+that secret.
+
 ## App Studio surface
 
 Publishing endpoints (`providers/app-studio/api/project_publishing.go`) are a

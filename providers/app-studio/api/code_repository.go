@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -60,6 +61,15 @@ const (
 	projectRepositoryStatusRepositoryMissing = "RepositoryMissing"
 	projectRepositoryStatusConnectionMissing = "ConnectionMissing"
 	projectRepositoryStatusUnavailable       = "Unavailable"
+
+	// projectReconcilerFinalizer mirrors the Project reconciler's finalizer
+	// (controller/project). Until it is present the reconciler has not run
+	// for the Project yet, so a missing Repository CR is still pending.
+	projectReconcilerFinalizer = "ai.faros.sh/instances"
+	// projectRepositoryCreationGrace bounds how long after Project creation a
+	// missing reconciler-created Repository CR reads as provisioning rather
+	// than missing.
+	projectRepositoryCreationGrace = 10 * time.Minute
 )
 
 var (
@@ -120,12 +130,15 @@ func (p projectRepositoryPlan) projectBinding() *aiv1alpha1.ProjectRepositoryBin
 	}
 }
 
-func (s *Server) prepareProjectRepository(ctx context.Context, c *asclient.Client, requestedConnection, requestedRepoName, displayName, description string) (projectRepositoryPlan, error) {
+// prepareProjectRepository plans a new App Studio-created repository. With
+// exactName the requested name is the user's explicit choice and is used
+// verbatim or rejected; otherwise a derived name is suffixed until free.
+func (s *Server) prepareProjectRepository(ctx context.Context, c *asclient.Client, requestedConnection, requestedRepoName, displayName, description string, exactName bool) (projectRepositoryPlan, error) {
 	connectionRef, err := selectCodeConnection(ctx, c, requestedConnection)
 	if err != nil {
 		return projectRepositoryPlan{}, err
 	}
-	repoName, err := repositoryName(ctx, c, requestedRepoName, displayName)
+	repoName, err := repositoryName(ctx, c, requestedRepoName, displayName, exactName)
 	if err != nil {
 		return projectRepositoryPlan{}, err
 	}
@@ -310,13 +323,27 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 	return "", newValidationError(readiness.Message)
 }
 
-func repositoryName(ctx context.Context, c *asclient.Client, requested, displayName string) (string, error) {
+// repositoryName picks the Repository resource name for a new project
+// repository. A derived name is suffixed while a Repository with that name
+// exists. An exact (user-supplied) name is never suffixed: an existing
+// Repository — often one left behind by a deleted project, since project
+// deletion keeps repositories by default — is a 409 Conflict the user
+// resolves by adopting it or choosing another name.
+func repositoryName(ctx context.Context, c *asclient.Client, requested, displayName string, exact bool) (string, error) {
 	base := dns1123Label(requested)
 	if base == "" {
 		base = dns1123Label(displayName)
 	}
 	if base == "" {
 		base = "app"
+	}
+	if exact {
+		if _, err := c.Resource(codeRepositoryResource, "").Get(ctx, base, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			return base, nil
+		} else if err != nil {
+			return "", codeProviderRequestError("get Code repository", err)
+		}
+		return "", newConflictError(fmt.Sprintf("a code Repository named %q already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name", base))
 	}
 	for i := 0; i < 5; i++ {
 		name := base
@@ -371,6 +398,10 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 	repo, err := get(ctx, codeRepositoriesGVR, ref)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			if projectRepositoryAwaitingCreation(p, time.Now()) {
+				view.Message = fmt.Sprintf("Creating repository %q.", ref)
+				return view
+			}
 			view.Status = projectRepositoryStatusRepositoryMissing
 			view.Message = fmt.Sprintf("Repository resource %q no longer exists.", ref)
 			return view
@@ -418,6 +449,26 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 		view.CommitsError = "Git commit history is temporarily unavailable."
 	}
 	return view
+}
+
+// projectRepositoryAwaitingCreation reports whether a missing Repository CR is
+// one the Project reconciler is still expected to create: the binding is not
+// adopted, names a connection, and the Project is either younger than the
+// creation grace or not yet reconciled (no reconciler finalizer). Anything
+// else is a Repository that existed and is gone.
+func projectRepositoryAwaitingCreation(p *aiv1alpha1.Project, now time.Time) bool {
+	if p == nil || p.Spec.Repository == nil || p.DeletionTimestamp != nil {
+		return false
+	}
+	binding := p.Spec.Repository
+	if binding.Adopted || strings.TrimSpace(binding.ConnectionRef) == "" {
+		return false
+	}
+	if !slices.Contains(p.Finalizers, projectReconcilerFinalizer) {
+		return true
+	}
+	created := p.CreationTimestamp.Time
+	return !created.IsZero() && now.Sub(created) < projectRepositoryCreationGrace
 }
 
 func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repositoryRef string) ([]ProjectRepositoryCommitView, error) {

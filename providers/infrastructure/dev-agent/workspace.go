@@ -29,10 +29,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -158,7 +160,60 @@ type workspaceCheckpoint struct {
 	SourceRevision uint64     `json:"sourceRevision"`
 	SourceDigest   string     `json:"sourceDigest"`
 	Files          []syncFile `json:"files"`
-	CreatedAt      time.Time  `json:"createdAt"`
+	// OpaqueFiles are binary or large managed files, recorded by digest and
+	// size only: their bytes are never copied into checkpoint state. Restore
+	// leaves them untouched when the workspace copy still matches, and fails
+	// otherwise rather than inventing content.
+	OpaqueFiles []workspaceOpaqueFile `json:"opaqueFiles,omitempty"`
+	// EntriesDigest seals Files and OpaqueFiles when OpaqueFiles is non-empty,
+	// because SourceDigest then covers bytes the checkpoint does not hold.
+	EntriesDigest string    `json:"entriesDigest,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type workspaceOpaqueFile struct {
+	Path   string `json:"path"`
+	Digest string `json:"digest"`
+	Bytes  int64  `json:"bytes"`
+}
+
+// workspaceFile is one managed file as the workspace verbs see it. Text
+// files (valid UTF-8, no NUL, at most workspaceMaxFileBytes) carry their
+// content. Every other file is opaque: represented by size and sha256 only,
+// and never loaded into a JSON body. An opaque file with nil Content has its
+// bytes on disk at Path; a diff candidate may carry opaque bytes in memory.
+type workspaceFile struct {
+	Path    string
+	Content []byte
+	Opaque  bool
+	Size    int64
+	Digest  string
+}
+
+func (f workspaceFile) onDisk() bool { return f.Opaque && f.Content == nil }
+
+// isWorkspaceText reports whether content can travel as a text body in the
+// workspace API.
+func isWorkspaceText(content []byte) bool {
+	return len(content) <= workspaceMaxFileBytes && utf8.Valid(content) && bytes.IndexByte(content, 0) < 0
+}
+
+// classifyWorkspaceBytes builds the in-memory workspace file for content.
+// Text keeps its bytes; opaque content keeps them only when keepOpaque is set.
+func classifyWorkspaceBytes(clean string, content []byte, keepOpaque bool) workspaceFile {
+	if content == nil {
+		content = []byte{}
+	}
+	file := workspaceFile{Path: clean, Size: int64(len(content)), Digest: digestBytes(content)}
+	if isWorkspaceText(content) {
+		file.Content = content
+		return file
+	}
+	file.Opaque = true
+	if keepOpaque {
+		file.Content = content
+	}
+	return file
 }
 
 type workspaceCheckpointSummary struct {
@@ -235,7 +290,11 @@ func (s *agentServer) handleWorkspaceSeed(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if _, err := validateWorkspaceSeedFiles(req.Files); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		if errors.Is(err, errSyncTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	if req.SourceRevision == 0 && strings.TrimSpace(req.SourceDigest) == "" {
@@ -382,6 +441,17 @@ func (s *agentServer) handleWorkspaceRead(w http.ResponseWriter, r *http.Request
 			http.Error(w, fmt.Sprintf("read %q: path is not a regular file", clean), http.StatusBadRequest)
 			return
 		}
+		// Large and binary files are opaque to the workspace API: the read
+		// fails with their size and digest instead of loading them.
+		if info.Size() > workspaceMaxFileBytes {
+			digest, size, err := hashWorkspaceFile(root, clean)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("read %q: %v", clean, err), http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, fmt.Sprintf("read %q is %d bytes (sha256 %s), above the %d-byte text limit; large and binary files are opaque to the workspace API", clean, size, digest, workspaceMaxFileBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 		content, err := root.ReadFile(clean)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("read %q: %v", clean, err), http.StatusInternalServerError)
@@ -391,8 +461,8 @@ func (s *agentServer) handleWorkspaceRead(w http.ResponseWriter, r *http.Request
 			http.Error(w, fmt.Sprintf("read %q exceeds the remaining %d-byte response limit", clean, remaining), http.StatusRequestEntityTooLarge)
 			return
 		}
-		if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
-			http.Error(w, fmt.Sprintf("read %q is not UTF-8 text", clean), http.StatusUnprocessableEntity)
+		if !isWorkspaceText(content) {
+			http.Error(w, fmt.Sprintf("read %q is not UTF-8 text: it is a binary file (%d bytes, sha256 %s); binary files are opaque to the workspace API", clean, len(content), digestBytes(content)), http.StatusUnprocessableEntity)
 			return
 		}
 		response.Files = append(response.Files, workspaceReadFile{Path: clean, Content: string(content), Bytes: len(content), Digest: digestBytes(content)})
@@ -447,9 +517,11 @@ func (s *agentServer) handleWorkspaceMutate(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "read managed workspace: "+err.Error(), http.StatusConflict)
 		return
 	}
-	contentByPath := make(map[string][]byte, len(files))
+	// Opaque (binary or large) managed files ride through unchanged unless an
+	// operation overwrites them with text or deletes them.
+	filesByPath := make(map[string]workspaceFile, len(files))
 	for _, file := range files {
-		contentByPath[file.Path] = []byte(file.Content)
+		filesByPath[file.Path] = file
 	}
 	seen := make(map[string]struct{}, len(req.Operations))
 	for i, operation := range req.Operations {
@@ -477,29 +549,29 @@ func (s *agentServer) handleWorkspaceMutate(w http.ResponseWriter, r *http.Reque
 				http.Error(w, fmt.Sprintf("mutation %q must be UTF-8 text without NUL bytes", clean), http.StatusBadRequest)
 				return
 			}
-			contentByPath[clean] = []byte(operation.Content)
+			filesByPath[clean] = classifyWorkspaceBytes(clean, []byte(operation.Content), true)
 		case "delete", "remove":
-			delete(contentByPath, clean)
+			delete(filesByPath, clean)
 		default:
 			http.Error(w, fmt.Sprintf("operations[%d].op must be write or delete", i), http.StatusBadRequest)
 			return
 		}
 	}
-	if len(contentByPath) > workspaceMaxFiles {
+	if len(filesByPath) > workspaceMaxFiles {
 		http.Error(w, fmt.Sprintf("mutation would exceed %d managed files", workspaceMaxFiles), http.StatusRequestEntityTooLarge)
 		return
 	}
-	updated := syncFilesFromContent(contentByPath)
-	newDigest, err := digestSyncFiles(updated)
+	updated := workspaceFilesFromMap(filesByPath)
+	newDigest, err := digestWorkspaceFiles(root, updated)
 	if err != nil {
-		http.Error(w, "digest mutated workspace: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "digest mutated workspace: "+err.Error(), http.StatusConflict)
 		return
 	}
 	if newDigest == normalizeSourceDigest(manifest.SourceDigest) {
 		writeJSON(w, http.StatusOK, workspaceMutateResponse{Phase: "Unchanged", SourceRevision: manifest.SourceRevision, SourceDigest: manifest.SourceDigest})
 		return
 	}
-	changed, deleted, err := applyManagedContent(root, contentByPath, manifest.Files)
+	changed, deleted, err := applyManagedContent(root, updated, manifest.Files)
 	if err != nil {
 		http.Error(w, "apply workspace mutation: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -510,11 +582,7 @@ func (s *agentServer) handleWorkspaceMutate(w http.ResponseWriter, r *http.Reque
 	}
 	manifest.SourceRevision++
 	manifest.SourceDigest = newDigest
-	manifest.Files = make([]string, 0, len(contentByPath))
-	for clean := range contentByPath {
-		manifest.Files = append(manifest.Files, clean)
-	}
-	slicesSortStrings(manifest.Files)
+	manifest.Files = workspaceFilePaths(updated)
 	manifest.PendingReloadCommands = nil
 	if err := writeWorkspaceManifest(root, manifest); err != nil {
 		http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
@@ -570,7 +638,7 @@ func (s *agentServer) handleWorkspaceDiff(w http.ResponseWriter, r *http.Request
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		baseline = checkpoint.Files
+		baseline = checkpointWorkspaceFiles(checkpoint)
 		baseRevision, baseDigest = checkpoint.SourceRevision, checkpoint.SourceDigest
 	} else if req.Files != nil || req.DeletePaths != nil {
 		candidate, err := candidateWorkspaceFiles(currentFiles, req.Files, req.DeletePaths)
@@ -589,9 +657,9 @@ func (s *agentServer) handleWorkspaceDiff(w http.ResponseWriter, r *http.Request
 		http.Error(w, "workspace digest no longer matches expected evidence", http.StatusConflict)
 		return
 	}
-	currentDigest, err := digestSyncFiles(currentFiles)
+	currentDigest, err := digestWorkspaceFiles(root, currentFiles)
 	if err != nil {
-		http.Error(w, "digest workspace: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "digest workspace: "+err.Error(), http.StatusConflict)
 		return
 	}
 	changes, err := diffWorkspaceFiles(baseline, currentFiles)
@@ -678,7 +746,11 @@ func (s *agentServer) handleWorkspaceCheckpoint(w http.ResponseWriter, r *http.R
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	checkpoint := workspaceCheckpoint{ID: id, Label: strings.TrimSpace(req.Label), SourceRevision: manifest.SourceRevision, SourceDigest: manifest.SourceDigest, Files: files, CreatedAt: time.Now().UTC()}
+	checkpoint, err := newWorkspaceCheckpoint(id, strings.TrimSpace(req.Label), manifest, files)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.saveWorkspaceCheckpoint(checkpoint); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -716,11 +788,29 @@ func (s *agentServer) restoreWorkspaceCheckpoint(w http.ResponseWriter, r *http.
 		http.Error(w, "workspace revision or digest no longer matches expected evidence", http.StatusConflict)
 		return
 	}
-	contentByPath := make(map[string][]byte, len(checkpoint.Files))
-	for _, file := range checkpoint.Files {
-		contentByPath[file.Path] = []byte(file.Content)
+	target := checkpointWorkspaceFiles(checkpoint)
+	// A checkpoint holds no bytes for opaque files: restore can only keep the
+	// workspace copy, so it must still be exactly the recorded bytes. Every
+	// opaque file is checked before anything is written.
+	for _, file := range target {
+		if !file.onDisk() {
+			continue
+		}
+		if err := verifyOpaqueWorkspaceFile(root, file); err != nil {
+			http.Error(w, fmt.Sprintf("checkpoint %q cannot be restored: binary file %q (%d bytes, sha256 %s) is recorded by digest only and the workspace copy %v; sync that file back first", checkpoint.ID, file.Path, file.Size, file.Digest, err), http.StatusConflict)
+			return
+		}
 	}
-	changed, deleted, err := applyManagedContent(root, contentByPath, manifest.Files)
+	restoredDigest, err := digestWorkspaceFiles(root, target)
+	if err != nil {
+		http.Error(w, "restore workspace checkpoint: "+err.Error(), http.StatusConflict)
+		return
+	}
+	if restoredDigest != normalizeSourceDigest(checkpoint.SourceDigest) {
+		http.Error(w, "checkpoint digest does not match its files", http.StatusConflict)
+		return
+	}
+	changed, deleted, err := applyManagedContent(root, target, manifest.Files)
 	if err != nil {
 		http.Error(w, "restore workspace checkpoint: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -731,11 +821,7 @@ func (s *agentServer) restoreWorkspaceCheckpoint(w http.ResponseWriter, r *http.
 	}
 	manifest.SourceRevision++
 	manifest.SourceDigest = checkpoint.SourceDigest
-	manifest.Files = make([]string, 0, len(contentByPath))
-	for clean := range contentByPath {
-		manifest.Files = append(manifest.Files, clean)
-	}
-	slicesSortStrings(manifest.Files)
+	manifest.Files = workspaceFilePaths(target)
 	manifest.PendingReloadCommands = nil
 	if err := writeWorkspaceManifest(root, manifest); err != nil {
 		http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
@@ -838,12 +924,16 @@ func listWorkspaceEntries(root *os.Root, base string, recursive bool, maxEntries
 	return entries, nil
 }
 
-func readManagedFiles(root *os.Root, paths []string) ([]syncFile, error) {
+// readManagedFiles loads the managed workspace. Text files are loaded;
+// binary files and files above workspaceMaxFileBytes are opaque: hashed
+// from disk and represented by size and digest only, so a large asset never
+// makes mutate, diff, or checkpoint fail.
+func readManagedFiles(root *os.Root, paths []string) ([]workspaceFile, error) {
 	cleaned, err := normalizeWorkspacePaths(paths)
 	if err != nil {
 		return nil, err
 	}
-	files := make([]syncFile, 0, len(cleaned))
+	files := make([]workspaceFile, 0, len(cleaned))
 	for _, clean := range cleaned {
 		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
 			return nil, err
@@ -855,32 +945,126 @@ func readManagedFiles(root *os.Root, paths []string) ([]syncFile, error) {
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("managed path %q is not a regular file", clean)
 		}
+		if info.Size() > workspaceMaxFileBytes {
+			digest, size, err := hashWorkspaceFile(root, clean)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, workspaceFile{Path: clean, Opaque: true, Size: size, Digest: digest})
+			continue
+		}
 		content, err := root.ReadFile(clean)
 		if err != nil {
 			return nil, err
 		}
-		if len(content) > workspaceMaxFileBytes {
-			return nil, fmt.Errorf("managed path %q exceeds %d bytes", clean, workspaceMaxFileBytes)
-		}
-		files = append(files, syncFile{Path: clean, Content: string(content)})
+		files = append(files, classifyWorkspaceBytes(clean, content, false))
 	}
 	return files, nil
 }
 
-func syncFilesFromContent(content map[string][]byte) []syncFile {
-	paths := make([]string, 0, len(content))
-	for clean := range content {
-		paths = append(paths, clean)
+// hashWorkspaceFile streams one workspace file and returns its sha256 (hex)
+// and size.
+func hashWorkspaceFile(root *os.Root, clean string) (string, int64, error) {
+	file, err := root.Open(clean)
+	if err != nil {
+		return "", 0, err
 	}
-	slicesSortStrings(paths)
-	files := make([]syncFile, 0, len(paths))
-	for _, clean := range paths {
-		files = append(files, syncFile{Path: clean, Content: string(content[clean])})
+	defer func() { _ = file.Close() }()
+	hash := sha256.New()
+	size, err := io.Copy(hash, file)
+	if err != nil {
+		return "", 0, err
 	}
-	return files
+	return hex.EncodeToString(hash.Sum(nil)), size, nil
 }
 
-func applyManagedContent(root *os.Root, content map[string][]byte, previous []string) (changed, deleted []string, err error) {
+// verifyOpaqueWorkspaceFile checks that an opaque file's recorded bytes are
+// still exactly what the workspace holds at its path.
+func verifyOpaqueWorkspaceFile(root *os.Root, file workspaceFile) error {
+	if err := ensureExecPathNoSymlink(root, file.Path, true); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return errors.New("is missing")
+		}
+		return err
+	}
+	info, err := root.Lstat(file.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.New("is missing")
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("is not a regular file")
+	}
+	digest, size, err := hashWorkspaceFile(root, file.Path)
+	if err != nil {
+		return err
+	}
+	if digest != file.Digest || size != file.Size {
+		return fmt.Errorf("has changed (now %d bytes, sha256 %s)", size, digest)
+	}
+	return nil
+}
+
+// digestWorkspaceFiles computes the workspace source digest of files, the
+// same digest /sync and exec verify. In-memory bytes are hashed directly;
+// opaque files are streamed from disk and must still match their recorded
+// digest, so a concurrent change fails the operation instead of being
+// silently adopted.
+func digestWorkspaceFiles(root *os.Root, files []workspaceFile) (string, error) {
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b workspaceFile) int { return strings.Compare(a.Path, b.Path) })
+	digester := newSyncDigester()
+	for _, file := range sorted {
+		clean, err := cleanWorkspacePath(file.Path)
+		if err != nil {
+			return "", err
+		}
+		if err := validateManagedWorkspacePath(clean); err != nil {
+			return "", err
+		}
+		if !file.onDisk() {
+			digester.add(clean, file.Content)
+			continue
+		}
+		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
+			return "", fmt.Errorf("read binary file %q: %w", clean, err)
+		}
+		digest, size, err := digester.addFile(root, clean)
+		if err != nil {
+			return "", fmt.Errorf("read binary file %q: %w", clean, err)
+		}
+		if digest != file.Digest || size != file.Size {
+			return "", fmt.Errorf("binary file %q changed while the workspace operation ran", clean)
+		}
+	}
+	return digester.sum(), nil
+}
+
+func workspaceFilesFromMap(files map[string]workspaceFile) []workspaceFile {
+	out := make([]workspaceFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, file)
+	}
+	slices.SortFunc(out, func(a, b workspaceFile) int { return strings.Compare(a.Path, b.Path) })
+	return out
+}
+
+func workspaceFilePaths(files []workspaceFile) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	slicesSortStrings(paths)
+	return paths
+}
+
+// applyManagedContent converges the managed workspace to files: in-memory
+// content is written when it differs, opaque files whose bytes live on disk
+// are left untouched, and previously managed paths absent from files are
+// removed.
+func applyManagedContent(root *os.Root, files []workspaceFile, previous []string) (changed, deleted []string, err error) {
 	previousSet := make(map[string]struct{}, len(previous))
 	for _, raw := range previous {
 		clean, cleanErr := cleanWorkspacePath(raw)
@@ -889,27 +1073,30 @@ func applyManagedContent(root *os.Root, content map[string][]byte, previous []st
 		}
 		previousSet[clean] = struct{}{}
 	}
-	paths := make([]string, 0, len(content))
-	for clean := range content {
-		paths = append(paths, clean)
-	}
-	slicesSortStrings(paths)
-	for _, clean := range paths {
+	keep := make(map[string]struct{}, len(files))
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b workspaceFile) int { return strings.Compare(a.Path, b.Path) })
+	for _, file := range sorted {
+		clean := file.Path
+		keep[clean] = struct{}{}
+		if file.onDisk() {
+			continue
+		}
 		if err := ensureExecPathNoSymlink(root, clean, false); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, nil, err
 		}
 		if err := ensureExecPathNoSymlink(root, clean, true); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, nil, err
 		}
-		if workspaceFileContentChanged(root, clean, content[clean]) {
-			if err := writeWorkspaceFile(root, clean, content[clean]); err != nil {
+		if workspaceFileContentChanged(root, clean, file.Content) {
+			if err := writeWorkspaceFile(root, clean, file.Content); err != nil {
 				return nil, nil, err
 			}
 			changed = append(changed, clean)
 		}
 	}
 	for _, clean := range sortedMapKeys(previousSet) {
-		if _, keep := content[clean]; keep {
+		if _, ok := keep[clean]; ok {
 			continue
 		}
 		removed, err := removeManagedWorkspaceFile(root, clean)
@@ -923,11 +1110,20 @@ func applyManagedContent(root *os.Root, content map[string][]byte, previous []st
 	return changed, deleted, nil
 }
 
-func candidateWorkspaceFiles(current, writes []syncFile, deletes []string) ([]syncFile, error) {
-	content := make(map[string][]byte, len(current)+len(writes))
-	for _, file := range current {
-		content[file.Path] = []byte(file.Content)
+func workspaceFileIndex(files []workspaceFile) map[string]workspaceFile {
+	index := make(map[string]workspaceFile, len(files))
+	for _, file := range files {
+		index[file.Path] = file
 	}
+	return index
+}
+
+// candidateWorkspaceFiles overlays proposed writes and deletes on the current
+// workspace for a diff preview. utf-8 candidates keep the text rules; base64
+// candidates may be binary up to the sync per-file limit and are compared by
+// digest.
+func candidateWorkspaceFiles(current []workspaceFile, writes []syncFile, deletes []string) ([]workspaceFile, error) {
+	files := workspaceFileIndex(current)
 	for _, file := range writes {
 		clean, err := cleanWorkspacePath(file.Path)
 		if err != nil {
@@ -936,40 +1132,49 @@ func candidateWorkspaceFiles(current, writes []syncFile, deletes []string) ([]sy
 		if err := validateManagedWorkspacePath(clean); err != nil {
 			return nil, err
 		}
-		if len([]byte(file.Content)) > workspaceMaxFileBytes || !utf8.ValidString(file.Content) || strings.ContainsRune(file.Content, '\x00') {
+		content, binary, err := decodeSyncContent(file)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case binary && len(content) > syncMaxFileBytes:
+			return nil, fmt.Errorf("candidate file %q is %d bytes, above the %d-byte limit", clean, len(content), syncMaxFileBytes)
+		case !binary && !isWorkspaceText(content):
 			return nil, fmt.Errorf("candidate file %q is invalid or too large", clean)
 		}
-		content[clean] = []byte(file.Content)
+		files[clean] = classifyWorkspaceBytes(clean, content, true)
 	}
 	for _, raw := range deletes {
 		clean, err := cleanWorkspacePath(raw)
 		if err != nil {
 			return nil, err
 		}
-		delete(content, clean)
+		delete(files, clean)
 	}
-	if len(content) > workspaceMaxFiles {
+	if len(files) > workspaceMaxFiles {
 		return nil, fmt.Errorf("candidate workspace exceeds %d files", workspaceMaxFiles)
 	}
-	return syncFilesFromContent(content), nil
+	return workspaceFilesFromMap(files), nil
 }
 
-func diffWorkspaceFiles(before, after []syncFile) ([]workspaceChange, error) {
-	left := make(map[string][]byte, len(before))
-	right := make(map[string][]byte, len(after))
+// diffWorkspaceFiles compares two workspace views by per-file digest, so
+// opaque files take part without their bytes.
+func diffWorkspaceFiles(before, after []workspaceFile) ([]workspaceChange, error) {
+	left := make(map[string]workspaceFile, len(before))
+	right := make(map[string]workspaceFile, len(after))
 	for _, file := range before {
 		clean, err := cleanWorkspacePath(file.Path)
 		if err != nil {
 			return nil, err
 		}
-		left[clean] = []byte(file.Content)
+		left[clean] = file
 	}
 	for _, file := range after {
 		clean, err := cleanWorkspacePath(file.Path)
 		if err != nil {
 			return nil, err
 		}
-		right[clean] = []byte(file.Content)
+		right[clean] = file
 	}
 	all := make(map[string]struct{}, len(left)+len(right))
 	for clean := range left {
@@ -981,9 +1186,9 @@ func diffWorkspaceFiles(before, after []syncFile) ([]workspaceChange, error) {
 	paths := sortedMapKeys(all)
 	changes := make([]workspaceChange, 0)
 	for _, clean := range paths {
-		beforeContent, beforeOK := left[clean]
-		afterContent, afterOK := right[clean]
-		if beforeOK && afterOK && bytes.Equal(beforeContent, afterContent) {
+		beforeFile, beforeOK := left[clean]
+		afterFile, afterOK := right[clean]
+		if beforeOK && afterOK && beforeFile.Digest == afterFile.Digest && beforeFile.Size == afterFile.Size {
 			continue
 		}
 		change := workspaceChange{Path: clean}
@@ -996,10 +1201,10 @@ func diffWorkspaceFiles(before, after []syncFile) ([]workspaceChange, error) {
 			change.Kind = "modified"
 		}
 		if beforeOK {
-			change.BeforeDigest, change.BeforeBytes = digestBytes(beforeContent), len(beforeContent)
+			change.BeforeDigest, change.BeforeBytes = beforeFile.Digest, int(beforeFile.Size)
 		}
 		if afterOK {
-			change.AfterDigest, change.AfterBytes = digestBytes(afterContent), len(afterContent)
+			change.AfterDigest, change.AfterBytes = afterFile.Digest, int(afterFile.Size)
 		}
 		changes = append(changes, change)
 	}
@@ -1028,28 +1233,117 @@ func validateCheckpointID(id string) error {
 }
 
 func checkpointSummary(checkpoint workspaceCheckpoint) workspaceCheckpointSummary {
-	return workspaceCheckpointSummary{ID: checkpoint.ID, Label: checkpoint.Label, SourceRevision: checkpoint.SourceRevision, SourceDigest: checkpoint.SourceDigest, FileCount: len(checkpoint.Files), CreatedAt: checkpoint.CreatedAt}
+	return workspaceCheckpointSummary{ID: checkpoint.ID, Label: checkpoint.Label, SourceRevision: checkpoint.SourceRevision, SourceDigest: checkpoint.SourceDigest, FileCount: len(checkpoint.Files) + len(checkpoint.OpaqueFiles), CreatedAt: checkpoint.CreatedAt}
 }
 
+// newWorkspaceCheckpoint records text files by content and opaque files by
+// digest and size only.
+func newWorkspaceCheckpoint(id, label string, manifest workspaceManifest, files []workspaceFile) (workspaceCheckpoint, error) {
+	checkpoint := workspaceCheckpoint{ID: id, Label: label, SourceRevision: manifest.SourceRevision, SourceDigest: manifest.SourceDigest, Files: make([]syncFile, 0, len(files)), CreatedAt: time.Now().UTC()}
+	for _, file := range workspaceFilesFromMap(workspaceFileIndex(files)) {
+		if file.Opaque {
+			checkpoint.OpaqueFiles = append(checkpoint.OpaqueFiles, workspaceOpaqueFile{Path: file.Path, Digest: file.Digest, Bytes: file.Size})
+			continue
+		}
+		checkpoint.Files = append(checkpoint.Files, syncFile{Path: file.Path, Content: string(file.Content)})
+	}
+	if len(checkpoint.OpaqueFiles) > 0 {
+		sealed, err := checkpointEntriesDigest(checkpoint)
+		if err != nil {
+			return workspaceCheckpoint{}, err
+		}
+		checkpoint.EntriesDigest = sealed
+	}
+	return checkpoint, nil
+}
+
+// checkpointWorkspaceFiles is the workspace view a checkpoint describes;
+// opaque entries point at bytes that must still be on disk.
+func checkpointWorkspaceFiles(checkpoint workspaceCheckpoint) []workspaceFile {
+	files := make([]workspaceFile, 0, len(checkpoint.Files)+len(checkpoint.OpaqueFiles))
+	for _, file := range checkpoint.Files {
+		files = append(files, classifyWorkspaceBytes(file.Path, []byte(file.Content), true))
+	}
+	for _, file := range checkpoint.OpaqueFiles {
+		files = append(files, workspaceFile{Path: file.Path, Opaque: true, Size: file.Bytes, Digest: file.Digest})
+	}
+	return workspaceFilesFromMap(workspaceFileIndex(files))
+}
+
+// checkpointEntriesDigest seals a checkpoint's recorded entries (text content
+// and opaque digests) so a corrupt checkpoint is detected even though its
+// SourceDigest covers bytes it does not hold.
+func checkpointEntriesDigest(checkpoint workspaceCheckpoint) (string, error) {
+	raw, err := json.Marshal(struct {
+		Files       []syncFile            `json:"files"`
+		OpaqueFiles []workspaceOpaqueFile `json:"opaqueFiles"`
+	}{Files: checkpoint.Files, OpaqueFiles: checkpoint.OpaqueFiles})
+	if err != nil {
+		return "", err
+	}
+	return digestBytes(raw), nil
+}
+
+// validateWorkspaceSeedFiles applies the authoritative /sync rules to a seed:
+// utf-8 entries must be text, base64 entries may be binary, and the sync
+// per-file and total decoded limits apply (within the seed's request cap).
 func validateWorkspaceSeedFiles(files []syncFile) (map[string]struct{}, error) {
-	paths, err := validateSyncFiles(files)
+	decoded, err := decodeSyncFiles(files, true)
 	if err != nil {
 		return nil, err
 	}
-	for _, file := range files {
-		if len([]byte(file.Content)) > workspaceMaxFileBytes {
-			return nil, fmt.Errorf("source file %q exceeds %d bytes", file.Path, workspaceMaxFileBytes)
-		}
-	}
-	return paths, nil
+	return validateAuthoritativeSyncFiles(decoded)
 }
 
 func validateWorkspaceCheckpoint(checkpoint workspaceCheckpoint) error {
-	if len(checkpoint.Files) > workspaceMaxFiles {
+	if len(checkpoint.Files)+len(checkpoint.OpaqueFiles) > workspaceMaxFiles {
 		return fmt.Errorf("checkpoint has more than %d files", workspaceMaxFiles)
 	}
-	if _, err := validateWorkspaceSeedFiles(checkpoint.Files); err != nil {
-		return err
+	paths := make(map[string]struct{}, len(checkpoint.Files)+len(checkpoint.OpaqueFiles))
+	claim := func(raw string) error {
+		clean, err := cleanWorkspacePath(raw)
+		if err != nil {
+			return err
+		}
+		if clean != raw {
+			return fmt.Errorf("checkpoint path %q is not clean", raw)
+		}
+		if err := validateManagedWorkspacePath(clean); err != nil {
+			return err
+		}
+		if _, exists := paths[clean]; exists {
+			return fmt.Errorf("checkpoint duplicates path %q", clean)
+		}
+		paths[clean] = struct{}{}
+		return nil
+	}
+	for _, file := range checkpoint.Files {
+		if err := claim(file.Path); err != nil {
+			return err
+		}
+		if file.Encoding != "" || !isWorkspaceText([]byte(file.Content)) {
+			return fmt.Errorf("checkpoint file %q must be UTF-8 text of at most %d bytes", file.Path, workspaceMaxFileBytes)
+		}
+	}
+	for _, file := range checkpoint.OpaqueFiles {
+		if err := claim(file.Path); err != nil {
+			return err
+		}
+		if raw, err := hex.DecodeString(file.Digest); err != nil || len(raw) != sha256.Size || file.Bytes < 0 {
+			return fmt.Errorf("checkpoint binary file %q has an invalid digest or size", file.Path)
+		}
+	}
+	if len(checkpoint.OpaqueFiles) > 0 {
+		// SourceDigest covers opaque bytes held only on disk; restore checks
+		// it against the workspace. Here the recorded entries are verified.
+		sealed, err := checkpointEntriesDigest(checkpoint)
+		if err != nil {
+			return err
+		}
+		if sealed != checkpoint.EntriesDigest {
+			return errors.New("checkpoint digest does not match its files")
+		}
+		return nil
 	}
 	digest, err := digestSyncFiles(checkpoint.Files)
 	if err != nil {

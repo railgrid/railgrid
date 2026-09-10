@@ -36,6 +36,10 @@ type projectRestoreResponse struct {
 	Written        []string `json:"written"`
 	Deleted        []string `json:"deleted"`
 	SourceRevision uint64   `json:"sourceRevision"`
+	// Skipped lists repository paths the checkout could not return (too
+	// large, or binaries on a Code provider without base64 support). Their
+	// current workspace copies are left as they are.
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // restoreProjectWorkspace is POST /api/projects/{project}/restore-workspace.
@@ -108,6 +112,7 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	result, err := s.workspaces.ReplaceTree(r.Context(), scope, workspace.ReplaceTreeOptions{
 		Files:                  files,
 		ExpectedSourceRevision: req.ExpectedSourceRevision,
+		PreservePaths:          checkout.Skipped,
 	})
 	if err != nil {
 		if errors.Is(err, workspace.ErrSourceRevisionConflict) || errors.Is(err, workspace.ErrMutationConflict) {
@@ -126,6 +131,7 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		Written:        result.Written,
 		Deleted:        result.Deleted,
 		SourceRevision: result.SourceRevision,
+		Skipped:        checkout.Skipped,
 	})
 }
 
@@ -137,7 +143,7 @@ func (s *Server) checkoutProjectRepository(r *http.Request, id identity, reposit
 		id.tenantPath,
 		s.mcpInsecureSkipTLSVerify,
 		projectToolCodeCheckoutRepository,
-		map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA},
+		s.checkoutArgs(r.Context(), r, id, map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA}),
 	)
 	if err != nil {
 		return checkoutToolResult{}, fmt.Errorf("checkout repository at commit %s: %w", commitSHA, err)
@@ -149,20 +155,23 @@ func (s *Server) checkoutProjectRepository(r *http.Request, id identity, reposit
 	return checkout, nil
 }
 
-// exactRestoreFiles validates that checkout returned the complete, exact Git
-// object requested by History before any workspace mutation is attempted.
+// exactRestoreFiles validates that checkout returned the exact Git object
+// requested by History, and decodes its files (base64 binaries included),
+// before any workspace mutation is attempted. Paths the checkout skipped are
+// not an error: the restore preserves their current workspace copies.
 func exactRestoreFiles(requestedSHA string, checkout checkoutToolResult) ([]workspace.File, error) {
 	requestedSHA = strings.TrimSpace(requestedSHA)
 	returnedSHA := strings.TrimSpace(checkout.CommitSHA)
 	if returnedSHA != requestedSHA {
 		return nil, fmt.Errorf("checkout returned commit %q instead of requested commit %q", returnedSHA, requestedSHA)
 	}
-	if len(checkout.Skipped) > 0 {
-		return nil, fmt.Errorf("checkout omitted %d path(s): %s", len(checkout.Skipped), strings.Join(checkout.Skipped, ", "))
-	}
 	files := make([]workspace.File, 0, len(checkout.Files))
 	for _, file := range checkout.Files {
-		files = append(files, workspace.File{Path: file.Path, Content: file.Content})
+		data, err := file.bytes()
+		if err != nil {
+			return nil, fmt.Errorf("checkout file %q: %w", file.Path, err)
+		}
+		files = append(files, workspace.File{Path: file.Path, Content: string(data)})
 	}
 	return files, nil
 }

@@ -19,7 +19,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,6 +56,8 @@ endpoint that exposes both kube and linux edges plus a list_targets tool the
 AI uses to discover what's reachable.  This is the entry point for
 Claude / Cursor / similar MCP clients:
   https://faros.example.com/services/mcpserver/root:faros:user-default/apis/faros.sh/v1alpha1/mcpservers/default/mcp
+The configuration hints then carry the workspace's long-lived MCP token from
+the hub's connect endpoint, which also works after an OIDC login.
 
 Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
   https://faros.example.com/services/providers/edges/agent/root:faros:user-default/apis/edges.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
@@ -145,14 +149,38 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 		return mcpErr
 	}
 
-	fmt.Println(mcpURL)
-
-	// Resolve the bearer token from the kubeconfig for the usage hint.
+	// Resolve the bearer token for the usage hint. The aggregate endpoint has
+	// a long-lived, workspace-scoped token behind the hub's connect endpoint;
+	// prefer it, because the kubeconfig's static token is empty for OIDC
+	// (exec plugin) logins and a user token would expire anyway.
 	token := ""
-	if currentCtx, ok := rawCfg.Contexts[rawCfg.CurrentContext]; ok {
-		if u, ok := rawCfg.AuthInfos[currentCtx.AuthInfo]; ok {
+	tokenNote := ""
+	if mcpserverName != "" {
+		info, err := connectMCPForURL(serverURL, mcpserverName)
+		switch {
+		case err != nil:
+			tokenNote = fmt.Sprintf("Could not fetch the MCP token from the hub (%v).", err)
+		case info.Token == "":
+			tokenNote = "The hub has not minted this MCP server's token yet; re-run shortly."
+		default:
+			token = info.Token
+			if info.EndpointURL != "" {
+				mcpURL = info.EndpointURL
+			}
+		}
+	}
+	if token == "" {
+		if u, ok := rawCfg.AuthInfos[ctx.AuthInfo]; ok {
 			token = u.Token
 		}
+	}
+	if token == "" && tokenNote == "" {
+		tokenNote = "Your kubeconfig logs in through OIDC (no static token). 'faros env' prints a current TOKEN; it expires."
+	}
+
+	fmt.Println(mcpURL)
+	if tokenNote != "" {
+		fmt.Fprintln(os.Stderr, tokenNote)
 	}
 
 	// Derive the MCP server name for the `claude mcp add` hint.
@@ -192,6 +220,22 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	fmt.Printf("    --url %s \\\n", shellSingleQuote(mcpURL))
 	fmt.Println("    --bearer-token-env-var FAROS_MCP_TOKEN")
 	return nil
+}
+
+// connectMCPForURL asks the hub for the aggregate MCPServer's endpoint and
+// long-lived token, provided the faros context targets the same workspace as
+// serverURL (the kubeconfig's current context).
+func connectMCPForURL(serverURL, mcpserverName string) (*mcpConnectInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := newHubSession(ctx, hubTarget{})
+	if err != nil {
+		return nil, err
+	}
+	if _, cluster := apiurl.SplitBaseAndCluster(serverURL); cluster != s.Cluster {
+		return nil, fmt.Errorf("current context targets %s, the faros context %s", cluster, s.Cluster)
+	}
+	return s.mcpConnect(ctx, mcpserverName)
 }
 
 func shellSingleQuote(value string) string {

@@ -413,7 +413,7 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "reference", "references")
 		}
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile, projectToolImportAttachment, projectToolDownloadFile:
 		item.Target = projectAssistantActionSafeTarget(projectAssistantMutationTarget(args, arguments, base))
 		item.Title = projectAssistantActionLifecycleTitle(status, "Updating files", "Updated files", "File update failed")
 		if status == projectAssistantActionFeedStatusSucceeded {
@@ -544,7 +544,7 @@ func projectAssistantMutationRecoveryIdentityFromTool(name string, args map[stri
 
 func projectAssistantMutationRecoveryOperationFamily(operation string) string {
 	switch projectToolBaseName(operation) {
-	case "create", projectToolCreateFile:
+	case "create", projectToolCreateFile, projectToolImportAttachment, projectToolDownloadFile:
 		return "create"
 	case "edit", projectToolReplaceFile, projectToolEditFile:
 		return "edit"
@@ -781,7 +781,8 @@ func projectAssistantActionFeedItemKind(name string) string {
 		return projectAssistantActionFeedItemRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantActionFeedItemCommit
-	case base == projectToolCreateFile || base == projectToolReplaceFile || base == projectToolEditFile || base == projectToolDeleteFile || base == projectToolMoveFile:
+	case base == projectToolCreateFile || base == projectToolReplaceFile || base == projectToolEditFile || base == projectToolDeleteFile || base == projectToolMoveFile ||
+		base == projectToolImportAttachment || base == projectToolDownloadFile:
 		return projectAssistantActionFeedItemEdit
 	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep ||
 		base == projectToolLoadSkill || base == projectToolReadSkillResource:
@@ -878,7 +879,7 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 	case projectToolGrep:
 		item.GroupKey = "inspect:search"
 		item.GroupTitle = "Searched project"
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile, projectToolImportAttachment, projectToolDownloadFile:
 		item.GroupKey = "edit:files"
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
@@ -1204,6 +1205,9 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 			return "The requested source text matched more than one location; provide a narrower exact string or explicitly replace all."
 		}
 	}
+	if category == "runtime" && projectAssistantPreviewHubOriginUnconfigured(value) {
+		return "Private preview inspection is unavailable: this App Studio deployment has no usable FAROS_HUB_PUBLIC_URL (Helm chart value hub.publicURL). Ask the platform operator to set it."
+	}
 	return map[string]string{
 		"timeout":    "The action did not finish before its time limit.",
 		"permission": "App Studio did not have permission to complete this action.",
@@ -1214,9 +1218,20 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 	}[category]
 }
 
+// projectAssistantPreviewHubOriginUnconfigured recognizes (lower-cased)
+// errPrivatePreviewHubOriginUnconfigured text: a deployment configuration gap
+// that surfaces as a preview failure.
+func projectAssistantPreviewHubOriginUnconfigured(value string) bool {
+	return strings.Contains(value, "no usable faros_hub_public_url")
+}
+
 func projectAssistantActionDiagnosticCategory(raw string) string {
 	value := strings.ToLower(raw)
 	switch {
+	case projectAssistantPreviewHubOriginUnconfigured(value):
+		// Classified with preview problems; the message names the missing
+		// deployment setting (see projectAssistantActionDiagnosticMessage).
+		return "runtime"
 	case strings.Contains(value, "timeout"), strings.Contains(value, "timed out"), strings.Contains(value, "deadline exceeded"):
 		return "timeout"
 	case strings.Contains(value, "permission"), strings.Contains(value, "forbidden"), strings.Contains(value, "unauthorized"), strings.Contains(value, "access denied"),

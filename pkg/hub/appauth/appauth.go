@@ -27,6 +27,12 @@ limitations under the License.
 //     The proxy exchanges the code server-to-server and then maintains its
 //     own bounded local session; the hub is not consulted again until that
 //     session expires.
+//   - Non-browser clients (CLIs, CI, agents) exchange their hub bearer AT
+//     THE HUB for a short-lived app access token bound to one instance
+//     (POST /auth/apps/token) and present that to the app. The proxy asks
+//     the hub once (POST /auth/apps/verify), then caches the verdict locally
+//     for at most the session TTL. A gate never sees a hub bearer (see
+//     apptoken.go and verify.go).
 //
 // Access policy is plain kcp RBAC in the tenant workspace: visiting a private
 // app requires `get` on the instance resource with subresource `access`
@@ -70,6 +76,12 @@ const (
 	// ExchangePath is the server-to-server endpoint the access proxy calls to
 	// turn a one-use code into a session grant.
 	ExchangePath = "/auth/apps/exchange"
+	// TokenPath is where a caller exchanges their hub bearer for an app
+	// access token bound to one instance (see HandleMintToken).
+	TokenPath = "/auth/apps/token"
+	// VerifyPath is the server-to-server endpoint the access proxy calls to
+	// authorize a request carrying an app access token (see HandleVerify).
+	VerifyPath = "/auth/apps/verify"
 	// CallbackPath is the reserved path on the app host that authorize
 	// redirects back to. It must stay in lockstep with the access proxy's
 	// callback route (providers/infrastructure/accessproxy).
@@ -171,12 +183,32 @@ type Config struct {
 	// unauthenticated browser is sent to. Defaults to "/ui/login" (the
 	// portal SPA is mounted under /ui/).
 	LoginPath string
+	// BearerIdentity authenticates the Authorization bearer on a request and
+	// resolves it to the platform identity. It MUST be the same validator the
+	// hub uses to mint browser sessions from a bearer (KCPProxy.BrowserIdentity),
+	// so the token endpoint admits exactly the identities the browser flow
+	// admits. Nil leaves the token endpoint unregistered.
+	BearerIdentity func(*http.Request) (browsersession.Identity, error)
+	// TokenKey returns the hub secret (>= 32 bytes, identical on every
+	// replica) that app access tokens are HKDF-derived from. Nil leaves both
+	// the token and verify endpoints unregistered.
+	TokenKey func(context.Context) ([]byte, error)
+	// IdentityUnavailable is the sentinel BearerIdentity wraps when the
+	// credential was accepted but the identity could not be resolved (a
+	// transient hub-side failure). Such errors answer 503 and are not counted
+	// as failed verifications. Nil treats every BearerIdentity error as an
+	// invalid credential.
+	IdentityUnavailable error
+	// ClientIP keys the failed-verification limiter. It should see through
+	// the hub's trusted reverse proxies (proxy.ClientIP). Nil uses the
+	// connection peer address.
+	ClientIP func(*http.Request) string
 	// Now and Random are test seams.
 	Now    func() time.Time
 	Random io.Reader
 }
 
-// Handler serves the authorize and exchange endpoints.
+// Handler serves the authorize, exchange and verify endpoints.
 type Handler struct {
 	sessions     *browsersession.Store
 	sarClient    SARFactory
@@ -185,6 +217,12 @@ type Handler struct {
 	now          func() time.Time
 	random       io.Reader
 	codes        CodeStore
+
+	bearerIdentity      func(*http.Request) (browsersession.Identity, error)
+	tokenKey            func(context.Context) ([]byte, error)
+	identityUnavailable error
+	clientIP            func(*http.Request) string
+	verifyFailures      *failureLimiter
 }
 
 // CodeRecord is what authorize binds a code to and exchange verifies against.
@@ -225,6 +263,14 @@ func New(cfg Config) (*Handler, error) {
 		now:          cfg.Now,
 		random:       cfg.Random,
 		codes:        cfg.Codes,
+
+		bearerIdentity:      cfg.BearerIdentity,
+		tokenKey:            cfg.TokenKey,
+		identityUnavailable: cfg.IdentityUnavailable,
+		clientIP:            cfg.ClientIP,
+	}
+	if h.clientIP == nil {
+		h.clientIP = peerAddress
 	}
 	if h.loginPath == "" {
 		h.loginPath = "/ui/login"
@@ -240,6 +286,8 @@ func New(cfg Config) (*Handler, error) {
 		// test that swaps h.now after construction also moves the store's clock.
 		h.codes = newMemoryCodeStore(func() time.Time { return h.now() })
 	}
+	h.verifyFailures = newFailureLimiter(verifyFailureBurst, verifyFailureRefill, maxVerifyFailureSources,
+		func() time.Time { return h.now() })
 	return h, nil
 }
 
@@ -254,6 +302,20 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 	}
 	router.HandleFunc(AuthorizePath, wrap(h.HandleAuthorize)).Methods("GET")
 	router.HandleFunc(ExchangePath, wrap(h.HandleExchange)).Methods("POST")
+	if h.tokenKey == nil {
+		return
+	}
+	if h.bearerIdentity != nil {
+		// Called by users directly, like authorize: behind the shared auth
+		// limiter, plus the per-source failure budget inside the handler.
+		router.HandleFunc(TokenPath, wrap(h.HandleMintToken)).Methods("POST")
+	}
+	// Deliberately NOT behind the shared auth limiter: every verification a
+	// gate makes arrives from that gate's one address, and counting successful
+	// ones would couple every programmatic caller of every app behind it to
+	// one per-address budget (shared with browser code exchanges). Failed
+	// verifications are limited per source inside HandleVerify instead.
+	router.HandleFunc(VerifyPath, h.HandleVerify).Methods("POST")
 }
 
 // retriedParam marks an authorize URL that has already been through the login

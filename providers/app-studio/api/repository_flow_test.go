@@ -209,6 +209,8 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"edit_file",
 		"delete_file",
 		"move_file",
+		"import_attachment",
+		"download_file",
 		"select_project_template",
 		"get_project_checkpoints",
 		"check_project_build",
@@ -234,9 +236,9 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	}
 
 	all := projectChatToolNames(registry.ChatTools(true))
-	wantAll := append([]string(nil), want[:19]...)
+	wantAll := append([]string(nil), want[:21]...)
 	wantAll = append(wantAll, "commit_project_files")
-	wantAll = append(wantAll, want[19:]...)
+	wantAll = append(wantAll, want[21:]...)
 	if strings.Join(all, ",") != strings.Join(wantAll, ",") {
 		t.Fatalf("tool names with commit bridge = %v, want %v", all, wantAll)
 	}
@@ -2229,10 +2231,11 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 		t.Fatalf("too many paths error = %v, want bounded path count", err)
 	}
 
-	files := make([]workspace.File, 0, 65)
-	paths := make([]any, 0, 65)
-	for i := 0; i < 65; i++ {
-		path := fmt.Sprintf("src/large-%02d.txt", i)
+	count := projectCommitProjectFilesMaxSize/workspace.MaxWriteBytes + 1
+	files := make([]workspace.File, 0, count)
+	paths := make([]any, 0, count)
+	for i := 0; i < count; i++ {
+		path := fmt.Sprintf("src/large-%03d.txt", i)
 		files = append(files, workspace.File{Path: path, Content: strings.Repeat("x", workspace.MaxWriteBytes)})
 		paths = append(paths, path)
 	}
@@ -2261,16 +2264,47 @@ func TestProjectMCPTimeoutFitsLongRunningOperations(t *testing.T) {
 }
 
 func TestProjectRepositoryViewDegradedStates(t *testing.T) {
-	project := projectWithRepository("demo-repo", "demo", "github")
+	project := reconciledProjectWithRepository("demo-repo", "demo", "github", time.Now().Add(-time.Hour))
+	young := reconciledProjectWithRepository("demo-repo", "demo", "github", time.Now().Add(-time.Minute))
+	unreconciled := projectWithRepository("demo-repo", "demo", "github")
+	unreconciled.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	adopted := reconciledProjectWithRepository("demo-repo", "demo", "github", time.Now().Add(-time.Minute))
+	adopted.Spec.Repository.Adopted = true
+	legacy := reconciledProjectWithRepository("demo-repo", "demo", "", time.Now().Add(-time.Minute))
 
 	tests := []struct {
-		name       string
-		objects    []*unstructured.Unstructured
-		wantStatus string
-		wantReady  bool
+		name        string
+		project     *aiv1alpha1.Project
+		objects     []*unstructured.Unstructured
+		wantStatus  string
+		wantMessage string
+		wantReady   bool
 	}{
 		{
-			name:       "repository missing",
+			name:        "repository missing",
+			wantStatus:  projectRepositoryStatusRepositoryMissing,
+			wantMessage: `Repository resource "demo-repo" no longer exists.`,
+		},
+		{
+			name:        "young project repository not created yet",
+			project:     young,
+			wantStatus:  projectRepositoryStatusProvisioning,
+			wantMessage: `Creating repository "demo-repo".`,
+		},
+		{
+			name:        "unreconciled project repository not created yet",
+			project:     unreconciled,
+			wantStatus:  projectRepositoryStatusProvisioning,
+			wantMessage: `Creating repository "demo-repo".`,
+		},
+		{
+			name:       "young adopted project repository missing",
+			project:    adopted,
+			wantStatus: projectRepositoryStatusRepositoryMissing,
+		},
+		{
+			name:       "young project without connection repository missing",
+			project:    legacy,
 			wantStatus: projectRepositoryStatusRepositoryMissing,
 		},
 		{
@@ -2301,12 +2335,19 @@ func TestProjectRepositoryViewDegradedStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			view := projectRepositoryViewFromGetter(context.Background(), project, codeObjectGetter(tt.objects...))
+			p := project
+			if tt.project != nil {
+				p = tt.project
+			}
+			view := projectRepositoryViewFromGetter(context.Background(), p, codeObjectGetter(tt.objects...))
 			if view == nil {
 				t.Fatal("projectRepositoryView returned nil")
 			}
 			if view.Status != tt.wantStatus {
 				t.Fatalf("Status = %q, want %q", view.Status, tt.wantStatus)
+			}
+			if tt.wantMessage != "" && view.Message != tt.wantMessage {
+				t.Fatalf("Message = %q, want %q", view.Message, tt.wantMessage)
 			}
 			if view.Ready != tt.wantReady {
 				t.Fatalf("Ready = %t, want %t", view.Ready, tt.wantReady)
@@ -2415,6 +2456,15 @@ func projectWithRepository(ref, name, connectionRef string) *aiv1alpha1.Project 
 			},
 		},
 	}
+}
+
+// reconciledProjectWithRepository is a Project the reconciler has already
+// picked up (finalizer present), created at the given time.
+func reconciledProjectWithRepository(ref, name, connectionRef string, created time.Time) *aiv1alpha1.Project {
+	project := projectWithRepository(ref, name, connectionRef)
+	project.CreationTimestamp = metav1.NewTime(created)
+	project.Finalizers = []string{projectReconcilerFinalizer}
+	return project
 }
 
 func codeObjectGetter(objects ...*unstructured.Unstructured) codeResourceGetter {

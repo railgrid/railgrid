@@ -120,10 +120,10 @@ faros ssh my-server -- uptime
 ### 4. Give an AI agent your workspace
 
 ```bash
-faros mcp url --name default
+faros mcp url --mcpserver-name default
 ```
 
-This prints the workspace's MCP endpoint and ready-to-paste configuration for Claude Code and Claude Desktop. The endpoint carries the tools of every enabled provider and every connected edge, and each call is authorized as you.
+This prints the workspace's MCP endpoint and ready-to-paste configuration, with its long-lived token, for Claude Code, Claude Desktop and Codex. The endpoint carries the tools of every enabled provider and every connected edge, and each call is authorized as you.
 
 ## Security
 
@@ -144,11 +144,40 @@ To report a vulnerability, open a private security advisory on this repository r
 | `faros edge upgrade <name>` | Print upgrade instructions for an edge agent |
 | `faros kubeconfig edge <name>` | Generate a kubeconfig that reaches an edge through the hub |
 | `faros ssh <name> [-- cmd]` | Open a shell or run a command on a server edge |
-| `faros mcp url --name <name>` / `--edge <name>` | Print the workspace or per-edge MCP endpoint |
+| `faros mcp url --mcpserver-name <name>` / `--edge <name>` | Print the workspace or per-edge MCP endpoint |
 | `faros get`, `faros apply` | Read and apply workspace resources |
 | `faros agent join\|run\|install\|uninstall\|upgrade` | Run or install the agent on a cluster or host |
 | `faros dev init\|update\|delete` | Manage a local kind-based environment |
 | `faros get-token` | OIDC token for a kubectl exec credential plugin |
+| `faros env [--json] [--no-mcp]` | Print `HUB`, `CLUSTER`, `ORG`, `WS`, `TOKEN`, `AS`, `MCP_URL`, `MCP_TOKEN` as shell exports |
+| `faros app list\|create\|status\|promote\|publish` | Manage App Studio projects |
+| `faros commit <repositoryRef> [--branch main] [--dry-run]` | Record local git commits through faros (`code__commit_files`) |
+| `faros sandbox sync\|exec\|logs\|restart\|status <instance> [component]` | Drive a development-mode instance through the data plane |
+
+### Building an app from a terminal or an AI agent
+
+These commands call the hub REST and MCP APIs as you, resolving the org and
+workspace UUIDs from the kubeconfig's `faros` context. Every one takes
+`--org` / `--workspace` (display name or UUID) to target another workspace, and
+the `app` and `sandbox` commands take `-o json` for raw output.
+
+```bash
+eval "$(faros env)"                          # exports for curl and scripts
+faros app create shop --template application --display-name Shop --wait
+faros app status shop                        # repository ref, commits, dev URL, promotion, publishing
+gh repo clone <owner>/<repository ref> shop && cd shop
+faros sandbox sync shop-dev api ./api        # authoritative sync of api/ into component "api"
+faros sandbox exec shop-dev api -- node -e 'console.log(1)'   # exits with the command's exit code
+faros sandbox logs shop-dev api -f
+git add -A && git commit -m "Add cart"       # commit locally, never push
+faros commit <repository ref>                # faros records the commit; your branch is reset onto it
+faros app promote shop --hostname-prefix shop   # the prefix is locked after the first promote
+faros app publish shop --mode public         # or restricted, or private
+```
+
+`faros commit` sends only UTF-8 text files and refuses to run when the working
+tree is dirty or `origin/<branch>` has moved past your base. `faros sandbox
+sync` skips non-text files, and `exec` needs a prior sync.
 
 ## Repository layout
 

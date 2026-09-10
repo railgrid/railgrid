@@ -400,8 +400,8 @@ func (s *Server) requireProjectThumbnailCurrentRevision(ctx context.Context, req
 		if err := json.Unmarshal(body, &process); err != nil {
 			return fmt.Errorf("decode component %s process status: %w", firstNonEmpty(component, "default"), err)
 		}
-		if process.SourceRevision != request.sourceRevision {
-			return fmt.Errorf("component %s is serving workspace revision %d, want %d", firstNonEmpty(component, "default"), process.SourceRevision, request.sourceRevision)
+		if want := s.developmentSyncRevision(request.id, target.dataPlaneRefFor(component), request.sourceRevision); process.SourceRevision != want {
+			return fmt.Errorf("component %s is serving workspace revision %d, want %d", firstNonEmpty(component, "default"), process.SourceRevision, want)
 		}
 	}
 	return nil

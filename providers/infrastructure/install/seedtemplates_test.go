@@ -17,6 +17,7 @@ limitations under the License.
 package install
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +31,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/instancespec"
 )
 
 var viteShimPattern = regexp.MustCompile(`printf '%s' '([^']+)' \| base64 -d`)
@@ -77,6 +79,22 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 						t.Errorf("development.components[%s].devImage is empty", name)
 					}
 				}
+			}
+			// The instance controller validates values against this same
+			// compiled contract; the curated sampleValues (plus every schema
+			// default — e.g. connections.* = "" against its pattern) must pass.
+			contract, err := instancespec.NewContract(&tmpl)
+			if err != nil {
+				t.Fatalf("compile instance contract: %v", err)
+			}
+			sample := map[string]any{}
+			if sv := tmpl.Spec.SampleValues; sv != nil && len(sv.Raw) > 0 {
+				if err := json.Unmarshal(sv.Raw, &sample); err != nil {
+					t.Fatalf("decode sampleValues: %v", err)
+				}
+			}
+			if _, errs := contract.ValidateAndDefault(context.Background(), sample); len(errs) != 0 {
+				t.Fatalf("sampleValues (defaulted) fail the template schema: %v", errs)
 			}
 		})
 	}

@@ -22,15 +22,20 @@ package commitbundle
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -38,11 +43,29 @@ const (
 	EnvDir = "CODE_COMMIT_BUNDLE_DIR"
 
 	// Limits keep the tool useful for generated apps while preventing the
-	// provider from being used as an unbounded object store.
-	MaxFiles      = 500
-	MaxFileBytes  = 2 * 1024 * 1024
-	MaxTotalBytes = 16 * 1024 * 1024
+	// provider from being used as an unbounded object store. Every size is
+	// counted in decoded bytes, whatever the wire encoding.
+	MaxFiles = 500
+	// MaxFileBytes caps one UTF-8 text file.
+	MaxFileBytes = 2 * 1024 * 1024
+	// MaxBinaryFileBytes caps one base64-encoded (binary) file.
+	MaxBinaryFileBytes = 25 * 1024 * 1024
+	// MaxTotalBytes caps all files in one bundle.
+	MaxTotalBytes = 48 * 1024 * 1024
 	MaxPathLength = 1024
+
+	// EncodingUTF8 marks content carried verbatim as UTF-8 text (the default).
+	EncodingUTF8 = "utf-8"
+	// EncodingBase64 marks content carried as RFC 4648 standard base64 with
+	// padding; the file's bytes are the decoded content.
+	EncodingBase64 = "base64"
+
+	// DefaultSweepMaxAge is how long an unclaimed bundle may sit on disk. A
+	// live bundle is claimed within minutes (commit wait, rate-limit window,
+	// checkout read), so anything this old was orphaned by a crash.
+	DefaultSweepMaxAge = 24 * time.Hour
+	// DefaultSweepInterval is how often RunSweeper looks for orphans.
+	DefaultSweepInterval = time.Hour
 )
 
 var errBundleNotFound = errors.New("bundle not found")
@@ -53,11 +76,36 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, errBundleNotFound)
 }
 
-// File is one UTF-8 text file from an MCP commit_files call.
+// File is one file from an MCP commit_files call or a repository checkout.
+// Encoding is "" or EncodingUTF8 for text, EncodingBase64 for bytes carried
+// as base64; Content stays in that encoding.
 type File struct {
-	Path    string
-	Content string
-	Delete  bool
+	Path     string
+	Content  string
+	Encoding string
+	Delete   bool
+}
+
+// NormalizeEncoding validates a file encoding and returns its canonical form:
+// "" for UTF-8 text (omitted or "utf-8") and EncodingBase64 for base64.
+func NormalizeEncoding(encoding string) (string, error) {
+	switch encoding {
+	case "", EncodingUTF8:
+		return "", nil
+	case EncodingBase64:
+		return EncodingBase64, nil
+	}
+	return "", fmt.Errorf("unsupported encoding %q: use %q or %q", encoding, EncodingUTF8, EncodingBase64)
+}
+
+// DecodeBase64 strictly decodes standard padded base64. Line breaks and
+// non-canonical padding bits are rejected so every accepted string maps to
+// exactly one byte sequence, whichever decoder later reads it.
+func DecodeBase64(content string) ([]byte, error) {
+	if strings.ContainsAny(content, "\r\n") {
+		return nil, errors.New("base64 content must not contain line breaks")
+	}
+	return base64.StdEncoding.Strict().DecodeString(content)
 }
 
 // FileMeta is file metadata safe to expose in status.
@@ -87,13 +135,15 @@ type Bundle struct {
 	Files  []BundleFile `json:"files"`
 }
 
-// BundleFile is one file entry inside a bundle.
+// BundleFile is one file entry inside a bundle. Content keeps the encoding it
+// arrived in; Size and Digest describe the decoded bytes.
 type BundleFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	Size    int64  `json:"size"`
-	Digest  string `json:"digest"`
-	Delete  bool   `json:"delete,omitempty"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Encoding string `json:"encoding,omitempty"`
+	Size     int64  `json:"size"`
+	Digest   string `json:"digest"`
+	Delete   bool   `json:"delete,omitempty"`
 }
 
 // Store persists and fetches immutable commit bundles.
@@ -156,19 +206,23 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err := ctx.Err(); err != nil {
 		return BundleRef{}, err
 	}
-	data, err := json.MarshalIndent(bundle, "", "  ")
-	if err != nil {
-		return BundleRef{}, fmt.Errorf("marshal bundle: %w", err)
-	}
 	dir := s.scopeDir(key)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return BundleRef{}, fmt.Errorf("create scoped bundle directory: %w", err)
 	}
 	path := s.path(key, bundle.Name)
 	if _, err := os.Stat(path); err == nil {
+		// Reusing an identical bundle: refresh its age so the orphan sweeper
+		// does not reclaim it out from under this new request.
+		now := time.Now()
+		_ = os.Chtimes(path, now, now)
 		return ref, nil
 	} else if !os.IsNotExist(err) {
 		return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return BundleRef{}, fmt.Errorf("marshal bundle: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, "."+bundle.Name+"-*.tmp")
 	if err != nil {
@@ -263,6 +317,76 @@ func (s *FileStore) Delete(ctx context.Context, scope, name, digest string) erro
 	return nil
 }
 
+// Sweep removes bundles (and abandoned temp files) last written more than
+// maxAge before now. Consumers delete bundles once they reach a terminal
+// state; this only reclaims what a crash or an abandoned request left behind.
+// Scope directories are kept: removing one could race a concurrent Put.
+func (s *FileStore) Sweep(now time.Time, maxAge time.Duration) (int, error) {
+	if s == nil {
+		return 0, errors.New("bundle store is nil")
+	}
+	scopes, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0, fmt.Errorf("list bundle directory: %w", err)
+	}
+	cutoff := now.Add(-maxAge)
+	removed := 0
+	var errs []error
+	for _, scope := range scopes {
+		if !scope.IsDir() || !strings.HasPrefix(scope.Name(), "scope-") {
+			continue
+		}
+		dir := filepath.Join(s.dir, scope.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list %s: %w", scope.Name(), err))
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || (!strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".tmp")) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove %s/%s: %w", scope.Name(), name, err))
+				continue
+			}
+			removed++
+		}
+	}
+	return removed, errors.Join(errs...)
+}
+
+// RunSweeper sweeps orphaned bundles once at startup and then every interval
+// until ctx is done.
+func (s *FileStore) RunSweeper(ctx context.Context, interval, maxAge time.Duration) {
+	logger := klog.FromContext(ctx).WithName("commitbundle-sweeper")
+	sweep := func() {
+		removed, err := s.Sweep(time.Now(), maxAge)
+		if err != nil {
+			logger.Error(err, "sweep orphaned bundles", "dir", s.dir)
+		}
+		if removed > 0 {
+			logger.Info("removed orphaned bundles", "count", removed, "maxAge", maxAge)
+		}
+	}
+	sweep()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
 func (s *FileStore) scopeDir(scopeKey string) string {
 	return filepath.Join(s.dir, scopeKey)
 }
@@ -290,7 +414,7 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 
 	seen := map[string]struct{}{}
 	bundleFiles := make([]BundleFile, 0, len(files))
-	var total int64
+	hasDelete := false
 	for _, f := range files {
 		path, err := cleanPath(f.Path)
 		if err != nil {
@@ -300,33 +424,44 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 			return Bundle{}, BundleRef{}, fmt.Errorf("conflicting commit operation for path %q", path)
 		}
 		seen[path] = struct{}{}
-		if f.Delete && f.Content != "" {
-			return Bundle{}, BundleRef{}, fmt.Errorf("deleted file %q cannot include content", path)
+		encoding, err := NormalizeEncoding(f.Encoding)
+		if err != nil {
+			return Bundle{}, BundleRef{}, fmt.Errorf("file %q: %w", path, err)
 		}
-		size := int64(len([]byte(f.Content)))
-		if size > MaxFileBytes {
-			return Bundle{}, BundleRef{}, fmt.Errorf("file %q is too large: %d > %d bytes", path, size, MaxFileBytes)
+		if f.Delete {
+			if f.Content != "" {
+				return Bundle{}, BundleRef{}, fmt.Errorf("deleted file %q cannot include content", path)
+			}
+			encoding = ""
+			hasDelete = true
 		}
-		total += size
-		if total > MaxTotalBytes {
-			return Bundle{}, BundleRef{}, fmt.Errorf("bundle is too large: %d > %d bytes", total, MaxTotalBytes)
-		}
-		digest := ""
-		if !f.Delete {
-			digest = digestBytes([]byte(f.Content))
-		}
-		bundleFiles = append(bundleFiles, BundleFile{
-			Path:    path,
-			Content: f.Content,
-			Size:    size,
-			Digest:  digest,
-			Delete:  f.Delete,
-		})
+		bundleFiles = append(bundleFiles, BundleFile{Path: path, Content: f.Content, Encoding: encoding, Delete: f.Delete})
 	}
 	sort.Slice(bundleFiles, func(i, j int) bool {
 		return bundleFiles[i].Path < bundleFiles[j].Path
 	})
-	digest := bundleDigest(bundleFiles)
+
+	// Sizes and digests cover the decoded bytes. Files are decoded one at a
+	// time, in digest order, so at most one decoded file is held at once.
+	digester := newBundleDigester(hasDelete)
+	var total int64
+	for i := range bundleFiles {
+		f := &bundleFiles[i]
+		data, err := decodedContent(*f)
+		if err != nil {
+			return Bundle{}, BundleRef{}, err
+		}
+		f.Size = int64(len(data))
+		total += f.Size
+		if total > MaxTotalBytes {
+			return Bundle{}, BundleRef{}, fmt.Errorf("bundle is too large: %d > %d bytes", total, MaxTotalBytes)
+		}
+		if !f.Delete {
+			f.Digest = digestBytes(data)
+		}
+		digester.add(f.Path, f.Delete, data)
+	}
+	digest := digester.sum()
 	name := "bundle-" + strings.TrimPrefix(digest, "sha256:")[:24]
 	bundle := Bundle{Name: name, Digest: digest, Size: total, Files: bundleFiles}
 	ref := BundleRef{
@@ -374,32 +509,61 @@ func validateBundleName(name string) error {
 	return nil
 }
 
-func bundleDigest(files []BundleFile) string {
-	h := sha256.New()
-	hasDelete := false
-	for _, f := range files {
-		if f.Delete {
-			hasDelete = true
-			break
+// decodedContent returns a file's bytes, enforcing the per-file cap for its
+// class: MaxFileBytes for UTF-8 text, MaxBinaryFileBytes for base64.
+func decodedContent(f BundleFile) ([]byte, error) {
+	if f.Encoding != EncodingBase64 {
+		if len(f.Content) > MaxFileBytes {
+			return nil, fmt.Errorf("file %q is too large: %d > %d bytes", f.Path, len(f.Content), MaxFileBytes)
 		}
+		return []byte(f.Content), nil
 	}
-	for _, f := range files {
-		_, _ = h.Write([]byte(f.Path))
-		_, _ = h.Write([]byte{0})
-		if hasDelete {
-			if f.Delete {
-				_, _ = h.Write([]byte{0})
-			} else {
-				_, _ = h.Write([]byte{1})
-			}
-			var size [8]byte
-			binary.BigEndian.PutUint64(size[:], uint64(len([]byte(f.Content))))
-			_, _ = h.Write(size[:])
+	// Reject an oversized payload before allocating its decoded copy.
+	if len(f.Content) > base64.StdEncoding.EncodedLen(MaxBinaryFileBytes) {
+		return nil, fmt.Errorf("file %q is too large: more than %d bytes", f.Path, MaxBinaryFileBytes)
+	}
+	data, err := DecodeBase64(f.Content)
+	if err != nil {
+		return nil, fmt.Errorf("file %q has invalid base64 content: %w", f.Path, err)
+	}
+	if len(data) > MaxBinaryFileBytes {
+		return nil, fmt.Errorf("file %q is too large: %d > %d bytes", f.Path, len(data), MaxBinaryFileBytes)
+	}
+	return data, nil
+}
+
+// bundleDigester hashes a bundle's files, in path order, over their decoded
+// bytes. Upsert-only bundles keep the original path/content framing; bundles
+// with deletions add an operation flag and a length prefix so a deletion and
+// an empty file cannot collide.
+type bundleDigester struct {
+	h         hash.Hash
+	hasDelete bool
+}
+
+func newBundleDigester(hasDelete bool) *bundleDigester {
+	return &bundleDigester{h: sha256.New(), hasDelete: hasDelete}
+}
+
+func (d *bundleDigester) add(path string, deleted bool, data []byte) {
+	_, _ = d.h.Write([]byte(path))
+	_, _ = d.h.Write([]byte{0})
+	if d.hasDelete {
+		if deleted {
+			_, _ = d.h.Write([]byte{0})
+		} else {
+			_, _ = d.h.Write([]byte{1})
 		}
-		_, _ = h.Write([]byte(f.Content))
-		_, _ = h.Write([]byte{0})
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(data)))
+		_, _ = d.h.Write(size[:])
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+	_, _ = d.h.Write(data)
+	_, _ = d.h.Write([]byte{0})
+}
+
+func (d *bundleDigester) sum() string {
+	return "sha256:" + hex.EncodeToString(d.h.Sum(nil))
 }
 
 func digestBytes(data []byte) string {

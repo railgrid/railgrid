@@ -309,6 +309,27 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		http.Error(w, "activity marker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	launches := reqBody.Action == ExecActionStart || reqBody.Action == ExecActionRun
+	if launches && reqBody.SourceRevision == 0 && reqBody.SourceDigest == "" {
+		// Default to the revision the component has applied. It is resolved
+		// only after authorization so an unauthorized caller cannot make the
+		// provider reach the runtime.
+		statusTarget, err := ResolveComponentStatusTarget(contract, instance, req.component)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		revision, digest, err := fetchComponentSource(r.Context(), h.runtime, statusTarget)
+		if errors.Is(err, errNoAppliedSource) {
+			http.Error(w, fmt.Sprintf("sourceRevision is required for %s: component %q reports no applied source revision — sync its workspace first (dev_sync, or POST .../components/%s/sync), wait for any dependency reload to finish, then retry; or pass sourceRevision and sourceDigest explicitly", reqBody.Action, req.component, req.component), http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			http.Error(w, "resolve the component's applied source revision: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		reqBody.SourceRevision, reqBody.SourceDigest = revision, digest
+	}
 	call := ExecCall{
 		Workspace:        req.workspace,
 		Resource:         req.resource,
@@ -328,6 +349,8 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	switch reqBody.Action {
 	case ExecActionStart:
 		result, err = h.executor.Start(r.Context(), call)
+	case ExecActionRun:
+		result, err = runExec(r.Context(), h.executor, call)
 	case ExecActionPoll:
 		result, err = h.executor.Poll(r.Context(), call)
 	case ExecActionCancel:
@@ -336,6 +359,12 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	if err != nil {
 		writeExecError(w, err)
 		return
+	}
+	if launches {
+		result.SourceRevision, result.SourceDigest = reqBody.SourceRevision, reqBody.SourceDigest
+		if result.RequestID == "" {
+			result.RequestID = reqBody.RequestID
+		}
 	}
 	limits, err := limitsForCapability(component.Exec)
 	if err != nil {

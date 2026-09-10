@@ -24,8 +24,11 @@ type RateLimitError struct {
 	Err     error
 }
 
+// Error names GitHub, the only registered host, so the message cannot be read
+// as a credential or scope problem.
 func (e *RateLimitError) Error() string {
-	message := fmt.Sprintf("host requests paused until %s", e.RetryAt.UTC().Format(time.RFC3339))
+	wait := max(time.Until(e.RetryAt), 0).Round(time.Second)
+	message := fmt.Sprintf("github: rate limited, resets in %s (at %s)", wait, e.RetryAt.UTC().Format(time.RFC3339))
 	if e.Err != nil {
 		return message + ": " + e.Err.Error()
 	}

@@ -54,11 +54,18 @@ type RepositoryResult struct {
 	SSHURL   string
 }
 
-// RepositoryCommitFile is one text file to write in a repository commit.
+// EncodingBase64 marks RepositoryCommitFile content carried as RFC 4648
+// standard padded base64; the file's bytes are the decoded content.
+const EncodingBase64 = "base64"
+
+// RepositoryCommitFile is one file to write (or delete) in a repository commit,
+// or one file read by a checkout. Encoding "" means Content is the UTF-8 text
+// itself; EncodingBase64 means Content is the base64 of the file's bytes.
 type RepositoryCommitFile struct {
-	Path    string
-	Content string
-	Delete  bool
+	Path     string
+	Content  string
+	Encoding string
+	Delete   bool
 }
 
 // RepositoryCommitInput describes a single commit authored through a backend.
@@ -141,6 +148,22 @@ type PackageLister interface {
 	ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) ([]PackageInfo, error)
 }
 
+type freshContainerPackagesKey struct{}
+
+// WithFreshContainerPackages asks ListPackages to refetch container image
+// listings and their versions instead of reusing a shared cached snapshot, so
+// an image pushed after a recent commit shows up without waiting out the cache.
+// Other ecosystems still use the cache, keeping the extra host traffic small.
+func WithFreshContainerPackages(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshContainerPackagesKey{}, true)
+}
+
+// FreshContainerPackages reports whether ctx carries WithFreshContainerPackages.
+func FreshContainerPackages(ctx context.Context) bool {
+	fresh, _ := ctx.Value(freshContainerPackagesKey{}).(bool)
+	return fresh
+}
+
 // WorkflowRunQuery identifies the CI run to inspect.
 type WorkflowRunQuery struct {
 	// WorkflowFileName is the workflow file (e.g. "faros-app-studio-build.yml").
@@ -189,29 +212,36 @@ type WorkflowDispatcher interface {
 }
 
 // RepositoryCommitter is an OPTIONAL capability for backends that can write
-// text files to a repository without requiring a local git clone.
+// files to a repository without requiring a local git clone.
 type RepositoryCommitter interface {
 	CommitFiles(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, input RepositoryCommitInput) (RepositoryCommitResult, error)
 }
 
-// RepositoryCheckoutInput bounds a text-tree read. Zero limits apply the
-// backend's defaults; the caller (the RepositoryCheckout controller) sets
-// them from the platform's workspace bounds.
+// RepositoryCheckoutInput bounds a tree read. Zero limits apply the backend's
+// defaults; the caller (the RepositoryCheckout controller) sets them from the
+// platform's workspace bounds. Sizes are decoded bytes.
 type RepositoryCheckoutInput struct {
 	// Ref is the branch, tag, or commit SHA to read; empty means the
 	// repository's default branch.
 	Ref string
 	// MaxFiles caps how many files the checkout returns.
 	MaxFiles int
-	// MaxFileBytes caps one file's size; larger files are skipped.
+	// MaxFileBytes caps one UTF-8 text file's size; larger files are skipped.
 	MaxFileBytes int64
+	// IncludeBinary returns binary files as EncodingBase64. When false, binary
+	// files are skipped and the pre-download size check uses MaxFileBytes.
+	IncludeBinary bool
+	// MaxBinaryFileBytes caps one binary file's size when IncludeBinary is
+	// set; larger files are skipped.
+	MaxBinaryFileBytes int64
 	// MaxTotalBytes caps the checkout's total content size; files beyond it
 	// are skipped.
 	MaxTotalBytes int64
 }
 
-// RepositoryCheckoutResult is the text tree a backend read: UTF-8 files plus
-// the paths it skipped (binary, oversized, over the caps).
+// RepositoryCheckoutResult is the tree a backend read: UTF-8 text files
+// verbatim, binary files as EncodingBase64 (only with IncludeBinary), plus the
+// paths it skipped (binary without IncludeBinary, oversized, over the caps).
 type RepositoryCheckoutResult struct {
 	Ref       string
 	CommitSHA string
@@ -220,7 +250,7 @@ type RepositoryCheckoutResult struct {
 }
 
 // RepositoryReader is an OPTIONAL capability for backends that can read a
-// repository's text tree without a local git clone — the CommitFiles flow in
+// repository's tree without a local git clone — the CommitFiles flow in
 // reverse, consumed by App Studio workspace hydration and repo import.
 type RepositoryReader interface {
 	CheckoutFiles(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, input RepositoryCheckoutInput) (RepositoryCheckoutResult, error)

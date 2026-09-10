@@ -20,11 +20,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8stesting "k8s.io/client-go/testing"
@@ -161,5 +164,94 @@ func TestDeleteProjectRetriesCleanupForTerminatingProject(t *testing.T) {
 	}
 	if len(cleaned.Finalizers) != 0 {
 		t.Fatalf("cleanup finalizer after retry = %v", cleaned.Finalizers)
+	}
+}
+
+func TestDeleteProjectRepositoryDeletionIsOptInAndRefusesAdopted(t *testing.T) {
+	const projectUID = "project-current"
+	project := func(adopted bool) *unstructured.Unstructured {
+		typed := &aiv1alpha1.Project{
+			TypeMeta:   metav1.TypeMeta{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project"},
+			ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID(projectUID)},
+			Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{
+				RepositoryRef: "demo-repo", Name: "demo-repo", ConnectionRef: "github", Adopted: adopted,
+			}},
+		}
+		object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(typed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &unstructured.Unstructured{Object: object}
+	}
+	repository := func(adopted bool, claimedBy string) *unstructured.Unstructured {
+		repo := codeRepositoryObject("demo-repo", "demo-repo", "github", true)
+		repo.SetLabels(map[string]string{projectRepositoryProjectLabel: claimedBy})
+		annotations := map[string]string{projectRepositoryProjectAnnotation: claimedBy, projectRepositoryUIDAnnotation: projectUID}
+		if adopted {
+			annotations[projectRepositoryAdoptedAnnotation] = "true"
+		}
+		repo.SetAnnotations(annotations)
+		return repo
+	}
+
+	tests := []struct {
+		name            string
+		query           string
+		project         *unstructured.Unstructured
+		repository      *unstructured.Unstructured
+		failRepoDelete  bool
+		wantCode        int
+		wantBody        string
+		wantRepoDeleted bool
+		wantProjectGone bool
+	}{
+		{name: "default keeps repository", query: "", project: project(false), repository: repository(false, "demo"), wantCode: http.StatusNoContent, wantProjectGone: true},
+		{name: "opt-in deletes created repository", query: "&deleteRepository=true", project: project(false), repository: repository(false, "demo"), wantCode: http.StatusNoContent, wantRepoDeleted: true, wantProjectGone: true},
+		{name: "opt-in refuses adopted binding", query: "&deleteRepository=true", project: project(true), repository: repository(true, "demo"), wantCode: http.StatusConflict, wantBody: "never deletes adopted repositories"},
+		{name: "opt-in refuses adopted repository", query: "&deleteRepository=true", project: project(false), repository: repository(true, "demo"), wantCode: http.StatusConflict, wantBody: "never deletes adopted repositories"},
+		{name: "opt-in refuses foreign repository", query: "&deleteRepository=true", project: project(false), repository: repository(false, "other"), wantCode: http.StatusConflict, wantBody: "is not owned by project"},
+		{name: "opt-in surfaces repository delete failure", query: "&deleteRepository=true", project: project(false), repository: repository(false, "demo"), failRepoDelete: true, wantCode: http.StatusForbidden},
+		{name: "opt-in without repository resource", query: "&deleteRepository=true", project: project(false), wantCode: http.StatusNoContent, wantProjectGone: true},
+		{name: "invalid flag", query: "&deleteRepository=maybe", project: project(false), repository: repository(false, "demo"), wantCode: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objects := []runtime.Object{tt.project}
+			if tt.repository != nil {
+				objects = append(objects, tt.repository)
+			}
+			dyn := newProjectCreationTestDynamicClient(objects...)
+			if tt.failRepoDelete {
+				dyn.PrependReactor("delete", "repositories", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "demo-repo", errors.New("denied"))
+				})
+			}
+			client := asclient.NewFromDynamic(dyn)
+			server := &Server{store: store.NewMemoryStore(), projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+			router := mux.NewRouter()
+			server.Register(router)
+
+			response := publishingDo(t, router, http.MethodDelete, "/api/projects/demo?uid="+projectUID+tt.query, "")
+			if response.Code != tt.wantCode {
+				t.Fatalf("status = %d: %s, want %d", response.Code, response.Body.String(), tt.wantCode)
+			}
+			if !strings.Contains(response.Body.String(), tt.wantBody) {
+				t.Fatalf("body = %s, want %q", response.Body.String(), tt.wantBody)
+			}
+			_, projectErr := client.Projects().Get(context.Background(), "demo", metav1.GetOptions{})
+			if gone := apierrors.IsNotFound(projectErr); gone != tt.wantProjectGone {
+				t.Fatalf("project gone = %t (%v), want %t", gone, projectErr, tt.wantProjectGone)
+			}
+			if tt.repository == nil {
+				return
+			}
+			repo, repoErr := client.Resource(codeRepositoryResource, "").Get(context.Background(), "demo-repo", metav1.GetOptions{})
+			if deleted := apierrors.IsNotFound(repoErr); deleted != tt.wantRepoDeleted {
+				t.Fatalf("repository deleted = %t (%v), want %t", deleted, repoErr, tt.wantRepoDeleted)
+			}
+			if tt.wantProjectGone && !tt.wantRepoDeleted && repo.GetLabels()[projectRepositoryProjectLabel] != "" {
+				t.Fatalf("kept repository labels = %v, want the project claim released", repo.GetLabels())
+			}
+		})
 	}
 }

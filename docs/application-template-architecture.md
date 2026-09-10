@@ -298,7 +298,12 @@ Not faros code — installed via Helm/GitOps on the shared runtime cluster:
 - A **Cloudflare-managed zone** for `<base-domain>`. Per-app DNS records are created
   automatically from each Ingress — there is no wildcard record to pre-provision.
 - **TLS at the Cloudflare edge** (Universal/Edge SSL). Per-app Ingresses need no `tls:` block;
-  there is no cert-manager or wildcard-cert requirement on the cluster.
+  there is no cert-manager or wildcard-cert requirement on the cluster. Universal SSL only
+  covers the zone apex and one level below it, though. If the base domain sits below the zone
+  apex (for example `bob.faros.sh`), app hosts are two levels deep, and each new host waits
+  minutes for its own edge certificate. Add a `*.<base-domain>` edge certificate (Advanced
+  Certificate Manager / Total TLS). See "TLS for the app base domain" in
+  [providers/infrastructure/docs/application-template-architecture.md](../providers/infrastructure/docs/application-template-architecture.md#tls-for-the-app-base-domain).
 
 Documented in `providers/infrastructure/docs/runtime-ingress.md`, including how to swap the
 ingress class for a different controller.

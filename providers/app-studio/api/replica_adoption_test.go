@@ -37,8 +37,17 @@ func TestProjectAdoptionPreservesRetainedSource(t *testing.T) {
 			ctx := context.Background()
 			checkouts := 0
 			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				checkouts++
 				w.Header().Set("Content-Type", "application/json")
+				var rpc struct {
+					Method string `json:"method"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&rpc)
+				if rpc.Method == "tools/list" {
+					// The binary-capability probe is not a checkout.
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}}})
+					return
+				}
+				checkouts++
 				payload := `{"ref":"main","commitSHA":"git-sha","files":[{"path":"index.ts","content":"Git source"}]}`
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": payload}}}})
 			}))

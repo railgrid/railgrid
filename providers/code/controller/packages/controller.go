@@ -53,6 +53,15 @@ import (
 // CODE_PACKAGE_CRAWL_INTERVAL overrides the controller interval, not cache TTL.
 const defaultCrawlInterval = 2 * time.Minute
 
+// After a RepositoryCommit succeeds, CI usually publishes a new image within
+// minutes. For recentCommitWindow the repository is crawled every
+// recentCommitCrawlInterval with fresh container listings (see
+// backend.WithFreshContainerPackages) so the new image is picked up quickly.
+const (
+	recentCommitWindow        = 10 * time.Minute
+	recentCommitCrawlInterval = 30 * time.Second
+)
+
 // Reconciler crawls each Repository's host packages into Package CRs.
 type Reconciler struct {
 	Manager       mcmanager.Manager
@@ -73,6 +82,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Owns(&codev1alpha1.Package{}).
 		Watches(&codev1alpha1.Connection{}, dependencyHandler(false), mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Secret{}, dependencyHandler(true), mcbuilder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&codev1alpha1.RepositoryCommit{}, commitHandler(), mcbuilder.WithPredicates(commitSucceeded)).
 		Complete(r)
 }
 
@@ -134,7 +144,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	infos, err := lister.ListPackages(ctx, conn, cred, &repo)
+	recent := recentlyCommitted(ctx, c, &repo, time.Now())
+	listCtx := ctx
+	if recent {
+		listCtx = backend.WithFreshContainerPackages(ctx)
+	}
+	infos, err := lister.ListPackages(listCtx, conn, cred, &repo)
 	if err != nil {
 		// Preserve observed state. Known host deadlines are scheduled explicitly;
 		// other failures use controller-runtime's exponential workqueue retry.
@@ -148,8 +163,38 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err := r.sync(ctx, c, &repo, infos); err != nil {
 		return ctrl.Result{}, err
 	}
-	logger.V(4).Info("packages crawled", "count", len(infos))
-	return ctrl.Result{RequeueAfter: jitter(r.CrawlInterval, &repo)}, nil
+	logger.V(4).Info("packages crawled", "count", len(infos), "recentCommit", recent)
+	return ctrl.Result{RequeueAfter: r.nextCrawl(&repo, recent)}, nil
+}
+
+// nextCrawl is the polling delay after a successful crawl, shortened while
+// the repository is in its post-commit window.
+func (r *Reconciler) nextCrawl(repo *codev1alpha1.Repository, recentCommit bool) time.Duration {
+	interval := jitter(r.CrawlInterval, repo)
+	if recentCommit && interval > recentCommitCrawlInterval {
+		return recentCommitCrawlInterval
+	}
+	return interval
+}
+
+// recentlyCommitted reports whether a RepositoryCommit into repo succeeded
+// within recentCommitWindow of now. It only tunes polling, so a failed lookup
+// falls back to the normal crawl.
+func recentlyCommitted(ctx context.Context, c client.Client, repo *codev1alpha1.Repository, now time.Time) bool {
+	var commits codev1alpha1.RepositoryCommitList
+	if err := c.List(ctx, &commits, client.MatchingLabels{codev1alpha1.LabelRepository: repo.Name}); err != nil {
+		klog.FromContext(ctx).V(2).Info("packages: list repository commits failed, using normal crawl interval", "repository", repo.Name, "err", err)
+		return false
+	}
+	for _, commit := range commits.Items {
+		if commit.Spec.RepositoryRef != repo.Name || commit.Status.Phase != codev1alpha1.RepositoryCommitPhaseSucceeded || commit.Status.CompletedAt == nil {
+			continue
+		}
+		if now.Sub(commit.Status.CompletedAt.Time) < recentCommitWindow {
+			return true
+		}
+	}
+	return false
 }
 
 // sync reconciles the set of Package CRs owned by repo to exactly match infos:

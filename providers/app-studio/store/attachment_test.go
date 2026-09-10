@@ -497,6 +497,20 @@ func TestValidateAttachmentContentAllowlist(t *testing.T) {
 	if err := ValidateAttachmentContent("notes.md", "text/markdown", []byte("# hello\n")); err != nil {
 		t.Fatal(err)
 	}
+	// Any other type is an opaque file attachment up to AttachmentMaxBytes.
+	if err := ValidateAttachmentContent("jeep.glb", "model/gltf-binary", make([]byte, AttachmentMaxImageBytes+1)); err != nil {
+		t.Fatalf("file attachment: %v", err)
+	}
+	// An image beyond the model-visible bound is stored as an opaque file.
+	if err := ValidateAttachmentContent("hero.png", "image/png", make([]byte, AttachmentMaxImageBytes+1)); err != nil || AttachmentKindFor("image/png", AttachmentMaxImageBytes+1) != AttachmentKindFile {
+		t.Fatalf("large image attachment: %v", err)
+	}
+	if AttachmentKind("model/gltf-binary") != AttachmentKindFile || AttachmentKind("image/gif") != AttachmentKindFile || AttachmentKind("image/png") != AttachmentKindImage || AttachmentKind("text/markdown") != AttachmentKindText {
+		t.Fatal("attachment kinds misclassified")
+	}
+	if err := ValidateAttachmentContent("huge.bin", "application/octet-stream", make([]byte, AttachmentMaxBytes+1)); err == nil {
+		t.Fatal("oversized file attachment accepted")
+	}
 	for _, test := range []struct {
 		name, filename, contentType string
 		data                        []byte
@@ -505,7 +519,7 @@ func TestValidateAttachmentContentAllowlist(t *testing.T) {
 		{"wrong extension", "notes.json", "text/plain", []byte("hello")},
 		{"invalid utf8", "notes.txt", "text/plain", []byte{0xff}},
 		{"path traversal", "../notes.txt", "text/plain", []byte("hello")},
-		{"unsupported type", "movie.mp4", "video/mp4", []byte("video")},
+		{"invalid type", "movie.mp4", "video", []byte("video")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := ValidateAttachmentContent(test.filename, test.contentType, test.data); err == nil {

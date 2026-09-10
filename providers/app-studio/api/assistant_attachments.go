@@ -55,14 +55,17 @@ var (
 )
 
 type attachmentReceiptResponse struct {
-	ID          string     `json:"id"`
-	Filename    string     `json:"filename"`
-	ContentType string     `json:"contentType"`
-	SizeBytes   int64      `json:"sizeBytes"`
-	SHA256      string     `json:"sha256"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	Draft       bool       `json:"draft,omitempty"`
-	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"contentType"`
+	// Kind is "image" or "text" (model-visible content) or "file" (opaque
+	// bytes the model sees as metadata and can import into the workspace).
+	Kind      string     `json:"kind"`
+	SizeBytes int64      `json:"sizeBytes"`
+	SHA256    string     `json:"sha256"`
+	CreatedAt time.Time  `json:"createdAt"`
+	Draft     bool       `json:"draft,omitempty"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 func attachmentReceipt(attachment store.Attachment) attachmentReceiptResponse {
@@ -70,6 +73,7 @@ func attachmentReceipt(attachment store.Attachment) attachmentReceiptResponse {
 		ID:          attachment.ID,
 		Filename:    attachment.Filename,
 		ContentType: attachment.ContentType,
+		Kind:        store.AttachmentKindFor(attachment.ContentType, attachment.SizeBytes),
 		SizeBytes:   attachment.SizeBytes,
 		SHA256:      attachment.SHA256,
 		CreatedAt:   attachment.CreatedAt.UTC(),
@@ -287,11 +291,6 @@ func (s *Server) createProjectAssistantAttachment(w http.ResponseWriter, r *http
 		return
 	}
 	contentType := detectProjectAttachmentContentType(header.Filename, header.Header.Get("Content-Type"), data)
-	contentType, err = store.NormalizeAttachmentContentType(contentType)
-	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
 	if err := store.ValidateAttachmentContent(header.Filename, contentType, data); err != nil {
 		if strings.Contains(err.Error(), "maximum") {
 			writeStatus(w, http.StatusRequestEntityTooLarge, "RequestEntityTooLarge", err.Error())
@@ -479,7 +478,31 @@ func parseClientAttachmentID(r *http.Request) (string, error) {
 	return id, nil
 }
 
+// detectProjectAttachmentContentType returns a normalized media type. Image
+// and text types keep their strict validation downstream (magic bytes,
+// .txt/.md + UTF-8). Anything else — or text that is not a .txt/.md file,
+// such as JSON or a model — becomes an opaque "file" attachment typed from
+// the declared type or extension (application/octet-stream as a fallback).
 func detectProjectAttachmentContentType(filename, declared string, data []byte) string {
+	candidate := projectAttachmentCandidateContentType(filename, declared, data)
+	normalized, err := store.NormalizeAttachmentContentType(candidate)
+	if err != nil {
+		normalized = ""
+	}
+	ext := strings.ToLower(path.Ext(strings.TrimSpace(filename)))
+	if store.AttachmentKind(normalized) == store.AttachmentKindText && ext != ".txt" && ext != ".md" {
+		normalized = ""
+	}
+	if normalized != "" {
+		return normalized
+	}
+	if byExtension, err := store.NormalizeAttachmentContentType(projectFileTypeByExtension(filename)); err == nil && store.AttachmentKind(byExtension) == store.AttachmentKindFile {
+		return byExtension
+	}
+	return "application/octet-stream"
+}
+
+func projectAttachmentCandidateContentType(filename, declared string, data []byte) string {
 	declared = strings.TrimSpace(declared)
 	if declared != "" {
 		if parsed, _, err := mime.ParseMediaType(declared); err == nil && parsed != "application/octet-stream" && parsed != "binary/octet-stream" {

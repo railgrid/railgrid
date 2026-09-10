@@ -432,6 +432,10 @@ func projectEinoAssistantMessagesWithoutAttachments(messages []*schema.Message) 
 					cloned.Content = projectAssistantHistoricalTextAttachmentModelText(receipt)
 					break
 				}
+				if projectAssistantAttachmentIsFile(receipt) {
+					cloned.Content = projectAssistantFileAttachmentModelText(receipt)
+					break
+				}
 			}
 			if len(message.Extra) > 0 {
 				cloned.Extra = make(map[string]any, len(message.Extra))

@@ -33,7 +33,7 @@ const testMCPPath = "/some-cluster/apis/faros.sh/v1alpha1/mcpservers/default/mcp
 
 // allowAll is the verifier the federation-focused tests use so they exercise
 // the aggregate itself rather than bearer verification.
-var allowAll = BearerVerifierFunc(func(*http.Request, string, string, string) error { return nil })
+var allowAll = BearerVerifierFunc(func(*http.Request, string, string, string) (Caller, error) { return Caller{}, nil })
 
 // countingVerifier records every verification attempt and answers with a
 // fixed error (nil = allow).
@@ -43,10 +43,10 @@ type countingVerifier struct {
 	last  struct{ token, cluster, name string }
 }
 
-func (c *countingVerifier) Verify(_ *http.Request, token, cluster, name string) error {
+func (c *countingVerifier) Verify(_ *http.Request, token, cluster, name string) (Caller, error) {
 	c.calls.Add(1)
 	c.last.token, c.last.cluster, c.last.name = token, cluster, name
-	return c.err
+	return Caller{}, c.err
 }
 
 // countingProvider is a fake upstream provider /mcp endpoint that counts how
@@ -81,7 +81,7 @@ func TestGarbageBearerNeverReachesProviders(t *testing.T) {
 	provider, upstream := countingProvider(t)
 	v := &countingVerifier{err: ErrUnauthenticated}
 	h := New(Options{
-		Providers: func(context.Context) []ProviderTarget {
+		Providers: func(context.Context, Caller) []ProviderTarget {
 			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
 		},
 		Verifier: v,
@@ -107,7 +107,7 @@ func TestGarbageBearerNeverReachesProviders(t *testing.T) {
 func TestValidTokenForOtherClusterForbidden(t *testing.T) {
 	provider, upstream := countingProvider(t)
 	h := New(Options{
-		Providers: func(context.Context) []ProviderTarget {
+		Providers: func(context.Context, Caller) []ProviderTarget {
 			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
 		},
 		Verifier: &countingVerifier{err: ErrForbidden},
@@ -126,7 +126,7 @@ func TestValidTokenForOtherClusterForbidden(t *testing.T) {
 func TestVerifierOutageIsNotBypassed(t *testing.T) {
 	provider, upstream := countingProvider(t)
 	h := New(Options{
-		Providers: func(context.Context) []ProviderTarget {
+		Providers: func(context.Context, Caller) []ProviderTarget {
 			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
 		},
 		Verifier: &countingVerifier{err: context.DeadlineExceeded},
@@ -139,7 +139,7 @@ func TestVerifierOutageIsNotBypassed(t *testing.T) {
 	}
 
 	// No verifier at all is the same: fail closed.
-	h = New(Options{Providers: func(context.Context) []ProviderTarget { return nil }})
+	h = New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }})
 	if rr := toolsList(h, "t"); rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("nil verifier: status = %d, want 503", rr.Code)
 	}
@@ -152,7 +152,7 @@ func TestValidTokenProceedsAndIsCached(t *testing.T) {
 	provider, upstream := countingProvider(t)
 	v := &countingVerifier{}
 	h := New(Options{
-		Providers: func(context.Context) []ProviderTarget {
+		Providers: func(context.Context, Caller) []ProviderTarget {
 			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
 		},
 		Verifier: v,
@@ -181,7 +181,7 @@ func TestValidTokenProceedsAndIsCached(t *testing.T) {
 func TestVerificationCacheExpires(t *testing.T) {
 	v := &countingVerifier{}
 	h := New(Options{
-		Providers:      func(context.Context) []ProviderTarget { return nil },
+		Providers:      func(context.Context, Caller) []ProviderTarget { return nil },
 		Verifier:       v,
 		VerifyCacheTTL: time.Nanosecond,
 	})
@@ -200,22 +200,22 @@ func TestVerificationCacheExpires(t *testing.T) {
 // entry is evicted) rather than dropped, so a client that verified a moment
 // ago is not pushed back through online verification on every request.
 func TestVerificationCacheEvictsAtCapacity(t *testing.T) {
-	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll}).(*handler)
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }, Verifier: allowAll}).(*handler)
 	for i := 0; i < maxVerifiedEntries; i++ {
-		h.remember(fmt.Sprintf("bearer-%d|c|n", i))
+		h.remember(fmt.Sprintf("bearer-%d|c|n", i), Caller{})
 	}
 	if n := len(h.verified); n != maxVerifiedEntries {
 		t.Fatalf("cache holds %d entries, want %d", n, maxVerifiedEntries)
 	}
-	h.remember("fresh|c|n")
-	if !h.cached("fresh|c|n") {
+	h.remember("fresh|c|n", Caller{})
+	if _, ok := h.cached("fresh|c|n"); !ok {
 		t.Fatal("a bearer verified at capacity was not cached")
 	}
 	if n := len(h.verified); n != maxVerifiedEntries {
 		t.Fatalf("cache holds %d entries after eviction, want %d", n, maxVerifiedEntries)
 	}
 	// Refreshing a key already present evicts nothing.
-	h.remember("fresh|c|n")
+	h.remember("fresh|c|n", Caller{})
 	if n := len(h.verified); n != maxVerifiedEntries {
 		t.Fatalf("cache holds %d entries after a refresh, want %d", n, maxVerifiedEntries)
 	}
@@ -240,14 +240,14 @@ func TestRateLimitCoversOnlyUncachedVerifications(t *testing.T) {
 	provider, upstream := countingProvider(t)
 	lim := &fixedLimiter{n: 2}
 	h := New(Options{
-		Providers: func(context.Context) []ProviderTarget {
+		Providers: func(context.Context, Caller) []ProviderTarget {
 			return []ProviderTarget{{Name: "infra", MCPURL: provider.URL}}
 		},
-		Verifier: BearerVerifierFunc(func(_ *http.Request, token, _, _ string) error {
+		Verifier: BearerVerifierFunc(func(_ *http.Request, token, _, _ string) (Caller, error) {
 			if token == "good" {
-				return nil
+				return Caller{}, nil
 			}
-			return ErrUnauthenticated
+			return Caller{}, ErrUnauthenticated
 		}),
 		RateLimiter: lim,
 	})
@@ -329,7 +329,7 @@ func jsonrpc(t *testing.T, h http.Handler, method string, params string) (json.R
 // TestAlwaysOnEmptyAggregate is the core guarantee: with zero providers the
 // endpoint still initializes and serves an (empty) tools/list — never 501.
 func TestAlwaysOnEmptyAggregate(t *testing.T) {
-	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll})
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }, Verifier: allowAll})
 
 	if _, code := jsonrpc(t, h, "initialize", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}`); code != http.StatusOK {
 		t.Fatalf("initialize status = %d, want 200 (endpoint must be always-on)", code)
@@ -354,7 +354,7 @@ func TestAlwaysOnEmptyAggregate(t *testing.T) {
 
 // TestUnauthorizedAndBadPath covers the two request-level guards.
 func TestUnauthorizedAndBadPath(t *testing.T) {
-	h := New(Options{Providers: func(context.Context) []ProviderTarget { return nil }, Verifier: allowAll})
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }, Verifier: allowAll})
 
 	noAuth := httptest.NewRequest(http.MethodPost, testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	rr := httptest.NewRecorder()
@@ -394,7 +394,7 @@ func TestFederatesReadyProvider(t *testing.T) {
 	}))
 	defer provider.Close()
 
-	h := New(Options{Providers: func(context.Context) []ProviderTarget {
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget {
 		return []ProviderTarget{{Name: "infra", DisplayName: "Infrastructure", MCPURL: provider.URL}}
 	}, Verifier: allowAll})
 

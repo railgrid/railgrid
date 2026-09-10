@@ -165,6 +165,9 @@ func runServe() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	go vwhealth.Watch(ctx, kcpConfig, endpointSliceName, vwState, vwhealth.DefaultInterval)
+	// Bundles are deleted once consumed; the sweeper reclaims ones a crash or
+	// an abandoned request left behind (they can be tens of MiB each).
+	go bundles.RunSweeper(ctx, commitbundle.DefaultSweepInterval, commitbundle.DefaultSweepMaxAge)
 	defer stop()
 
 	go func() {

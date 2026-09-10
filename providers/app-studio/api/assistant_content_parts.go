@@ -30,7 +30,7 @@ import (
 const (
 	projectAssistantMaxContentParts           = 64
 	projectAssistantMaxAttachmentsPerTurn     = 8
-	projectAssistantMaxAttachmentBytesPerTurn = 20 << 20
+	projectAssistantMaxAttachmentBytesPerTurn = 50 << 20
 	projectAssistantMaxContentPartBytes       = 64 << 10
 	projectAssistantContentPartTextType       = "text"
 	projectAssistantContentPartSkillType      = "skill"

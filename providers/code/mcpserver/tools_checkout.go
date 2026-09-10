@@ -12,6 +12,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -30,13 +31,19 @@ import (
 var repositoryCheckoutsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycheckouts")
 
 type checkoutRepositoryInput struct {
-	RepositoryRef string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to read"`
-	Ref           string `json:"ref,omitempty" jsonschema:"Branch, tag, or commit SHA; defaults to the repository default branch"`
+	RepositoryRef  string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to read"`
+	Ref            string `json:"ref,omitempty" jsonschema:"Branch, tag, or commit SHA; defaults to the repository default branch"`
+	BinaryEncoding string `json:"binaryEncoding,omitempty" jsonschema:"Set to base64 to also receive binary files (images, fonts, archives) as {path, content, encoding: base64} with content the RFC 4648 standard padded base64 of the bytes; limits then are 25 MiB per binary file and 48 MiB in total. Omit it and binary files are skipped and listed in skipped, text files are limited to 16 MiB in total, and no file carries an encoding field"`
 }
 
+// checkoutFileOutput is one checked-out file. Encoding is omitted for UTF-8
+// text (content is the text) and "base64" for binary files (content is the
+// RFC 4648 standard padded base64 of the bytes) — only ever emitted when the
+// caller asked for binaryEncoding=base64.
 type checkoutFileOutput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Encoding string `json:"encoding,omitempty"`
 }
 
 type checkoutRepositoryOutput struct {
@@ -53,20 +60,40 @@ type checkoutRepositoryOutput struct {
 // reverse. The tool creates a RepositoryCheckout CR AS THE CALLER, the
 // controller reads the tree through the git backend into a provider-owned
 // bundle, and the tool returns the bundle's files inline (then reclaims it).
+//
+// The result is returned ONLY as JSON text content, with no structuredContent
+// (hence the untyped output): with a typed output the SDK would carry the
+// whole tree twice — once as structuredContent and again as a text copy —
+// and a checkout can hold up to 48 MiB of files. Every consumer reads the
+// text block (App Studio prefers it; the faros CLI falls back to it).
 func registerCheckoutTools(srv *mcp.Server, deps Deps, ident identity) {
 	yes := true
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "checkout_repository",
-		Title:       "Read a repository's text files",
-		Description: "Read the UTF-8 text tree of a managed Repository at a ref (default branch by default) and return the files inline. Binary and oversized files are skipped and listed. Used to hydrate an App Studio workspace or import an existing repository.",
+		Title:       "Read a repository's files",
+		Description: "Read the tree of a managed Repository at a ref (default branch by default) and return the files inline as JSON text {repositoryRef, name, phase, ref, commitSHA, files:[{path, content, encoding?}], skipped}. Text files are UTF-8 (256 KiB each, 500 files). Binary files are skipped unless binaryEncoding=base64, which returns them with encoding=base64. Files over a limit are skipped and listed. Used to hydrate an App Studio workspace or import an existing repository.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true, OpenWorldHint: &yes},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in checkoutRepositoryInput) (*mcp.CallToolResult, checkoutRepositoryOutput, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in checkoutRepositoryInput) (*mcp.CallToolResult, any, error) {
 		dyn, err := tenantClient(deps, ident)
 		if err != nil {
-			return nil, checkoutRepositoryOutput{}, err
+			return nil, nil, err
 		}
-		return checkoutRepository(ctx, dyn, deps.Bundles, in)
+		_, out, err := checkoutRepository(ctx, dyn, deps.Bundles, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		res, err := checkoutToolResult(out)
+		return res, nil, err
 	})
+}
+
+// checkoutToolResult renders the checkout as a single JSON text block.
+func checkoutToolResult(out checkoutRepositoryOutput) (*mcp.CallToolResult, error) {
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode checkout result: %w", err)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}, nil
 }
 
 func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, in checkoutRepositoryInput) (*mcp.CallToolResult, checkoutRepositoryOutput, error) {
@@ -77,20 +104,32 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 	if in.RepositoryRef == "" {
 		return nil, checkoutRepositoryOutput{}, fmt.Errorf("repositoryRef is required")
 	}
+	var includeBinary bool
+	switch in.BinaryEncoding {
+	case "":
+	case commitbundle.EncodingBase64:
+		includeBinary = true
+	default:
+		return nil, checkoutRepositoryOutput{}, fmt.Errorf("unsupported binaryEncoding %q: use %q or omit it", in.BinaryEncoding, commitbundle.EncodingBase64)
+	}
 	if _, err := getRepository(ctx, dyn, in.RepositoryRef); err != nil {
 		return nil, checkoutRepositoryOutput{}, err
 	}
 
 	spec := map[string]any{"repositoryRef": in.RepositoryRef}
 	putIf(spec, "ref", in.Ref)
+	metadata := map[string]any{
+		"name":   checkoutObjectName(in.RepositoryRef, time.Now()),
+		"labels": map[string]any{codev1alpha1.LabelRepository: in.RepositoryRef},
+	}
+	if includeBinary {
+		metadata["annotations"] = map[string]any{codev1alpha1.AnnotationCheckoutBinaryEncoding: commitbundle.EncodingBase64}
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": codev1alpha1.SchemeGroupVersion.String(),
 		"kind":       "RepositoryCheckout",
-		"metadata": map[string]any{
-			"name":   checkoutObjectName(in.RepositoryRef, time.Now()),
-			"labels": map[string]any{codev1alpha1.LabelRepository: in.RepositoryRef},
-		},
-		"spec": spec,
+		"metadata":   metadata,
+		"spec":       spec,
 	}}
 	created, err := dyn.Resource(repositoryCheckoutsGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
@@ -149,7 +188,14 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 
 	out.Files = make([]checkoutFileOutput, 0, len(bundle.Files))
 	for _, f := range bundle.Files {
-		out.Files = append(out.Files, checkoutFileOutput{Path: f.Path, Content: f.Content})
+		if f.Encoding != "" && !includeBinary {
+			// Safe by construction for callers that did not opt in: they
+			// would write the encoded content as text, so they never see an
+			// encoded file, whatever the bundle holds.
+			out.Skipped = append(out.Skipped, f.Path+" (binary)")
+			continue
+		}
+		out.Files = append(out.Files, checkoutFileOutput{Path: f.Path, Content: f.Content, Encoding: f.Encoding})
 	}
 	return nil, out, nil
 }

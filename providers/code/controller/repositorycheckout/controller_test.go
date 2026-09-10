@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
 	codescheme "github.com/faroshq/provider-code/scheme"
 )
 
@@ -66,5 +67,32 @@ func TestIsTerminal(t *testing.T) {
 	}
 	if !isTerminal(codev1alpha1.RepositoryCheckoutPhaseSucceeded) || !isTerminal(codev1alpha1.RepositoryCheckoutPhaseFailed) {
 		t.Error("terminal phases not reported terminal")
+	}
+}
+
+func TestCheckoutInputOptsIntoBinariesByAnnotation(t *testing.T) {
+	checkout := &codev1alpha1.RepositoryCheckout{Spec: codev1alpha1.RepositoryCheckoutSpec{RepositoryRef: "demo", Ref: "main"}}
+	legacy, err := checkoutInput(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := backend.RepositoryCheckoutInput{Ref: "main", MaxFiles: 500, MaxFileBytes: 256 << 10, MaxTotalBytes: 16 << 20}
+	if legacy != want {
+		t.Fatalf("unannotated input = %+v, want the text-only bounds %+v", legacy, want)
+	}
+
+	checkout.Annotations = map[string]string{codev1alpha1.AnnotationCheckoutBinaryEncoding: "base64"}
+	binary, err := checkoutInput(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = backend.RepositoryCheckoutInput{Ref: "main", MaxFiles: 500, MaxFileBytes: 256 << 10, IncludeBinary: true, MaxBinaryFileBytes: 25 << 20, MaxTotalBytes: 48 << 20}
+	if binary != want {
+		t.Fatalf("annotated input = %+v, want %+v", binary, want)
+	}
+
+	checkout.Annotations[codev1alpha1.AnnotationCheckoutBinaryEncoding] = "hex"
+	if _, err := checkoutInput(checkout); err == nil {
+		t.Fatal("checkoutInput accepted an unsupported binary encoding")
 	}
 }

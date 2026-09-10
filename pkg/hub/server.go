@@ -494,36 +494,24 @@ func (s *Server) Run(ctx context.Context) error {
 	// server when nothing is registered, never edge-dependent. Providers —
 	// including the edges provider — federate in the same way. See
 	// pkg/hub/mcpaggregate.
-	// mcpProviderEnumerator returns the tenant's Ready, MCP-exposing providers.
-	// Shared by the aggregate endpoint (federates their tools per request) and
-	// the REST introspection endpoint (surfaces the same set to the portal).
-	mcpProviderEnumerator := func(ctx context.Context) []mcpaggregate.ProviderTarget {
-		all := providerRegistry.List()
-		out := make([]mcpaggregate.ProviderTarget, 0, len(all))
-		for _, p := range all {
-			if !p.Ready() || p.BackendURL == nil {
-				continue
-			}
-			// Platform providers only. Federation forwards the CALLER's bearer
-			// token to each target's /mcp endpoint, and this enumerator has no
-			// verified tenant context to filter on — so including org-owned
-			// providers would let one Org's backend receive another Org's user
-			// tokens, and would collide on the `<provider>__<tool>` prefix when
-			// two Orgs pick the same provider name. Federating an Org's own
-			// providers needs tenant context plumbed through first.
-			if p.OrgUUID != "" {
-				continue
-			}
-			// A provider's MCP transport is mounted at /mcp under its
-			// backend URL (see providers/*/mcpserver).
-			out = append(out, mcpaggregate.ProviderTarget{
-				Name:        p.Name,
-				DisplayName: p.DisplayName,
-				MCPURL:      strings.TrimRight(p.BackendURL.String(), "/") + "/mcp",
-			})
-		}
-		return out
-	}
+	// mcpProviderEnumerator returns the Ready, MCP-exposing providers visible
+	// to one VERIFIED caller. Shared by the aggregate endpoint (federates their
+	// tools per request) and the MCPServer status controller.
+	//
+	// Security: the enumerator is scoped by the tenant the bearer verifier
+	// resolved from the request's cluster (never by client headers), and lists
+	// reg.ListForOrg(thatOrg) — platform providers plus that Org's own, with an
+	// org copy shadowing the platform provider of the same name. So one Org's
+	// providers never appear to, or receive requests from, another Org's
+	// callers, and `<provider>__<tool>` cannot collide across Orgs. Platform
+	// providers are still dialled directly with the caller's bearer. An
+	// org-owned provider is reached only through backendProxy.OrgProviderRoute
+	// — the same edge hop and delegated-token swap /services/providers/{name}
+	// uses — so it never receives the caller's bearer; when no delegated token
+	// can be minted (ServiceAccount bearer, org-scope cluster, no issuer) the
+	// provider is skipped for that request. See
+	// pkg/hub/mcpaggregate/enumerator.go.
+	mcpProviderEnumerator := mcpaggregate.RegistryEnumerator(providerRegistry, backendProxy, logger)
 	// Every aggregate request is verified against the tenant cluster named in
 	// its path before anything is federated: a TokenReview must prove the
 	// bearer is that MCPServer's own ServiceAccount, or (wired below once the
@@ -670,10 +658,23 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating published-app host resolver: %w", err)
 			}
+			// App access tokens (programmatic access to private apps) are sealed
+			// with a subkey HKDF-derived from the hub's cross-replica secret in
+			// root:faros:system:controllers, so any replica verifies them.
+			appTokenKeys, err := serviceaccounts.NewKCPProofKeySource(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+			if err != nil {
+				return fmt.Errorf("creating app-access token key source: %w", err)
+			}
 			appAuthCfg := appauth.Config{
 				Sessions:     browserSessionStore,
 				SARClient:    sarFactory,
 				InstanceHost: instanceHost,
+				// POST /auth/apps/token authenticates hub bearers with the same
+				// validator that mints browser sessions from a bearer.
+				BearerIdentity:      kcpProxy.BrowserIdentity,
+				IdentityUnavailable: proxy.ErrUserRecordUnavailable,
+				TokenKey:            appTokenKeys.DelegatedProofKey,
+				ClientIP:            func(r *http.Request) string { return proxy.ClientIP(r, trustedProxies) },
 			}
 			if appCodeStore != nil {
 				// authorize and exchange are separate requests that a scaled hub

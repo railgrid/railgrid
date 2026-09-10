@@ -334,6 +334,84 @@ func TestCreateProjectExplicitTemplateTakesPrecedenceOverPreflight(t *testing.T)
 	}
 }
 
+func TestCreateProjectExplicitNameOverridesPreflightRepositoryName(t *testing.T) {
+	client := newProjectCreationTestClient(codeConnectionObjectWithValidated("github", metav1.ConditionTrue))
+	preflight := &projectCreatePreflight{
+		Naming: projectNamingResult{DisplayName: "Pomodoro Focus Timer", RepositoryName: "pomodoro-focus-timer"},
+	}
+	created, err := (&Server{}).createProjectFromRequestWithPreflight(
+		context.Background(),
+		client,
+		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},
+		CreateProjectRequest{Name: "focus-timer", ConnectionRef: "github"},
+		nil,
+		nil,
+		preflight,
+	)
+	if err != nil {
+		t.Fatalf("createProjectFromRequestWithPreflight: %v", err)
+	}
+	if created.Name != "focus-timer" || created.Spec.Repository == nil {
+		t.Fatalf("created project = %s %+v, want focus-timer with a repository", created.Name, created.Spec.Repository)
+	}
+	if created.Spec.Repository.RepositoryRef != "focus-timer" || created.Spec.Repository.Name != "focus-timer" {
+		t.Fatalf("repository = %+v, want the explicit project name, not the preflight suggestion", created.Spec.Repository)
+	}
+}
+
+func TestCreateProjectRepositoryNameCollision(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		body     string
+		wantCode int
+	}{
+		{
+			name:     "explicit name conflicts",
+			body:     `{"name":"focus-timer","displayName":"Focus Timer","connectionRef":"github"}`,
+			wantCode: http.StatusConflict,
+		},
+		{
+			name:     "derived name is suffixed",
+			body:     `{"displayName":"Focus Timer","connectionRef":"github"}`,
+			wantCode: http.StatusCreated,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newProjectCreationTestClient(
+				codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
+				codeRepositoryObject("focus-timer", "focus-timer", "github", true),
+			)
+			server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+			req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(tt.body))
+			setPublishingIdentity(req)
+			response := httptest.NewRecorder()
+			server.createProject(response, req)
+			if response.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d: %s", response.Code, tt.wantCode, response.Body.String())
+			}
+			projects, err := client.Projects().List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantCode == http.StatusConflict {
+				if body := response.Body.String(); !strings.Contains(body, `a code Repository named \"focus-timer\" already exists`) || !strings.Contains(body, "existingRepositoryRef") {
+					t.Fatalf("conflict body = %s, want actionable repository collision message", body)
+				}
+				if len(projects.Items) != 0 {
+					t.Fatalf("projects = %+v, want none after a repository name conflict", projects.Items)
+				}
+				return
+			}
+			if len(projects.Items) != 1 || projects.Items[0].Spec.Repository == nil {
+				t.Fatalf("projects = %+v, want one project with a repository", projects.Items)
+			}
+			if ref := projects.Items[0].Spec.Repository.RepositoryRef; ref == "focus-timer" || !strings.HasPrefix(ref, "focus-timer-") {
+				t.Fatalf("repository ref = %q, want a suffixed free name", ref)
+			}
+		})
+	}
+}
+
 func TestCreateProjectExplicitTemplateFailsClosedBeforeCreation(t *testing.T) {
 	client := newProjectCreationTestClient(
 		codeConnectionObjectWithValidated("github", metav1.ConditionTrue),

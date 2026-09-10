@@ -215,12 +215,14 @@ type pollingLister struct {
 	err   error
 	calls int
 	token string
+	fresh bool
 }
 
 func (b *pollingLister) Name() string { return "github" }
-func (b *pollingLister) ListPackages(_ context.Context, _ *codev1alpha1.Connection, cred backend.Credential, _ *codev1alpha1.Repository) ([]backend.PackageInfo, error) {
+func (b *pollingLister) ListPackages(ctx context.Context, _ *codev1alpha1.Connection, cred backend.Credential, _ *codev1alpha1.Repository) ([]backend.PackageInfo, error) {
 	b.calls++
 	b.token = cred.Token
+	b.fresh = backend.FreshContainerPackages(ctx)
 	return b.infos, b.err
 }
 
@@ -288,6 +290,69 @@ func TestReconcileRetainsLastKnownPackagesOnFailureAndRecovers(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestReconcileFastCrawlAfterRecentCommit(t *testing.T) {
+	now := time.Now()
+	commit := func(name, repositoryRef string, phase codev1alpha1.RepositoryCommitPhase, completed time.Time) *codev1alpha1.RepositoryCommit {
+		c := &codev1alpha1.RepositoryCommit{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{codev1alpha1.LabelRepository: "demo"}},
+			Spec:       codev1alpha1.RepositoryCommitSpec{RepositoryRef: repositoryRef},
+			Status:     codev1alpha1.RepositoryCommitStatus{Phase: phase},
+		}
+		if !completed.IsZero() {
+			c.Status.CompletedAt = &metav1.Time{Time: completed}
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name    string
+		commits []client.Object
+		fast    bool
+	}{
+		{name: "no commits"},
+		{name: "recent success", commits: []client.Object{commit("c1", "demo", codev1alpha1.RepositoryCommitPhaseSucceeded, now.Add(-time.Minute))}, fast: true},
+		{name: "success outside window", commits: []client.Object{commit("c1", "demo", codev1alpha1.RepositoryCommitPhaseSucceeded, now.Add(-recentCommitWindow-time.Second))}},
+		{name: "recent failure", commits: []client.Object{commit("c1", "demo", codev1alpha1.RepositoryCommitPhaseFailed, now.Add(-time.Minute))}},
+		{name: "still running", commits: []client.Object{commit("c1", "demo", codev1alpha1.RepositoryCommitPhaseRunning, time.Time{})}},
+		{name: "label for another repository", commits: []client.Object{commit("c1", "other", codev1alpha1.RepositoryCommitPhaseSucceeded, now.Add(-time.Minute))}},
+		{name: "old and recent", commits: []client.Object{
+			commit("c1", "demo", codev1alpha1.RepositoryCommitPhaseSucceeded, now.Add(-time.Hour)),
+			commit("c2", "demo", codev1alpha1.RepositoryCommitPhaseSucceeded, now.Add(-9*time.Minute)),
+		}, fast: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := testRepo()
+			conn := &codev1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "conn"}, Spec: codev1alpha1.ConnectionSpec{Provider: codev1alpha1.ProviderGitHub, SecretRef: codev1alpha1.LocalSecretReference{Name: "credential", Namespace: "default", Key: "token"}}}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+			c := newFakeClient(append([]client.Object{repo, conn, secret}, tc.commits...)...)
+			b := &pollingLister{}
+			registry := backend.NewRegistry()
+			if err := registry.Register(b); err != nil {
+				t.Fatal(err)
+			}
+			r := &Reconciler{Manager: pollingManager{c: c}, Backends: registry, CrawlInterval: defaultCrawlInterval}
+			result, err := r.Reconcile(context.Background(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: repo.Name}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := jitter(defaultCrawlInterval, repo)
+			if tc.fast {
+				want = recentCommitCrawlInterval
+			}
+			if result.RequeueAfter != want || b.fresh != tc.fast {
+				t.Fatalf("RequeueAfter=%s fresh=%v, want %s fresh=%v", result.RequeueAfter, b.fresh, want, tc.fast)
+			}
+		})
+	}
+}
+
+func TestNextCrawlKeepsShorterConfiguredInterval(t *testing.T) {
+	repo := testRepo()
+	r := &Reconciler{CrawlInterval: 10 * time.Second}
+	if got := r.nextCrawl(repo, true); got != jitter(10*time.Second, repo) {
+		t.Fatalf("nextCrawl = %s, want the configured jittered interval", got)
+	}
 }
 
 func TestCrawlIntervalDefaultsAndOverride(t *testing.T) {

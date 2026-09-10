@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -279,7 +281,7 @@ func TestListingRefreshCoalescesWithoutHoldingRequestGate(t *testing.T) {
 					err    error
 				}
 				run := func(ctx context.Context, done chan<- outcome) {
-					values, err := cachedPackageListing(ctx, b, client, cred, []string{"packages", "alice", "npm"}, fetch)
+					values, err := cachedPackageListing(ctx, b, client, cred, []string{"packages", "alice", "npm"}, false, fetch)
 					done <- outcome{values, err}
 				}
 				leader, waiter, cancelled := make(chan outcome, 1), make(chan outcome, 1), make(chan outcome, 1)
@@ -352,5 +354,79 @@ func TestListingRefreshCoalescesWithoutHoldingRequestGate(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// A fresh request refetches only the container listing and its versions while
+// the shared snapshot is still valid, and republishes the result for others.
+func TestFreshContainerPackagesBypassesListingCache(t *testing.T) {
+	var mu sync.Mutex
+	requests := map[string]int{}
+	tag := "v1"
+	base := pollingRoundTripper(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		key := r.URL.Query().Get("package_type")
+		body := `[]`
+		switch {
+		case r.URL.Path == "/api/v3/users/alice":
+			key, body = "owner", `{"type":"User"}`
+		case strings.HasSuffix(r.URL.Path, "/versions"):
+			key, body = "versions", fmt.Sprintf(`[{"name":"sha256:%s","metadata":{"container":{"tags":[%q]}}}]`, tag, tag)
+		case key == "container" || key == "npm":
+			body = fmt.Sprintf(`[{"name":"app","package_type":%q,"repository":{"name":"demo"}}]`, key)
+		}
+		requests[key]++
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	b, _ := pollingBackend()
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: base})
+	conn := pollingConnection("https://example.test")
+	cred := backend.Credential{Token: "mock"}
+	list := func(ctx context.Context) string {
+		t.Helper()
+		got, err := b.ListPackages(ctx, conn, cred, pollingRepo("demo"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range got {
+			if p.Type == "container" && len(p.Versions) == 1 {
+				return p.Versions[0].Tags[0]
+			}
+		}
+		t.Fatalf("no container versions in %+v", got)
+		return ""
+	}
+	snapshot := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[string]int, len(requests))
+		for k, v := range requests {
+			out[k] = v
+		}
+		return out
+	}
+
+	if got := list(ctx); got != "v1" {
+		t.Fatalf("initial tag = %q", got)
+	}
+	initial := snapshot()
+	mu.Lock()
+	tag = "v2"
+	mu.Unlock()
+	if got := list(ctx); got != "v1" || !reflect.DeepEqual(snapshot(), initial) {
+		t.Fatalf("cached crawl: tag=%q requests=%v, want v1 with no requests", got, snapshot())
+	}
+	if got := list(backend.WithFreshContainerPackages(ctx)); got != "v2" {
+		t.Fatalf("fresh crawl tag = %q, want v2", got)
+	}
+	want := initial
+	want["container"]++
+	want["versions"]++
+	if got := snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fresh crawl requests = %v, want %v (container listing and versions only)", got, want)
+	}
+	if got := list(ctx); got != "v2" || !reflect.DeepEqual(snapshot(), want) {
+		t.Fatalf("fresh result not shared: tag=%q requests=%v", got, snapshot())
 	}
 }

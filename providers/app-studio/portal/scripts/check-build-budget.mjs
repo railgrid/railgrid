@@ -81,5 +81,8 @@ enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipByte
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
 // Shared AgentKit presentation and lazy model settings: measured page path
 // 1,184,698 raw / 330,988 gzip; total assets 1,234,098 raw / 347,897 gzip.
+// Code tab file uploads, binary previews and any-file chat attachments (the
+// Code tab is now a lazy chunk, so the page path shrank): measured page path
+// 1,182,417 raw / 330,228 gzip; total assets 1,257,567 raw / 355,416 gzip.
 enforce('App Studio page path', pageArtifacts, { rawBytes: 1_190_000, gzipBytes: 335_000 })
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_240_000, gzipBytes: 350_000 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_265_000, gzipBytes: 358_000 })

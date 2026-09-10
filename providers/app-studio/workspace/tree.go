@@ -17,7 +17,6 @@ limitations under the License.
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,11 +28,11 @@ import (
 )
 
 const (
-	// These bounds match the Code provider's checkout bundle limits. Keeping
-	// the same ceiling here means a restore cannot accept a tree larger than
-	// the source operation that produced it.
+	// These bounds match the Code provider's checkout bundle limits (decoded
+	// bytes, binaries included). Keeping the same ceiling here means a restore
+	// cannot accept a tree larger than the source operation that produced it.
 	maxWorkspaceTreeFiles = 500
-	maxWorkspaceTreeBytes = 16 << 20
+	maxWorkspaceTreeBytes = 48 << 20
 	treeTransactionPrefix = workspaceTempFilePrefix + "tree-"
 	treeBackupPrefix      = workspaceTempFilePrefix + "tree-backup-"
 )
@@ -48,6 +47,10 @@ var ErrSourceRevisionConflict = errors.New("workspace source revision changed")
 type ReplaceTreeOptions struct {
 	Files                  []File
 	ExpectedSourceRevision *uint64
+	// PreservePaths lists current workspace paths the replacement must leave
+	// untouched even though Files omits them — e.g. files the checkout
+	// skipped (too large, or binaries an older Code provider cannot return).
+	PreservePaths []string
 }
 
 // ReplaceTreeResult describes the paths changed by an exact tree replacement.
@@ -64,7 +67,6 @@ type treeEntry struct {
 	targetPath string
 	operation  ManagedFileOperation
 	content    []byte
-	before     []byte
 	mode       fs.FileMode
 	stagePath  string
 	backupPath string
@@ -121,7 +123,15 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 	if err != nil {
 		return ReplaceTreeResult{}, err
 	}
-	entries, written, deleted, changedPaths, err := planTreeReplacement(files, current)
+	preserve := make(map[string]struct{}, len(opts.PreservePaths))
+	for _, raw := range opts.PreservePaths {
+		clean, err := cleanProjectPath(raw)
+		if err != nil {
+			return ReplaceTreeResult{}, err
+		}
+		preserve[clean] = struct{}{}
+	}
+	entries, written, deleted, changedPaths, err := planTreeReplacement(files, current, preserve)
 	if err != nil {
 		return ReplaceTreeResult{}, err
 	}
@@ -235,8 +245,11 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 	}, nil
 }
 
+// currentTreeFile identifies an existing managed file by content version
+// rather than bytes, so a tree holding large binaries is compared without
+// loading every file into memory.
 type currentTreeFile struct {
-	content []byte
+	version string
 	mode    fs.FileMode
 }
 
@@ -254,7 +267,7 @@ func normalizeTreeFiles(files []File) (map[string]File, error) {
 		if _, exists := result[clean]; exists {
 			return nil, fmt.Errorf("workspace tree contains duplicate path %q", clean)
 		}
-		if err := validateMutationContent(clean, file.Content); err != nil {
+		if err := validateFileBytes(clean, []byte(file.Content)); err != nil {
 			return nil, err
 		}
 		total += len([]byte(file.Content))
@@ -293,11 +306,11 @@ func (s *FileStore) currentTree(ctx context.Context, scope Scope, dir string) (m
 		if err := rejectSymlinkComponents(dir, clean, true); err != nil {
 			return nil, err
 		}
-		content, existed, err := s.readMutationTargetLimited(ctx, scope, clean, MaxWriteBytes)
+		current, err := s.inspectMutationTarget(ctx, scope, clean)
 		if err != nil {
 			return nil, err
 		}
-		if !existed {
+		if !current.existed {
 			return nil, fmt.Errorf("workspace file %q disappeared while preparing replacement", clean)
 		}
 		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(clean)))
@@ -307,12 +320,12 @@ func (s *FileStore) currentTree(ctx context.Context, scope Scope, dir string) (m
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("path %q is not a regular file", clean)
 		}
-		result[clean] = currentTreeFile{content: content, mode: info.Mode().Perm()}
+		result[clean] = currentTreeFile{version: current.version, mode: info.Mode().Perm()}
 	}
 	return result, nil
 }
 
-func planTreeReplacement(files map[string]File, current map[string]currentTreeFile) ([]treeEntry, []string, []string, []string, error) {
+func planTreeReplacement(files map[string]File, current map[string]currentTreeFile, preserve map[string]struct{}) ([]treeEntry, []string, []string, []string, error) {
 	paths := make([]string, 0, len(files)+len(current))
 	seen := make(map[string]struct{}, len(files)+len(current))
 	for filePath := range files {
@@ -344,12 +357,15 @@ func planTreeReplacement(files map[string]File, current map[string]currentTreeFi
 			entries = append(entries, treeEntry{path: filePath, operation: ManagedFileCreate, content: []byte(file.Content), mode: 0o644})
 			written = append(written, filePath)
 			changed = append(changed, filePath)
-		case desired && existed && !bytes.Equal(before.content, []byte(file.Content)):
-			entries = append(entries, treeEntry{path: filePath, operation: ManagedFileReplace, content: []byte(file.Content), before: before.content, mode: before.mode})
+		case desired && existed && before.version != fileVersion([]byte(file.Content)):
+			entries = append(entries, treeEntry{path: filePath, operation: ManagedFileReplace, content: []byte(file.Content), mode: before.mode})
 			written = append(written, filePath)
 			changed = append(changed, filePath)
 		case !desired && existed:
-			entries = append(entries, treeEntry{path: filePath, operation: ManagedFileDelete, before: before.content, mode: before.mode})
+			if _, keep := preserve[filePath]; keep {
+				continue
+			}
+			entries = append(entries, treeEntry{path: filePath, operation: ManagedFileDelete, mode: before.mode})
 			deleted = append(deleted, filePath)
 			changed = append(changed, filePath)
 		}
@@ -387,7 +403,7 @@ func (s *FileStore) verifyTreeBaseline(ctx context.Context, scope Scope, dir str
 	}
 	for filePath, before := range current {
 		after, ok := observed[filePath]
-		if !ok || !bytes.Equal(before.content, after.content) {
+		if !ok || before.version != after.version {
 			return fmt.Errorf("%w: %s", ErrMutationConflict, filePath)
 		}
 	}

@@ -60,10 +60,10 @@ const mcpIdentityNamespace = mcpaggregate.MCPIdentityNamespace
 // enabled providers / changed toolsets without a manual refresh.
 const toolsRefreshInterval = 60 * time.Second
 
-// ProviderEnumerator returns the tenant's Ready, MCP-exposing providers. Wired
-// from the hub's provider registry — the same enumerator the aggregate endpoint
-// federates with.
-type ProviderEnumerator func(ctx context.Context) []mcpaggregate.ProviderTarget
+// ProviderEnumerator returns the Ready, MCP-exposing providers visible to a
+// caller. Wired from the hub's provider registry — the same enumerator the
+// aggregate endpoint federates with (mcpaggregate.RegistryEnumerator).
+type ProviderEnumerator = mcpaggregate.ProviderEnumerator
 
 // Reconciler provisions each MCPServer's identity and publishes its status.
 type Reconciler struct {
@@ -117,8 +117,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	clusterRef := string(req.ClusterName)
-	if path := lookupClusterPath(ctx, c); path != "" {
-		clusterRef = path
+	clusterPath := lookupClusterPath(ctx, c)
+	if clusterPath != "" {
+		clusterRef = clusterPath
 	}
 	srv.Status.URL = apiurl.MCPServerURL(r.hubExternalURL, clusterRef, srv.Name)
 
@@ -162,7 +163,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// set reflects exactly what this server can reach (per-server targeted
 		// tooling). Best-effort: discovery failures leave the last snapshot and
 		// don't fail the reconcile.
-		srv.Status.FederatedProviders = r.discoverTools(ctx, string(req.ClusterName), token)
+		tenantPath := clusterPath
+		if tenantPath == "" {
+			tenantPath = directClusterPath(ctx, kcp)
+		}
+		srv.Status.FederatedProviders = r.discoverTools(ctx, string(req.ClusterName), statusCaller(tenantPath, srv.Name), token)
 		now := metav1.Now()
 		srv.Status.ToolsRefreshedTime = &now
 	}
@@ -183,14 +188,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{RequeueAfter: toolsRefreshInterval}, nil
 }
 
+// statusCaller is the caller status discovery enumerates for: the server's own
+// ServiceAccount, in the tenant its workspace path names. That is what a client
+// holding the server's token gets from the aggregate — the Org's catalog with
+// its shadowing applied, and no org-owned providers, because a ServiceAccount
+// bearer has no human a delegated token could be minted for. When the path is
+// unknown (the lookup failed) the tenant is left empty, which enumerates the
+// platform catalog only: status may then list a platform provider the Org has
+// shadowed, until the next refresh resolves the path.
+func statusCaller(clusterPath, mcpServerName string) mcpaggregate.Caller {
+	caller := mcpaggregate.Caller{ServiceAccount: mcpaggregate.ServiceAccountUsername(mcpServerName)}
+	if orgUUID, wsUUID, ok := mcpaggregate.TenantFromPath(clusterPath); ok {
+		caller.OrgUUID, caller.WorkspaceUUID = orgUUID, wsUUID
+	}
+	return caller
+}
+
 // discoverTools runs federation discovery for one server with its own token and
 // maps the result into the CR status shape. Returns nil when no enumerator is
 // wired (e.g. minimal hubs), so status simply carries no federated providers.
-func (r *Reconciler) discoverTools(ctx context.Context, cluster, token string) []farosv1alpha1.FederatedMCPProvider {
+func (r *Reconciler) discoverTools(ctx context.Context, cluster string, caller mcpaggregate.Caller, token string) []farosv1alpha1.FederatedMCPProvider {
 	if r.enumerate == nil {
 		return nil
 	}
-	targets := r.enumerate(ctx)
+	targets := r.enumerate(ctx, caller)
 	discovered := mcpaggregate.DiscoverFederation(ctx, targets, token, cluster)
 	out := make([]farosv1alpha1.FederatedMCPProvider, 0, len(discovered))
 	for _, p := range discovered {
@@ -312,6 +333,19 @@ func lookupClusterPath(ctx context.Context, c client.Client) string {
 		return ""
 	}
 	return u.GetAnnotations()["kcp.io/path"]
+}
+
+// directClusterPath reads the workspace path off the LogicalCluster singleton
+// through the hub's direct tenant client. The multicluster client addresses
+// the core.faros.sh APIExport virtual workspace, which need not serve
+// core.kcp.io LogicalClusters; status discovery needs the tenant regardless,
+// to apply the Org's provider shadowing. Returns "" on any failure.
+func directClusterPath(ctx context.Context, kcp kcpclientset.Interface) string {
+	lc, err := kcp.CoreV1alpha1().LogicalClusters().Get(ctx, "cluster", metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	return lc.GetAnnotations()["kcp.io/path"]
 }
 
 // setCondition upserts a condition by type.

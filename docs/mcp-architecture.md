@@ -39,9 +39,12 @@ That single endpoint is filled, **per request**, from two sources:
    infrastructure provider, which runs as its own process) has its `/mcp`
    endpoint fetched over HTTP and its tools re-exposed as `<provider>__<tool>`.
 
-The caller's bearer token and tenant are forwarded all the way through, so
-every tool runs **as the caller**, authorized by the caller's RBAC in the
-tenant workspace. There is no provider-wide identity.
+Every tool runs **as the caller**, authorized by the caller's RBAC in the
+tenant workspace. There is no provider-wide identity. Platform providers receive
+the caller's own bearer; an organization's own (bring-your-own) providers
+receive a short-lived delegated token for the same user and workspace instead,
+and never the caller's bearer — see
+[Org-owned providers](#org-owned-bring-your-own-providers).
 
 ---
 
@@ -104,9 +107,15 @@ in an in-memory registry with a `BackendURL` and a heartbeat
 ([`pkg/hub/providers/registry.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/providers/registry.go)). `Provider.Ready()` requires
 valid endpoints and a fresh heartbeat (TTL ~90s).
 
-**Enumeration.** The hub wires a `ProviderEnumerator` into the aggregate
-([`pkg/hub/server.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/server.go) `SetProviderEnumerator`) that returns each
-Ready provider's MCP URL as `BackendURL + "/mcp"`.
+**Enumeration.** The hub wires `mcpaggregate.RegistryEnumerator`
+([`pkg/hub/mcpaggregate/enumerator.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/mcpaggregate/enumerator.go)) into the aggregate. It is
+called with the **verified caller** — the Org, Workspace and user (or
+ServiceAccount) the bearer verifier resolved from the cluster in the request
+path, never anything from request headers — and lists
+`Registry.ListForOrg(caller's Org)`: every platform provider plus that Org's
+own. A platform provider's MCP URL is `BackendURL + "/mcp"`. An org-owned
+provider's is reached over its edge route (below). Targets are sorted by name,
+so the aggregate's tool list is stable.
 
 **Federation.** Per request,
 [`providers/mcp/aggregate/provider_proxy.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
@@ -123,12 +132,64 @@ The provider's own MCP handler — e.g.
 [`providers/infrastructure/mcpserver/server.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
 
+### Org-owned (bring-your-own) providers
+
+An organization can run its own copy of a provider in its own cluster
+([byo-providers.md](./byo-providers.md)) — including one with a platform
+provider's name, e.g. a self-hosted `infrastructure`. The aggregate federates
+those too, under three rules:
+
+1. **Tenant scoping.** Only the caller's own Org's providers are listed. The
+   Org comes from the verifier (the cluster's `kcp.io/path`, checked against the
+   user's Membership or the ServiceAccount's TokenReview in that cluster), so a
+   caller cannot claim another Org, and another Org's tools never appear or
+   receive a request.
+2. **Shadowing.** An Org's provider replaces the platform provider of the same
+   name for that Org, exactly as `/services/providers/{name}` does. At most one
+   `<name>__*` tool set is registered. If the Org's copy cannot be federated
+   for a request (rule 3), the platform copy does **not** come back in its
+   place — the Org replaced it, so its tools would act on the wrong backend.
+3. **No bearer crosses.** An org-owned provider's `BackendURL` names an address
+   inside the tenant's cluster; the hub never dials it. Its `/mcp` is reached
+   through the platform `edges` provider's tunnel via the hub-owned Service
+   (`providers.ProviderProxy.OrgProviderRoute` — the same edge hop and the same
+   delegated-token swap the backend proxy uses for
+   `/services/providers/{name}`). The request carries a **delegated user
+   token** — a ten-minute ServiceAccount token minted in the caller's team
+   workspace for (user, provider), `faros-du-<hash>` — and `X-Faros-User`
+   naming the human. The federation client does not even attach the caller's
+   bearer to such a request, and the transport refuses to send the delegated
+   token anywhere but that provider's edge route. When no delegated token can
+   be minted, the provider is **skipped for that request** (logged at V(1)):
+   - a **ServiceAccount** bearer (the MCPServer's own token from the portal
+     connect snippet, App Studio project identities, other workloads) has no
+     human to delegate for;
+   - an **org-scope** cluster (the Org workspace itself, no team workspace)
+     has nowhere to mint the account;
+   - no issuer wired, mint failure, or an unusable edge route.
+
+   It is never reached with the caller's bearer as a fallback.
+
+Why this is safe: the tuple a delegated token is minted from — Org, Workspace,
+user — is exactly what the verifier proved (membership in that workspace), the
+provider is from that Org's own catalog, and the token is scoped by kcp to that
+one workspace and expires in ten minutes. The worst a tenant-run provider can do
+with it is what the user could already do in that workspace with `kubectl`,
+which is the same bound the backend proxy already accepts for org-owned
+providers.
+
+The MCPServer status controller enumerates as the server's own ServiceAccount in
+the server's tenant: its `status.federatedProviders` reflects the Org's
+shadowing and, for the reason above, lists no org-owned providers.
+
 ## Authentication & identity
 
 This is the part future integrations most need to get right.
 
-The federation client is created with the **caller's** credentials, not the
-hub's or the provider's:
+For a **platform** provider the federation client is created with the
+**caller's** credentials, not the hub's or the provider's (org-owned providers
+get a delegated token instead — see
+[above](#org-owned-bring-your-own-providers)):
 
 ```go
 // providers/mcp/aggregate/provider_proxy.go
@@ -147,9 +208,11 @@ So the identity flows end-to-end:
 AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServer's SA token)
                           │ build one mcp.Server (stateless, per request)
                           ├─ in-binary families ─────▶ edges (agent-proxy / tunnel)
-                          └─ federation: POST {provider BackendURL}/mcp
+                          └─ federation (platform provider): POST {provider BackendURL}/mcp
                                Authorization: Bearer T
                                X-Faros-Tenant: {cluster}
+                             (org-owned provider: POST via edges tunnel,
+                               Authorization: Bearer <delegated token>, never T)
                                     │
                                     ▼
                         out-of-process provider (own /mcp)
@@ -168,8 +231,9 @@ must pass a `SubjectAccessReview` in that same workspace for verb `use` on
 `faros.sh/mcpservers`, restricted to the requested server name (cluster-scoped,
 no namespace). The review uses the identity, groups, UID and extras returned by
 TokenReview. Access is denied unless explicitly allowed; review failures fail
-closed before any federation. The original caller bearer is still forwarded,
-so this permission grants endpoint admission, not downstream provider rights.
+closed before any federation. The original caller bearer is still forwarded to
+platform providers, so this permission grants endpoint admission, not
+downstream provider rights.
 New App Studio project identities receive `use` on `mcpservers/default`; existing
 identity roles are not migrated by this change.
 
@@ -178,9 +242,14 @@ as used by `faros mcp` and the e2e suites) is accepted instead when the hub's
 normal identity path resolves it and the user holds a live Membership covering
 the cluster's Organization or Workspace per the `UserMembershipIndex`. Anything
 else is answered with `401` (unrecognised) or `403` (valid, but for another
-tenant or MCPServer) and no provider is contacted. Successful verifications
-are cached by `sha256(token)+cluster+name` for 60 seconds (including workload
-authorization, so grant revocation takes up to 60 seconds), and uncached
+tenant or MCPServer) and no provider is contacted. A successful verification
+also yields the caller's tenant — the Org and Workspace from the cluster's
+`kcp.io/path` (resolved for ServiceAccount bearers too, only after TokenReview
+passes; a lookup outage is a 503, not a guess) plus the user name for a human
+bearer — which is what provider enumeration is scoped to. Successful
+verifications, with that tenant, are cached by `sha256(token)+cluster+name` for
+60 seconds (including workload authorization and membership, so revocation
+takes up to 60 seconds), and uncached
 attempts are rate-limited per client address with the same limiter that
 protects `/api/auth/token-login`, so the endpoint cannot be used as a token
 oracle against providers.
@@ -216,7 +285,8 @@ Two consequences:
   built per-(tenant, caller) from the request token; the provider's own
   credentials are never used for tenant work.
 - **Federation routes to published endpoints, not backends.** The aggregator
-  reaches each provider through its registered `BackendURL`/`/mcp` surface
+  reaches each platform provider through its registered `BackendURL`/`/mcp`
+  surface, and each org-owned provider through its hub-recorded edge route,
   with the caller's identity forwarded — never into the provider's runtime
   cluster, DB, or internal Services. This is the cross-provider half of the
   platform [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary).
@@ -270,8 +340,9 @@ each provider separately.
    - `registerProviderTools` enumerates Ready providers and federates their
      `/mcp` tools as `<provider>__<tool>`.
 4. The composed server answers `tools/list` / `tools/call`.
-5. Federated `tools/call` is forwarded to the provider's `/mcp` with the
-   caller's bearer token + `X-Faros-Tenant`.
+5. Federated `tools/call` is forwarded to the provider's `/mcp` with
+   `X-Faros-Tenant` and — for a platform provider — the caller's bearer, or —
+   for an org-owned provider — over the edge tunnel with a delegated token.
 
 ## Resilience notes
 
@@ -290,7 +361,10 @@ each provider separately.
 | --- | --- |
 | Aggregate VW handler | `providers/mcp/virtual/builder.go` |
 | Built-in registration / mount prefix | `providers/mcp/manifest.go`, `pkg/apiurl/urls.go` |
-| Hub mounting + provider enumerator | `pkg/hub/server.go` |
+| Hub mounting | `pkg/hub/server.go` |
+| Tenant-scoped provider enumerator | `pkg/hub/mcpaggregate/enumerator.go` |
+| Bearer verification + verified caller | `pkg/hub/mcpaggregate/verifier.go` |
+| Org-owned provider route (edge hop + delegated token) | `pkg/hub/providers/org_provider_route.go`, `pkg/hub/providers/proxy_edge.go` |
 | In-binary family registry | `providers/mcp/aggregate/registry.go` |
 | Aggregate composition | `providers/mcp/aggregate/aggregatemcp.go` |
 | Out-of-process federation | `providers/mcp/aggregate/provider_proxy.go` |

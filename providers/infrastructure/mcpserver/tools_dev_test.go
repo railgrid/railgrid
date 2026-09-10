@@ -12,11 +12,14 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/faroshq/provider-infrastructure/kro"
@@ -101,7 +104,7 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	h := &captureHandler{}
 	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc123xyz", user: "dev@acme.io", token: "tok"}
 
-	body, status, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "simplewebapps", "my-site", "app", "sync", []byte(`{"files":[]}`))
+	body, status, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "simplewebapps", "my-site", "app", "sync", []byte(`{"files":[]}`), nil)
 	if err != nil {
 		t.Fatalf("callDataPlane: %v", err)
 	}
@@ -123,9 +126,161 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	}
 }
 
+func TestCallDataPlaneExtraHeadersCannotOverrideIdentity(t *testing.T) {
+	h := &captureHandler{}
+	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", user: "dev@acme.io", token: "tok"}
+	extra := http.Header{"Idempotency-Key": []string{"key-1"}, "Authorization": []string{"Bearer forged"}}
+	if _, _, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "instances", "x", "app", "exec", []byte(`{}`), extra); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.req.Header.Get("Idempotency-Key"); got != "key-1" {
+		t.Errorf("Idempotency-Key = %q, want key-1", got)
+	}
+	if got := h.req.Header.Values("Authorization"); len(got) != 1 || got[0] != "Bearer tok" {
+		t.Errorf("Authorization = %v, want only the caller bearer", got)
+	}
+}
+
+// scriptedDataPlane answers every data-plane call with a fixed status/body
+// and records each request.
+type scriptedDataPlane struct {
+	status int
+	body   string
+	reqs   []*http.Request
+	bodies []string
+}
+
+func (s *scriptedDataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	s.reqs = append(s.reqs, r)
+	s.bodies = append(s.bodies, string(raw))
+	w.WriteHeader(s.status)
+	_, _ = w.Write([]byte(s.body))
+}
+
+func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
+	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"phase":"Synced","sourceRevision":3}`}
+	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	target := devTarget{resource: "instances", components: devComponentPaths(map[string]string{"backend": "api", "frontend": "web"})}
+	routed := routeDevSyncFiles([]devSyncFile{{Path: "web/src/App.jsx", Content: "x"}}, target.components)
+
+	out, err := pushDevSync(context.Background(), dp, ident, target, "my-app", routed, "auto")
+	if err != nil {
+		t.Fatalf("pushDevSync: %v", err)
+	}
+	if len(dp.reqs) != 1 || dp.reqs[0].URL.Path != "/dataplane/clusters/abc/instances/my-app/components/frontend/sync" {
+		t.Fatalf("sync calls = %d (first %v), want only frontend", len(dp.reqs), dp.reqs)
+	}
+	if _, called := out["backend"]; called || out["frontend"].Files != 1 {
+		t.Fatalf("sync output = %+v, want only frontend with 1 file", out)
+	}
+	if !strings.Contains(string(out["frontend"].Response), `"sourceRevision":3`) {
+		t.Errorf("frontend response = %s, want the agent's sync evidence passed through", out["frontend"].Response)
+	}
+}
+
+func TestRunDevExecUsesRunActionAndAppliedRevision(t *testing.T) {
+	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"sessionID":"s1","requestID":"key-1","state":"succeeded","exitCode":0,"stdout":"ok\n","sourceRevision":4,"sourceDigest":"abc"}`}
+	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	out, err := runDevExec(context.Background(), dp, ident, "instances", "my-app", "backend", devExecInput{
+		Argv: []string{"sh", "-c", "npm test"}, Workdir: " src ", TimeoutSeconds: 30, IdempotencyKey: "key-1",
+	})
+	if err != nil {
+		t.Fatalf("runDevExec: %v", err)
+	}
+	if len(dp.reqs) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(dp.reqs))
+	}
+	req := dp.reqs[0]
+	if req.Method != http.MethodPost || req.URL.Path != "/dataplane/clusters/abc/instances/my-app/components/backend/exec" {
+		t.Fatalf("exec request = %s %s", req.Method, req.URL.Path)
+	}
+	if got := req.Header.Get("Idempotency-Key"); got != "key-1" {
+		t.Errorf("Idempotency-Key = %q, want key-1", got)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(dp.bodies[0]), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["action"] != "run" || sent["workdir"] != "src" || sent["timeoutSeconds"] != float64(30) {
+		t.Errorf("exec body = %v, want action run with workdir and timeout", sent)
+	}
+	if _, has := sent["sourceRevision"]; has {
+		t.Errorf("exec body = %v, want no sourceRevision so the applied revision is used", sent)
+	}
+	if out.Instance != "my-app" || out.Component != "backend" || out.State != "succeeded" || out.ExitCode == nil || *out.ExitCode != 0 || out.Stdout != "ok\n" || out.SourceRevision != 4 || out.Hint != "" {
+		t.Errorf("exec output = %+v", out)
+	}
+}
+
+func TestRunDevExecGeneratesNoKeyAndHintsWhileRunning(t *testing.T) {
+	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"sessionID":"s1","requestID":"generated","state":"running"}`}
+	ident := identity{clusterID: "abc", token: "tok"}
+	out, err := runDevExec(context.Background(), dp, ident, "instances", "my-app", "backend", devExecInput{Argv: []string{"sleep", "100"}})
+	if err != nil {
+		t.Fatalf("runDevExec: %v", err)
+	}
+	if got := dp.reqs[0].Header.Get("Idempotency-Key"); got != "" {
+		t.Errorf("Idempotency-Key = %q, want none (the provider generates one)", got)
+	}
+	if !strings.Contains(out.Hint, "generated") || !strings.Contains(out.Hint, "dev_exec") {
+		t.Errorf("running hint = %q, want guidance to re-call dev_exec with the returned requestID", out.Hint)
+	}
+}
+
+func TestRunDevExecRejectsEmptyArgvAndSurfacesErrors(t *testing.T) {
+	dp := &scriptedDataPlane{status: http.StatusBadRequest, body: "sourceRevision is required for run: sync first"}
+	ident := identity{clusterID: "abc", token: "tok"}
+	if _, err := runDevExec(context.Background(), dp, ident, "instances", "x", "app", devExecInput{}); err == nil || !strings.Contains(err.Error(), "argv is required") {
+		t.Fatalf("empty argv error = %v", err)
+	}
+	if len(dp.reqs) != 0 {
+		t.Fatal("empty argv reached the data plane")
+	}
+	if _, err := runDevExec(context.Background(), dp, ident, "instances", "x", "app", devExecInput{Argv: []string{"true"}}); err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "sync first") {
+		t.Fatalf("data-plane error = %v, want status and message", err)
+	}
+}
+
+func TestDevExecToolIsRegisteredAsDestructive(t *testing.T) {
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	registerDevTools(srv, Deps{}, identity{})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "dev_exec" {
+			continue
+		}
+		if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint || tool.Annotations.IdempotentHint {
+			t.Fatalf("dev_exec annotations = %+v, want destructive and not idempotent", tool.Annotations)
+		}
+		for _, want := range []string{"PORT", "NOT the app's own environment", "no shell", "sh\",\"-c"} {
+			if !strings.Contains(tool.Description, want) && !strings.Contains(strings.ToLower(tool.Description), strings.ToLower(want)) {
+				t.Errorf("dev_exec description lacks %q", want)
+			}
+		}
+		return
+	}
+	t.Fatal("dev_exec is not registered")
+}
+
 func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 	h := &captureHandler{}
-	_, _, err := callDataPlane(context.Background(), h, identity{token: "tok"}, http.MethodGet, "simplewebapps", "x", "app", "log", nil)
+	_, _, err := callDataPlane(context.Background(), h, identity{token: "tok"}, http.MethodGet, "simplewebapps", "x", "app", "log", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "X-Faros-Cluster") {
 		t.Fatalf("missing cluster ID must fail with an addressing error, got %v", err)
 	}
@@ -254,4 +409,153 @@ func TestTemplateDevelopmentFromSpecCarriesRuntimeContract(t *testing.T) {
 	if got != want {
 		t.Errorf("backend component = %#v, want %#v", got, want)
 	}
+}
+
+// verbDataPlane answers data-plane calls per "<component>/<verb>" and records
+// every request as "METHOD <component>/<verb>" plus its body.
+type verbDataPlane struct {
+	responses map[string]scriptedResponse
+	calls     []string
+	bodies    map[string]string
+}
+
+type scriptedResponse struct {
+	status int
+	body   string
+}
+
+func (v *verbDataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_, rest, _ := strings.Cut(r.URL.Path, "/components/")
+	raw, _ := io.ReadAll(r.Body)
+	v.calls = append(v.calls, r.Method+" "+rest)
+	if v.bodies == nil {
+		v.bodies = map[string]string{}
+	}
+	v.bodies[rest] = string(raw)
+	response, ok := v.responses[rest]
+	if !ok {
+		http.Error(w, "method "+r.Method+" not allowed for verb "+rest, http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(response.status)
+	_, _ = w.Write([]byte(response.body))
+}
+
+func TestNormalizeDevSyncFiles(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 0x00, 0xff}
+	encoded := base64.StdEncoding.EncodeToString(png)
+	got, err := normalizeDevSyncFiles([]devSyncFile{
+		{Path: "web/a.txt", Content: "a", Encoding: "utf-8"},
+		{Path: "web/b.txt", Content: "b"},
+		{Path: "web/logo.png", Content: encoded, Encoding: "base64"},
+	})
+	if err != nil {
+		t.Fatalf("normalizeDevSyncFiles: %v", err)
+	}
+	if got[0].Encoding != "" || got[1].Encoding != "" || got[2].Encoding != "base64" || got[2].Content != encoded {
+		t.Fatalf("normalized = %+v, want text without encoding and base64 passed through verbatim", got)
+	}
+
+	tooMany := make([]devSyncFile, devSyncMaxFiles+1)
+	for i := range tooMany {
+		tooMany[i] = devSyncFile{Path: "f", Content: "x"}
+	}
+	half := strings.Repeat("a", devSyncMaxBytes/2)
+	for name, tc := range map[string]struct {
+		files []devSyncFile
+		want  string
+	}{
+		"unknown encoding":  {[]devSyncFile{{Path: "a.bin", Content: "00", Encoding: "hex"}}, "unsupported encoding"},
+		"invalid base64":    {[]devSyncFile{{Path: "a.bin", Content: "@@@@", Encoding: "base64"}}, "invalid base64"},
+		"line breaks":       {[]devSyncFile{{Path: "a.bin", Content: "AAAA\nAAAA", Encoding: "base64"}}, "line breaks"},
+		"binary file bytes": {[]devSyncFile{{Path: "a.glb", Content: base64.StdEncoding.EncodeToString(make([]byte, devSyncMaxFileBytes+1)), Encoding: "base64"}}, "per-file limit"},
+		"decoded total":     {[]devSyncFile{{Path: "a", Content: half}, {Path: "b", Content: half}, {Path: "c", Content: "x"}}, "limit (decoded)"},
+		"file count":        {tooMany, "file limit"},
+	} {
+		if _, err := normalizeDevSyncFiles(tc.files); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+	// The cap is on decoded bytes: base64 expansion alone must not reject a
+	// payload whose decoded size fits.
+	fits := base64.StdEncoding.EncodeToString(make([]byte, devSyncMaxFileBytes))
+	if _, err := normalizeDevSyncFiles([]devSyncFile{{Path: "a.glb", Content: fits, Encoding: "base64"}, {Path: "b.txt", Content: strings.Repeat("b", devSyncMaxBytes-devSyncMaxFileBytes)}}); err != nil {
+		t.Fatalf("payload at the decoded limit rejected: %v", err)
+	}
+}
+
+func TestDevSyncBinaryFilesAreGatedOnAgentSyncEncodings(t *testing.T) {
+	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	target := devTarget{resource: "instances", components: devComponentPaths(map[string]string{"api": "api", "web": "web"})}
+	logo := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', 0x00, 0xff})
+	files, err := normalizeDevSyncFiles([]devSyncFile{
+		{Path: "web/src/App.jsx", Content: "export default 1"},
+		{Path: "web/public/logo.png", Content: logo, Encoding: "base64"},
+		{Path: "api/index.js", Content: "x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed := routeDevSyncFiles(files, target.components)
+
+	t.Run("supported", func(t *testing.T) {
+		dp := &verbDataPlane{responses: map[string]scriptedResponse{
+			"web/process": {http.StatusOK, `{"configured":true,"syncEncodings":["utf-8","base64"]}`},
+			"web/sync":    {http.StatusOK, `{"phase":"Synced"}`},
+			"api/sync":    {http.StatusOK, `{"phase":"Synced"}`},
+		}}
+		if err := requireDevSyncEncodings(context.Background(), dp, ident, target, "my-app", routed); err != nil {
+			t.Fatalf("requireDevSyncEncodings: %v", err)
+		}
+		if len(dp.calls) != 1 || dp.calls[0] != "GET web/process" {
+			t.Fatalf("status calls = %v, want only web (api has no binary files)", dp.calls)
+		}
+		if _, err := pushDevSync(context.Background(), dp, ident, target, "my-app", routed, "auto"); err != nil {
+			t.Fatalf("pushDevSync: %v", err)
+		}
+		var sent devSandboxRequest
+		if err := json.Unmarshal([]byte(dp.bodies["web/sync"]), &sent); err != nil {
+			t.Fatal(err)
+		}
+		want := []devSyncFile{{Path: "src/App.jsx", Content: "export default 1"}, {Path: "public/logo.png", Content: logo, Encoding: "base64"}}
+		if len(sent.Files) != 2 || sent.Files[0] != want[0] || sent.Files[1] != want[1] {
+			t.Fatalf("web sync files = %+v, want %+v", sent.Files, want)
+		}
+		if strings.Contains(dp.bodies["api/sync"], "encoding") {
+			t.Errorf("text-only sync carries an encoding field: %s", dp.bodies["api/sync"])
+		}
+	})
+
+	for name, response := range map[string]*scriptedResponse{
+		"old agent":        {http.StatusOK, `{"configured":true,"running":true}`},
+		"no status verb":   nil,
+		"status unhealthy": {http.StatusBadGateway, "runtime supervisor unavailable"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dp := &verbDataPlane{responses: map[string]scriptedResponse{}}
+			if response != nil {
+				dp.responses["web/process"] = *response
+			}
+			err := requireDevSyncEncodings(context.Background(), dp, ident, target, "my-app", routed)
+			if err == nil || !strings.Contains(err.Error(), "web/public/logo.png") || !strings.Contains(err.Error(), `component "web"`) || !strings.Contains(err.Error(), "nothing was synced") {
+				t.Fatalf("err = %v, want a refusal naming web/public/logo.png", err)
+			}
+			if strings.Contains(err.Error(), "App.jsx") {
+				t.Errorf("err names text files that could be sent: %v", err)
+			}
+			for _, call := range dp.calls {
+				if strings.HasSuffix(call, "/sync") {
+					t.Fatalf("a sync was sent despite the refusal: %v", dp.calls)
+				}
+			}
+		})
+	}
+
+	t.Run("text only never checks status", func(t *testing.T) {
+		dp := &verbDataPlane{}
+		textOnly := routeDevSyncFiles([]devSyncFile{{Path: "web/a.txt", Content: "a"}}, target.components)
+		if err := requireDevSyncEncodings(context.Background(), dp, ident, target, "my-app", textOnly); err != nil || len(dp.calls) != 0 {
+			t.Fatalf("text-only gating = %v with calls %v, want no status call", err, dp.calls)
+		}
+	})
 }

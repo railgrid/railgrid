@@ -66,6 +66,10 @@ enabling secure workload deployment across distributed edges.`,
 		newVersionCommand(),
 		newSSHCommand(),
 		newMCPCommand(),
+		newEnvCommand(),
+		newCommitCommand(),
+		newSandboxCommand(),
+		newAppCommand(),
 		devCmd,
 	)
 

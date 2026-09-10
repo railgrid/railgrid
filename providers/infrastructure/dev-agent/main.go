@@ -22,10 +22,12 @@ You may obtain a copy of the License at
 //	GET  /healthz  liveness; no auth.
 //	GET  /readyz   coordinator readiness; no auth.
 //	POST /sync     write/delete workspace files; restart: ""|"auto"|"always".
+//	               File entries carry encoding "utf-8" (default) or "base64".
 //	POST /restart  stop + start the dev process.
 //	POST /env      set non-secret env for the dev process; optional restart.
 //	GET  /logs     current dev-process attempt output (text/plain).
-//	GET  /status   current child-process and declared-port readiness (JSON).
+//	GET  /status   current child-process and declared-port readiness (JSON),
+//	               plus syncEncodings, the /sync encodings this agent decodes.
 //
 // Every endpoint except /healthz and /readyz requires X-Sandbox-Control-Token (constant-
 // time compared against FAROS_DEV_CONTROL_TOKEN, read once then cleared).
@@ -59,6 +61,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"log"
@@ -114,6 +117,7 @@ type agentConfig struct {
 	WorkDir              string
 	StartCommand         string
 	Port                 string
+	Component            string // FAROS_COMPONENT; only the executor exposes it to commands
 	ControlToken         string
 	ReloadStrategy       string // "process" (default) | "container"
 	ReloadRules          []reloadRule
@@ -411,7 +415,12 @@ func runRuntimeSupervisor(ctx context.Context, cfg *agentConfig) error {
 }
 
 func runStatelessExecutor(ctx context.Context, cfg *agentConfig) error {
-	srv := &http.Server{Addr: defaultExecutorAddr, Handler: &statelessExecutor{workspace: cfg.WorkDir, exit: os.Exit}, ReadHeaderTimeout: 10 * time.Second}
+	executor := &statelessExecutor{
+		workspace: cfg.WorkDir,
+		env:       execContext{Port: cfg.Port, Component: cfg.Component},
+		exit:      os.Exit,
+	}
+	srv := &http.Server{Addr: defaultExecutorAddr, Handler: executor, ReadHeaderTimeout: 10 * time.Second}
 	return serveUntilDone(ctx, srv, nil)
 }
 
@@ -667,6 +676,7 @@ func configFromEnv() (*agentConfig, error) {
 		WorkDir:                   workdir,
 		StartCommand:              strings.TrimSpace(os.Getenv("FAROS_DEV_START_COMMAND")),
 		Port:                      strings.TrimSpace(os.Getenv("FAROS_DEV_PORT")),
+		Component:                 strings.TrimSpace(os.Getenv("FAROS_COMPONENT")),
 		ControlToken:              token,
 		ReloadStrategy:            strategy,
 		ReloadRules:               rules,
@@ -775,9 +785,46 @@ func matchAny(pattern string, changed []string) bool {
 	return false
 }
 
+const (
+	// syncRequestMaxBytes bounds one /sync JSON body. It is sized for the
+	// decoded limits below after base64 expansion (4/3) plus JSON framing;
+	// overflow is a 413, never a silent truncation.
+	syncRequestMaxBytes = 96 << 20
+	// syncMaxFiles, syncMaxFileBytes, and syncMaxTotalBytes bound one sync
+	// request in DECODED bytes, whatever the wire encoding.
+	syncMaxFiles      = 500
+	syncMaxFileBytes  = 25 << 20
+	syncMaxTotalBytes = 48 << 20
+
+	syncEncodingUTF8   = "utf-8"
+	syncEncodingBase64 = "base64"
+)
+
+// syncEncodings is advertised by GET /status so senders can tell whether this
+// agent decodes base64 entries (an older agent would write the base64 text
+// itself as the file content).
+var syncEncodings = []string{syncEncodingUTF8, syncEncodingBase64}
+
+// errSyncTooLarge marks a sync request that exceeds a decoded-size or
+// file-count limit (HTTP 413).
+var errSyncTooLarge = errors.New("sync request too large")
+
+// syncFile is one file entry on the /sync wire.
 type syncFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// Encoding is "utf-8" (the default when empty) or "base64" (RFC 4648
+	// standard alphabet with padding). Sizes, limits, and digests are always
+	// computed over the decoded bytes.
+	Encoding string `json:"encoding,omitempty"`
+}
+
+// decodedSyncFile is a sync entry after strict decoding: Path is cleaned and
+// Content holds the exact bytes to write.
+type decodedSyncFile struct {
+	Path    string
+	Content []byte
+	Binary  bool // sent as base64
 }
 
 type syncRequest struct {
@@ -897,13 +944,32 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
+	// The body is read and decoded before the mutation lock is taken so a
+	// slow upload never blocks exec or other workspace operations.
+	r.Body = http.MaxBytesReader(w, r.Body, syncRequestMaxBytes)
 	var req syncRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, fmt.Sprintf("sync request body exceeds %d bytes; send fewer or smaller files per request", syncRequestMaxBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	files, err := decodeSyncFiles(req.Files, true)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errSyncTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	// Only the decoded bytes are used from here on; drop the encoded copies.
+	req.Files = nil
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	root, err := openWorkspaceRoot(s.config.WorkDir)
 	if err != nil {
 		http.Error(w, "open workspace: "+err.Error(), http.StatusInternalServerError)
@@ -917,14 +983,11 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	previous, found, err := readWorkspaceManifest(root)
 	if err != nil {
-		if req.SourceRevision == 0 && strings.TrimSpace(req.SourceDigest) == "" {
-			http.Error(w, "read workspace manifest: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
 		// A protected manifest is synchronization metadata, not source of truth.
 		// If it is corrupted, an authoritative full-file sync can safely rebuild
 		// it, but must not delete paths that are no longer known to be managed.
-		log.Printf("workspace manifest is invalid; rebuilding from authoritative sync: %v", err)
+		// A plain sync rebuilds it from the paths it writes.
+		log.Printf("workspace manifest is invalid; rebuilding from sync: %v", err)
 		previous, found = workspaceManifest{}, false
 	}
 	var incomingPaths map[string]struct{}
@@ -944,16 +1007,12 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		cleanDeletePaths = append(cleanDeletePaths, clean)
 	}
 	if authoritative {
-		incomingPaths, err = validateSyncFiles(req.Files)
+		incomingPaths, err = validateAuthoritativeSyncFiles(files)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		gotDigest, err := digestSyncFiles(req.Files)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		gotDigest := digestDecodedSyncFiles(files)
 		if normalizeSourceDigest(req.SourceDigest) != gotDigest {
 			http.Error(w, "sourceDigest does not match the supplied workspace files", http.StatusConflict)
 			return
@@ -973,19 +1032,12 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	changed := make([]string, 0, len(req.Files))
-	for _, f := range req.Files {
-		clean, err := cleanWorkspacePath(f.Path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if authoritative {
-			if err := validateManagedWorkspacePath(clean); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
+	changed := make([]string, 0, len(files))
+	written := make([]string, 0, len(files))
+	for _, f := range files {
+		// Paths were cleaned by decodeSyncFiles and, for authoritative syncs,
+		// checked against reserved components by validateAuthoritativeSyncFiles.
+		clean := f.Path
 		if err := ensureExecPathNoSymlink(root, clean, false); err != nil {
 			http.Error(w, fmt.Sprintf("write %q: %v", clean, err), http.StatusConflict)
 			return
@@ -994,7 +1046,8 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("write %q: %v", clean, err), http.StatusConflict)
 			return
 		}
-		content := []byte(f.Content)
+		written = append(written, clean)
+		content := f.Content
 		if !workspaceFileContentChanged(root, clean, content) {
 			continue
 		}
@@ -1036,8 +1089,27 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	// first (dependency installs), then restart per policy/strategy.
 	touched := append(append([]string{}, changed...), deleted...)
 	ruleCommands := matchReloadRules(s.config.ReloadRules, touched)
-	if authoritative && found {
+	if found {
+		// Unfinished commands from an earlier sync (failed, or never run
+		// because no restart was requested) are carried until they succeed,
+		// for plain and authoritative syncs alike.
 		ruleCommands = mergeReloadCommands(previous.PendingReloadCommands, ruleCommands)
+	}
+	// pending is what remains to run after this sync: every rule command until
+	// a reload runs them successfully.
+	pending := ruleCommands
+	// stampPlain records the plain sync's result as a new applied revision so
+	// exec (and /status) keep working after plain syncs. See
+	// stampPlainSyncManifest for the App Studio revision caveat.
+	stampPlain := func(pendingCommands []string) error {
+		manifest, stamped, err := stampPlainSyncManifest(root, previous, found, written, cleanDeletePaths, pendingCommands)
+		if err != nil {
+			return err
+		}
+		if stamped {
+			resp.SourceRevision, resp.SourceDigest = manifest.SourceRevision, manifest.SourceDigest
+		}
+		return nil
 	}
 	if authoritative {
 		appliedManifest.PendingReloadCommands = append([]string(nil), ruleCommands...)
@@ -1060,7 +1132,7 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// package-lock.json (or fail after doing so), so restore the exact
 			// authoritative bundle and verify the original manifest before any
 			// restart or response is accepted.
-			if err := restoreAuthoritativeWorkspaceFiles(root, req.Files); err != nil {
+			if err := restoreAuthoritativeWorkspaceFiles(root, files); err != nil {
 				http.Error(w, "restore authoritative workspace after reload: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -1082,6 +1154,12 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// (the dev process keeps running against the old dependencies). The
 			// authoritative source has already been restored above.
 			resp.ReloadError = reloadErr.Error()
+			if !authoritative {
+				if err := stampPlain(pending); err != nil {
+					http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -1091,6 +1169,17 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "clear completed workspace reload: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+		}
+		// The rule commands (including carried ones) ran successfully.
+		pending = nil
+	}
+	if !authoritative {
+		// Hashed after reload hooks ran: for a plain sync the disk is the
+		// source of truth, so hook output to managed files (a regenerated
+		// lockfile) is part of the applied revision.
+		if err := stampPlain(pending); err != nil {
+			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}
 	if restartNeeded {
@@ -1114,53 +1203,142 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func validateSyncFiles(files []syncFile) (map[string]struct{}, error) {
-	paths := make(map[string]struct{}, len(files))
+// decodeSyncContent strictly decodes one entry's content: utf-8 (or empty)
+// entries are taken verbatim; base64 entries must be canonical RFC 4648
+// standard-alphabet base64 with padding and no line breaks.
+func decodeSyncContent(file syncFile) (content []byte, binary bool, err error) {
+	switch file.Encoding {
+	case "", syncEncodingUTF8:
+		return []byte(file.Content), false, nil
+	case syncEncodingBase64:
+		if strings.ContainsAny(file.Content, "\r\n") {
+			return nil, true, fmt.Errorf("file %q: base64 content must not contain line breaks", file.Path)
+		}
+		decoded, err := base64.StdEncoding.Strict().DecodeString(file.Content)
+		if err != nil {
+			return nil, true, fmt.Errorf("file %q: invalid base64 content: %v", file.Path, err)
+		}
+		return decoded, true, nil
+	default:
+		return nil, false, fmt.Errorf("file %q: unsupported encoding %q (want %q or %q)", file.Path, file.Encoding, syncEncodingUTF8, syncEncodingBase64)
+	}
+}
+
+// decodeSyncFiles cleans every path and strictly decodes every entry. With
+// enforceLimits it applies the per-request limits (file count, per-file and
+// total decoded bytes), failing with errSyncTooLarge.
+func decodeSyncFiles(files []syncFile, enforceLimits bool) ([]decodedSyncFile, error) {
+	if enforceLimits && len(files) > syncMaxFiles {
+		return nil, fmt.Errorf("%w: %d files; at most %d files may be sent per request", errSyncTooLarge, len(files), syncMaxFiles)
+	}
+	out := make([]decodedSyncFile, 0, len(files))
+	total := 0
 	for _, file := range files {
 		clean, err := cleanWorkspacePath(file.Path)
 		if err != nil {
 			return nil, err
 		}
-		if err := validateManagedWorkspacePath(clean); err != nil {
+		content, binary, err := decodeSyncContent(file)
+		if err != nil {
 			return nil, err
 		}
-		if !utf8.ValidString(file.Content) || strings.ContainsRune(file.Content, '\x00') {
-			return nil, fmt.Errorf("source file %q must be UTF-8 text without NUL bytes", clean)
+		if enforceLimits {
+			if len(content) > syncMaxFileBytes {
+				return nil, fmt.Errorf("%w: file %q is %d bytes after decoding, above the %d-byte per-file limit", errSyncTooLarge, clean, len(content), syncMaxFileBytes)
+			}
+			total += len(content)
+			if total > syncMaxTotalBytes {
+				return nil, fmt.Errorf("%w: files exceed the %d-byte total decoded limit; send fewer files per request", errSyncTooLarge, syncMaxTotalBytes)
+			}
 		}
-		if _, exists := paths[clean]; exists {
-			return nil, fmt.Errorf("duplicate source path %q", clean)
+		out = append(out, decodedSyncFile{Path: clean, Content: content, Binary: binary})
+	}
+	return out, nil
+}
+
+// validateAuthoritativeSyncFiles checks a decoded authoritative bundle:
+// managed paths only, no duplicates, and utf-8 entries must be text without
+// NUL bytes. base64 entries may hold any bytes.
+func validateAuthoritativeSyncFiles(files []decodedSyncFile) (map[string]struct{}, error) {
+	paths := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		if err := validateManagedWorkspacePath(file.Path); err != nil {
+			return nil, err
 		}
-		paths[clean] = struct{}{}
+		if !file.Binary && (!utf8.Valid(file.Content) || bytes.IndexByte(file.Content, 0) >= 0) {
+			return nil, fmt.Errorf("source file %q must be UTF-8 text without NUL bytes (send binary files with encoding %q)", file.Path, syncEncodingBase64)
+		}
+		if _, exists := paths[file.Path]; exists {
+			return nil, fmt.Errorf("duplicate source path %q", file.Path)
+		}
+		paths[file.Path] = struct{}{}
 	}
 	return paths, nil
 }
 
+// digestSyncFiles computes the workspace source digest of wire entries over
+// their decoded bytes. Request limits are not applied here.
 func digestSyncFiles(files []syncFile) (string, error) {
-	type digestEntry struct {
-		path    string
-		content string
+	decoded, err := decodeSyncFiles(files, false)
+	if err != nil {
+		return "", err
 	}
-	entries := make([]digestEntry, 0, len(files))
-	for _, file := range files {
-		clean, err := cleanWorkspacePath(file.Path)
-		if err != nil {
+	for _, file := range decoded {
+		if err := validateManagedWorkspacePath(file.Path); err != nil {
 			return "", err
 		}
-		if err := validateManagedWorkspacePath(clean); err != nil {
-			return "", err
-		}
-		entries = append(entries, digestEntry{path: clean, content: file.Content})
 	}
-	slices.SortFunc(entries, func(a, b digestEntry) int { return strings.Compare(a.path, b.path) })
-	hash := sha256.New()
-	for _, entry := range entries {
-		_, _ = hash.Write([]byte(entry.path))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(entry.content))
-		_, _ = hash.Write([]byte{0})
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return digestDecodedSyncFiles(decoded), nil
 }
+
+// digestDecodedSyncFiles computes the workspace source digest of decoded
+// entries whose paths are already cleaned and validated.
+func digestDecodedSyncFiles(files []decodedSyncFile) string {
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b decodedSyncFile) int { return strings.Compare(a.Path, b.Path) })
+	digester := newSyncDigester()
+	for _, file := range sorted {
+		digester.add(file.Path, file.Content)
+	}
+	return digester.sum()
+}
+
+// syncDigester accumulates the workspace source digest: sha256 over entries
+// in ascending path order, each written as `path \0 bytes \0`. Callers add
+// entries in sorted order. File bytes can be streamed from disk so large
+// binaries are never loaded into memory just to be hashed.
+type syncDigester struct{ hash hash.Hash }
+
+func newSyncDigester() *syncDigester { return &syncDigester{hash: sha256.New()} }
+
+func (d *syncDigester) add(clean string, content []byte) {
+	_, _ = d.hash.Write([]byte(clean))
+	_, _ = d.hash.Write([]byte{0})
+	_, _ = d.hash.Write(content)
+	_, _ = d.hash.Write([]byte{0})
+}
+
+// addFile streams one workspace file into the digest and returns that file's
+// own sha256 (hex) and size. The caller has already checked that clean is a
+// regular, non-symlinked file.
+func (d *syncDigester) addFile(root *os.Root, clean string) (string, int64, error) {
+	file, err := root.Open(clean)
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { _ = file.Close() }()
+	fileHash := sha256.New()
+	_, _ = d.hash.Write([]byte(clean))
+	_, _ = d.hash.Write([]byte{0})
+	size, err := io.Copy(io.MultiWriter(d.hash, fileHash), file)
+	if err != nil {
+		return "", 0, err
+	}
+	_, _ = d.hash.Write([]byte{0})
+	return hex.EncodeToString(fileHash.Sum(nil)), size, nil
+}
+
+func (d *syncDigester) sum() string { return hex.EncodeToString(d.hash.Sum(nil)) }
 
 func readWorkspaceManifest(root *os.Root) (workspaceManifest, bool, error) {
 	raw, err := root.ReadFile(workspaceManifestName)
@@ -1268,7 +1446,7 @@ func verifyWorkspaceManifest(root *os.Root, manifest workspaceManifest) error {
 	if manifest.SourceRevision == 0 || normalizeSourceDigest(manifest.SourceDigest) == "" {
 		return errors.New("workspace manifest has no source revision or digest")
 	}
-	entries := make([]syncFile, 0, len(manifest.Files))
+	paths := make([]string, 0, len(manifest.Files))
 	for _, raw := range manifest.Files {
 		clean, err := cleanWorkspacePath(raw)
 		if err != nil {
@@ -1277,6 +1455,13 @@ func verifyWorkspaceManifest(root *os.Root, manifest workspaceManifest) error {
 		if err := validateManagedWorkspacePath(clean); err != nil {
 			return err
 		}
+		paths = append(paths, clean)
+	}
+	slices.Sort(paths)
+	// Files are streamed one at a time: /status and exec verify on every call,
+	// and a workspace may hold tens of MiB of binary assets.
+	digester := newSyncDigester()
+	for _, clean := range paths {
 		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
 			return err
 		}
@@ -1287,17 +1472,11 @@ func verifyWorkspaceManifest(root *os.Root, manifest workspaceManifest) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("managed path %q is not a regular file", clean)
 		}
-		content, err := root.ReadFile(clean)
-		if err != nil {
+		if _, _, err := digester.addFile(root, clean); err != nil {
 			return err
 		}
-		entries = append(entries, syncFile{Path: clean, Content: string(content)})
 	}
-	got, err := digestSyncFiles(entries)
-	if err != nil {
-		return err
-	}
-	if normalizeSourceDigest(manifest.SourceDigest) != got {
+	if normalizeSourceDigest(manifest.SourceDigest) != digester.sum() {
 		return fmt.Errorf("workspace manifest digest does not match managed files")
 	}
 	return nil
@@ -1353,6 +1532,10 @@ func writeWorkspaceFile(root *os.Root, clean string, content []byte) error {
 }
 
 func workspaceFileContentChanged(root *os.Root, clean string, next []byte) bool {
+	// A size mismatch settles it without reading a possibly large file.
+	if info, err := root.Stat(clean); err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(next)) {
+		return true
+	}
 	current, err := root.ReadFile(clean)
 	return err != nil || !bytes.Equal(current, next)
 }
@@ -1361,25 +1544,19 @@ func workspaceFileContentChanged(root *os.Root, clean string, next []byte) bool 
 // reload hook. Hooks may legitimately create runtime output, but they must not
 // mutate the submitted source bundle or make the manifest claim hook output as
 // the current source digest.
-func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []syncFile) error {
-	if _, err := validateSyncFiles(files); err != nil {
+func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []decodedSyncFile) error {
+	if _, err := validateAuthoritativeSyncFiles(files); err != nil {
 		return err
 	}
 	for _, file := range files {
-		clean, err := cleanWorkspacePath(file.Path)
-		if err != nil {
-			return err
-		}
-		if err := validateManagedWorkspacePath(clean); err != nil {
-			return err
-		}
+		clean := file.Path
 		if err := ensureExecPathNoSymlink(root, clean, false); err != nil {
 			return err
 		}
 		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
 			return err
 		}
-		content := []byte(file.Content)
+		content := file.Content
 		if workspaceFileContentChanged(root, clean, content) {
 			if err := writeWorkspaceFile(root, clean, content); err != nil {
 				return fmt.Errorf("restore %q: %w", clean, err)
@@ -1433,6 +1610,106 @@ func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceMan
 		}
 	}
 	return deleted, nil
+}
+
+// stampPlainSyncManifest turns a plain sync (no sourceRevision/sourceDigest)
+// into an applied revision, so exec and /status keep working and a plain sync
+// after an authoritative one no longer leaves a manifest that fails
+// verification.
+//
+// The managed set is the previous manifest's files (when readable) plus every
+// written path, minus deleted paths and anything beneath a deleted directory.
+// Reserved paths (.git, node_modules, ...) are never managed. The digest is
+// computed over the current disk content of that set; paths that no longer
+// exist as regular, non-symlinked files drop out. The revision is bumped
+// (previous+1, or 1) only when the digest changed; otherwise it is kept.
+// pending is written verbatim as the manifest's PendingReloadCommands.
+// Nothing is written when there is neither a previous manifest nor a managed
+// file (stamped=false).
+//
+// CAVEAT for authoritative writers (App Studio): App Studio sends
+// authoritative syncs numbered by its own counter. Once a plain sync has
+// bumped the agent's revision, an authoritative sync whose revision is lower
+// than or equal to (with a different digest) the agent's current revision is
+// rejected with 409 ("older than the applied revision"). Writers that mix
+// both kinds of sync must adopt the sourceRevision returned by /sync (or read
+// from /status) and continue numbering from it.
+func stampPlainSyncManifest(root *os.Root, previous workspaceManifest, found bool, written, deletedPaths, pending []string) (workspaceManifest, bool, error) {
+	managed := make(map[string]struct{}, len(previous.Files)+len(written))
+	if found {
+		for _, clean := range previous.Files {
+			managed[clean] = struct{}{}
+		}
+	}
+	for _, clean := range written {
+		if validateManagedWorkspacePath(clean) == nil {
+			managed[clean] = struct{}{}
+		}
+	}
+	for _, removed := range deletedPaths {
+		for clean := range managed {
+			if clean == removed || strings.HasPrefix(clean, removed+"/") {
+				delete(managed, clean)
+			}
+		}
+	}
+	paths := make([]string, 0, len(managed))
+	for clean := range managed {
+		paths = append(paths, clean)
+	}
+	slices.Sort(paths)
+	digester := newSyncDigester()
+	files := make([]string, 0, len(paths))
+	for _, clean := range paths {
+		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
+			// A symlinked managed path cannot be verified; it is no longer
+			// managed. Other errors are real I/O failures.
+			if errors.Is(err, errExecSymlink) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || strings.Contains(err.Error(), "is not a directory") {
+				continue
+			}
+			return workspaceManifest{}, false, fmt.Errorf("inspect %q: %w", clean, err)
+		}
+		info, err := root.Lstat(clean)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return workspaceManifest{}, false, fmt.Errorf("inspect %q: %w", clean, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if _, _, err := digester.addFile(root, clean); err != nil {
+			return workspaceManifest{}, false, fmt.Errorf("read %q: %w", clean, err)
+		}
+		files = append(files, clean)
+	}
+	if !found && len(files) == 0 {
+		return workspaceManifest{}, false, nil
+	}
+	digest := digester.sum()
+	revision := uint64(1)
+	if found {
+		revision = previous.SourceRevision
+		if digest != normalizeSourceDigest(previous.SourceDigest) {
+			if revision == ^uint64(0) {
+				return workspaceManifest{}, false, errors.New("workspace revision exhausted")
+			}
+			revision++
+		}
+	}
+	manifest := workspaceManifest{SourceRevision: revision, SourceDigest: digest, Files: make([]string, 0, len(files))}
+	if revision == previous.SourceRevision && found {
+		// Unchanged content keeps the recorded digest spelling (an
+		// authoritative writer may have used the "sha256:" prefix).
+		manifest.SourceDigest = previous.SourceDigest
+	}
+	manifest.Files = append(manifest.Files, files...)
+	manifest.PendingReloadCommands = append([]string(nil), pending...)
+	if err := writeWorkspaceManifest(root, manifest); err != nil {
+		return workspaceManifest{}, false, err
+	}
+	return manifest, true, nil
 }
 
 // isStartupAffectingPath is the legacy node-shaped heuristic, used only when
@@ -1514,6 +1791,9 @@ type processStatusResponse struct {
 	ActionsTokenExpiresAt   int64  `json:"actionsTokenExpiresAtUnixMilli,omitempty"`
 	SourceRevision          uint64 `json:"sourceRevision,omitempty"`
 	SourceDigest            string `json:"sourceDigest,omitempty"`
+	// SyncEncodings lists the /sync file encodings this agent decodes. A
+	// sender must not send base64 entries unless "base64" is listed.
+	SyncEncodings []string `json:"syncEncodings,omitempty"`
 }
 
 type runtimeOperations interface {
@@ -1767,6 +2047,7 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			status.SourceDigest = manifest.SourceDigest
 		}
 	}
+	status.SyncEncodings = slices.Clone(syncEncodings)
 	actions := s.actionsState.snapshot(time.Now())
 	status.ActionsEnabled = actions.Enabled
 	status.ActionsReady = actions.Ready

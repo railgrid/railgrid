@@ -782,7 +782,7 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		// invoke errors.
 		t.runState.RecordMutationFailure(spec.Name, args)
 	}
-	if settlementErr := t.recordV2CommitSettlement(ctx, spec, args, successful); settlementErr != nil {
+	if settlementErr := t.recordV2CommitSettlement(ctx, spec, args, successful, result); settlementErr != nil {
 		return "", settlementErr
 	}
 	status := projectToolCallTerminalStatus(spec.Name, result, successful)
@@ -813,11 +813,12 @@ func (t projectEinoAssistantTool) recordV2CommitSettlement(
 	spec projectAssistantToolSpec,
 	args map[string]any,
 	succeeded bool,
+	results ...string,
 ) error {
 	if t.runState == nil || !projectEinoAssistantCommitTool(spec.Name) {
 		return nil
 	}
-	if err := t.recoverV2CommitSettlement(ctx, spec, args, succeeded); err != nil {
+	if err := t.recoverV2CommitSettlement(ctx, spec, args, succeeded, results...); err != nil {
 		return err
 	}
 	t.runState.RecordCompletedAction(spec.Name, projectEinoAssistantCanonicalActionArguments(projectEinoToolArgumentsString(args)))
@@ -829,6 +830,7 @@ func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 	spec projectAssistantToolSpec,
 	args map[string]any,
 	succeeded bool,
+	results ...string,
 ) error {
 	if t.runState == nil || !projectEinoAssistantCommitTool(spec.Name) {
 		return nil
@@ -838,8 +840,25 @@ func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 	if succeeded {
 		workspaceDigest := projectToolString(args["workspaceDigest"])
 		paths := projectToolStringList(args["paths"])
+		settlementDigest := workspaceDigest
 		settlementBlocker := ""
-		if t.req.Workspace != nil {
+		settle := t.req.Workspace != nil
+		if skipped := projectCommitSkippedBinaryPaths(strings.Join(results, "")); len(skipped) > 0 && settle {
+			// Binaries the Code provider could not accept were not committed:
+			// settle only the committed paths so the binaries stay dirty. The
+			// approved digest covers every path, so bind the narrower set to
+			// its current content (the run still owns the workspace).
+			paths = projectStringsWithout(paths, skipped)
+			if len(paths) == 0 {
+				settle = false
+			} else if digest, err := t.req.Workspace.WorkspaceDigest(ctx, t.req.WorkspaceScope, paths); err == nil {
+				settlementDigest = digest
+			} else {
+				settlementBlocker = "repository commit succeeded but local workspace settlement could not bind the committed paths"
+				settle = false
+			}
+		}
+		if settle {
 			// Persist the cleanup obligation before advancing run-local state. If
 			// cleanup is interrupted, the next turn reconciles this receipt by
 			// digest without repeating the already successful repository effect.
@@ -847,7 +866,7 @@ func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 			if err := t.req.Workspace.RecordCommitSettlement(
 				settlementCtx,
 				t.req.WorkspaceScope,
-				workspaceDigest,
+				settlementDigest,
 				paths,
 			); err != nil {
 				settlementBlocker = "repository commit succeeded but local workspace settlement could not be persisted"
@@ -948,7 +967,7 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 	// Replay is also a post-effect recovery boundary. If the external commit
 	// was durably settled before process loss, repair only idempotent local
 	// state; do not count a replay as another completed model action.
-	if settlementErr := t.recoverV2CommitSettlement(ctx, spec, args, successful); settlementErr != nil {
+	if settlementErr := t.recoverV2CommitSettlement(ctx, spec, args, successful, result); settlementErr != nil {
 		return "", settlementErr
 	}
 	if successful && projectToolBaseName(spec.Name) == projectToolLoadSkill && t.runState != nil {
@@ -1188,6 +1207,21 @@ func projectEinoAssistantWorkspaceDigest(ctx context.Context, store *workspace.F
 	return store.WorkspaceDigest(ctx, scope, paths)
 }
 
+// projectStringsWithout returns values minus every entry of remove.
+func projectStringsWithout(values, remove []string) []string {
+	drop := make(map[string]struct{}, len(remove))
+	for _, value := range remove {
+		drop[value] = struct{}{}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, skip := drop[value]; !skip {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func projectAssistantMutationFromSuccessfulResult(name, result string, successful bool) *projectAssistantMutation {
 	if !successful {
 		return nil
@@ -1223,7 +1257,8 @@ func projectEinoAssistantPersistentToolResult(name, result string) string {
 
 func projectAssistantMutationFromResult(name, result string) *projectAssistantMutation {
 	switch projectToolBaseName(name) {
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 	default:
 		return nil
 	}
@@ -1920,7 +1955,8 @@ func projectAssistantValidateGrantBearingToolArguments(spec projectAssistantTool
 		// run-local initial-build authority. Argument shape is validated here.
 		_, err := projectAssistantInitialExecutionPlanFromArguments(activeGoal, args)
 		return err
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		return projectAssistantValidateWorkspaceMutationArguments(spec.Name, args)
 	default:
 		return nil

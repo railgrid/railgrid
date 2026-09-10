@@ -88,7 +88,8 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 		return projectAssistantToolBundleRuntime
 	case projectToolLS, projectToolReadFile, projectToolReadAttachment, projectToolGlob, projectToolGrep:
 		return projectAssistantToolBundleWorkspaceRead
-	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolImportAttachment, projectToolDownloadFile:
 		return projectAssistantToolBundleEdit
 	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantToolBundleRepo

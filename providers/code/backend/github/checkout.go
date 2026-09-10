@@ -13,6 +13,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"unicode/utf8"
@@ -26,16 +27,20 @@ import (
 // Default checkout bounds when the caller passes zero values. They mirror the
 // App Studio workspace bounds the checked-out tree ultimately lands in.
 const (
-	defaultCheckoutMaxFiles      = 500
-	defaultCheckoutMaxFileBytes  = 256 << 10 // 256 KiB per file
-	defaultCheckoutMaxTotalBytes = 16 << 20  // 16 MiB per checkout
+	defaultCheckoutMaxFiles                = 500
+	defaultCheckoutMaxFileBytes            = 256 << 10 // 256 KiB per text file
+	defaultCheckoutMaxBinaryFileBytes      = 25 << 20  // 25 MiB per binary file
+	defaultCheckoutMaxTotalBytes           = 16 << 20  // 16 MiB per text-only checkout
+	defaultCheckoutMaxTotalBytesWithBinary = 48 << 20  // 48 MiB per checkout with binaries
 )
 
-// CheckoutFiles reads the repository's text tree at input.Ref without a local
+// CheckoutFiles reads the repository's tree at input.Ref without a local
 // clone: resolve the ref to a commit, walk the git tree recursively, and fetch
-// each blob. Binary blobs (NUL byte / invalid UTF-8), oversized files, and
+// each blob. Text blobs are returned verbatim. Binary blobs (NUL byte /
+// invalid UTF-8) are returned as base64 under their own per-file cap when
+// input.IncludeBinary is set, and skipped otherwise. Oversized files and
 // anything beyond the caps are skipped and reported, never errors — a partial
-// text checkout is the contract (backend.RepositoryReader).
+// checkout is the contract (backend.RepositoryReader).
 func (b *Backend) CheckoutFiles(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, input backend.RepositoryCheckoutInput) (backend.RepositoryCheckoutResult, error) {
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
@@ -51,9 +56,22 @@ func (b *Backend) CheckoutFiles(ctx context.Context, conn *codev1alpha1.Connecti
 	if maxFileBytes <= 0 {
 		maxFileBytes = defaultCheckoutMaxFileBytes
 	}
+	maxBinaryFileBytes := input.MaxBinaryFileBytes
+	if maxBinaryFileBytes <= 0 {
+		maxBinaryFileBytes = defaultCheckoutMaxBinaryFileBytes
+	}
 	maxTotalBytes := input.MaxTotalBytes
 	if maxTotalBytes <= 0 {
 		maxTotalBytes = defaultCheckoutMaxTotalBytes
+		if input.IncludeBinary {
+			maxTotalBytes = defaultCheckoutMaxTotalBytesWithBinary
+		}
+	}
+	// The class is only known after download, so with binaries the
+	// pre-download size check uses the larger of the two per-file caps.
+	maxAnyFileBytes := maxFileBytes
+	if input.IncludeBinary {
+		maxAnyFileBytes = max(maxFileBytes, maxBinaryFileBytes)
 	}
 
 	ref := input.Ref
@@ -93,29 +111,53 @@ func (b *Backend) CheckoutFiles(ctx context.Context, conn *codev1alpha1.Connecti
 	sort.Slice(entries, func(i, j int) bool { return entries[i].GetPath() < entries[j].GetPath() })
 
 	var total int64
+	var largeClient *gogithub.Client // long-timeout client, built on first large blob
 	for _, entry := range entries {
 		path := entry.GetPath()
 		switch {
 		case len(result.Files) >= maxFiles:
 			result.Skipped = appendSkip(result.Skipped, path+" (file-count cap)")
 			continue
-		case int64(entry.GetSize()) > maxFileBytes:
+		case int64(entry.GetSize()) > maxAnyFileBytes:
 			result.Skipped = appendSkip(result.Skipped, path+" (file too large)")
 			continue
 		case total+int64(entry.GetSize()) > maxTotalBytes:
 			result.Skipped = appendSkip(result.Skipped, path+" (total-size cap)")
 			continue
 		}
-		raw, resp, err := c.Git.GetBlobRaw(ctx, org, repo.Spec.Name, entry.GetSHA())
+		blobClient := c
+		if int64(entry.GetSize()) > largeBlobBytes {
+			if largeClient == nil {
+				if largeClient, err = b.blobClient(ctx, cred, conn.Spec.BaseURL); err != nil {
+					return backend.RepositoryCheckoutResult{}, err
+				}
+			}
+			blobClient = largeClient
+		}
+		raw, resp, err := blobClient.Git.GetBlobRaw(ctx, org, repo.Spec.Name, entry.GetSHA())
 		if err != nil {
 			return backend.RepositoryCheckoutResult{}, classify(resp, fmt.Errorf("read blob %s: %w", path, err))
 		}
-		if isBinaryContent(raw) {
+		size := int64(len(raw))
+		binary := isBinaryContent(raw)
+		switch {
+		case binary && !input.IncludeBinary:
 			result.Skipped = appendSkip(result.Skipped, path+" (binary)")
 			continue
+		case binary && size > maxBinaryFileBytes, !binary && size > maxFileBytes:
+			result.Skipped = appendSkip(result.Skipped, path+" (file too large)")
+			continue
+		case total+size > maxTotalBytes:
+			result.Skipped = appendSkip(result.Skipped, path+" (total-size cap)")
+			continue
 		}
-		total += int64(len(raw))
-		result.Files = append(result.Files, backend.RepositoryCommitFile{Path: path, Content: string(raw)})
+		total += size
+		file := backend.RepositoryCommitFile{Path: path, Content: string(raw)}
+		if binary {
+			file.Content = base64.StdEncoding.EncodeToString(raw)
+			file.Encoding = backend.EncodingBase64
+		}
+		result.Files = append(result.Files, file)
 	}
 	return result, nil
 }

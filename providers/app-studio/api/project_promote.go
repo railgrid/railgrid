@@ -185,6 +185,10 @@ type projectPromoteRequest struct {
 	ReleaseID *string        `json:"releaseID,omitempty"`
 }
 
+// projectPromoteResponse is deliberately slim: the portal and the assistant's
+// promote_project tool only need the rollout identity, and the full Project
+// (managedFields included) would cost several KB of model context per call.
+// Callers that need project state re-read it.
 type projectPromoteResponse struct {
 	Environment     string                       `json:"environment"`
 	Instance        string                       `json:"instance"`
@@ -192,7 +196,6 @@ type projectPromoteResponse struct {
 	CommitSHA       string                       `json:"commitSHA,omitempty"`
 	ReleaseID       string                       `json:"releaseID,omitempty"`
 	Components      []projectBuildCheckComponent `json:"components,omitempty"`
-	Project         json.RawMessage              `json:"project,omitempty"`
 }
 
 // newProjectRedeployRevision mints an opaque, non-secret rollout token. It is
@@ -701,7 +704,6 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 	// included — so no explicit provisioning happens here anymore.
 	reconciled := projectWithLiveBindingStatus(ctx, c, updated, id)
 
-	raw, _ := json.Marshal(reconciled)
 	return reconciled, projectPromoteResponse{
 		Environment:     projectProductionEnvironmentName,
 		Instance:        projectTemplateProdInstanceName(p),
@@ -709,7 +711,6 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 		CommitSHA:       check.CommitSHA,
 		ReleaseID:       releaseID,
 		Components:      check.Components,
-		Project:         raw,
 	}, nil
 }
 

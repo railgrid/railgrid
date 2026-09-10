@@ -54,7 +54,9 @@ func (s *Server) prepareOptionalProjectRepository(ctx context.Context, c *asclie
 		}
 		req.ConnectionRef = readiness.ConnectionRef
 	}
-	return s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
+	// An explicit project name pins the repository name (see
+	// createProjectFromRequestWithPreflight), so it must not be suffixed.
+	return s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description, req.Name != "")
 }
 
 // putProjectRepository records explicit permission to create a private repository
@@ -103,7 +105,7 @@ func (s *Server) putProjectRepository(w http.ResponseWriter, r *http.Request) {
 		// Reserve a fresh name across workspaces and project incarnations. The
 		// Code provider also enforces create-only intent against remote collisions.
 		name := dns1123LabelWithSuffix(p.Name, uuid.NewString()[:8])
-		plan, err := s.prepareProjectRepository(r.Context(), c, req.ConnectionRef, name, p.Spec.DisplayName, p.Spec.Description)
+		plan, err := s.prepareProjectRepository(r.Context(), c, req.ConnectionRef, name, p.Spec.DisplayName, p.Spec.Description, false)
 		if err != nil {
 			writeProjectError(w, err)
 			return

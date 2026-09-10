@@ -20,10 +20,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -348,6 +350,285 @@ func TestDecodeExecRequestRejectsRetiredSourceSnapshot(t *testing.T) {
 	w := httptest.NewRecorder()
 	if _, _, err := decodeExecRequest(w, r, &infrav1alpha1.TemplateDataPlaneExec{}); err == nil || !strings.Contains(err.Error(), `unknown field "files"`) {
 		t.Fatalf("decodeExecRequest error = %v, want retired files field rejection", err)
+	}
+}
+
+// scriptedExecutor returns a fixed start result and then walks a list of poll
+// results, repeating the last one once the script is exhausted.
+type scriptedExecutor struct {
+	start     ExecResult
+	polls     []ExecResult
+	startCall ExecCall
+	pollCalls []ExecCall
+}
+
+func (s *scriptedExecutor) Start(_ context.Context, call ExecCall) (ExecResult, error) {
+	s.startCall = call
+	return s.start, nil
+}
+
+func (s *scriptedExecutor) Poll(_ context.Context, call ExecCall) (ExecResult, error) {
+	s.pollCalls = append(s.pollCalls, call)
+	if len(s.polls) == 0 {
+		return s.start, nil
+	}
+	index := min(len(s.pollCalls)-1, len(s.polls)-1)
+	return s.polls[index], nil
+}
+
+func (s *scriptedExecutor) Cancel(context.Context, ExecCall) (ExecResult, error) {
+	return ExecResult{}, errors.New("unexpected cancel")
+}
+
+// fastExecRun shortens the run poll cadence and wait budget for a test.
+func fastExecRun(t *testing.T, budget time.Duration) {
+	t.Helper()
+	initial, maxDelay, waitBudget := execRunPollInitial, execRunPollMax, execRunWaitBudget
+	execRunPollInitial, execRunPollMax = time.Millisecond, 2*time.Millisecond
+	execRunWaitBudget = func(int32) time.Duration { return budget }
+	t.Cleanup(func() { execRunPollInitial, execRunPollMax, execRunWaitBudget = initial, maxDelay, waitBudget })
+}
+
+func newScriptedExecHandler(executor Executor, rt *fakeRuntime) *Handler {
+	return NewHandler(&fakeInstanceGetter{instance: execInstance()}, &fakeContractGetter{contract: execContract()}, rt,
+		WithExec(executor, &fakeExecAuthorizer{}),
+		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
+}
+
+func postExec(t *testing.T, h *Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer caller-token")
+	if idempotencyKey != "" {
+		r.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+func decodeExecResult(t *testing.T, rec *httptest.ResponseRecorder) ExecResult {
+	t.Helper()
+	var result ExecResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode exec result %q: %v", rec.Body.String(), err)
+	}
+	return result
+}
+
+const testSourceDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+
+func TestHandlerExecRunPollsUntilTerminal(t *testing.T) {
+	fastExecRun(t, 5*time.Second)
+	exitCode := int32(3)
+	executor := &scriptedExecutor{
+		start: ExecResult{SessionID: "session-1", RequestID: "run-1", State: "queued"},
+		polls: []ExecResult{
+			{SessionID: "session-1", RequestID: "run-1", State: "running"},
+			{SessionID: "session-1", RequestID: "run-1", State: "running"},
+			{SessionID: "session-1", RequestID: "run-1", State: "failed", ExitCode: &exitCode, Stdout: "out", Stderr: "err"},
+		},
+	}
+	h := newScriptedExecHandler(executor, &fakeRuntime{})
+	rec := postExec(t, h, `{"action":"run","argv":["go","test"],"sourceRevision":5,"sourceDigest":"`+testSourceDigest+`"}`, "run-1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	got := decodeExecResult(t, rec)
+	if got.State != "failed" || got.ExitCode == nil || *got.ExitCode != 3 || got.SessionID != "session-1" {
+		t.Fatalf("run result = %+v, want terminal failed result with exit code 3", got)
+	}
+	if got.SourceRevision != 5 || got.SourceDigest != testSourceDigest {
+		t.Fatalf("run result source = %d/%q, want the executed revision", got.SourceRevision, got.SourceDigest)
+	}
+	if executor.startCall.Request.Action != ExecActionStart || executor.startCall.IdempotencyKey != "run-1" {
+		t.Fatalf("start call = action %q key %q, want start with the caller key", executor.startCall.Request.Action, executor.startCall.IdempotencyKey)
+	}
+	if len(executor.pollCalls) != 3 {
+		t.Fatalf("poll calls = %d, want 3", len(executor.pollCalls))
+	}
+	for _, call := range executor.pollCalls {
+		if call.Request.Action != ExecActionPoll || call.Request.SessionID != "session-1" || call.Request.RequestID != "run-1" || len(call.Request.Argv) != 0 {
+			t.Fatalf("poll request = %+v, want a session-bound poll", call.Request)
+		}
+	}
+}
+
+func TestHandlerExecRunReturnsRunningSessionAtWaitBudget(t *testing.T) {
+	fastExecRun(t, 20*time.Millisecond)
+	executor := &scriptedExecutor{
+		start: ExecResult{SessionID: "session-1", State: "queued"},
+		polls: []ExecResult{{State: "running", Stdout: "partial"}},
+	}
+	h := newScriptedExecHandler(executor, &fakeRuntime{})
+	rec := postExec(t, h, `{"action":"run","argv":["sleep","60"],"sourceRevision":1,"sourceDigest":"`+testSourceDigest+`"}`, "run-1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	got := decodeExecResult(t, rec)
+	if got.State != "running" || got.SessionID != "session-1" || got.RequestID != "run-1" {
+		t.Fatalf("run result at wait budget = %+v, want the running session so the caller can poll", got)
+	}
+	if len(executor.pollCalls) == 0 {
+		t.Fatal("run never polled before the wait budget expired")
+	}
+}
+
+func TestExecRunWaitBudgetAddsSlackAndStaysBelowProxyTimeouts(t *testing.T) {
+	if got := execRunWaitBudget(30); got != 40*time.Second {
+		t.Fatalf("budget(30s) = %s, want 40s", got)
+	}
+	if got := execRunWaitBudget(ExecMaxTimeoutSeconds); got != execRunMaxWait {
+		t.Fatalf("budget(%ds) = %s, want cap %s", ExecMaxTimeoutSeconds, got, execRunMaxWait)
+	}
+}
+
+func TestHandlerExecRunGeneratesIdempotencyKeyButStartRequiresOne(t *testing.T) {
+	fastExecRun(t, time.Second)
+	executor := &scriptedExecutor{start: ExecResult{SessionID: "session-1", State: "succeeded"}}
+	h := newScriptedExecHandler(executor, &fakeRuntime{})
+	body := `{"action":"%s","argv":["true"],"sourceRevision":1,"sourceDigest":"` + testSourceDigest + `"}`
+
+	rec := postExec(t, h, fmt.Sprintf(body, ExecActionRun), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run without key status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	key := executor.startCall.IdempotencyKey
+	if len(key) != 32 || strings.Trim(key, "0123456789abcdef") != "" || executor.startCall.Request.RequestID != key {
+		t.Fatalf("generated key = %q / requestID %q, want a 128-bit hex key used as requestID", key, executor.startCall.Request.RequestID)
+	}
+	if got := decodeExecResult(t, rec); got.RequestID != key {
+		t.Fatalf("run result requestID = %q, want generated key %q", got.RequestID, key)
+	}
+	if len(executor.pollCalls) != 0 {
+		t.Fatalf("terminal start was polled %d times", len(executor.pollCalls))
+	}
+
+	executor.startCall = ExecCall{}
+	rec = postExec(t, h, fmt.Sprintf(body, ExecActionStart), "")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Idempotency-Key is required") {
+		t.Fatalf("start without key status = %d body %q, want 400", rec.Code, rec.Body.String())
+	}
+	if executor.startCall.Request.Action != "" {
+		t.Fatal("start without key reached the executor")
+	}
+}
+
+// statusUpstream serves the dev agent /status through the fake runtime and
+// records what the provider sent.
+func statusUpstream(t *testing.T, status int, body string) (*fakeRuntime, *string, *string) {
+	t.Helper()
+	var gotPath, gotToken string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get(controlTokenHeader)
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(upstream.Close)
+	return &fakeRuntime{host: upstream.URL, token: "control-token"}, &gotPath, &gotToken
+}
+
+func TestHandlerExecDefaultsSourceToAppliedComponentRevision(t *testing.T) {
+	fastExecRun(t, time.Second)
+	for _, action := range []ExecAction{ExecActionStart, ExecActionRun} {
+		t.Run(string(action), func(t *testing.T) {
+			rt, gotPath, gotToken := statusUpstream(t, http.StatusOK, `{"running":true,"sourceRevision":4,"sourceDigest":"`+testSourceDigest+`"}`)
+			executor := &scriptedExecutor{start: ExecResult{SessionID: "session-1", State: "succeeded"}}
+			h := newScriptedExecHandler(executor, rt)
+			rec := postExec(t, h, `{"action":"`+string(action)+`","argv":["true"]}`, "run-1")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %q", rec.Code, rec.Body.String())
+			}
+			if want := "/api/v1/namespaces/ws-default/services/app-backend-control:control/proxy/status"; *gotPath != want {
+				t.Fatalf("status path = %q, want %q", *gotPath, want)
+			}
+			if *gotToken != "control-token" {
+				t.Fatalf("status control token = %q", *gotToken)
+			}
+			if executor.startCall.Request.SourceRevision != 4 || executor.startCall.Request.SourceDigest != testSourceDigest {
+				t.Fatalf("executor source = %d/%q, want applied revision", executor.startCall.Request.SourceRevision, executor.startCall.Request.SourceDigest)
+			}
+			if got := decodeExecResult(t, rec); got.SourceRevision != 4 || got.SourceDigest != testSourceDigest {
+				t.Fatalf("result source = %d/%q, want applied revision", got.SourceRevision, got.SourceDigest)
+			}
+		})
+	}
+}
+
+func TestHandlerExecWithoutAppliedRevisionTellsCallerToSync(t *testing.T) {
+	rt, _, _ := statusUpstream(t, http.StatusOK, `{"running":true}`)
+	executor := &scriptedExecutor{}
+	h := newScriptedExecHandler(executor, rt)
+	rec := postExec(t, h, `{"action":"start","argv":["true"]}`, "run-1")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body %q, want 400", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"sourceRevision is required for start", "sync"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body %q missing %q", rec.Body.String(), want)
+		}
+	}
+	if executor.startCall.Request.Action != "" {
+		t.Fatal("executor was called without an applied revision")
+	}
+}
+
+func TestHandlerExecSurfacesComponentStatusFailure(t *testing.T) {
+	rt, _, _ := statusUpstream(t, http.StatusBadGateway, "runtime supervisor unavailable")
+	executor := &scriptedExecutor{}
+	h := newScriptedExecHandler(executor, rt)
+	rec := postExec(t, h, `{"action":"run","argv":["true"]}`, "")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "runtime supervisor unavailable") {
+		t.Fatalf("status = %d body %q, want 502 with the status failure", rec.Code, rec.Body.String())
+	}
+	if executor.startCall.Request.Action != "" {
+		t.Fatal("executor was called after status resolution failed")
+	}
+}
+
+func TestDecodeExecRequestSourceEvidenceMustBeWholeOrOmitted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "both omitted", body: `{"action":"start","argv":["true"]}`},
+		{name: "run both omitted", body: `{"action":"run","argv":["true"]}`},
+		{name: "revision only", body: `{"action":"start","argv":["true"],"sourceRevision":2}`, wantErr: "sourceDigest is required"},
+		{name: "digest only", body: `{"action":"run","argv":["true"],"sourceDigest":"sha"}`, wantErr: "sourceRevision is required"},
+		{name: "run rejects sessionID", body: `{"action":"run","argv":["true"],"sessionID":"s"}`, wantErr: "sessionID is not accepted for run"},
+		{name: "run needs argv", body: `{"action":"run"}`, wantErr: "run argv must contain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			r.Header.Set("Idempotency-Key", "key")
+			_, _, err := decodeExecRequest(httptest.NewRecorder(), r, &infrav1alpha1.TemplateDataPlaneExec{})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("decodeExecRequest error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("decodeExecRequest error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeExecRequestRunUsesRequestIDAsKey(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"action":"run","requestID":"body-key","argv":["true"]}`))
+	req, key, err := decodeExecRequest(httptest.NewRecorder(), r, &infrav1alpha1.TemplateDataPlaneExec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "body-key" || req.RequestID != "body-key" {
+		t.Fatalf("key/requestID = %q/%q, want body requestID", key, req.RequestID)
 	}
 }
 

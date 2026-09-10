@@ -32,6 +32,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,8 +83,17 @@ type persistentExecRequest struct {
 	SourceDigest   string   `json:"sourceDigest"`
 }
 
+// execContext is the non-secret, platform-owned context an executed command
+// may see: the component's app port (as PORT, so a command can reach the dev
+// server) and the component name. It never carries the app's own environment.
+type execContext struct {
+	Port      string
+	Component string
+}
+
 type statelessExecutor struct {
 	workspace string
+	env       execContext
 	execute   func(context.Context, string, persistentExecRequest) (execResponse, error)
 	exit      func(int)
 	mu        sync.Mutex
@@ -119,7 +129,9 @@ func (s *statelessExecutor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	execute := s.execute
 	if execute == nil {
-		execute = runPersistentExec
+		execute = func(ctx context.Context, workspace string, req persistentExecRequest) (execResponse, error) {
+			return runPersistentExecWithContext(ctx, workspace, s.env, req)
+		}
 	}
 	// A process baseline is meaningful only when one command owns the executor
 	// namespace at a time. Serialize at the server boundary and recheck fail-stop
@@ -169,6 +181,10 @@ func (s *statelessExecutor) failStop() {
 }
 
 func runPersistentExec(parent context.Context, workspace string, req persistentExecRequest) (execResponse, error) {
+	return runPersistentExecWithContext(parent, workspace, execContext{}, req)
+}
+
+func runPersistentExecWithContext(parent context.Context, workspace string, execEnv execContext, req persistentExecRequest) (execResponse, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -218,7 +234,7 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	}
 
 	workPath := filepath.Join(rootPath, filepath.FromSlash(workDir))
-	env := sanitizedExecEnvironment(workPath)
+	env := sanitizedExecEnvironment(workPath, execEnv)
 	executable, err := resolveExecExecutable(req.Argv[0], env, workPath)
 	if err != nil {
 		return execResponse{}, err
@@ -445,12 +461,14 @@ func rejectRootSymlink(rootPath string) error {
 	return nil
 }
 
-func sanitizedExecEnvironment(workDir string) []string {
+func sanitizedExecEnvironment(workDir string, execEnv execContext) []string {
 	// Never inherit the agent's environment: it may contain the control token
 	// or provider/runtime credentials. Keep this server-owned and deterministic.
 	// This is not a container boundary: the child shares the component's mounts,
 	// network and PID namespace, so deployment-level secret/credential exposure
-	// must be handled by the dev workload itself.
+	// must be handled by the dev workload itself. The app's own environment
+	// (user env, secrets) is deliberately never forwarded; only the
+	// platform-configured app port and component name are added.
 	values := map[string]string{
 		"HOME":             "/tmp",
 		"LANG":             "C.UTF-8",
@@ -458,6 +476,12 @@ func sanitizedExecEnvironment(workDir string) []string {
 		"PATH":             "/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin",
 		"PWD":              workDir,
 		"TMPDIR":           "/tmp",
+	}
+	if port := strings.TrimSpace(execEnv.Port); validExecPort(port) {
+		values["PORT"] = port
+	}
+	if component := strings.TrimSpace(execEnv.Component); component != "" && !strings.ContainsAny(component, "\x00\n") {
+		values["FAROS_COMPONENT"] = component
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -469,6 +493,13 @@ func sanitizedExecEnvironment(workDir string) []string {
 		env = append(env, key+"="+values[key])
 	}
 	return env
+}
+
+// validExecPort accepts only a decimal TCP port so a malformed configuration
+// value is dropped rather than handed to commands.
+func validExecPort(port string) bool {
+	value, err := strconv.Atoi(port)
+	return err == nil && value > 0 && value <= 65535 && strconv.Itoa(value) == port
 }
 
 func resolveExecExecutable(name string, env []string, workDir string) (string, error) {

@@ -238,6 +238,12 @@ func (s *Server) privatePreviewHubOrigin(ctx context.Context, id identity, targe
 	return trustedOrigin, nil
 }
 
+// errPrivatePreviewHubOriginUnconfigured is a deployment configuration
+// problem, not a preview or app failure. The wording is what both the model
+// (through the tool result) and the action feed diagnostic report, so it
+// names the chart value an operator must set.
+var errPrivatePreviewHubOriginUnconfigured = errors.New("private preview inspection is unavailable: the app-studio deployment has no usable FAROS_HUB_PUBLIC_URL (chart value hub.publicURL, an absolute HTTPS origin such as https://hub.example.com); ask the platform operator to set it")
+
 // privatePreviewConfiguredHubOrigin is the only origin App Studio allows the
 // private-preview gate to select for a one-use browser handoff. The provider's
 // hubBase can be an internal address, so it is not suitable for browser
@@ -246,7 +252,7 @@ func (s *Server) privatePreviewConfiguredHubOrigin() (*url.URL, error) {
 	raw := strings.TrimRight(strings.TrimSpace(s.hubPublicURL), "/")
 	configured, err := url.Parse(raw)
 	if err != nil || !configured.IsAbs() || !strings.EqualFold(configured.Scheme, "https") || configured.Host == "" || configured.User != nil || configured.Path != "" || configured.RawQuery != "" || configured.ForceQuery || configured.Fragment != "" || configured.Opaque != "" {
-		return nil, errors.New("FAROS_HUB_PUBLIC_URL must be an absolute HTTPS origin")
+		return nil, errPrivatePreviewHubOriginUnconfigured
 	}
 	return &url.URL{Scheme: "https", Host: configured.Host}, nil
 }

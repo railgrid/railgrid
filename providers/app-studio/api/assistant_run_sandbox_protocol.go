@@ -320,6 +320,12 @@ func sandboxWorkspaceHTTPError(operation string, status int, body []byte) error 
 	if status == http.StatusBadGateway || status == http.StatusServiceUnavailable {
 		return &projectDevelopmentSyncHTTPError{component: operation, status: status, detail: message}
 	}
+	if operation == "read" && (status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity) {
+		// The agent refuses to return a large (413) or binary (422) managed
+		// file as text. That is an ordinary tool failure, never a fence
+		// conflict that would end the run.
+		return fmt.Errorf("the file is binary or too large to read as text (%s)", message)
+	}
 	return fmt.Errorf("sandbox workspace %s endpoint returned %d: %s", operation, status, truncateProjectToolInfo(string(body)))
 }
 

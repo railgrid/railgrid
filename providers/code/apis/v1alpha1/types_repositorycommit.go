@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -111,6 +113,11 @@ const (
 	RepositoryCommitPhaseSucceeded RepositoryCommitPhase = "Succeeded"
 	RepositoryCommitPhaseFailed    RepositoryCommitPhase = "Failed"
 )
+
+// RepositoryCommitRateLimitWindow bounds how long after status.startedAt a
+// rate-limited commit stays Running (Ready reason RateLimited) and is retried
+// before the controller marks it Failed.
+const RepositoryCommitRateLimitWindow = 15 * time.Minute
 
 // RepositoryCommitStatus is the observed result of the commit operation.
 type RepositoryCommitStatus struct {

@@ -71,6 +71,13 @@ type RepositoryCheckoutSpec struct {
 	Ref string `json:"ref,omitempty"`
 }
 
+// AnnotationCheckoutBinaryEncoding opts a RepositoryCheckout into binary
+// files. Set to "base64", the checkout keeps binary blobs (base64 in the
+// bundle, 25 MiB each, 48 MiB in total); absent, binaries are skipped and the
+// text-only bounds apply. It is an annotation rather than a spec field so
+// older controllers ignore it and stay text-only.
+const AnnotationCheckoutBinaryEncoding = "code.faros.sh/binary-encoding"
+
 // RepositoryCheckoutPhase is the high-level lifecycle of a checkout request.
 //
 // +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed

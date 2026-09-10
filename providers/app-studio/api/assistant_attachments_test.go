@@ -450,12 +450,17 @@ func TestProjectAssistantModelImageBoundsDeduplicateAndFailClosed(t *testing.T) 
 	if _, err := projectAssistantAttachmentReceiptsForModel(overCount); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("more than %d images", projectAssistantCurrentImageMaxCount)) {
 		t.Fatalf("image count bounds error = %v", err)
 	}
+	// Each image stays within the per-image bound (a larger one is an opaque
+	// file attachment, not a model image); together they exceed the turn's
+	// image budget.
 	overBytes := []projectAssistantContentPart{
 		projectAssistantContentPartAttachment(attachmentReceiptForTest("image-big-1", "screen.png", "image/png", image)),
 		projectAssistantContentPartAttachment(attachmentReceiptForTest("image-big-2", "screen.png", "image/png", image)),
+		projectAssistantContentPartAttachment(attachmentReceiptForTest("image-big-3", "screen.png", "image/png", image)),
 	}
-	overBytes[0].Attachment.SizeBytes = projectAssistantCurrentImageMaxBytes
-	overBytes[1].Attachment.SizeBytes = 1
+	for index := range overBytes {
+		overBytes[index].Attachment.SizeBytes = projectAssistantCurrentImageMaxBytes/3 + 1
+	}
 	if _, err := projectAssistantAttachmentReceiptsForModel(overBytes); err == nil || !strings.Contains(err.Error(), "exceed") {
 		t.Fatalf("image aggregate bounds error = %v", err)
 	}
@@ -829,9 +834,9 @@ func TestProjectAssistantAttachmentContentPartsEnforceTurnBounds(t *testing.T) {
 	if _, _, _, err := normalizeProjectAssistantContentParts(parts, nil, nil); err == nil || !strings.Contains(err.Error(), "at most 8 attachments") {
 		t.Fatalf("attachment count validation error = %v", err)
 	}
-	parts = parts[:3]
+	parts = parts[:projectAssistantMaxAttachmentsPerTurn]
 	for index := range parts {
-		parts[index].Attachment.SizeBytes = 7 << 20
+		parts[index].Attachment.SizeBytes = projectAssistantMaxAttachmentBytesPerTurn/int64(len(parts)) + 1
 	}
 	if _, _, _, err := normalizeProjectAssistantContentParts(parts, nil, nil); err == nil || !strings.Contains(err.Error(), "total at most") {
 		t.Fatalf("attachment aggregate validation error = %v", err)

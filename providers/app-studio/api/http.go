@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // identity is the per-request caller context the hub's backend proxy injects.
@@ -157,6 +158,17 @@ type ValidationError struct{ Msg string }
 func (e *ValidationError) Error() string { return e.Msg }
 
 func newValidationError(msg string) error { return &ValidationError{Msg: msg} }
+
+// newConflictError is a handler-side 409 whose message is shown verbatim;
+// writeError maps it through apierrors.IsConflict.
+func newConflictError(msg string) error {
+	return &apierrors.StatusError{ErrStatus: metav1.Status{
+		Status:  metav1.StatusFailure,
+		Code:    http.StatusConflict,
+		Reason:  metav1.StatusReasonConflict,
+		Message: msg,
+	}}
+}
 
 // writeStatus emits a kubernetes-style Status envelope so kubectl-like clients
 // render it nicely.

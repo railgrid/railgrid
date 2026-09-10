@@ -227,7 +227,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolWebFetch,
-				Description:  "Fetch a public web page over HTTP(S) and return its readable text (truncated). Use it to read documentation, a README, or a page found with web_search. Internal addresses are blocked.",
+				Description:  "Fetch a public web page over HTTP(S) and return its readable text (truncated). Use it to read documentation, a README, or a page found with web_search. Internal addresses are blocked. It cannot save files: to add a binary asset (image, model, font) to the project use download_file with a direct file URL, or import_attachment for a file the user attached.",
 				Parameters:   json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1,"description":"Absolute http(s) URL."}},"required":["url"],"additionalProperties":false}`),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,
@@ -404,6 +404,8 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}))
 			},
 		},
+		projectAssistantImportAttachmentTool(server),
+		projectAssistantDownloadFileTool(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolSelectTemplate,
@@ -670,6 +672,11 @@ func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStor
 			result.Content = strings.Join(lines[start:end], "\n")
 		}
 		result.Complete = !file.Truncated && offset == 1 && limit >= len(lines)
+	} else {
+		// A binary read has no content to see; its version always covers the
+		// whole file, so it authorizes delete_file/move_file like a complete
+		// text read.
+		result.Complete = file.Version != ""
 	}
 	if result.Complete {
 		result.Version = file.Version

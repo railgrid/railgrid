@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -52,6 +53,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/bindings"
+	"github.com/faroshq/provider-app-studio/hubmcp"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -106,6 +108,21 @@ type Reconciler struct {
 	// previous owner must never be committed over the live one. Nil means
 	// single-replica: always owner.
 	Owns func(workspace.Scope) bool
+	// OnCommitted is told about every commit convergence settles, so the
+	// project's assistant thread can show it. Nil disables the notification.
+	OnCommitted func(context.Context, workspace.Scope, CommitResult)
+	// pendingCommits remembers, per project, a RepositoryCommit that
+	// commit_files left running (see resolvePendingCommit).
+	pendingMu      sync.Mutex
+	pendingCommits map[string]pendingCommit
+	// binaryCommits caches, per workspace cluster, whether the Code
+	// provider's code__commit_files accepts base64 file items.
+	binaryCommits hubmcp.CapabilityCache
+	// skipNotices remembers the last skipped-path notice per project so an
+	// unchanged skip is logged once rather than on every reconcile.
+	skipNotices map[string]string
+	// now is a test seam for pending-commit follow-up timing.
+	now func() time.Time
 	// HubBase / HubInsecure address the hub for MCP commit calls and for the
 	// tenant-path client below.
 	HubBase     string
@@ -305,7 +322,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("repository: %w", err)
 	}
-	dirty, err := r.commitWorkspace(ctx, token, &p, repo)
+	dirty, err := r.commitWorkspace(ctx, token, tc, &p, repo)
 	if err != nil {
 		log.Printf("app-studio project %s: commit convergence: %v", p.Name, err)
 		dirty = true

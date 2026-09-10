@@ -149,7 +149,6 @@ import { isValidTimestamp } from './agentkit/timestamp'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
 import type { AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
-import CodeExplorer from './CodeExplorer.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
@@ -241,6 +240,13 @@ import StatusBadge from './portalkit/StatusBadge.vue'
 import ReleasePipeline from './ReleasePipeline.vue'
 import ProjectHistory from './ProjectHistory.vue'
 const AIWorkbenchLauncher = defineAsyncComponent(() => import('./agentkit/AIWorkbenchLauncher.vue'))
+// The Code tab loads on first open; its upload/preview tooling stays off the page path.
+const CodeExplorer = defineAsyncComponent({
+  loader: () => import('./CodeExplorer.vue'),
+  delay: 200,
+  loadingComponent: { render: () => h('div', { role: 'status', class: 'px-4 py-3 text-[13px] text-text-muted' }, 'Loading workspace files…') },
+  errorComponent: { render: () => h('div', { role: 'alert', class: 'px-4 py-3 text-[13px] text-danger' }, 'Could not load the code explorer. Reload this page to retry.') },
+})
 const ModelsSettings = defineAsyncComponent({
   loader: () => import('./ModelsSettings.vue'),
   delay: 0,
@@ -10168,6 +10174,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :ctx="props.ctx"
           :project-name="selected?.name || ''"
           :refresh-revision="codeExplorerRefreshRevision"
+          :assistant-busy="messageStreaming"
         />
       </div>
 

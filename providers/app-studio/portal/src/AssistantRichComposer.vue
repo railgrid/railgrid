@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { FileText, Image, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
+import { File as FileIcon, FileText, Image, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
 import { api, isProjectAPINotFoundError } from './api'
 import AssistantCommandPalette from './AssistantCommandPalette.vue'
 import AssistantAttachmentPreview from './AssistantAttachmentPreview.vue'
@@ -18,13 +18,16 @@ import { assistantResourceSelectionKey } from './assistantResources'
 import {
   ASSISTANT_ATTACHMENT_ACCEPT,
   ASSISTANT_LARGE_PASTE_BYTES,
+  assistantAttachmentContentTypeKind,
   assistantAttachmentIsImage,
+  assistantAttachmentKind,
+  assistantAttachmentSizeLabel,
   assistantAttachmentValidationError,
-  assistantAttachmentIsSupported,
   assistantAttachmentPart,
   projectAssistantAttachmentReceipt,
   type AssistantAttachmentStatus,
 } from './assistantAttachments'
+import { dragCarriesFiles, droppedFiles } from './projectFiles'
 import { useDismissibleAddMenu } from './useDismissibleAddMenu'
 import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
 import type {
@@ -127,6 +130,16 @@ const attachmentChipsPending = computed(() => attachmentChips.value.some((chip) 
 
 function attachmentLabel(chip: AssistantAttachmentChip): string {
   return chip.receipt?.filename || chip.file?.name || 'attachment'
+}
+
+/** Non-image, non-text files are "file" attachments: the model sees only their metadata. */
+function attachmentKind(chip: Pick<AssistantAttachmentChip, 'file' | 'receipt'>) {
+  if (chip.file) return assistantAttachmentKind(chip.file)
+  return assistantAttachmentContentTypeKind(chip.receipt?.contentType ?? '')
+}
+
+function attachmentSize(chip: Pick<AssistantAttachmentChip, 'file' | 'receipt'>): string {
+  return assistantAttachmentSizeLabel(chip.file?.size ?? chip.receipt?.sizeBytes)
 }
 
 function attachmentCleanupIDs(chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt'>): string[] {
@@ -632,10 +645,6 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
     appendAttachmentError(file, 'Select a project before adding an attachment.')
     return
   }
-  if (!assistantAttachmentIsSupported(file)) {
-    appendAttachmentError(file, 'Only PNG, JPEG, WebP screenshots and .txt or .md files can be attached.')
-    return
-  }
   const existingChip = existingClientID
     ? attachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
     : undefined
@@ -778,6 +787,50 @@ function handleAttachmentInput(event: Event) {
   })()
   if (input) input.value = ''
   restorePickerFocus()
+}
+
+// Drag-and-drop is a pointer shortcut for the Files picker; the keyboard path
+// stays the Add menu. dragDepth absorbs enter/leave pairs from child nodes.
+const dropActive = ref(false)
+let dragDepth = 0
+
+function attachmentsBlocked(): boolean {
+  return props.disabled || props.activeRun
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  event.preventDefault()
+  dragDepth += 1
+  dropActive.value = !attachmentsBlocked()
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  // Always claim the drop so the browser never navigates to the file.
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = attachmentsBlocked() ? 'none' : 'copy'
+}
+
+function handleDragLeave(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dropActive.value = false
+}
+
+function handleDrop(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  event.preventDefault()
+  dragDepth = 0
+  dropActive.value = false
+  if (attachmentsBlocked()) return
+  const { files } = droppedFiles(event.dataTransfer)
+  if (!files.length) return
+  closePalette(false)
+  closeAttachmentMenu()
+  void (async () => {
+    for (const file of files) await uploadAttachment(file)
+  })()
 }
 
 function retryAttachment(chip: AssistantAttachmentChip) {
@@ -1085,7 +1138,19 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="rootRef" class="relative min-h-[72px]">
+  <div
+    ref="rootRef" class="relative min-h-[72px]"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
+    <div v-if="dropActive" class="pointer-events-none absolute inset-0 z-20 rounded-md bg-surface-raised p-1" aria-hidden="true">
+      <div class="k-dropzone is-dragover h-full">
+        <Paperclip class="h-4 w-4" :stroke-width="1.75" />
+        <span>Drop files to attach</span>
+      </div>
+    </div>
     <AssistantCommandPalette
       :open="commandPaletteOpen"
       :command-query="commandPaletteQuery"
@@ -1126,8 +1191,10 @@ defineExpose({
           <div class="flex min-w-0 items-center gap-1.5">
             <Loader2 v-if="chip.status === 'uploading' || chip.status === 'deleting'" class="h-3 w-3 shrink-0 animate-spin" :stroke-width="1.75" />
             <Image v-else-if="chip.receipt?.contentType.startsWith('image/') || (chip.file && assistantAttachmentIsImage(chip.file))" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <FileIcon v-else-if="attachmentKind(chip) === 'file'" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
             <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" />
             <span class="max-w-48 truncate">{{ attachmentLabel(chip) }}</span>
+            <span v-if="attachmentKind(chip) === 'file' && attachmentSize(chip)" class="shrink-0 text-[10px] opacity-75">{{ attachmentSize(chip) }}</span>
             <span class="text-[10px] opacity-75">{{ attachmentStatusLabel(chip) }}</span>
             <div class="ml-auto flex shrink-0 items-center gap-0.5">
               <button

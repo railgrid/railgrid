@@ -8,7 +8,7 @@ metadata:
     faros.sh/immutable-inputs: "version"
 spec:
   displayName: "PostgreSQL database"
-  description: "A standalone PostgreSQL database for workloads. StatefulSet + Service + credentials Secret; credentials stay in-cluster and are exposed only as a Secret reference."
+  description: "A standalone PostgreSQL database for workloads. StatefulSet + Service + credentials Secret; credentials stay in-cluster and are exposed only as a Secret reference. Workloads (simple-webapp, worker, cron-job) consume it via connections.database, which injects DATABASE_URL."
   category: Databases
   version: 0.1.0
   # exposure: what the platform tells callers about reaching an instance.
@@ -27,16 +27,29 @@ spec:
       relational database, without deploying a new web app stack, ingress, OAuth
       proxy, frontend, or backend.
 
+      HOW TO CONSUME IT: provision this instance, then provision (or
+      update_instance) a simple-webapp, worker, or cron-job instance in the
+      SAME workspace with `connections.database: <this instance's
+      values.name>`. That workload gets env DATABASE_URL, sourced from this
+      instance's Secret — app code reads the env var and never the Secret.
+      Instances in one workspace share one runtime namespace; a workload in
+      another workspace cannot connect. (The "application" template brings
+      its own Postgres and needs none of this.)
+
       The platform creates database `appdb`, user `appuser`, and a random
-      password. Consumers read the full connection URI from Secret
-      `<name>-db-credentials`, key `uri`. The URI has the form
-      `postgres://appuser:<password>@<name>-db:5432/appdb`. The in-cluster
-      Postgres service has TLS disabled, so clients that default to TLS should
-      set sslmode=disable.
+      password. The full connection URI lives in Secret
+      `<name>-db-credentials`, key `uri`, in the form
+      `postgres://appuser:<password>@<name>-db:5432/appdb`. The URI has NO
+      sslmode and the in-cluster Postgres has TLS disabled, so connect with
+      sslmode=disable (append `?sslmode=disable` / set it if your driver
+      defaults to TLS, e.g. Node `pg`, JDBC).
 
       Postgres may not be ready the moment a consuming app starts. App code
-      should retry the initial connection and run schema creation or migrations
-      idempotently. This template does not expose the database publicly.
+      must RETRY the initial connection instead of exiting, and run schema
+      creation / migrations idempotently inside that same retry loop — a
+      fresh Postgres can answer one query and then reset the next connection
+      while it finishes initializing. This template does not expose the
+      database publicly.
     outputs:
       - "status.host / status.port - the in-cluster Service endpoint for PostgreSQL."
       - "status.ready - ready replica count for the Postgres StatefulSet."

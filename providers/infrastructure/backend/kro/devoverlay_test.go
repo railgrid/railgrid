@@ -623,6 +623,24 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if !hasTestContainerPort(executor, devExecRunnerPort) {
 		t.Errorf("executor does not expose internal port %d", devExecRunnerPort)
 	}
+	// Exec'd commands need to reach the dev server, so the executor learns the
+	// app port (surfaced as PORT by the agent) and its component name, but
+	// nothing from the app's own environment.
+	appPort, ok := testEnvValue(app, "FAROS_DEV_PORT")
+	if !ok || appPort == "" {
+		t.Fatalf("app FAROS_DEV_PORT = %q (present=%t), want the production container port", appPort, ok)
+	}
+	if got, ok := testEnvValue(executor, "FAROS_DEV_PORT"); !ok || got != appPort {
+		t.Errorf("executor FAROS_DEV_PORT = %q (present=%t), want app port %q", got, ok, appPort)
+	}
+	if got, ok := testEnvValue(executor, "FAROS_COMPONENT"); !ok || got != "backend" {
+		t.Errorf("executor FAROS_COMPONENT = %q (present=%t), want backend", got, ok)
+	}
+	for _, envName := range []string{"FAROS_DEV_START_COMMAND", "FAROS_DEV_RELOAD_RULES", "PORT"} {
+		if hasTestEnv(executor, envName) {
+			t.Errorf("executor received %s, which belongs to the app/runtime supervisor", envName)
+		}
+	}
 	for _, c := range []map[string]any{coordinator, app, executor} {
 		containerName, _ := c["name"].(string)
 		if hasTestEnv(c, "DATABASE_URL") && containerName != "backend" {

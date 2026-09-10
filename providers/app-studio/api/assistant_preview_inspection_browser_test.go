@@ -581,10 +581,28 @@ func TestPrivatePreviewConfiguredHubOriginRequiresAbsoluteHTTPSOrigin(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := (&Server{hubPublicURL: tc.url}).privatePreviewConfiguredHubOrigin()
-			if err == nil || !strings.Contains(err.Error(), "FAROS_HUB_PUBLIC_URL") {
-				t.Fatalf("configured origin %q error = %v, want missing/invalid public URL", tc.url, err)
+			if err == nil || !strings.Contains(err.Error(), "FAROS_HUB_PUBLIC_URL") || !strings.Contains(err.Error(), "hub.publicURL") {
+				t.Fatalf("configured origin %q error = %v, want missing/invalid public URL naming the chart value", tc.url, err)
 			}
 		})
+	}
+}
+
+func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testing.T) {
+	_, err := (&Server{}).privatePreviewConfiguredHubOrigin()
+	if err == nil {
+		t.Fatal("missing FAROS_HUB_PUBLIC_URL was accepted")
+	}
+	// The model sees the tool failure text; it must say what to fix.
+	result := projectEinoAssistantSafeToolFailureResult(browserMCPToolNavigate, err)
+	if !strings.Contains(result, "private preview inspection is unavailable") || !strings.Contains(result, "hub.publicURL") {
+		t.Fatalf("model-facing tool result = %q, want the configuration cause", result)
+	}
+	// The action feed classifies it as a preview problem with the same cause,
+	// not as an unknown failure.
+	diagnostic := projectAssistantActionFeedDiagnosticForTool("navigate-call", browserMCPToolNavigate, projectEinoAssistantSafeErrorText(err))
+	if diagnostic == nil || diagnostic.Category != "runtime" || !strings.Contains(diagnostic.Message, "FAROS_HUB_PUBLIC_URL") || !strings.Contains(diagnostic.Message, "hub.publicURL") {
+		t.Fatalf("diagnostic = %#v, want runtime preview diagnostic naming FAROS_HUB_PUBLIC_URL", diagnostic)
 	}
 }
 

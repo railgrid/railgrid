@@ -289,7 +289,7 @@ test('Add menu keyboard navigation wraps, skips disabled entries, and restores t
 
 test('local attachment validation chips are removal-only while upload failures retain retry', async () => {
   const { assistantAttachmentValidationError, newAssistantStagedAttachment } = await vite.ssrLoadModule('/src/assistantAttachments.ts')
-  const invalidFile = { name: 'notes.pdf', type: 'application/pdf', size: 10 }
+  const invalidFile = { name: 'notes.pdf', type: 'application/pdf', size: (25 << 20) + 1 }
   const staged = newAssistantStagedAttachment(invalidFile, assistantAttachmentValidationError(invalidFile))
   assert.ok(staged.error)
   assert.equal(staged.retryable, false)

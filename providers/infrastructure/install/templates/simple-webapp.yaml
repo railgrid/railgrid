@@ -4,9 +4,9 @@ metadata:
   name: simple-webapp
 spec:
   displayName: "Simple web app"
-  description: "A single-container web app on a public URL — Deployment + Service + HTTPRoute. No backend tiers, no database. Development-capable: can back an App Studio project with a hot-reload dev server."
+  description: "A single-container web app on a public URL — Deployment + Service + HTTPRoute. No backend tiers; connects to a separate database / redis-cache instance via the connections input. Development-capable: can back an App Studio project with a hot-reload dev server."
   category: Workloads
-  version: 0.2.0
+  version: 0.3.0
   # exposure: what the platform tells callers about reaching an instance.
   # Every instance is published; App Studio's preview depends on it.
   exposure: public
@@ -24,10 +24,27 @@ spec:
     usage: |
       Deploys ONE container serving HTTP on ONE public URL. Choose this for
       frontend-only or single-process apps — static sites, single-page apps, a
-      self-contained server — when there is no separate backend tier and no
-      managed database. If the app needs an API tier + Postgres, use the
-      "application" template instead; if it only needs a standalone database or
-      cache next to an existing runtime, use "database" or "redis-cache".
+      self-contained server — when there is no separate backend tier. If the
+      app needs a separate API tier + its own Postgres, use the "application"
+      template instead. A single container that needs Postgres or Redis: first
+      provision a "database" / "redis-cache" instance in the same workspace,
+      then connect it with the connections input (below).
+
+      CONNECTIONS (the connections input) — inject a sibling instance's
+      credentials as env, sourced from its Secret (never templated in clear):
+        • connections.database: <values.name of a database instance> →
+          DATABASE_URL = `postgres://appuser:<password>@<name>-db:5432/appdb`.
+          The URI has NO sslmode and the in-cluster Postgres has TLS disabled,
+          so connect with sslmode=disable (append `?sslmode=disable` / set it
+          if your driver defaults to TLS, e.g. Node `pg`, JDBC).
+        • connections.cache: <values.name of a redis-cache instance> →
+          REDIS_URL = `redis://:<password>@<name>:6379`.
+        • Unset (default "") = not connected; the variable is left unset. A
+          name that is set makes the pod wait until that instance's Secret
+          exists, so it must name a real instance in THIS workspace.
+        • The database/cache boots alongside your app: RETRY the first
+          connection instead of exiting, and run schema creation/migrations
+          idempotently inside that same retry loop.
 
       PRODUCTION MODE — you supply exactly one container image (the image
       input) and nothing else:
@@ -50,11 +67,13 @@ spec:
 
       INPUTS you set when provisioning: name (required); image (required in
       production, ignored in development), port, replicas, env (env-var map;
-      not for secrets), expose.hostnamePrefix, access (public|private; default
-      public — private requires platform sign-in and an RBAC grant on this
-      instance). The platform stamps spec.expose.fqdn and spec.farosCluster —
-      do not set them. All except name and farosMode can be changed later with
-      update_instance; flipping access is an in-place update.
+      not for secrets), connections.database / connections.cache (see
+      CONNECTIONS; they apply in both modes), expose.hostnamePrefix, access
+      (public|private; default public — private requires platform sign-in and
+      an RBAC grant on this instance). The platform stamps spec.expose.fqdn
+      and spec.farosCluster — do not set them. All except name and farosMode
+      can be changed later with update_instance; flipping access is an
+      in-place update.
     outputs:
       - "status.url is the public HTTPS URL (status.host = bare hostname) in every mode; requests enter through the platform access gate."
       - "status.ready — ready replica count for the app Deployment."
@@ -123,7 +142,32 @@ spec:
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT) win on name conflicts. Values are stored world-readable — not for secrets."
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT, and DATABASE_URL / REDIS_URL when a connection is set) win on name conflicts. Values are stored world-readable — not for secrets; use connections for database/cache credentials."
+      # Fixed slots, not a list input: simpleschema.go gives a list of objects
+      # no item properties on the kro side, and the dev overlay copies the
+      # container env list literally, so a CEL-built env list would be dropped
+      # in development mode. Each slot renders one literal secretKeyRef env
+      # entry below. default: {} so the nested "" (= not connected) defaults
+      # apply when the object is omitted; kro also defaults the object to {}
+      # on the runtime CRD because a child has a default. The pattern admits
+      # "" so that default validates.
+      connections:
+        type: object
+        default: {}
+        description: "Sibling instances in this workspace whose credentials are injected as env, read from their Secret (never templated in clear). Empty = not connected."
+        properties:
+          database:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "values.name of a database instance in this workspace; its connection URI is injected as DATABASE_URL (no sslmode; in-cluster TLS is off, so use sslmode=disable). The pod waits until that instance's Secret exists."
+          cache:
+            type: string
+            default: ""
+            pattern: "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 63
+            description: "values.name of a redis-cache instance in this workspace; its connection URI is injected as REDIS_URL. The pod waits until that instance's Secret exists."
       # default: {} so nested defaults apply and the controller can stamp fqdn
       # onto an instance that omitted the expose object.
       expose:
@@ -234,8 +278,9 @@ spec:
   backendConfig:
     resources:
       # Tenant env vars ride a ConfigMap consumed via envFrom so the map input
-      # needs no CEL list synthesis; explicit container env (PORT) wins over
-      # envFrom on name conflicts, so platform vars can't be clobbered.
+      # needs no CEL list synthesis; explicit container env (PORT, and a
+      # connected DATABASE_URL / REDIS_URL) wins over envFrom on name
+      # conflicts, so platform vars can't be clobbered.
       - id: appEnv
         template:
           apiVersion: v1
@@ -277,6 +322,26 @@ spec:
                     env:
                       - name: PORT
                         value: ${string(schema.spec.port)}
+                      # connections.* → credentials from the sibling
+                      # instance's Secret in this (shared, per-workspace)
+                      # runtime namespace. Unconnected: a placeholder name +
+                      # optional=true leaves the var unset (and an env-map
+                      # value of the same name, via envFrom, still applies).
+                      # Connected: optional=false, so the pod waits for the
+                      # Secret and its uri key. Literal entries so the dev
+                      # overlay carries them into development mode too.
+                      - name: DATABASE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: '${schema.spec.connections.database == "" ? schema.spec.name + "-unbound-db" : schema.spec.connections.database + "-db-credentials"}'
+                            key: uri
+                            optional: '${schema.spec.connections.database == ""}'
+                      - name: REDIS_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: '${schema.spec.connections.cache == "" ? schema.spec.name + "-unbound-cache" : schema.spec.connections.cache + "-credentials"}'
+                            key: uri
+                            optional: '${schema.spec.connections.cache == ""}'
                     envFrom:
                       - configMapRef:
                           name: ${appEnv.metadata.name}

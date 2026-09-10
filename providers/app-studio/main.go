@@ -335,6 +335,7 @@ func runServe() {
 			Workspace:   workspaces,
 			Busy:        apiServer.AssistantBusy,
 			Owns:        apiServer.OwnsProject,
+			OnCommitted: projectCommitNotifier(apiServer.ProjectCommitted),
 			Store:       msgStore,
 			HubBase:     strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/"),
 			HubInsecure: os.Getenv("FAROS_HUB_INSECURE") == "true",

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import { FileText, Paperclip, RotateCcw, X, Plus } from 'lucide-vue-next'
+import { File as FileIcon, FileText, Paperclip, RotateCcw, X, Plus } from 'lucide-vue-next'
 import {
   ASSISTANT_ATTACHMENT_ACCEPT,
   ASSISTANT_LARGE_PASTE_BYTES,
   assistantAttachmentIsImage,
+  assistantAttachmentKind,
+  assistantAttachmentSizeLabel,
   assistantAttachmentValidationError,
   newAssistantStagedAttachment,
   type AssistantStagedAttachment,
@@ -198,8 +200,10 @@ onBeforeUnmount(() => {
           :title="attachment.error || statusLabel(attachment)"
         >
           <div class="flex min-w-0 items-center gap-1.5">
-            <FileText class="h-3 w-3 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+            <FileIcon v-if="assistantAttachmentKind(attachment.file) === 'file'" class="h-3 w-3 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+            <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" aria-hidden="true" />
             <span class="max-w-48 truncate">{{ attachmentLabel(attachment) }}</span>
+            <span v-if="assistantAttachmentKind(attachment.file) === 'file'" class="shrink-0 text-[10px] opacity-75">{{ assistantAttachmentSizeLabel(attachment.file.size) }}</span>
             <span class="text-[10px] opacity-75">{{ statusLabel(attachment) }}</span>
             <div class="ml-auto flex shrink-0 items-center gap-0.5">
               <button

@@ -62,4 +62,7 @@ const (
 	ReasonReconciling = "Reconciling"
 	ReasonReady       = "Ready"
 	ReasonError       = "Error"
+	// ReasonRateLimited marks work waiting for the git host's rate limit to
+	// reset. The object stays in progress and the controller retries it.
+	ReasonRateLimited = "RateLimited"
 )
