@@ -20,6 +20,7 @@ import {
 
 const store = useTerminalSessionsStore()
 const insets = useLayoutInsets()
+const tabRefs = new Map<string, HTMLButtonElement>()
 
 // Bridge: provider micro-frontends can't reach this Pinia store from
 // inside their isolated Vue apps, so they dispatch a
@@ -85,11 +86,16 @@ const splitTitle = computed(() => {
 const panelStyle = computed<Record<string, string>>(() => {
   // Honor AppLayout's published insets so the dock never slides under the side/bottom nav.
   const base = { left: insets.left, right: insets.right, bottom: insets.bottom }
-  if (store.panelState.isMinimized) return { ...base, height: '36px' }
+  if (store.panelState.isMinimized) return { ...base, height: '44px' }
   if (store.panelState.isFullscreen)
     return { ...base, height: `calc(100vh - 16px - ${insets.bottom})`, top: '16px' }
   return { ...base, height: `${store.panelState.height}px` }
 })
+
+const viewportHeight = ref(typeof window === 'undefined' ? 160 : window.innerHeight)
+const panelHeightMax = computed(() =>
+  Math.max(160, viewportHeight.value - 64),
+)
 
 function isSessionVisible(session: TerminalSession): boolean {
   if (store.panelState.splitLayout === 'single') return session.id === store.activeSessionId
@@ -146,7 +152,10 @@ function resizeAll() {
 }
 
 watch(
-  () => store.sessions.map((s) => s.id).join(','),
+  // Reordering changes the array order but does not change the active
+  // terminal. Watching the IDs here made a keyboard reorder schedule a
+  // second focus pass into xterm after the tab had already received focus.
+  () => store.activeSessionId,
   () => {
     nextTick(refocusActive)
   },
@@ -193,6 +202,47 @@ function handleDrop(toIndex: number) {
   dragOverIndex.value = null
 }
 
+function setTabRef(sessionID: string, element: Element | null): void {
+  if (element instanceof HTMLButtonElement) tabRefs.set(sessionID, element)
+  else tabRefs.delete(sessionID)
+}
+
+function focusSessionTab(index: number): void {
+  const session = store.sessions[index]
+  if (!session) return
+  store.setActiveSession(session.id)
+  nextTick(() => tabRefs.get(session.id)?.focus())
+}
+
+function handleTabKeydown(event: KeyboardEvent, index: number): void {
+  const count = store.sessions.length
+  if (count === 0) return
+  if (event.altKey && event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    event.preventDefault()
+    const direction = event.key === 'ArrowLeft' ? -1 : 1
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= count) return
+    const sessionID = store.sessions[index]?.id
+    if (!sessionID) return
+    store.reorderSessions(index, nextIndex)
+    nextTick(() => tabRefs.get(sessionID)?.focus())
+    return
+  }
+  if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+    event.preventDefault()
+    store.setActiveSession(store.sessions[index]?.id ?? '')
+    return
+  }
+  let nextIndex: number | null = null
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % count
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + count) % count
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = count - 1
+  if (nextIndex === null) return
+  event.preventDefault()
+  focusSessionTab(nextIndex)
+}
+
 // ---- Panel resize ------------------------------------------------------------
 const resizing = ref(false)
 let resizeStartY = 0
@@ -207,12 +257,34 @@ function startResize(e: MouseEvent) {
   document.body.style.cursor = 'ns-resize'
   document.body.style.userSelect = 'none'
 }
+
+function panelHeightBounds(): { min: number; max: number } {
+  return { min: 160, max: Math.max(160, window.innerHeight - 64) }
+}
+
+function setPanelHeight(next: number): void {
+  const bounds = panelHeightBounds()
+  store.updatePanelState({ height: Math.max(bounds.min, Math.min(bounds.max, next)) })
+  resizeAll()
+}
+
+function handlePanelResizeKeydown(event: KeyboardEvent): void {
+  if (store.panelState.isMinimized || store.panelState.isFullscreen) return
+  const step = event.shiftKey ? 40 : 20
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    const bounds = panelHeightBounds()
+    if (event.key === 'ArrowUp') setPanelHeight(store.panelState.height + step)
+    else if (event.key === 'ArrowDown') setPanelHeight(store.panelState.height - step)
+    else if (event.key === 'Home') setPanelHeight(bounds.min)
+    else setPanelHeight(bounds.max)
+  }
+}
+
 function onResize(e: MouseEvent) {
   if (!resizing.value) return
   const delta = resizeStartY - e.clientY
-  const next = Math.max(160, Math.min(window.innerHeight - 64, resizeStartHeight + delta))
-  store.updatePanelState({ height: next })
-  resizeAll()
+  setPanelHeight(resizeStartHeight + delta)
 }
 function stopResize() {
   resizing.value = false
@@ -244,14 +316,19 @@ function onPaneResize(e: MouseEvent) {
   const isVertical = store.panelState.splitLayout === 'vertical'
   const pos = isVertical ? e.clientX : e.clientY
   const delta = pos - paneStartPos
+  adjustPaneSizes(paneIndex, delta, true)
+}
+
+function adjustPaneSizes(idx: number, delta: number, isPixelDelta = false): void {
+  const isVertical = store.panelState.splitLayout === 'vertical'
   const container = document.querySelector('.terminal-dock .panel-content') as HTMLElement | null
   if (!container) return
   const containerSize = isVertical ? container.clientWidth : container.clientHeight
   if (containerSize === 0) return
-  const deltaPct = (delta / containerSize) * 100
-  const sizes = [...paneStartSizes]
-  const li = paneIndex
-  const ri = paneIndex + 1
+  const deltaPct = isPixelDelta ? (delta / containerSize) * 100 : delta
+  const sizes = isPixelDelta ? [...paneStartSizes] : [...store.panelState.paneSizes]
+  const li = idx
+  const ri = idx + 1
   if (ri >= sizes.length) return
   let left = Math.max(10, Math.min(90, sizes[li] + deltaPct))
   let right = Math.max(10, Math.min(90, sizes[ri] - deltaPct))
@@ -262,6 +339,20 @@ function onPaneResize(e: MouseEvent) {
   sizes[ri] = right
   store.updatePanelState({ paneSizes: sizes })
   resizeAll()
+}
+
+function handlePaneResizeKeydown(event: KeyboardEvent, idx: number): void {
+  const isVertical = store.panelState.splitLayout === 'vertical'
+  let delta = 0
+  if (isVertical && event.key === 'ArrowRight') delta = 5
+  else if (isVertical && event.key === 'ArrowLeft') delta = -5
+  else if (!isVertical && event.key === 'ArrowDown') delta = 5
+  else if (!isVertical && event.key === 'ArrowUp') delta = -5
+  else if (event.key === 'PageDown') delta = 10
+  else if (event.key === 'PageUp') delta = -10
+  if (delta === 0) return
+  event.preventDefault()
+  adjustPaneSizes(idx, delta)
 }
 function stopPaneResize() {
   paneResizing.value = false
@@ -274,12 +365,14 @@ function stopPaneResize() {
 
 // ---- Window resize -----------------------------------------------------------
 function onWindowResize() {
-  const maxH = window.innerHeight - 64
+  viewportHeight.value = window.innerHeight
+  const maxH = Math.max(160, window.innerHeight - 64)
   if (store.panelState.height > maxH) store.updatePanelState({ height: maxH })
   resizeAll()
 }
 
 onMounted(() => {
+  viewportHeight.value = window.innerHeight
   window.addEventListener('resize', onWindowResize)
 })
 onUnmounted(() => {
@@ -299,18 +392,26 @@ onUnmounted(() => {
     <!-- Resize handle (top edge) -->
     <div
       v-if="!store.panelState.isMinimized && !store.panelState.isFullscreen"
-      class="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize transition-colors hover:bg-accent/30"
+      class="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize transition-colors hover:bg-accent/30 focus-visible:bg-accent/30 focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize terminal panel"
+      :aria-valuemin="160"
+      :aria-valuemax="panelHeightMax"
+      :aria-valuenow="Math.round(store.panelState.height)"
+      tabindex="0"
       @mousedown="startResize"
+      @keydown="handlePanelResizeKeydown"
     />
 
     <!-- Header: tabs + controls -->
-    <div class="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border-subtle bg-surface-overlay/40 px-2">
-      <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+    <div class="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-border-subtle bg-surface-overlay/40 px-2">
+      <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Open terminals">
         <div
           v-for="(session, index) in store.sessions"
           :key="session.id"
           :class="[
-            'group flex h-7 max-w-[200px] min-w-[120px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-[11px] transition-all',
+            'terminal-tab group flex h-11 max-w-[240px] min-w-[120px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-[11px] transition-all sm:h-8',
             session.id === store.activeSessionId
               ? 'border-accent/40 bg-accent/10 text-text-primary'
               : 'border-border-subtle bg-surface-overlay/50 text-text-secondary hover:border-border hover:bg-surface-hover',
@@ -324,30 +425,46 @@ onUnmounted(() => {
           @dragover="handleDragOver($event, index)"
           @dragleave="handleDragLeave"
           @drop.prevent="handleDrop(index)"
-          @click="store.setActiveSession(session.id)"
         >
-          <TerminalSquare
-            class="h-3 w-3 shrink-0"
-            :class="session.id === store.activeSessionId ? 'text-accent' : 'text-text-muted'"
-            :stroke-width="2"
-          />
-          <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ session.displayName }}</span>
+          <button
+            :ref="(element) => setTabRef(session.id, element as Element | null)"
+            type="button"
+            role="tab"
+            :aria-selected="session.id === store.activeSessionId"
+            aria-controls="terminal-panel"
+            :tabindex="session.id === store.activeSessionId ? 0 : -1"
+            class="terminal-tab-button flex min-h-11 min-w-0 flex-1 items-center gap-1.5 border-0 bg-transparent p-0 text-left text-inherit outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 sm:min-h-8"
+            @click="store.setActiveSession(session.id)"
+            @keydown="handleTabKeydown($event, index)"
+          >
+            <TerminalSquare
+              class="h-3 w-3 shrink-0"
+              :class="session.id === store.activeSessionId ? 'text-accent' : 'text-text-muted'"
+              :stroke-width="2"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ session.displayName }}</span>
+          </button>
           <button
             v-if="store.sessions.length > 1 && store.panelState.splitLayout !== 'single'"
             type="button"
-            class="k-btn k-btn--ghost flex h-4 w-4 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-accent group-hover:opacity-100"
-            :title="session.isPinned ? 'Unpin from split view' : 'Pin to split view'"
+            class="terminal-tab-action k-btn k-btn--ghost flex h-11 w-11 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-all hover:bg-surface-hover hover:text-accent sm:h-8 sm:w-8 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+            :aria-label="`${session.isPinned ? 'Unpin' : 'Pin'} ${session.displayName} ${session.isPinned ? 'from' : 'in'} split view`"
+            :title="`${session.isPinned ? 'Unpin' : 'Pin'} ${session.displayName} ${session.isPinned ? 'from' : 'in'} split view`"
             @click.stop="store.toggleSessionPin(session.id)"
+            @dragstart.stop.prevent
           >
-            <component :is="session.isPinned ? Pin : PinOff" class="h-2.5 w-2.5" :stroke-width="2" />
+            <component :is="session.isPinned ? Pin : PinOff" class="h-2.5 w-2.5" :stroke-width="2" aria-hidden="true" />
           </button>
           <button
             type="button"
-            class="k-btn k-btn--ghost flex h-4 w-4 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted opacity-0 transition-all hover:bg-danger-subtle hover:text-danger group-hover:opacity-100"
-            title="Close"
+            class="terminal-tab-action k-btn k-btn--ghost flex h-11 w-11 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-all hover:bg-danger-subtle hover:text-danger sm:h-8 sm:w-8 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+            :aria-label="`Close ${session.displayName} terminal`"
+            :title="`Close ${session.displayName} terminal`"
             @click.stop="store.closeSession(session.id)"
+            @dragstart.stop.prevent
           >
-            <X class="h-2.5 w-2.5" :stroke-width="2.5" />
+            <X class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -356,35 +473,39 @@ onUnmounted(() => {
         <button
           v-if="store.sessions.length > 1"
           type="button"
-          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          class="k-btn k-btn--ghost flex h-11 w-11 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent sm:h-8 sm:w-8"
+          aria-label="Change terminal split layout"
           :title="splitTitle"
           @click="store.cycleSplitLayout()"
         >
-          <component :is="splitIcon" class="h-3 w-3" :stroke-width="1.75" />
+          <component :is="splitIcon" class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <button
           type="button"
-          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          class="k-btn k-btn--ghost flex h-11 w-11 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent sm:h-8 sm:w-8"
+          :aria-label="store.panelState.isFullscreen ? 'Exit terminal fullscreen' : 'Open terminal fullscreen'"
           :title="store.panelState.isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
           @click="store.toggleFullscreen()"
         >
-          <component :is="store.panelState.isFullscreen ? Minimize2 : Maximize2" class="h-3 w-3" :stroke-width="1.75" />
+          <component :is="store.panelState.isFullscreen ? Minimize2 : Maximize2" class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <button
           type="button"
-          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          class="k-btn k-btn--ghost flex h-11 w-11 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent sm:h-8 sm:w-8"
+          :aria-label="store.panelState.isMinimized ? 'Restore terminal panel' : 'Minimize terminal panel'"
           :title="store.panelState.isMinimized ? 'Restore' : 'Minimize'"
           @click="store.toggleMinimize()"
         >
-          <component :is="store.panelState.isMinimized ? ChevronUp : ChevronDown" class="h-3 w-3" :stroke-width="1.75" />
+          <component :is="store.panelState.isMinimized ? ChevronUp : ChevronDown" class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <button
           type="button"
-          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-danger-subtle hover:text-danger"
+          class="k-btn k-btn--ghost flex h-11 w-11 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-danger-subtle hover:text-danger sm:h-8 sm:w-8"
+          aria-label="Close all terminals"
           title="Close all"
           @click="store.closeAllSessions()"
         >
-          <X class="h-3 w-3" :stroke-width="2" />
+          <X class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -392,6 +513,9 @@ onUnmounted(() => {
     <!-- Content area -->
     <div
       v-if="!store.panelState.isMinimized"
+      id="terminal-panel"
+      role="tabpanel"
+      aria-label="Terminal sessions"
       class="panel-content relative min-h-0 flex-1 overflow-hidden bg-surface"
       :class="`layout-${store.panelState.splitLayout}`"
     >
@@ -410,9 +534,17 @@ onUnmounted(() => {
         />
         <div
           v-if="shouldShowResizeHandle(session)"
-          class="pane-resize-handle"
+          class="pane-resize-handle focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
           :class="resizeHandleClass"
+          role="separator"
+          :aria-orientation="store.panelState.splitLayout === 'vertical' ? 'vertical' : 'horizontal'"
+          :aria-label="`Resize between ${store.visibleSessions[getVisibleIndex(session)]?.displayName ?? 'terminal'} and ${store.visibleSessions[getVisibleIndex(session) + 1]?.displayName ?? 'terminal'}`"
+          :aria-valuemin="10"
+          :aria-valuemax="90"
+          :aria-valuenow="Math.round(store.panelState.paneSizes[getVisibleIndex(session)] ?? 50)"
+          tabindex="0"
           @mousedown="startPaneResize($event, getVisibleIndex(session))"
+          @keydown="handlePaneResizeKeydown($event, getVisibleIndex(session))"
         />
       </template>
     </div>
@@ -513,5 +645,26 @@ onUnmounted(() => {
   height: 4px;
   cursor: ns-resize;
   flex-shrink: 0;
+}
+
+/* Tailwind's sm: compact rules also apply on a coarse-pointer tablet. Keep
+ * the hybrid target contract authoritative for the tab row and its resource
+ * actions, including the actions that are hover-revealed on desktop. */
+@media (pointer: coarse), (any-pointer: coarse) {
+  .terminal-tab,
+  .terminal-tab-button,
+  .terminal-tab-action {
+    min-height: 44px;
+  }
+
+  .terminal-tab {
+    height: 44px;
+  }
+
+  .terminal-tab-action {
+    height: 44px;
+    opacity: 1;
+    width: 44px;
+  }
 }
 </style>

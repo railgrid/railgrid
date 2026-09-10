@@ -485,7 +485,7 @@ test-portal: ## Run the complete portal test suite
 	cd portal && npm test
 
 test-portal-settings-conformance: ## Verify portal shell and organization/workspace source contracts
-	@node --test portal/src/theme-bootstrap.test.mjs portal/src/pages/OrganizationsWorkspace.conformance.test.mjs portal/src/pages/ProviderEnableDialog.deferred.test.mjs
+	@node --test portal/src/theme-bootstrap.test.mjs portal/src/pages/OrganizationsWorkspace.conformance.test.mjs portal/src/stores/tenant-read-status.test.mjs portal/src/pages/ProviderEnableDialog.deferred.test.mjs portal/src/components/TerminalDock.conformance.test.mjs portal/src/components/DashboardTile.conformance.test.mjs portal/src/pages/MCPPage.conformance.test.mjs
 
 test-create-flow-conformance: ## Verify route-owned creation uses the canonical page skeleton
 	@node --test hack/create-flow-conformance.test.mjs

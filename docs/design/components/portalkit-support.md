@@ -12,9 +12,11 @@ not render a standalone component:
   stale host styles untouched, and appends a versioned fallback when needed.
   The fallback imports canonical CSS through Vite's `?inline` loader, which
   embeds minified canonical rules; the authored stylesheet and synced source
-  copies remain byte-identical. The current core style version is 15, read from
-  `--faros-ui-core-version`. Existing style elements are never replaced.
-  Optional AI styles load independently through `agentkit/styles.ts`; see
+  copies remain byte-identical. The current core style version is 18, from
+  `FAROS_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`, and is read
+  from `--faros-ui-core-version`. Existing style elements are never replaced.
+  Optional AI styles load independently through `agentkit/styles.ts`, with
+  their own marker and version; see
   [AI presentation](ai-conversation.md).
 - `tenant.ts` owns the security-critical hub-proxy contract: `readTenant()`
   reads `faros:portal:tenant`; `tenantHeaders({ token, json })` emits
@@ -34,7 +36,7 @@ not render a standalone component:
   describe the same slots; the semantic map is names only and therefore
   requires the canonical stylesheet. Neither authorizes provider-local visual
   variants. A change to either map or its CSS increments the matching
-  `FAROS_UI_VERSION` style-handoff contract before the assets are synced.
+  `FAROS_UI_CORE_VERSION` style-handoff contract before the assets are synced.
 
 See the [resource reads pattern](../patterns/resource-reads.md) and
 [provider integration foundation](../foundations/provider-integration.md) for

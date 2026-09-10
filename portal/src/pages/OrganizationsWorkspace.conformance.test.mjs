@@ -100,7 +100,9 @@ test('organization settings use the org MemberList contract and lifecycle action
   const orgSection = tenantSettingsPage.slice(orgSectionStart, orgSectionEnd)
   assert.match(orgSection, /<MemberList/)
   assert.match(orgSection, /:members="orgMembers"/)
-  assert.match(orgSection, /:loading="orgMembersLoading"/)
+  assert.match(orgSection, /:loading="orgMembersLoading && !orgMembersHasSnapshot"/)
+  assert.match(orgSection, /orgMembersLoading && orgMembersHasSnapshot/)
+  assert.match(orgSection, /Showing the last successful result\./)
   assert.match(orgSection, /:busy="orgMemberBusy"/)
   assert.match(orgSection, /scope-label="this organization"/)
   assert.match(orgSection, /:add="onAddOrgMember"/)
@@ -720,8 +722,41 @@ test('settings sections keep read failures local and expose independent retries'
 
   assert.match(tenant, /type ListReadKind = 'org-members' \| 'workspace-members' \| 'app-access' \| 'service-accounts'/)
   assert.match(tenant, /beginListRead\(kind: ListReadKind, targetOrgUUID: string/)
-  assert.match(tenant, /finishListRead\(read: \{ key: string; sequence: number \}, message: string \| null\)/)
+  assert.match(tenant, /interface ListReadStatus\s*\{[\s\S]*sequence: number[\s\S]*status: number \| null[\s\S]*denied: boolean/)
+  assert.match(tenant, /finishListRead\(\s*read: \{ key: string; sequence: number \},\s*message: string \| null,\s*status: number \| null = null,\s*\)/)
+  assert.match(tenant, /status === 401 \|\| status === 403/)
+  assert.match(tenant, /function listReadDenied\([\s\S]*expectedSequence\?: number/)
+  assert.match(tenant, /listReadStatus,\s*listReadDenied/)
   assert.match(tenant, /if \(listReadSequences\.get\(read\.key\) !== read\.sequence\) return/)
+  assert.match(tenant, /context\.selectionRevisionAtStart !== selectionRevision/)
+
+  for (const [loader, failurePrefix] of [
+    ['listOrgMembers', 'failed to list org members'],
+    ['listWorkspaceMembers', 'failed to list workspace members'],
+    ['listAppAccessGrants', 'failed to list app access grants'],
+    ['listServiceAccounts', 'failed to list service accounts'],
+  ]) {
+    const loaderStart = tenant.indexOf(`async function ${loader}`)
+    const loaderEnd = tenant.indexOf('\n  async function ', loaderStart + 1)
+    const source = tenant.slice(loaderStart, loaderEnd < 0 ? undefined : loaderEnd)
+    assert.match(source, new RegExp(`publishListReadError\\(read, message, resp\\.status`), failurePrefix)
+    assert.match(source, /finishListRead\(read, null, resp\.status\)/)
+    assert.match(source, new RegExp(`readException\\('${failurePrefix}'`))
+  }
+
+  for (const [loader, kind] of [
+    ['reloadOrgMembers', 'org-members'],
+    ['reloadWsMembers', 'workspace-members'],
+    ['reloadAppAccessGrants', 'app-access'],
+    ['reloadSAs', 'service-accounts'],
+  ]) {
+    const loaderStart = tenantSettingsPage.indexOf(`async function ${loader}`)
+    const loaderEnd = tenantSettingsPage.indexOf('\n}\n\n', loaderStart)
+    const source = tenantSettingsPage.slice(loaderStart, loaderEnd)
+    assert.match(source, new RegExp(`tenant\\.listReadDenied\\('${kind}'`))
+    assert.match(source, /if \(readDenied\) \{[\s\S]*HasSnapshot\.value = false/)
+    assert.match(source, /else if \(readError\) \{[\s\S]*(?:last[\s\S]*successful|prior rows|sentinel)/)
+  }
 })
 
 test('app access is always scoped to the inspected workspace', () => {

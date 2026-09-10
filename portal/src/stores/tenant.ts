@@ -129,6 +129,12 @@ export interface SARow {
   lastTokenIssuedAt?: string
 }
 
+export interface ListReadStatus {
+  sequence: number
+  status: number | null
+  denied: boolean
+}
+
 export interface TokenResponse {
   token: string
   expiresAt: string
@@ -266,6 +272,7 @@ export const useTenantStore = defineStore('tenant', () => {
   // inherits a different target's failure.
   type ListReadKind = 'org-members' | 'workspace-members' | 'app-access' | 'service-accounts'
   const listReadErrors = ref<Record<string, string | null>>({})
+  const listReadStatuses = ref<Record<string, ListReadStatus>>({})
   const listReadSequences = new Map<string, number>()
   const listReadContexts = new Map<string, { targetOrgUUID: string; selectionRevisionAtStart: number }>()
   let listReadSequence = 0
@@ -280,16 +287,64 @@ export const useTenantStore = defineStore('tenant', () => {
     listReadSequences.set(key, sequence)
     listReadContexts.set(key, { targetOrgUUID, selectionRevisionAtStart: selectionRevision })
     listReadErrors.value = { ...listReadErrors.value, [key]: null }
+    listReadStatuses.value = {
+      ...listReadStatuses.value,
+      [key]: { sequence, status: null, denied: false },
+    }
     return { key, sequence }
   }
 
-  function finishListRead(read: { key: string; sequence: number }, message: string | null): void {
+  function finishListRead(
+    read: { key: string; sequence: number },
+    message: string | null,
+    status: number | null = null,
+  ): void {
     if (listReadSequences.get(read.key) !== read.sequence) return
     listReadErrors.value = { ...listReadErrors.value, [read.key]: message }
+    listReadStatuses.value = {
+      ...listReadStatuses.value,
+      [read.key]: { sequence: read.sequence, status, denied: status === 401 || status === 403 },
+    }
   }
 
   function listReadError(kind: ListReadKind, targetOrgUUID: string, wsUUID?: string): string | null {
     return listReadErrors.value[listReadKey(kind, targetOrgUUID, wsUUID)] ?? null
+  }
+
+  /**
+   * Return the latest status for this exact list target. The sequence check
+   * prevents a late response from an older same-target read from looking like
+   * the result of the current request; callers still apply their own page
+   * generation/scope guard before consuming it.
+   */
+  function listReadStatus(
+    kind: ListReadKind,
+    targetOrgUUID: string,
+    wsUUID?: string,
+    expectedSequence?: number,
+  ): ListReadStatus | null {
+    const key = listReadKey(kind, targetOrgUUID, wsUUID)
+    const latestSequence = listReadSequences.get(key)
+    const status = listReadStatuses.value[key]
+    const context = listReadContexts.get(key)
+    if (
+      latestSequence === undefined ||
+      !status ||
+      !context ||
+      status.sequence !== latestSequence ||
+      context.selectionRevisionAtStart !== selectionRevision ||
+      (expectedSequence !== undefined && expectedSequence !== latestSequence)
+    ) return null
+    return { ...status }
+  }
+
+  function listReadDenied(
+    kind: ListReadKind,
+    targetOrgUUID: string,
+    wsUUID?: string,
+    expectedSequence?: number,
+  ): boolean {
+    return listReadStatus(kind, targetOrgUUID, wsUUID, expectedSequence)?.denied === true
   }
 
   // Targeted operations may finish after the user changes organizations. Keep
@@ -307,11 +362,15 @@ export const useTenantStore = defineStore('tenant', () => {
     error.value = message
   }
 
-  function publishListReadError(read: { key: string; sequence: number }, message: string): void {
+  function publishListReadError(
+    read: { key: string; sequence: number },
+    message: string,
+    status: number | null = null,
+  ): void {
     if (listReadSequences.get(read.key) !== read.sequence) return
     const context = listReadContexts.get(read.key)
     if (context) publishTargetError(context.targetOrgUUID, message, context.selectionRevisionAtStart)
-    finishListRead(read, message)
+    finishListRead(read, message, status)
   }
 
   function readException(prefix: string, errorValue: unknown): string {
@@ -901,11 +960,11 @@ export const useTenantStore = defineStore('tenant', () => {
       })
       if (!resp.ok) {
         const message = `failed to list org members: ${resp.status}`
-        publishListReadError(read, message)
+        publishListReadError(read, message, resp.status)
         return []
       }
       const data = (await resp.json()) as { items: MemberRow[] }
-      finishListRead(read, null)
+      finishListRead(read, null, resp.status)
       return data.items ?? []
     } catch (errorValue: unknown) {
       const message = readException('failed to list org members', errorValue)
@@ -990,11 +1049,11 @@ export const useTenantStore = defineStore('tenant', () => {
       })
       if (!resp.ok) {
         const message = `failed to list workspace members: ${resp.status}`
-        publishListReadError(read, message)
+        publishListReadError(read, message, resp.status)
         return []
       }
       const data = (await resp.json()) as { items: MemberRow[] }
-      finishListRead(read, null)
+      finishListRead(read, null, resp.status)
       return data.items ?? []
     } catch (errorValue: unknown) {
       const message = readException('failed to list workspace members', errorValue)
@@ -1011,11 +1070,11 @@ export const useTenantStore = defineStore('tenant', () => {
       })
       if (!resp.ok) {
         const message = `failed to list app access grants: ${resp.status}`
-        publishListReadError(read, message)
+        publishListReadError(read, message, resp.status)
         return []
       }
       const data = (await resp.json()) as { items: AppAccessGrantRow[] }
-      finishListRead(read, null)
+      finishListRead(read, null, resp.status)
       return data.items ?? []
     } catch (errorValue: unknown) {
       const message = readException('failed to list app access grants', errorValue)
@@ -1122,11 +1181,11 @@ export const useTenantStore = defineStore('tenant', () => {
       })
       if (!resp.ok) {
         const message = `failed to list service accounts: ${resp.status}`
-        publishListReadError(read, message)
+        publishListReadError(read, message, resp.status)
         return []
       }
       const data = (await resp.json()) as { items: SARow[] }
-      finishListRead(read, null)
+      finishListRead(read, null, resp.status)
       return data.items ?? []
     } catch (errorValue: unknown) {
       const message = readException('failed to list service accounts', errorValue)
@@ -1270,6 +1329,8 @@ export const useTenantStore = defineStore('tenant', () => {
     error,
     clearError,
     listReadError,
+    listReadStatus,
+    listReadDenied,
     bootstrapState,
     bootstrapAttempts,
     // computed

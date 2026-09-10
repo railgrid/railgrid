@@ -5,10 +5,11 @@ import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
 import WelcomeWizard from '@/components/WelcomeWizard.vue'
+import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
-import { Puzzle, Plus, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
+import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -211,18 +212,57 @@ const providerFor = (name: string) => providers.byName(name)
 
 // --- Customize mode ---
 const editMode = ref(false)
-const addOpen = ref(false)
+const addMenuItems = computed<ActionMenuItem[]>(() => addable.value.map((name) => ({
+  id: name,
+  label: providerFor(name)?.displayName ?? name,
+  tone: 'neutral',
+})))
 
 function toggleEdit() {
   editMode.value = !editMode.value
-  if (!editMode.value) addOpen.value = false
 }
 function onAdd(name: string) {
   dash.unhide(name)
-  if (addable.value.length === 0) addOpen.value = false
 }
 function onRemove(name: string) {
   dash.hide(name)
+}
+
+type TileLayoutAction = 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'
+
+function onTileLayoutAction(name: string, action: TileLayoutAction): void {
+  const tile = layout.value.find((item) => item.i === name)
+  if (!tile) return
+
+  const columns = responsiveCols.value
+  switch (action) {
+    case 'left':
+      tile.x = Math.max(0, tile.x - 1)
+      break
+    case 'right':
+      tile.x = Math.min(Math.max(0, columns - tile.w), tile.x + 1)
+      break
+    case 'up':
+      tile.y = Math.max(0, tile.y - 1)
+      break
+    case 'down':
+      tile.y += 1
+      break
+    case 'narrower':
+      tile.w = Math.max(1, tile.w - 1)
+      tile.x = Math.min(tile.x, Math.max(0, columns - tile.w))
+      break
+    case 'wider':
+      tile.w = Math.min(columns - tile.x, tile.w + 1)
+      break
+    case 'shorter':
+      tile.h = Math.max(1, tile.h - 1)
+      break
+    case 'taller':
+      tile.h += 1
+      break
+  }
+  onUserLayoutUpdated()
 }
 
 // Persist geometry only after a user drag/resize settles. GridLayout's
@@ -286,34 +326,13 @@ function onGridSelectStart(event: Event) {
           <div class="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
             <template v-if="editMode">
               <!-- Add a previously-removed tile back. -->
-              <div class="relative">
-                <button
-                  type="button"
-                  class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-1.5"
-                  :disabled="addable.length === 0"
-                  :aria-expanded="addOpen"
-                  aria-controls="dashboard-add-menu"
-                  @click="addOpen = !addOpen"
-                >
-                  <Plus class="h-4 w-4" :stroke-width="1.75" /> Add tile
-                </button>
-                <div
-                  v-if="addOpen && addable.length"
-                  id="dashboard-add-menu"
-                  class="absolute right-0 z-20 mt-1 max-h-64 w-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay py-1 shadow-lg"
-                >
-                  <button
-                    v-for="name in addable"
-                    :key="name"
-                    type="button"
-                    class="k-menu-item"
-                    @click="onAdd(name)"
-                  >
-                    <Puzzle class="h-4 w-4 flex-shrink-0 text-text-muted" :stroke-width="1.75" />
-                    <span class="truncate">{{ providerFor(name)?.displayName ?? name }}</span>
-                  </button>
-                </div>
-              </div>
+              <ActionMenu
+                :items="addMenuItems"
+                label="Add tile"
+                :disabled="addable.length === 0"
+                show-label
+                @select="onAdd"
+              />
               <button
                 type="button"
                 class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
@@ -363,7 +382,7 @@ function onGridSelectStart(event: Event) {
           <div v-if="addable.length > 0">
             <div class="font-medium text-text-secondary">Your dashboard is empty</div>
             <div class="mt-1 text-xs">
-              You've removed all tiles. Use <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="editMode = true; addOpen = true">Customize → Add tile</button> to bring them back.
+              You've removed all tiles. Use <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="editMode = true">Customize → Add tile</button> to bring them back.
             </div>
           </div>
           <div v-else>
@@ -403,12 +422,13 @@ function onGridSelectStart(event: Event) {
             @moved="onUserLayoutUpdated"
             @resized="onUserLayoutUpdated"
           >
-            <DashboardTile
-              v-if="providerFor(item.i)"
-              :provider="providerFor(item.i)!"
-              :edit-mode="editMode"
-              @remove="onRemove"
-            />
+              <DashboardTile
+                v-if="providerFor(item.i)"
+                :provider="providerFor(item.i)!"
+                :edit-mode="editMode"
+                @remove="onRemove"
+                @layout-action="onTileLayoutAction(item.i, $event)"
+              />
           </GridItem>
         </GridLayout>
       </template>

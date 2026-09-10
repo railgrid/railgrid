@@ -4,10 +4,24 @@ import test from 'node:test'
 
 const tile = fs.readFileSync(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
 
-test('dashboard tile edit mode removes nested controls from focus and exposes a named remove action', () => {
-  assert.match(tile, /:aria-label="`Remove \$\{provider\.displayName\} tile`"/)
-  assert.match(tile, /h-11 w-11[^"]*sm:h-8 sm:w-8/)
+test('dashboard tile edit mode keeps arrangement and remove actions in the shared menu', () => {
+  assert.match(tile, /import ActionMenu, \{ type ActionMenuItem \} from '@\/portalkit\/ActionMenu\.vue'/)
+  assert.match(tile, /const arrangementItems = computed<ActionMenuItem\[\]>\(\(\) => \{[\s\S]*id: 'taller'/)
+  assert.match(tile, /id: 'remove', label: `Remove \$\{label\} tile`, tone: 'danger'/)
+  assert.match(tile, /<ActionMenu[\s\S]*:items="arrangementItems"[\s\S]*@select="onArrangementAction"/)
+  assert.doesNotMatch(tile, /<button[\s\S]*Move \$\{provider\.displayName\} tile left/)
+  assert.doesNotMatch(tile, /class="tile-no-drag mb-3 flex flex-wrap/)
   assert.equal((tile.match(/:inert="editMode"/g) ?? []).length, 2)
+})
+
+test('dashboard tile action menu maps remove separately from persisted layout actions', () => {
+  const handlerStart = tile.indexOf('function onArrangementAction')
+  const handlerEnd = tile.indexOf('\n}\n\nwatch(', handlerStart)
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  const handler = tile.slice(handlerStart, handlerEnd)
+  assert.match(handler, /if \(action === 'remove'\) \{[\s\S]*emit\('remove', props\.provider\.name\)/)
+  assert.match(handler, /emit\('layout-action', action as TileLayoutAction\)/)
+  assert.match(tile, /:label="`Arrange \$\{provider\.displayName\} tile`"/)
 })
 
 test('dashboard tile load failures offer recovery without leaking raw transport details', () => {

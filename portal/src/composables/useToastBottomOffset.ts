@@ -18,7 +18,7 @@ limitations under the License.
 export const TOAST_EDGE_GAP_PX = 16
 
 /** The rendered height of the minimized TerminalDock header. */
-export const MINIMIZED_TERMINAL_HEIGHT_PX = 36
+export const MINIMIZED_TERMINAL_HEIGHT_PX = 44
 
 export interface ToastBottomOffsetInput {
   /** The bottom inset published by the active navigation dock. */

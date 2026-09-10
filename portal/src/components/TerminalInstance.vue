@@ -208,7 +208,7 @@ defineExpose({ resize, focusTerminal, clearTerminal, reconnect })
         />
         <span>{{ statusLabel }}</span>
         <span class="font-mono text-text-muted/50">·</span>
-        <span class="font-mono text-text-muted/70">{{ edgeName }}</span>
+        <span class="font-mono text-text-muted">{{ edgeName }}</span>
       </div>
       <div class="flex items-center gap-1">
         <button

@@ -230,6 +230,7 @@ async function onUndeleteOrg(): Promise<void> {
 const orgMembers = ref<MemberRow[]>([])
 const orgMembersLoading = ref(false)
 const orgMembersError = ref<string | null>(null)
+const orgMembersHasSnapshot = ref(false)
 const orgMemberBusy = ref<Record<string, boolean>>({})
 let orgMembersRequest = 0
 let orgMemberContextGeneration = 0
@@ -256,6 +257,7 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
   if (!targetOrgUUID) {
     if (contextGeneration !== orgMemberContextGeneration || request !== orgMembersRequest) return
     orgMembers.value = []
+    orgMembersHasSnapshot.value = false
     orgMembersLoading.value = false
     orgMembersError.value = null
     return
@@ -264,14 +266,28 @@ async function reloadOrgMembers(targetOrgUUID = organizationTargetUUID.value): P
   // clearing rows and setting loading=true here would repaint the active
   // organization's form before the request guards below can run.
   if (!currentOrganizationTarget(targetOrgUUID, contextGeneration)) return
-  orgMembers.value = []
   orgMembersLoading.value = true
   orgMembersError.value = null
   try {
     const members = await tenant.listOrgMembers(targetOrgUUID)
     if (request === orgMembersRequest && currentOrganizationTarget(targetOrgUUID, contextGeneration)) {
-      orgMembers.value = members
-      orgMembersError.value = tenant.listReadError('org-members', targetOrgUUID)
+      const readError = tenant.listReadError('org-members', targetOrgUUID)
+      const readDenied = tenant.listReadDenied('org-members', targetOrgUUID)
+      if (readDenied) {
+        // A same-scope 401/403 is an authoritative loss of access. Do not
+        // leave a sensitive roster visible while the cached role catches up.
+        orgMembers.value = []
+        orgMembersHasSnapshot.value = false
+        orgMembersError.value = readError ?? 'You no longer have access to organization members.'
+      } else if (readError) {
+        // List methods return [] on transport failure. Keep the last
+        // successful rows and let the page identify this as stale data.
+        orgMembersError.value = readError
+      } else {
+        orgMembers.value = members
+        orgMembersHasSnapshot.value = true
+        orgMembersError.value = null
+      }
     }
   } catch (error: unknown) {
     if (request === orgMembersRequest && currentOrganizationTarget(targetOrgUUID, contextGeneration)) {
@@ -372,9 +388,13 @@ watch(
       workspaceMode === 'workspace'
     if (!isExpectedDeleteRefresh) {
       clearManagedOrgSnapshot()
-      orgMembers.value = []
-      orgMembersError.value = null
     }
+    // A lifecycle refresh can intentionally retain the managed organization
+    // identity so Restore remains reachable, but it still changes the
+    // membership authority. Never carry a prior roster through that boundary.
+    orgMembers.value = []
+    orgMembersHasSnapshot.value = false
+    orgMembersError.value = null
     orgMembersLoading.value = false
     editingOrgName.value = false
     orgNameDraft.value = ''
@@ -938,6 +958,7 @@ async function onDownloadKubeconfig() {
 const wsMembers = ref<MemberRow[]>([])
 const wsMembersLoading = ref(false)
 const wsMembersError = ref<string | null>(null)
+const wsMembersHasSnapshot = ref(false)
 const wsMemberBusy = ref<Record<string, boolean>>({})
 let wsMembersRequestGeneration = 0
 let wsMembersContextGeneration = 0
@@ -963,24 +984,38 @@ async function reloadWsMembers() {
   const target = selectedTarget()
   if (!target || selWs.value?.deletionRequestedAt) {
     wsMembers.value = []
+    wsMembersHasSnapshot.value = false
     wsMembersLoading.value = false
     wsMembersError.value = null
     return
   }
   if (activeSection.value !== 'workspaces') {
     wsMembers.value = []
+    wsMembersHasSnapshot.value = false
     wsMembersLoading.value = false
     wsMembersError.value = null
     return
   }
-  wsMembers.value = []
   wsMembersLoading.value = true
   wsMembersError.value = null
   try {
     const members = await tenant.listWorkspaceMembers(target.org, target.ws)
     if (requestGeneration === wsMembersRequestGeneration && isCurrentTarget(target) && !selWs.value?.deletionRequestedAt && activeSection.value === 'workspaces') {
-      wsMembers.value = members
-      wsMembersError.value = tenant.listReadError('workspace-members', target.org, target.ws)
+      const readError = tenant.listReadError('workspace-members', target.org, target.ws)
+      const readDenied = tenant.listReadDenied('workspace-members', target.org, target.ws)
+      if (readDenied) {
+        wsMembers.value = []
+        wsMembersHasSnapshot.value = false
+        wsMembersError.value = readError ?? 'You no longer have access to workspace members.'
+      } else if (readError) {
+        // A failed list is represented by [] from the tenant store. Retain
+        // the last successful snapshot until this exact target reads cleanly.
+        wsMembersError.value = readError
+      } else {
+        wsMembers.value = members
+        wsMembersHasSnapshot.value = true
+        wsMembersError.value = null
+      }
     }
   } catch (error: unknown) {
     if (requestGeneration === wsMembersRequestGeneration && isCurrentTarget(target) && !selWs.value?.deletionRequestedAt && activeSection.value === 'workspaces') {
@@ -1072,6 +1107,7 @@ async function onRemoveWsMember(user: string) {
 const appAccessGrants = ref<AppAccessGrantRow[]>([])
 const appAccessLoading = ref(false)
 const appAccessError = ref<string | null>(null)
+const appAccessHasSnapshot = ref(false)
 const appAccessBusy = ref<Record<string, boolean>>({})
 let appAccessRequestGeneration = 0
 let appAccessContextGeneration = 0
@@ -1105,24 +1141,38 @@ async function reloadAppAccessGrants() {
   const target = selectedTarget()
   if (!target || selWs.value?.deletionRequestedAt) {
     appAccessGrants.value = []
+    appAccessHasSnapshot.value = false
     appAccessLoading.value = false
     appAccessError.value = null
     return
   }
   if (activeSection.value !== 'workspaces') {
     appAccessGrants.value = []
+    appAccessHasSnapshot.value = false
     appAccessLoading.value = false
     appAccessError.value = null
     return
   }
-  appAccessGrants.value = []
   appAccessLoading.value = true
   appAccessError.value = null
   try {
     const grants = await tenant.listAppAccessGrants(target.org, target.ws)
     if (requestGeneration === appAccessRequestGeneration && isCurrentTarget(target) && !selWs.value?.deletionRequestedAt && activeSection.value === 'workspaces') {
-      appAccessGrants.value = grants
-      appAccessError.value = tenant.listReadError('app-access', target.org, target.ws)
+      const readError = tenant.listReadError('app-access', target.org, target.ws)
+      const readDenied = tenant.listReadDenied('app-access', target.org, target.ws)
+      if (readDenied) {
+        appAccessGrants.value = []
+        appAccessHasSnapshot.value = false
+        appAccessError.value = readError ?? 'You no longer have access to app access grants.'
+      } else if (readError) {
+        // The store intentionally returns [] for a failed read. Do not turn
+        // that sentinel into an authoritative empty grant list.
+        appAccessError.value = readError
+      } else {
+        appAccessGrants.value = grants
+        appAccessHasSnapshot.value = true
+        appAccessError.value = null
+      }
     }
   } catch (error: unknown) {
     if (requestGeneration === appAccessRequestGeneration && isCurrentTarget(target) && !selWs.value?.deletionRequestedAt && activeSection.value === 'workspaces') {
@@ -1170,6 +1220,7 @@ async function onRevokeAppAccess(grant: AppAccessGrantRow) {
 const sas = ref<SARow[]>([])
 const sasLoading = ref(false)
 const sasError = ref<string | null>(null)
+const sasHasSnapshot = ref(false)
 const newSAName = ref('')
 const newSARole = ref<'admin' | 'member'>('member')
 type ServiceAccountOperation = 'issue' | 'revoke' | 'delete'
@@ -1272,24 +1323,38 @@ async function reloadSAs() {
   const targetIsAdmin = canEditWs.value
   if (!target || !targetIsAdmin) {
     sas.value = []
+    sasHasSnapshot.value = false
     sasLoading.value = false
     sasError.value = null
     return
   }
   if (activeSection.value !== 'workspaces') {
     sas.value = []
+    sasHasSnapshot.value = false
     sasLoading.value = false
     sasError.value = null
     return
   }
-  sas.value = []
   sasLoading.value = true
   sasError.value = null
   try {
     const serviceAccounts = await tenant.listServiceAccounts(target.org, target.ws)
     if (requestGeneration === serviceAccountRequestGeneration && isCurrentTarget(target) && canEditWs.value && activeSection.value === 'workspaces') {
-      sas.value = serviceAccounts
-      sasError.value = tenant.listReadError('service-accounts', target.org, target.ws)
+      const readError = tenant.listReadError('service-accounts', target.org, target.ws)
+      const readDenied = tenant.listReadDenied('service-accounts', target.org, target.ws)
+      if (readDenied) {
+        sas.value = []
+        sasHasSnapshot.value = false
+        sasError.value = readError ?? 'You no longer have access to service accounts.'
+      } else if (readError) {
+        // [] is the tenant store's failure sentinel. Keep the prior rows
+        // visible and report this request as stale until a retry succeeds.
+        sasError.value = readError
+      } else {
+        sas.value = serviceAccounts
+        sasHasSnapshot.value = true
+        sasError.value = null
+      }
     }
   } catch (error: unknown) {
     if (requestGeneration === serviceAccountRequestGeneration && isCurrentTarget(target) && canEditWs.value && activeSection.value === 'workspaces') {
@@ -1424,10 +1489,12 @@ function clearWorkspaceAccessState(): void {
   invalidateWsMembersRequests()
   invalidateAppAccessRequests()
   wsMembers.value = []
+  wsMembersHasSnapshot.value = false
   wsMembersLoading.value = false
   wsMembersError.value = null
   wsMemberBusy.value = {}
   appAccessGrants.value = []
+  appAccessHasSnapshot.value = false
   appAccessLoading.value = false
   appAccessError.value = null
   appAccessBusy.value = {}
@@ -1436,6 +1503,7 @@ function clearWorkspaceAccessState(): void {
 function clearServiceAccountState(): void {
   invalidateServiceAccountRequests()
   sas.value = []
+  sasHasSnapshot.value = false
   sasLoading.value = false
   sasError.value = null
   saBusy.value = {}
@@ -1893,7 +1961,7 @@ function fmtDate(s?: string | null): string {
             </WorkspaceControlHeader>
 
             <!-- Access -->
-            <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-members-title">
+            <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-members-title" :aria-busy="wsMembersLoading">
                   <div class="mb-4">
                     <h2 id="workspace-members-title" class="text-lg font-semibold text-text-primary">Workspace members</h2>
                     <p class="mt-1 text-[12px] text-text-muted">
@@ -1908,17 +1976,20 @@ function fmtDate(s?: string | null): string {
                     <div v-if="wsMembersError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
                       <span class="flex min-w-0 items-start gap-2">
                         <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                        <span>{{ wsMembersError }}</span>
+                        <span>{{ wsMembersHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ wsMembersError }}</span>
                       </span>
                       <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="wsMembersLoading" @click="reloadWsMembers">
                         <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
                         Retry
                       </button>
                     </div>
+                    <div v-if="wsMembersLoading && wsMembersHasSnapshot" class="mt-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
+                      Refreshing workspace members…
+                    </div>
                     <MemberList
-                      v-else
+                      v-if="wsMembersHasSnapshot || !wsMembersError"
                       :members="wsMembers"
-                      :loading="wsMembersLoading"
+                      :loading="wsMembersLoading && !wsMembersHasSnapshot"
                       :busy="wsMemberBusy"
                       scope-label="this workspace"
                       table-label="Workspace members"
@@ -1940,21 +2011,25 @@ function fmtDate(s?: string | null): string {
                   <div v-if="appAccessError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
                     <span class="flex min-w-0 items-start gap-2">
                       <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                      <span>{{ appAccessError }}</span>
+                      <span>{{ appAccessHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ appAccessError }}</span>
                     </span>
                     <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="appAccessLoading" @click="reloadAppAccessGrants">
                       <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
                       Retry
                     </button>
                   </div>
+                  <div v-if="appAccessLoading && appAccessHasSnapshot" class="mb-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
+                    Refreshing app access grants…
+                  </div>
                   <ResourceTable
-                    v-else
+                    v-if="appAccessHasSnapshot || !appAccessError"
                     :columns="appAccessColumns"
                     :rows="appAccessRows"
                     aria-label="Published app access grants"
                     variant="simple"
                     row-key="binding"
                     :interactive="false"
+                    :loaded="appAccessHasSnapshot"
                     :loading="appAccessLoading"
                     empty-text="No app access grants. Public apps need none; private apps grant access per person."
                   >
@@ -2001,7 +2076,7 @@ function fmtDate(s?: string | null): string {
                 <div v-if="sasError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
                   <span class="flex min-w-0 items-start gap-2">
                     <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                    <span>{{ sasError }}</span>
+                    <span>{{ sasHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ sasError }}</span>
                   </span>
                   <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="sasLoading" @click="reloadSAs">
                     <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
@@ -2009,7 +2084,11 @@ function fmtDate(s?: string | null): string {
                   </button>
                 </div>
 
-                <template v-else>
+                <div v-if="sasLoading && sasHasSnapshot" class="mb-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
+                  Refreshing service accounts…
+                </div>
+
+                <template v-if="sasHasSnapshot || !sasError">
                 <div v-if="canEditWs" class="mb-4 flex flex-wrap items-center gap-2">
                   <input
                     v-model="newSAName"
@@ -2042,6 +2121,7 @@ function fmtDate(s?: string | null): string {
                   variant="simple"
                   row-key="uuid"
                   :interactive="false"
+                  :loaded="sasHasSnapshot"
                   :loading="sasLoading"
                   empty-text="No service accounts in this workspace."
                 >
@@ -2252,7 +2332,7 @@ function fmtDate(s?: string | null): string {
             </div>
           </section>
 
-          <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-members-title">
+          <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-members-title" :aria-busy="orgMembersLoading">
             <div class="mb-4">
               <p class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Access</p>
               <h2 id="organization-members-title" class="mt-1 text-lg font-semibold text-text-primary">Organization members</h2>
@@ -2260,28 +2340,36 @@ function fmtDate(s?: string | null): string {
                 Members can use this organization and its workspaces. Only organization admins can add, remove, or change roles.
               </p>
             </div>
-            <div v-if="orgMembersError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
-              <span class="flex min-w-0 items-start gap-2">
-                <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-                <span>{{ orgMembersError }}</span>
-              </span>
-              <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="orgMembersLoading" @click="reloadOrgMembers()">
-                <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-                Retry
-              </button>
+            <div v-if="organizationSettingsOrg.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[12px] text-text-muted" role="status">
+              Organization membership is unavailable while deletion is pending.
             </div>
-            <MemberList
-              v-else
-              :members="orgMembers"
-              :loading="orgMembersLoading"
-              :busy="orgMemberBusy"
-              scope-label="this organization"
-              table-label="Organization members"
-              :add="onAddOrgMember"
-              :readonly="!canManageOrgMembers"
-              @change-role="onChangeOrgMemberRole"
-              @remove="onRemoveOrgMember"
-            />
+            <template v-else>
+              <div v-if="orgMembersError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
+                <span class="flex min-w-0 items-start gap-2">
+                  <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+                  <span>{{ orgMembersHasSnapshot ? 'Showing the last successful result. ' : '' }}{{ orgMembersError }}</span>
+                </span>
+                <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" :disabled="orgMembersLoading" @click="reloadOrgMembers()">
+                  <RefreshCw class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
+                  Retry
+                </button>
+              </div>
+              <div v-if="orgMembersLoading && orgMembersHasSnapshot" class="mt-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-atomic="true">
+                Refreshing organization members…
+              </div>
+              <MemberList
+                v-if="orgMembersHasSnapshot || !orgMembersError"
+                :members="orgMembers"
+                :loading="orgMembersLoading && !orgMembersHasSnapshot"
+                :busy="orgMemberBusy"
+                scope-label="this organization"
+                table-label="Organization members"
+                :add="onAddOrgMember"
+                :readonly="!canManageOrgMembers"
+                @change-role="onChangeOrgMemberRole"
+                @remove="onRemoveOrgMember"
+              />
+            </template>
           </section>
         </div>
       </template>

@@ -27,12 +27,12 @@ the reconciler using that server's own identity).
 -->
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Copy, Check, RefreshCw, Plug, Plus, ChevronRight, ChevronDown,
-  Wrench, ArrowLeft, Ellipsis, ShieldCheck,
+  Wrench, ArrowLeft, ShieldCheck, Loader2,
 } from 'lucide-vue-next'
 import { authFetch } from '@/auth/session'
 import { useTenantStore } from '@/stores/tenant'
@@ -44,6 +44,7 @@ import ResourcePage from '@/portalkit/ResourcePage.vue'
 import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '@/portalkit/ResourceStatCards.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
+import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 
 interface FederatedTool {
   name: string
@@ -150,14 +151,15 @@ function toggleProvider(name: string) {
 
 const connect = ref<Record<string, Connect>>({})
 const selectedClient = ref<Client>('claude-code')
+const clientTabRefs = ref<Partial<Record<Client, HTMLButtonElement>>>({})
 const connectLoading = ref(false)
 const connectError = ref<string | null>(null)
 const pendingDeletion = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
+const copyError = ref<string | null>(null)
 const refreshMode = ref<'foreground' | 'background'>('foreground')
 let listRequestID = 0
 let connectRequestID = 0
-const actionsMenu = ref<HTMLDetailsElement | null>(null)
 
 const selectedConnect = computed(() => selected.value ? connect.value[selected.value] ?? null : null)
 const selectedPhase = computed(() => {
@@ -177,6 +179,13 @@ const selectedStatusTone = computed<'success' | 'warning' | 'danger' | 'muted' |
 })
 const deleting = computed(() => Boolean(selected.value && pendingDeletion.value === selected.value))
 const foregroundRefreshing = computed(() => loading.value && refreshMode.value === 'foreground')
+const detailActions = computed<ActionMenuItem[]>(() => [{
+  id: 'delete',
+  label: deleting.value ? 'Deleting server…' : 'Delete server',
+  tone: 'danger',
+  disabled: !selectedServer.value || deleting.value || loading.value,
+  busy: deleting.value,
+}])
 
 const statCards = computed<ResourceStatCard[]>(() => [
   {
@@ -238,13 +247,47 @@ watch(isCreate, (creating, wasCreating) => {
 }, { immediate: true })
 
 const copiedField = ref<string | null>(null)
+
+function setClientTabRef(client: Client, element: Element | null): void {
+  if (element instanceof HTMLButtonElement) clientTabRefs.value[client] = element
+  else delete clientTabRefs.value[client]
+}
+
+function selectClient(client: Client): void {
+  selectedClient.value = client
+}
+
+function onClientTabKeydown(event: KeyboardEvent, client: Client): void {
+  const index = clients.findIndex((candidate) => candidate.id === client)
+  if (index < 0) return
+  let nextIndex: number | null = null
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % clients.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + clients.length) % clients.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = clients.length - 1
+  else if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+    event.preventDefault()
+    selectClient(client)
+    return
+  }
+  if (nextIndex === null) return
+  event.preventDefault()
+  const nextClient = clients[nextIndex]
+  selectClient(nextClient.id)
+  nextTick(() => clientTabRefs.value[nextClient.id]?.focus())
+}
+
 async function copy(text: string, field: string) {
+  copiedField.value = null
+  copyError.value = null
   try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
     await navigator.clipboard.writeText(text)
     copiedField.value = field
     setTimeout(() => (copiedField.value = null), 2000)
   } catch {
-    /* non-fatal */
+    const label = field === 'snippet' ? 'setup snippet' : 'endpoint'
+    copyError.value = `Could not copy the ${label}. Select the text and copy it manually.`
   }
 }
 
@@ -300,6 +343,7 @@ watch([orgUUID, workspaceUUID], () => {
   busy.value = false
   connect.value = {}
   connectError.value = null
+  copyError.value = null
   // The list is a tenant-owned snapshot too. Drop it before the replacement
   // read so a same-named server from the previous workspace is never shown.
   servers.value = []
@@ -321,8 +365,11 @@ function closeDetail() {
 }
 
 function deleteFromMenu() {
-  actionsMenu.value?.removeAttribute('open')
   if (selected.value) void remove(selected.value)
+}
+
+function onDetailAction(id: string): void {
+  if (id === 'delete') deleteFromMenu()
 }
 
 async function loadConnect(name: string) {
@@ -457,6 +504,7 @@ watch(selected, (name, previousName) => {
   connectRequestID += 1
   connect.value = {}
   connectError.value = null
+  copyError.value = null
   pendingDeletion.value = null
   mutationError.value = null
   openProviders.value = new Set()
@@ -489,7 +537,7 @@ const displaySnippet = computed(() => {
 })
 async function copySnippet() {
   const c = selectedConnect.value
-  if (!c || !c.token) return
+  if (!c || !c.token || !c.tokenReady) return
   await copy(snippet(c, selectedClient.value, c.token), 'snippet')
 }
 
@@ -498,8 +546,15 @@ function providerPanelID(name: string, index: number): string {
   return `mcp-provider-${index}-${slug || 'provider'}`
 }
 
-function clientPanelID(client: Client): string {
-  return `mcp-client-${client}-snippet`
+function clientPanelID(_client: Client): string {
+  // The selected client swaps the contents of one panel. A stable target
+  // keeps every tab's aria-controls relationship valid while that content
+  // changes; tab IDs remain client-specific below for aria-labelledby.
+  return 'mcp-client-snippet'
+}
+
+function clientTabID(client: Client): string {
+  return `mcp-client-${client}-tab`
 }
 
 function rel(ts?: string): string {
@@ -548,7 +603,7 @@ function rel(ts?: string): string {
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Instructions (optional)</span>
               <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" />
             </label>
-            <label class="flex items-center gap-2 text-[12px] text-text-secondary">
+            <label class="k-checkbox-hit flex items-center gap-2 text-[12px] text-text-secondary">
               <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" /> Read-only
             </label>
 
@@ -561,6 +616,8 @@ function rel(ts?: string): string {
             <div class="k-create-actions">
               <button type="button" class="k-btn k-btn--ghost px-3 py-2 text-[12px]" :disabled="busy" @click="cancelCreate">Cancel</button>
               <button type="submit" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="busy || !draft.name.trim()">
+                <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 {{ busy ? 'Creating…' : 'Create server' }}
               </button>
             </div>
@@ -693,25 +750,15 @@ function rel(ts?: string): string {
                 :aria-busy="foregroundRefreshing || undefined"
                 @click="load"
               >
-                <RefreshCw :size="14" :class="{ 'animate-spin': foregroundRefreshing }" aria-hidden="true" />
+                <Loader2 v-if="foregroundRefreshing" :size="14" class="animate-spin" aria-hidden="true" />
+                <RefreshCw v-else :size="14" aria-hidden="true" />
                 {{ foregroundRefreshing ? 'Refreshing…' : 'Refresh' }}
               </button>
-              <details ref="actionsMenu" class="relative">
-                <summary class="k-btn k-btn--ghost list-none" aria-label="More MCP server actions">
-                  <Ellipsis :size="16" aria-hidden="true" />
-                  <span class="sr-only">More actions</span>
-                </summary>
-                <div class="absolute right-0 top-full z-20 mt-1 min-w-40 rounded-md border border-border-default bg-surface-overlay p-1 shadow-lg">
-                  <button
-                    type="button"
-                    class="block w-full rounded-sm px-2.5 py-2 text-left text-[12px] text-danger hover:bg-danger-subtle disabled:cursor-not-allowed disabled:opacity-40"
-                    :disabled="!selectedServer || deleting || loading"
-                    @click="deleteFromMenu"
-                  >
-                    {{ deleting ? 'Deleting server…' : 'Delete server' }}
-                  </button>
-                </div>
-              </details>
+              <ActionMenu
+                :items="detailActions"
+                label="More MCP server actions"
+                @select="onDetailAction"
+              />
             </div>
           </template>
 
@@ -738,48 +785,58 @@ function rel(ts?: string): string {
                         <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy endpoint
                       </button>
                     </div>
+                    <div v-if="copyError" class="rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
+                      {{ copyError }}
+                    </div>
                     <div v-if="connectError" class="flex items-center justify-between gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
                       <span>{{ connectError }}</span>
                       <button type="button" class="k-btn k-btn--ghost shrink-0 px-2 py-1 text-danger" :disabled="connectLoading" @click="loadConnect(selectedServer.name)">
-                        <RefreshCw :size="13" :class="{ 'animate-spin': connectLoading }" aria-hidden="true" /> Retry
+                        <Loader2 v-if="connectLoading" :size="13" class="animate-spin" aria-hidden="true" />
+                        <RefreshCw v-else :size="13" aria-hidden="true" /> Retry
                       </button>
                     </div>
                     <div v-if="!selectedConnect.tokenReady" class="flex items-center justify-between gap-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-[12px] text-warning" role="status" aria-live="polite">
                       <span>Token is still being provisioned.</span>
                       <button type="button" class="k-btn k-btn--ghost shrink-0 px-2 py-1 text-warning hover:border-warning/40 hover:bg-warning-subtle" :disabled="connectLoading" @click="loadConnect(selectedServer.name)">
-                        <RefreshCw :size="13" :class="{ 'animate-spin': connectLoading }" aria-hidden="true" /> Refresh
+                        <Loader2 v-if="connectLoading" :size="13" class="animate-spin" aria-hidden="true" />
+                        <RefreshCw v-else :size="13" aria-hidden="true" /> Refresh
                       </button>
                     </div>
                     <div v-if="connectLoading" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating connect details…</div>
 
                     <div class="grid min-w-0 gap-2">
-                      <div class="flex gap-1.5" role="tablist" aria-label="AI client setup">
+                      <div class="flex min-w-0 gap-1.5 overflow-x-auto" role="tablist" aria-label="AI client setup">
                         <button
                           v-for="c in clients"
-                          :id="`${clientPanelID(c.id)}-tab`"
+                          :ref="(element) => setClientTabRef(c.id, element as Element | null)"
+                          :id="clientTabID(c.id)"
                           :key="c.id"
                           type="button"
                           role="tab"
                           :aria-selected="selectedClient === c.id"
                           :aria-controls="clientPanelID(c.id)"
+                          :tabindex="selectedClient === c.id ? 0 : -1"
                           class="k-btn k-btn--ghost px-2.5 py-1.5 text-[12px] transition-all"
                           :class="selectedClient === c.id ? 'border-accent bg-accent/10 text-accent' : 'border-border-subtle text-text-secondary hover:bg-surface-hover'"
-                          @click="selectedClient = c.id"
+                          @click="selectClient(c.id)"
+                          @keydown="onClientTabKeydown($event, c.id)"
                         >
                           {{ c.label }}
                         </button>
                       </div>
-                      <div class="relative min-w-0 max-w-full" role="tabpanel" :id="clientPanelID(selectedClient)" :aria-labelledby="`${clientPanelID(selectedClient)}-tab`" tabindex="0">
-                        <pre class="block w-full min-w-0 max-w-full overflow-x-auto whitespace-pre rounded-md bg-surface-overlay p-3 font-mono text-[12px] leading-relaxed text-text-secondary"><code>{{ displaySnippet }}</code></pre>
-                        <button
-                          type="button"
-                          class="k-btn k-btn--ghost absolute right-2 top-2 h-7 px-2.5 text-[11px] disabled:opacity-40"
-                          :disabled="!selectedConnect.tokenReady"
-                          @click="copySnippet"
-                        >
-                          <Check v-if="copiedField === 'snippet'" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                          <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy
-                        </button>
+                      <div class="min-w-0 max-w-full" role="tabpanel" :id="clientPanelID(selectedClient)" :aria-labelledby="clientTabID(selectedClient)" tabindex="0">
+                        <div class="flex items-center justify-end rounded-t-md border border-b-0 border-border-subtle bg-surface-overlay px-2 py-1.5" role="toolbar" aria-label="Snippet actions">
+                          <button
+                            type="button"
+                            class="k-btn k-btn--ghost h-8 px-2.5 text-[11px] disabled:opacity-40"
+                            :disabled="!selectedConnect.tokenReady"
+                            @click="copySnippet"
+                          >
+                            <Check v-if="copiedField === 'snippet'" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
+                            <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy setup snippet
+                          </button>
+                        </div>
+                        <pre class="block w-full min-w-0 max-w-full overflow-x-auto whitespace-pre rounded-b-md border border-border-subtle border-t-0 bg-surface-overlay p-3 font-mono text-[12px] leading-relaxed text-text-secondary"><code>{{ displaySnippet }}</code></pre>
                       </div>
                     </div>
                     <p class="text-[11px] text-text-muted">Token is masked and injected only on copy. Keep it secret.</p>
@@ -787,7 +844,8 @@ function rel(ts?: string): string {
                   <div v-else-if="connectError" class="flex items-center justify-between gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
                     <span>{{ connectError }}</span>
                     <button type="button" class="k-btn k-btn--ghost shrink-0 px-2 py-1 text-danger" :disabled="connectLoading" @click="loadConnect(selectedServer.name)">
-                      <RefreshCw :size="13" :class="{ 'animate-spin': connectLoading }" aria-hidden="true" /> Retry
+                      <Loader2 v-if="connectLoading" :size="13" class="animate-spin" aria-hidden="true" />
+                      <RefreshCw v-else :size="13" aria-hidden="true" /> Retry
                     </button>
                   </div>
                   <div v-else class="text-[12px] text-text-muted" role="status" aria-live="polite">Loading connect details…</div>

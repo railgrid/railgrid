@@ -15,7 +15,13 @@ import {
 } from '@/providers/providerScriptLoader'
 import { createProviderContext } from '@/providers/providerContext'
 import type { ProviderDTO } from '@/stores/providers'
-import { CircleAlert, Puzzle, ChevronRight, RefreshCw, X } from 'lucide-vue-next'
+import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
+import {
+  CircleAlert,
+  ChevronRight,
+  Puzzle,
+  RefreshCw,
+} from 'lucide-vue-next'
 
 // DashboardTile is the portal-side mount point for one provider's
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
@@ -40,6 +46,7 @@ import { CircleAlert, Puzzle, ChevronRight, RefreshCw, X } from 'lucide-vue-next
 const props = defineProps<{ provider: ProviderDTO; editMode?: boolean }>()
 const emit = defineEmits<{
   (e: 'remove', name: string): void
+  (e: 'layout-action', action: 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'): void
 }>()
 
 const auth = useAuthStore()
@@ -69,6 +76,33 @@ const quickLinks = computed(() =>
     to: props.provider.builtinRoute ? `/${c.builtinRoute}` : `${parentTo.value}/${c.builtinRoute}`,
   })),
 )
+
+type TileLayoutAction = 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'
+
+const arrangementItems = computed<ActionMenuItem[]>(() => {
+  const label = props.provider.displayName
+  return [
+    { id: 'left', label: `Move ${label} tile left` },
+    { id: 'right', label: `Move ${label} tile right` },
+    { id: 'up', label: `Move ${label} tile up` },
+    { id: 'down', label: `Move ${label} tile down` },
+    { id: 'narrower', label: `Make ${label} tile narrower` },
+    { id: 'wider', label: `Make ${label} tile wider` },
+    { id: 'shorter', label: `Make ${label} tile shorter` },
+    { id: 'taller', label: `Make ${label} tile taller` },
+    { id: 'remove', label: `Remove ${label} tile`, tone: 'danger' },
+  ]
+})
+
+function onArrangementAction(action: string): void {
+  if (action === 'remove') {
+    emit('remove', props.provider.name)
+    return
+  }
+  if (['left', 'right', 'up', 'down', 'narrower', 'wider', 'shorter', 'taller'].includes(action)) {
+    emit('layout-action', action as TileLayoutAction)
+  }
+}
 
 watch(
   () => [props.provider.name, props.provider.version, props.provider.ready] as const,
@@ -222,20 +256,6 @@ onBeforeUnmount(() => {
     class="relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface-raised/80 p-5 backdrop-blur"
     :class="editMode ? 'cursor-move border-accent/40 ring-1 ring-accent/30' : 'border-border-subtle'"
   >
-    <!-- Remove affordance — only in edit mode. `tile-no-drag` keeps the
-         click from starting a grid drag (see DashboardPage's GridItem
-         drag-ignore-from). -->
-    <button
-      v-if="editMode"
-      type="button"
-      class="tile-no-drag k-btn k-btn--ghost absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay p-0 text-text-muted transition-colors hover:border-danger/40 hover:text-danger sm:h-8 sm:w-8"
-      :aria-label="`Remove ${provider.displayName} tile`"
-      title="Remove tile"
-      @click.stop="emit('remove', provider.name)"
-    >
-      <X class="h-4 w-4" :stroke-width="1.75" />
-    </button>
-
     <!-- Tile header is portal chrome (icon, name, status) so a provider's
          tile body never has to repeat the catalog metadata. -->
     <div class="mb-4 flex items-center gap-3">
@@ -252,6 +272,13 @@ onBeforeUnmount(() => {
       <div class="min-w-0 flex-1">
         <div class="truncate text-[13px] font-medium text-text-primary">{{ provider.displayName }}</div>
         <div class="truncate font-mono text-[10px] text-text-muted">{{ provider.name }}</div>
+      </div>
+      <div v-if="editMode" class="tile-no-drag shrink-0">
+        <ActionMenu
+          :items="arrangementItems"
+          :label="`Arrange ${provider.displayName} tile`"
+          @select="onArrangementAction"
+        />
       </div>
       <router-link
         v-if="!editMode"

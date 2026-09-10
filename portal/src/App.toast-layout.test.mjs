@@ -38,7 +38,7 @@ test('toast clearance combines bottom navigation and terminal chrome', () => {
     terminalVisible: true,
     terminalSessionCount: 1,
     terminalMinimized: true,
-  }), 96)
+  }), 104)
   // Fullscreen reaches the viewport edge, so retain the reachable edge gap
   // instead of moving the toast stack off-screen above the overlay.
   assert.equal(toastBottomOffsetPx({
