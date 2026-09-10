@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const timestamp = await readFile(new URL('./agentkit/AITimestamp.vue', import.meta.url), 'utf8')
+const canonicalAgentKitConversation = await readFile(new URL('../../../../provider-sdk/agentkit/conversation.css', import.meta.url), 'utf8')
+const studioStyles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+const aiInterrupt = await readFile(new URL('./agentkit/AIInterrupt.vue', import.meta.url), 'utf8')
 const approvalModePicker = await readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8')
 const commandPalette = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
 const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
@@ -26,8 +30,15 @@ const farosUIDestinations = await Promise.all([
 ].map((path) => readFile(new URL(path, import.meta.url), 'utf8')))
 
 test('announces asynchronous conversation and settings feedback', () => {
-  const followUpAlerts = app.match(/v-if="followUpError\(pendingFollowUp\.interrupt\)"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/g) ?? []
-  const permissionAlerts = app.match(/v-if="permissionError\(pendingApproval\.interrupt\)"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/g) ?? []
+  assert.match(aiInterrupt, /<div v-if="\$slots\.error \|\| invalid \|\| error" class="k-ai-interrupt__error" role="alert">/)
+  assert.match(aiInterrupt, /<slot name="error">[\s\S]*<span>\{\{ error \|\|/)
+  const interruptOpenings = app.match(/<AIInterrupt\b[\s\S]*?>/g) ?? []
+  const followUpAlerts = interruptOpenings.filter((opening) =>
+    /kind="follow-up"/.test(opening) && /:error="followUpError\(pendingFollowUp\.interrupt\) \|\| ''"/.test(opening),
+  )
+  const permissionAlerts = interruptOpenings.filter((opening) =>
+    /kind="approval"/.test(opening) && /:error="permissionError\(pendingApproval\.interrupt\) \|\| \(pendingApproval\.interrupt\.execDisclosureInvalid/.test(opening),
+  )
   assert.equal(followUpAlerts.length, 2)
   assert.equal(permissionAlerts.length, 2)
   assert.match(app, /v-else-if="developmentSyncStatus"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
@@ -58,14 +69,24 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.match(app, /class="app-studio-touch-target flex h-8 w-8[^>]*aria-label="Prepare project for review"/)
   assert.match(app, /class="app-studio-touch-target flex h-8 w-8[^>]*aria-label="Delete annotation"/)
   assert.match(app, /aria-label="Refresh production status" class="app-studio-touch-target/)
-  assert.match(app, /class="inline-flex h-8 min-w-\[7rem\][^"]*\[@media\(hover:none\)\]:h-11 \[@media\(any-pointer:coarse\)\]:h-11"/)
-  assert.match(app, /role="tab"[\s\S]*class="app-studio-touch-target inline-flex h-full[^\"]*focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent\/40"/)
-  assert.match(app, /v-if="tab\.closeable"[\s\S]*class="app-studio-touch-target mr-1 flex h-6 w-6/)
+  assert.match(app, /import AIWorkbenchTabs from '\.\/agentkit\/AIWorkbenchTabs\.vue'/)
+  assert.match(app, /const workbenchTabItems = computed<AIWorkbenchTabView\[\]>/)
+  assert.match(app, /workbenchTabItems[\s\S]*selected: workbench\.value\.activeTabID === tab\.id[\s\S]*controls: workbenchTabPanelID\(tab\)/)
+  assert.match(app, /<AIWorkbenchTabs[\s\S]*:tabs="workbenchTabItems"[\s\S]*launcher[\s\S]*@dragstart="startWorkbenchTabDragByID"[\s\S]*@dragend="clearWorkbenchTabDragState"/)
+  assert.match(app, /<template #icon="\{ tab \}">[\s\S]*class="object-contain"[\s\S]*<\/template>/)
+  assert.match(app, /<template #after-label="\{ tab \}">[\s\S]*workbenchTabIsReview\(tab\.id\)[\s\S]*hasPendingReview[\s\S]*<\/template>/)
+  assert.match(app, /<AIWorkbenchTabs[\s\S]*@close="closeWorkbenchTabByID"[\s\S]*@launch="openWorkbenchLauncher"/)
 })
 
 test('uses semantic overlay layers for tooltips and annotation editing', () => {
-  assert.match(app, /\[z-index:var\(--app-studio-z-tooltip\)\][^>]*group-hover\/timestamp:opacity-100/)
-  assert.match(app, /\[z-index:var\(--app-studio-z-tooltip\)\][^>]*aria-live="polite"/)
+  assert.match(app, /import AITimestamp from '\.\/agentkit\/AITimestamp\.vue'/)
+  assert.match(app, /<AITimestamp[\s\S]*:value="message\.createdAt"/)
+  assert.match(timestamp, /<time class="k-ai-timestamp__time" :datetime="value \|\| undefined"/)
+  assert.match(timestamp, /<button[\s\S]*:title="full"[\s\S]*:aria-label="accessibleLabel"/)
+  assert.match(timestamp, /<span v-if="!expanded" class="k-ai-timestamp__tooltip" role="tooltip" aria-hidden="true">/)
+  assert.match(canonicalAgentKitConversation, /\.k-ai-timestamp:hover \.k-ai-timestamp__tooltip,\s*\.k-ai-timestamp:focus-within \.k-ai-timestamp__tooltip/)
+  assert.match(canonicalAgentKitConversation, /z-index: var\(--k-ai-tooltip-layer, 70\)/)
+  assert.match(studioStyles, /--k-ai-tooltip-layer: var\(--app-studio-z-tooltip\)/)
   assert.match(app, /\[z-index:var\(--app-studio-z-menu\)\][^>]*developmentPreviewAnnotationEditorStyle/)
 })
 

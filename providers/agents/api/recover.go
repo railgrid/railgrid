@@ -80,13 +80,18 @@ const turnContextBudgetPct = 80
 // Best-effort: a failed write logs and the run continues. Losing a checkpoint
 // costs recoverability, which is strictly better than failing a working run over
 // a transient database error.
-func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID string) func(engine.Checkpoint) {
+func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID string, worked ...func() int64) func(engine.Checkpoint) {
 	scope, agentName := run.Scope, run.Agent.Name
 	runID := run.RunID
 	sourceName, notifyChannel := run.SourceName, run.NotifyChannel
 	return func(ck engine.Checkpoint) {
+		workedMS := int64(0)
+		if len(worked) > 0 && worked[0] != nil {
+			workedMS = worked[0]()
+		}
 		payload, err := json.Marshal(runCheckpoint{
 			Engine: ck, SourceName: sourceName, NotifyChannel: notifyChannel,
+			WorkedDurationMS: workedMS,
 		})
 		if err != nil {
 			return
@@ -101,6 +106,16 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID 
 			return
 		}
 		stored.Checkpoint = payload
+		if len(worked) > 0 && worked[0] != nil {
+			value := workedMS
+			if value < 0 {
+				value = 0
+			}
+			// A checkpoint callback is an explicit provider measurement boundary,
+			// so persist a non-nil zero as measured zero too. Historical rows that
+			// predate this callback keep a nil value.
+			stored.WorkedDurationMS = &value
+		}
 		stored.UpdatedAt = time.Now().UTC()
 		if err := s.store.SaveRun(ctx, scope, stored); err != nil {
 			log.Printf("recovery: checkpointing run %s (agent %s, session %s): %v", runID, agentName, sessionID, err)
@@ -157,7 +172,19 @@ func (s *Server) sweepStaleRuns(ctx context.Context, resume recoveryRunner, noti
 func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume recoveryRunner, notify recoveryNotifier) bool {
 	run, scope := sr.Run, sr.Scope
 	fail := func(reason string) bool {
-		s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: reason}, time.Now().UTC())
+		now := time.Now().UTC()
+		startedAt := run.CreatedAt
+		if run.StartedAt != nil {
+			startedAt = *run.StartedAt
+		}
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		persistCtx, cancelPersist := boundedPersistContext(ctx)
+		defer cancelPersist()
+		tracker := trackerForStored(run)
+		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(store.RunPhaseFailed), "", reason)
+		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
 		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
 		s.reportStrandedRun(ctx, sr, notify, reason)
 		return false

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ import (
 	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/llm"
+	"github.com/faroshq/provider-agents/store"
 )
 
 // chatHistoryLimit bounds how many prior messages are replayed into a turn.
@@ -576,8 +578,9 @@ type chatRequest struct {
 }
 
 // chat runs one assistant turn and streams the reply over Server-Sent Events
-// (events: "run", "delta", "done", "error"), reusing the shared executeTask
-// path with an SSE delta callback.
+// (events: "start", "run_started", "assistant_message", "delta", "done",
+// "error"), reusing the shared executeTask path with callbacks for each
+// server-owned lifecycle boundary.
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -650,6 +653,28 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// it an instance-backed tool (self-hosted search, a browser instance)
 		// has no way to compose its URL.
 		ClusterID: id.clusterID,
+		OnRunStarted: func(startedAt time.Time) {
+			sse("run_started", map[string]any{
+				"runID": runID, "sessionID": req.SessionID, "status": "running",
+				"startedAt": startedAt,
+			})
+		},
+		OnAssistantMessage: func(message engine.AssistantMessage, createdAt time.Time) {
+			// Failed model attempts still reach the API callback so active timing is
+			// accounted for, but their partial deltas are not a classified transcript
+			// phase. The terminal error frame carries that partial output instead.
+			if !message.Complete {
+				return
+			}
+			phase := "final"
+			if message.HasToolCalls {
+				phase = "commentary"
+			}
+			sse("assistant_message", map[string]any{
+				"runID": runID, "phase": phase, "content": message.Content,
+				"createdAt": createdAt, "segmentDurationMS": message.Duration.Milliseconds(),
+			})
+		},
 		OnDelta: func(delta string) {
 			sse("delta", map[string]string{"text": delta})
 		},
@@ -664,10 +689,20 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		status := "failed"
+		if res.Phase == store.RunPhaseAborted {
+			status = "aborted"
+		}
 		if s.credentialsError(err) {
-			sse("error", map[string]string{"runID": runID, "message": "no model configured — open Model settings to add one"})
+			sse("error", map[string]any{
+				"runID": runID, "message": "no model configured — open Model settings to add one",
+				"status": status, "startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
+			})
 		} else {
-			sse("error", map[string]string{"runID": runID, "message": err.Error()})
+			sse("error", map[string]any{
+				"runID": runID, "message": err.Error(), "status": status,
+				"startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
+			})
 		}
 		return
 	}
@@ -677,13 +712,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		sse("approval_required", map[string]any{
 			"runID": runID, "inboxID": res.Pending.InboxID,
 			"tool": res.Pending.Tool, "args": redactArgs(res.Pending.Args),
-			"content": res.Content,
+			"content": res.Content, "status": "waiting", "startedAt": res.StartedAt,
+			"durationMS": res.DurationMS,
 		})
 		return
 	}
 	sse("done", map[string]any{
-		"runID":   runID,
-		"content": res.Content,
+		"runID": runID, "content": res.Content, "finalContent": res.FinalContent,
+		"status": "completed", "startedAt": res.StartedAt, "finishedAt": res.FinishedAt,
+		"durationMS": res.DurationMS,
 		"usage": map[string]int64{
 			"inputTokens": res.Usage.InputTokens, "outputTokens": res.Usage.OutputTokens,
 			"usdMicros": res.Usage.USDMicros,

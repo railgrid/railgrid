@@ -56,6 +56,22 @@ const contextUsable = computed(() => {
   storeRevision.value
   return Boolean(authority?.usable)
 })
+const workspaceActive = computed(() => contextUsable.value && route.value.kind === 'agent')
+
+function requestWorkspaceLayout(fullBleed: boolean): void {
+  props.host.dispatchEvent(new CustomEvent('faros-layout-change', {
+    detail: { fullBleed },
+    bubbles: true,
+  }))
+}
+
+// The host clears layout overrides on navigation, including a workbench tab
+// change. Reassert the route's layout after the updated host context arrives.
+watch(
+  () => [workspaceActive.value, hashFor(route.value), props.ctx?.subPath] as const,
+  () => requestWorkspaceLayout(workspaceActive.value),
+  { flush: 'post' },
+)
 const active = computed(() => activeMenu(route.value))
 const menuCounts = computed<Record<MenuKey, number>>(() => {
   storeRevision.value
@@ -99,6 +115,7 @@ function advanceCreateSession(previous: Route, next: Route): void {
 }
 
 function go(next: Route, mode?: 'push' | 'replace'): void {
+  const previous = route.value
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   advanceCreateSession(route.value, next)
   route.value = next
@@ -112,19 +129,34 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
     cancelable: true,
   })
   if (props.host.dispatchEvent(navigation)) writeHash(next, historyMode)
-  if (!focusCollectionAfterEdit) scheduleRouteFocus(next)
+  if (!focusCollectionAfterEdit) focusAfterNavigation(previous, next)
 }
 
 function restoreRoute(): void {
+  restoreRouteFromHash(true)
+}
+
+function restoreRouteFromHash(normalize: boolean): void {
+  const previous = route.value
   const next = parseHash()
   if (route.value.kind === 'edit' && next.kind === 'menu' && next.menu === 'connections') {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
   }
   advanceCreateSession(route.value, next)
   route.value = next
-  syncHash(next)
+  if (normalize) syncHash(next)
   if (focusCollectionAfterEdit) scheduleCollectionFocus()
-  else scheduleRouteFocus(next)
+  else focusAfterNavigation(previous, next)
+}
+
+function focusAfterNavigation(previous: Route, next: Route): void {
+  if (previous.kind === 'agent' && next.kind === 'agent' && previous.name === next.name) {
+    // The workspace owns focus between chat and its panels. Do not pull it
+    // back to the resource title on every Config/Run selection.
+    focusRequest += 1
+    return
+  }
+  scheduleRouteFocus(next)
 }
 
 function scheduleCollectionFocus(): void {
@@ -141,7 +173,7 @@ function scheduleRouteFocus(next: Route): void {
   const request = ++focusRequest
   void nextTick(() => requestAnimationFrame(() => {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
-    const target = root.value?.querySelector<HTMLElement>('.k-resource-page__title, .k-create-title, .agents-panel-head > h3, .agents-detail-title > h2')
+    const target = root.value?.querySelector<HTMLElement>('[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-panel-head > h3, .agents-detail-title > h2')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()
@@ -228,6 +260,13 @@ function applyContext(context: FarosContext | null): void {
 
 watch(() => props.ctx, applyContext, { immediate: true, flush: 'sync' })
 
+// Vue Router uses pushState for host navigation, which does not emit a native
+// hashchange. The host republishes context after hash-only route changes too.
+// Follow that committed URL without rewriting the host's history entry.
+watch(() => props.ctx, () => {
+  if (contextUsable.value) restoreRouteFromHash(false)
+})
+
 type SourceDetail = Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>
 
 function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): boolean {
@@ -239,7 +278,7 @@ function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): bool
 
 function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
-    case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'config' }
+    case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
     case 'model': return { kind: 'menu', menu: 'models' }
     case 'connection':
     case 'toolset': return { kind: 'menu', menu: 'connections' }
@@ -305,6 +344,7 @@ function selectMenu(id: string): void {
 }
 
 onMounted(() => {
+  requestWorkspaceLayout(workspaceActive.value)
   bindStore(store.value)
   syncHash(route.value)
   window.addEventListener('hashchange', restoreRoute)
@@ -313,6 +353,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  requestWorkspaceLayout(false)
   window.removeEventListener('hashchange', restoreRoute)
   window.removeEventListener('popstate', restoreRoute)
   boundStore?.removeEventListener('change', onStoreChange)
@@ -329,7 +370,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
   <div v-else-if="!contextUsable" class="k-card agents-empty">
     <p class="muted" role="status">Select an organization and workspace in the sidebar to use your agents.</p>
   </div>
-  <div v-else ref="root" class="agents-app">
+  <div v-else ref="root" class="agents-app" :class="{ 'agents-app--workspace': workspaceActive }">
     <div v-if="route.kind === 'menu'" class="agents-nav-wrap">
       <Tabs class="agents-nav" :tabs="tabs" :active="active" aria-label="Agents provider sections" @select="selectMenu" />
       <span v-if="!live" class="agents-offline" title="Live updates are reconnecting; falling back to polling.">
@@ -386,6 +427,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :api="api"
         :name="route.name"
         :tab="route.tab"
+        :run-id="route.runID"
         :authority-epoch="authorityEpoch"
         @navigate="go"
       />

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
@@ -131,8 +132,9 @@ test('keeps structured failure diagnostics out of the user-visible action histor
   }))
   assert.match(html, /aria-expanded="true"/)
   assert.match(html, /text-danger/)
-  assert.match(html, /max-h-\[min\(40vh,320px\)\]/)
-  assert.match(html, /overflow-auto/)
+  assert.match(html, /class="k-ai-activity__panel"/)
+  assert.doesNotMatch(html, /max-h-\[min\(40vh,320px\)\]/)
+  assert.doesNotMatch(html, /class="grid max-h-\[min\(40vh,320px\)\] overflow-auto"/)
   assert.match(html, /Failed:/)
   assert.match(html, /Preview check failed/)
   assert.match(html, /Development server did not become ready/)
@@ -237,10 +239,58 @@ test('aligns group headers and child actions while bounding long call chains wit
       severity: 'normal',
     })),
   }))
-  assert.match(html, /action-chain-fade max-h-\[240px\] overflow-y-auto pb-7 pr-1/)
+  assert.match(html, /k-ai-activity-feed__group-rows--scrollable/)
+  const activityCSS = readFileSync(new URL('./agentkit/activity.css', import.meta.url), 'utf8')
+  assert.match(activityCSS, /\.k-ai-activity-feed__group-rows--scrollable\s*\{[^}]*max-height: 240px;[^}]*overflow-y: auto;[^}]*mask-image:/)
   assert.doesNotMatch(html, /assistant-long-chain-inspect-\d+" class="ml-5/)
   assert.doesNotMatch(html, /class="mt-1 grid max-h-\[min\(40vh,320px\)\]/)
   assert.doesNotMatch(html, /max-h-\[min\(40vh,320px\)\] gap-1.5/)
   assert.match(html, /Read file 8/)
   assert.match(html, /Read files/)
+})
+
+test('keeps a streamed group panel identity when an earlier group appears', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const target = {
+    id: 'stable-read-1',
+    kind: 'inspect',
+    status: 'succeeded',
+    title: 'Read project file',
+    target: 'src/App.vue',
+    groupKey: 'inspect:files',
+    groupTitle: 'Read files',
+    severity: 'normal',
+  }
+  const prefix = {
+    id: 'streamed-prefix-1',
+    kind: 'run',
+    status: 'succeeded',
+    title: 'Checked preview',
+    outcome: 'Ready',
+    groupKey: 'run:preview',
+    groupTitle: 'Ran checks',
+    severity: 'normal',
+  }
+
+  const panelFor = (html, label) => {
+    const labelMarker = `k-ai-activity-feed__group-label">${label}</span>`
+    const labelOffset = html.indexOf(labelMarker)
+    assert.notEqual(labelOffset, -1, `missing group label: ${label}`)
+    const buttonOffset = html.lastIndexOf('<button', labelOffset)
+    const control = html.slice(buttonOffset, labelOffset).match(/aria-controls="([^"]+)"/)
+    assert.ok(control, `missing group panel control: ${label}`)
+    return control[1]
+  }
+
+  const initial = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-streaming-groups',
+    items: [target],
+  }))
+  const afterEarlierGroup = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-streaming-groups',
+    items: [prefix, target],
+  }))
+
+  assert.equal(panelFor(initial, 'Read files'), panelFor(afterEarlierGroup, 'Read files'))
+  assert.match(panelFor(initial, 'Read files'), /stable-read-1/)
 })

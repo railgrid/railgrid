@@ -49,11 +49,7 @@ const cases: Case[] = [
       api.deleteAgent = deletion as ApiClient['deleteAgent']
       store.agents.data = [agentFixture('scout')]
       store.agents.loaded = store.agents.hasSnapshot = true
-      return {
-        deletion,
-        openSelector: 'button[aria-label="More agent actions"]',
-        selector: 'button[role="menuitem"]',
-      }
+      return { deletion, selector: 'button[aria-label="Delete agent"]' }
     },
   },
   {
@@ -66,7 +62,7 @@ const cases: Case[] = [
       api.listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })
       store.agents.data = [agentFixture('scout')]
       store.agents.loaded = store.agents.hasSnapshot = true
-      return { deletion, selector: 'button[aria-label="Delete this chat"]' }
+      return { deletion, selector: 'button[aria-label="Delete chat"]' }
     },
   },
   {

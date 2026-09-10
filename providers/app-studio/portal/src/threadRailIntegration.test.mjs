@@ -4,13 +4,16 @@ import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
-test('mounts the App Studio-owned thread rail against canonical lifecycle handlers', () => {
-  assert.match(app, /import ThreadRail from '\.\/ThreadRail\.vue'/)
-  assert.match(app, /<ThreadRail[\s\S]*:threads="assistantThreads"[\s\S]*:active-thread-i-d="activeAssistantThreadID"/)
-  assert.match(app, /<ThreadRail[\s\S]*:unread-thread-i-ds="unreadAssistantThreadIDs"/)
-  assert.match(app, /<ThreadRail[\s\S]*:pinned-thread-i-ds="pinnedAssistantThreadIDs"/)
-  assert.match(app, /<ThreadRail[\s\S]*@select="selectAssistantThread"[\s\S]*@create="createAssistantThread"/)
-  assert.match(app, /<ThreadRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
+test('mounts the shared conversation rail against App Studio lifecycle handlers', () => {
+  assert.match(app, /import AIConversationRail from '\.\/agentkit\/AIConversationRail\.vue'/)
+  assert.match(app, /<AIConversationRail[\s\S]*:threads="assistantThreads"[\s\S]*:active-thread-i-d="activeAssistantThreadID"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:unread-thread-i-ds="unreadAssistantThreadIDs"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:pinned-thread-i-ds="pinnedAssistantThreadIDs"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: true \}"/)
+  assert.match(app, /<AIConversationRail[\s\S]*@select="selectAssistantThread"[\s\S]*@create="createAssistantThread"/)
+  assert.match(app, /<AIConversationRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:storage-scope="assistantConversationRailStorageScope"/)
+  assert.match(app, /<AIConversationRail[\s\S]*overlay-target="#app-studio-overlay-root"[\s\S]*panel-id="app-studio-thread-rail"/)
   assert.doesNotMatch(app, /Manage threads|manageAssistantThreads|@manage=/)
 })
 
@@ -121,6 +124,8 @@ test('derives unread dots from persisted project-scoped update markers', () => {
 
 test('keeps identity and thread controls in one workspace-wide title bar', () => {
   assert.match(app, /const activeAssistantThreadTitle = computed/)
+  assert.match(app, /import AIConversationIdentity from '\.\/agentkit\/AIConversationIdentity\.vue'/)
+  assert.match(app, /import ResourceBackLink from '\.\/portalkit\/ResourceBackLink\.vue'/)
   assert.match(app, /<header data-app-studio-titlebar/)
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*@click="toggleThreadPanel"/)
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*@pointerenter="previewThreadPanel"[\s\S]*@pointerleave="closeThreadPanelPreview"/)
@@ -144,9 +149,11 @@ test('keeps identity and thread controls in one workspace-wide title bar', () =>
   assert.match(app, /selected\.repository\.name \|\| selected\.repository\.ref/)
   const titleBarStart = app.indexOf('<header data-app-studio-titlebar')
   const titleBarEnd = app.indexOf('</header>', titleBarStart)
-  const railStart = app.indexOf('<ThreadRail', titleBarEnd)
+  const railStart = app.indexOf('<AIConversationRail', titleBarEnd)
   assert.ok(titleBarStart >= 0 && titleBarEnd > titleBarStart && railStart > titleBarEnd)
   const titleBar = app.slice(titleBarStart, titleBarEnd)
+  assert.match(titleBar, /<ResourceBackLink[\s\S]*icon-only[\s\S]*aria-label="Back to projects"[\s\S]*@back="props\.navigate\(''\)"/)
+  assert.match(titleBar, /<AIConversationIdentity[\s\S]*<template #icon>[\s\S]*<template #title>[\s\S]*<template #context>/)
   assert.match(app, /const APP_STUDIO_ICON_URL = '\/ui\/providers\/app-studio\/icon\.svg'/)
   assert.match(titleBar, /<img :src="APP_STUDIO_ICON_URL" alt="" class="h-4 w-4 object-contain"/)
   assert.doesNotMatch(titleBar, /<MessageSquare/)

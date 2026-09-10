@@ -290,10 +290,17 @@ copy at `portal/src/assets/faros-ui.css` and each vendored
 `src/portalkit/faros-ui.css` are exact sync outputs; the verifier also rejects
 unmanifested canonical files and unexpected copies. Standalone bundles call
 `ensureFarosUIStyles()`, which accepts the host only when its computed
-`--faros-ui-canonical: 1` marker has a compatible `--faros-ui-version`. If the
+`--faros-ui-canonical: 1` marker has a compatible `--faros-ui-core-version`. If the
 host is stale, the bundle appends its exact vendored stylesheet under a
-versioned fallback ID. It never overwrites an existing style element, and a
-newer host stylesheet always wins.
+versioned fallback ID. It never overwrites an existing style element.
+
+AI conversation, workbench, and model presentation is an optional layer in
+`provider-sdk/agentkit/` and `provider-sdk/agentkit-vue/`. The same sync script
+copies it only to explicit `AGENTKIT_PORTALS` consumers (Agents and App Studio)
+as `src/agentkit/`. AgentKit depends on PortalKit; core PortalKit does not import
+AgentKit or its styles. `ensureAgentUIStyles()` loads the optional CSS with its
+own marker/version. Edit canonical sources and register new files/consumers in
+the manifest; see `provider-sdk/agentkit/README.md` for the import mapping.
 
 - **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
   (vanilla-TS)** Quickstart portal:
@@ -499,7 +506,8 @@ interaction. Read relevant entries, not the whole directory.
 
 Implementation authority remains the canonical root tokens and shared
 PortalKit sources (`portal/src/assets/main.css`, `provider-sdk/portalkit/`, and
-`provider-sdk/portalkit-vue/`), plus existing host components in
+`provider-sdk/portalkit-vue/`), optional AgentKit sources
+(`provider-sdk/agentkit/`, `provider-sdk/agentkit-vue/`), plus existing host components in
 `portal/src/components/`. Reuse those contracts; provider-local copies are
 distribution outputs, not new authorities. A new primitive or shared recipe is
 added canonical-first, then propagated with `make sync-portalkit`; never invent

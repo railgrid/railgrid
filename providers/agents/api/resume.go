@@ -84,6 +84,13 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s is %s (not resumable)", run.ID, run.Phase)
 		return
 	}
+	startedAt := run.CreatedAt
+	if run.StartedAt != nil {
+		startedAt = *run.StartedAt
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
 	approve, note := intent.Approve, intent.Note
 	var ck runCheckpoint
 	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
@@ -136,10 +143,15 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		maxIters = min(v, 32)
 	}
 	modelName := s.primaryModelName(ctx, rd.Creds, agent)
-	cb := s.runCallbacks(ctx, tr, run.SessionID)
+	workedMS, workedKnown := checkpointWorkedDuration(run.Checkpoint, ck)
+	if !workedKnown && run.WorkedDurationMS != nil {
+		workedMS, workedKnown = *run.WorkedDurationMS, true
+	}
+	tracker := newTurnProgressTrackerState(workedMS, workedKnown)
+	cb := s.runCallbacks(ctx, tr, run.SessionID, startedAt, tracker)
 	// A resumed run keeps checkpointing, so a replica that dies again picks up
 	// from where the resume got to rather than from the original snapshot.
-	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID)
+	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID, func() int64 { return tracker.durationMS() })
 	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),
@@ -147,7 +159,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	}, approve, note, cb)
 	end := time.Now().UTC()
 	if err != nil {
-		s.failResume(ctx, agentScope, run, err)
+		s.failResume(ctx, agentScope, run, err, tracker)
 		return
 	}
 	// res.Usage is the run's cumulative total (the engine resumes from the
@@ -165,27 +177,30 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		next := runCheckpoint{
 			Engine: res.Interrupt.Checkpoint, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args,
 			InboxID: res.Interrupt.RequestID, SourceName: ck.SourceName, NotifyChannel: ck.NotifyChannel,
+			WorkedDurationMS: tracker.durationMS(),
 		}
 		ckJSON, _ := json.Marshal(next)
 		if stored, gerr := s.store.GetRun(ctx, agentScope, run.ID); gerr == nil {
 			stored.Phase = store.RunPhasePendingApproval
 			stored.Checkpoint = ckJSON
+			stored.WorkedDurationMS = tracker.workedDurationMS()
 			stored.UpdatedAt = end
 			_ = s.store.SaveRun(ctx, agentScope, stored)
 		}
+		s.appendTurnTerminal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 		s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
 		return
 	}
 
-	_ = s.store.AppendMessage(ctx, agentScope, store.Message{
-		ID: uuid.NewString(), AgentName: agent.Name, SessionID: run.SessionID, RunID: run.ID,
-		Role: "assistant", Content: res.Content, CreatedAt: end,
-	})
+	finalContent := tracker.finalText(res.FinalContent)
+	s.appendTurnFinal(ctx, agentScope, tr, run.SessionID, startedAt, end, tracker, finalContent)
 	body, sources := splitSources(res.Content)
-	s.finishRun(ctx, agentScope, run.ID, runOutcome{
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	s.finishRun(persistCtx, agentScope, run.ID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
-		Output: body, Sources: sources,
+		Output: body, Sources: sources, WorkedDurationMS: tracker.workedDurationMS(),
 	}, end)
+	cancelPersist()
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 
 	// Deliver the continuation where the run's output was headed: channel runs
@@ -205,10 +220,30 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	}
 }
 
-func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error) {
+func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error, trackers ...*turnProgressTracker) {
 	log.Printf("resume: run %s failed: %v", run.ID, err)
-	s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: err.Error()}, time.Now().UTC())
-	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+	end := time.Now().UTC()
+	phase := store.RunPhaseFailed
+	if ctx.Err() != nil {
+		phase = store.RunPhaseAborted
+	}
+	startedAt := run.CreatedAt
+	if run.StartedAt != nil {
+		startedAt = *run.StartedAt
+	}
+	if startedAt.IsZero() {
+		startedAt = end
+	}
+	tracker := trackerForStored(run)
+	if len(trackers) > 0 && trackers[0] != nil {
+		tracker = trackers[0]
+	}
+	tr := taskRunForStored(run)
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	defer cancelPersist()
+	s.appendTurnTerminal(persistCtx, scope, tr, run.SessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), err.Error())
+	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: err.Error(), WorkedDurationMS: tracker.workedDurationMS()}, end)
+	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 }
 
 // sendToConnection delivers text through a named messaging connection using

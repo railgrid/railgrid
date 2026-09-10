@@ -126,12 +126,19 @@ test('renders persisted annotations as one Codex-style thread attachment outside
   assert.doesNotMatch(render, /if \(rendered\) return rendered/)
   assert.doesNotMatch(render, /§/)
   assert.match(app, /function assistantAnnotationsForMessage/)
-  assert.match(app, /<AssistantMessageAnnotations[\s\S]*:annotations="assistantAnnotationsForMessage\(message\)"/)
-  assert.match(app, /v-if="userMessageHasVisibleContent\(message\)"/)
+  const userMessageBeforeSlot = app.match(/<template v-if="message\.role === 'user' && \(assistantAttachmentsForMessage\(message\)\.length \|\| assistantAnnotationsForMessage\(message\)\.length\)" #before>[\s\S]*?<\/template>/g) ?? []
+  assert.equal(userMessageBeforeSlot.length, 1)
+  assert.match(userMessageBeforeSlot[0], /<AssistantMessageAttachments[\s\S]*:attachments="assistantAttachmentsForMessage\(message\)"/)
+  assert.match(userMessageBeforeSlot[0], /<AssistantMessageAnnotations[\s\S]*:annotations="assistantAnnotationsForMessage\(message\)"/)
+  assert.ok(userMessageBeforeSlot[0].indexOf('<AssistantMessageAttachments') < userMessageBeforeSlot[0].indexOf('<AssistantMessageAnnotations'))
+  const userVisibleContentBubbles = app.match(/:bubble="message\.role === 'user' && userMessageHasVisibleContent\(message\)"/g) ?? []
+  const userVisibleContentProse = app.match(/v-if="message\.role === 'user' && userMessageHasVisibleContent\(message\)"/g) ?? []
+  assert.equal(userVisibleContentBubbles.length, 1)
+  assert.equal(userVisibleContentProse.length, 1)
   const visibilityStart = app.indexOf('function userMessageHasVisibleContent')
   const visibilityEnd = app.indexOf('\n}', visibilityStart)
   const visibility = app.slice(visibilityStart, visibilityEnd)
-  assert.match(visibility, /if \(parts\.length\) return parts\.some\(\(part\) => part\.type !== 'annotation'\)/)
+  assert.match(visibility, /if \(parts\.length\) return parts\.some\(\(part\) => part\.type !== 'annotation' && part\.type !== 'attachment'\)/)
   assert.match(visibility, /return Boolean\(message\.content\)/)
 
   const html = await renderToString(createSSRApp(AssistantMessageAnnotations, {

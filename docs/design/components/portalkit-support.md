@@ -9,9 +9,13 @@ not render a standalone component:
 
 - `styles.ts` implements the standalone CSS handoff. It accepts a host only
   when the computed canonical marker and compatible version are present, keeps
-  stale host styles untouched, appends exact vendored CSS under a versioned
-  fallback ID, never replaces existing styles, and never downgrades a newer
-  host version.
+  stale host styles untouched, and appends a versioned fallback when needed.
+  The fallback imports canonical CSS through Vite's `?inline` loader, which
+  embeds minified canonical rules; the authored stylesheet and synced source
+  copies remain byte-identical. The current core style version is 15, read from
+  `--faros-ui-core-version`. Existing style elements are never replaced.
+  Optional AI styles load independently through `agentkit/styles.ts`; see
+  [AI presentation](ai-conversation.md).
 - `tenant.ts` owns the security-critical hub-proxy contract: `readTenant()`
   reads `faros:portal:tenant`; `tenantHeaders({ token, json })` emits
   `Accept`, optional JSON content type, bearer authorization, `X-Faros-Org`, and

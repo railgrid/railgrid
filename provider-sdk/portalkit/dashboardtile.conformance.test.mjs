@@ -22,10 +22,11 @@ test('dashboard tiles expose matching Tailwind and plain-DOM semantic slots', ()
 })
 
 test('stylesheet marker and runtime handoff require the same version', () => {
-  const cssVersion = styles.match(/--faros-ui-version:\s*(\d+);/)?.[1]
-  const runtimeVersion = styleHandoff.match(/FAROS_UI_VERSION = (\d+)/)?.[1]
+  const cssVersion = styles.match(/--faros-ui-core-version:\s*(\d+);/)?.[1]
+  const runtimeVersion = styleHandoff.match(/FAROS_UI_CORE_VERSION = (\d+)/)?.[1]
   assert.ok(cssVersion)
   assert.equal(runtimeVersion, cssVersion)
+
 })
 
 test('shared loading and dashboard actions respect input and motion preferences', () => {

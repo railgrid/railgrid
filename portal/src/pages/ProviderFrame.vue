@@ -97,8 +97,9 @@ const isAppStudioLandingRoute = computed(() =>
 )
 const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
 const isFullBleedProvider = computed(() =>
-  props.providerName === 'app-studio' &&
-  (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true),
+  (props.providerName === 'app-studio' &&
+    (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true)) ||
+  (props.providerName === 'agents' && providerFullBleedOverride.value === true),
 )
 
 const isBuiltinProvider = computed(() => {
@@ -216,13 +217,12 @@ watch(
 )
 
 // Theme / token / sub-route changes → push fresh context to the mounted
-// element via the property setter. The element's setter recomputes
-// subPath from window.location and re-syncs its internal router, so a
-// portal-side nav (clicking a child like "Workloads") actually reaches
-// the micro-frontend. Without props.subPath in the dep list the element
-// stayed on its initial route until a hard refresh.
+// element via the property setter. Providers use subPath or the committed URL
+// to restore their internal route. Include hash-only navigation: Vue Router's
+// pushState does not emit hashchange, and clicking a provider's sidebar entry
+// can clear its fragment while leaving subPath unchanged.
 watch(
-  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath] as const,
+  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath, router.currentRoute.value.hash] as const,
   () => pushContext(),
 )
 
@@ -413,7 +413,7 @@ function onNavigate(e: Event) {
 }
 
 function onLayoutChange(e: Event) {
-  if (props.providerName !== 'app-studio') return
+  if (props.providerName !== 'app-studio' && props.providerName !== 'agents') return
   const fullBleed = (e as CustomEvent<{ fullBleed?: unknown }>).detail?.fullBleed
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }

@@ -45,9 +45,9 @@ const SOURCE_EXTENSIONS = new Set([
   '.html',
 ])
 
-const DEFAULT_CANONICAL_ROOTS = ['provider-sdk/portalkit', 'provider-sdk/portalkit-vue']
+const DEFAULT_CANONICAL_ROOTS = ['provider-sdk/portalkit', 'provider-sdk/portalkit-vue', 'provider-sdk/agentkit', 'provider-sdk/agentkit-vue']
 const DEFAULT_PROVIDER_ROOTS = ['providers/*/portal/src']
-const DEFAULT_VENDORED_SEGMENTS = ['portalkit', 'portalkit-vue']
+const DEFAULT_VENDORED_SEGMENTS = ['portalkit', 'portalkit-vue', 'agentkit']
 const DEFAULT_CANONICAL_CONSUMER_PATHS = []
 const DEFAULT_TOKEN_AUTHORITY_PATHS = []
 

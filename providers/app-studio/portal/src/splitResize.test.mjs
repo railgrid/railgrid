@@ -5,7 +5,7 @@ import test from 'node:test'
 import ts from 'typescript'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-const threadRail = await readFile(new URL('./ThreadRail.vue', import.meta.url), 'utf8')
+const conversationRail = await readFile(new URL('./agentkit/AIConversationRail.vue', import.meta.url), 'utf8')
 const splitHelperSource = app.match(/function splitPercentFromPointer\([\s\S]*?\n\}/)?.[0]
 const splitBoundsSource = app.match(/const SPLIT_MIN_PERCENT = 32\nconst SPLIT_MAX_PERCENT = 68/)?.[0]
 const conversationMinimumConstantSource = app.match(/const CONVERSATION_BASE_MIN_WIDTH = 240/)?.[0]
@@ -36,16 +36,16 @@ function extractFunction(source, name) {
   assert.fail(`${name} has an unterminated body`)
 }
 
-const threadRailLayoutSource = threadRail.match(/const layoutWidth = computed\(\(\) => \([\s\S]*?\n\)\)/)?.[0]
-assert.ok(threadRailLayoutSource, 'ThreadRail.vue should expose its in-flow layout width')
-const threadRailLayoutHarnessSource = ts.transpileModule(`
-export function createThreadRailLayoutHarness() {
+const conversationRailLayoutSource = conversationRail.match(/const layoutWidth = computed\(\(\) => \([\s\S]*?\n\)\)/)?.[0]
+assert.ok(conversationRailLayoutSource, 'AIConversationRail.vue should expose its in-flow layout width')
+const conversationRailLayoutHarnessSource = ts.transpileModule(`
+export function createConversationRailLayoutHarness() {
   const computed = (fn) => ({ get value() { return fn() } })
   const mobileViewport = { value: false }
   const mobileOpen = { value: false }
   const anchored = { value: true }
   const effectiveWidth = { value: 224 }
-  ${threadRailLayoutSource}
+  ${conversationRailLayoutSource}
   return {
     layoutWidth,
     refs: { mobileViewport, mobileOpen, anchored, effectiveWidth },
@@ -54,7 +54,7 @@ export function createThreadRailLayoutHarness() {
 `, {
   compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
 }).outputText
-const { createThreadRailLayoutHarness } = await import(`data:text/javascript;base64,${Buffer.from(threadRailLayoutHarnessSource).toString('base64')}`)
+const { createConversationRailLayoutHarness } = await import(`data:text/javascript;base64,${Buffer.from(conversationRailLayoutHarnessSource).toString('base64')}`)
 
 const resizeHarnessSource = ts.transpileModule(`
 export function createResizeHarness(rect = { left: 0, width: 1000 }) {
@@ -137,7 +137,7 @@ export function createResizeHarness(rect = { left: 0, width: 1000 }) {
 }).outputText
 const { createResizeHarness } = await import(`data:text/javascript;base64,${Buffer.from(resizeHarnessSource).toString('base64')}`)
 
-test('keeps divider geometry invariant across anchored, collapsed, and flyout thread rails', () => {
+test('keeps divider geometry invariant across anchored, collapsed, and flyout conversation rails', () => {
   const splitRegion = { left: 84, width: 1000 }
   const dividerX = splitRegion.left + splitRegion.width * 0.58
 
@@ -175,11 +175,11 @@ test('derives conversation minimum from anchored rail width without reserving fl
   assert.equal(splitPercentFromPointer(900, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(0)), 68)
 })
 
-test('keeps the title bar and thread rail inside the resizable left group', () => {
+test('keeps the title bar and conversation rail inside the resizable left group', () => {
   const splitStart = app.indexOf('<div ref="splitRegionRef"')
   const leftGroupStart = app.indexOf('<section data-app-studio-conversation-pane', splitStart)
   const titleBarStart = app.indexOf('<header data-app-studio-titlebar', leftGroupStart)
-  const railStart = app.indexOf('<ThreadRail', titleBarStart)
+  const railStart = app.indexOf('<AIConversationRail', titleBarStart)
   const dividerStart = app.indexOf('@pointerdown="startResize"', railStart)
   const workbenchStart = app.indexOf('<section data-app-studio-workbench-pane', dividerStart)
   const workbenchHeaderStart = app.indexOf('<header class="flex h-14', workbenchStart)
@@ -201,8 +201,8 @@ test('keeps the title bar and thread rail inside the resizable left group', () =
   assert.doesNotMatch(conversationPane, /432px/)
   assert.match(app, /const conversationMinimumWidth = computed\(\(\) => conversationMinimumWidthForLayout\(threadRailRef\.value\?\.layoutWidth \?\? 0\)\)/)
   assert.match(app, /'--conversation-min-width': `\$\{conversationMinimumWidth\.value\}px`/)
-  assert.match(threadRail, /const layoutWidth = computed\(\(\) => \([\s\S]*!mobileViewport\.value[\s\S]*!mobileOpen\.value[\s\S]*anchored\.value[\s\S]*effectiveWidth\.value[\s\S]*: 0\n\)\)/)
-  assert.match(threadRail, /layoutWidth,/)
+  assert.match(conversationRail, /const layoutWidth = computed\(\(\) => \([\s\S]*!mobileViewport\.value[\s\S]*!mobileOpen\.value[\s\S]*anchored\.value[\s\S]*effectiveWidth\.value[\s\S]*: 0\n\)\)/)
+  assert.match(conversationRail, /layoutWidth,/)
 
   const chatSectionStart = app.indexOf('<section class="flex min-h-[360px]', railStart)
   const chatSectionEnd = app.indexOf('>', chatSectionStart)
@@ -248,7 +248,7 @@ test('keeps workbench visibility independent from split width and tab state', ()
 })
 
 test('reserves only an anchored desktop rail in the conversation minimum', () => {
-  const harness = createThreadRailLayoutHarness()
+  const harness = createConversationRailLayoutHarness()
   assert.equal(harness.layoutWidth.value, 224)
   assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 464)
 
@@ -366,11 +366,11 @@ test('keeps the desktop split and mobile single-pane layout structurally distinc
   assert.match(splitRegion, /md:flex-row/)
 
   const dividerMarker = app.indexOf('v-show="workbenchVisible"', splitRegionStart)
-  const dividerStart = app.lastIndexOf('<div', dividerMarker)
+  const dividerStart = app.lastIndexOf('<AIPaneDivider', dividerMarker)
   const dividerEnd = app.indexOf('>', dividerStart)
   const divider = app.slice(dividerStart, dividerEnd + 1)
   assert.match(divider, /v-show="workbenchVisible"/)
-  assert.match(divider, /class="hidden[^\"]*md:flex/)
+  assert.match(divider, /desktop-only/)
 
   const workbenchStart = app.indexOf('<section data-app-studio-workbench-pane')
   const workbenchEnd = app.indexOf('>', workbenchStart)
@@ -385,8 +385,8 @@ test('keeps the desktop split and mobile single-pane layout structurally distinc
   assert.match(conversationPane, /workbenchVisible \? 'hidden workbench-conversation-entering' : 'flex workbench-conversation-leaving'/)
   assert.match(app, /ref="mobileWorkbenchBackRef"[\s\S]*aria-label="Back to conversation"[\s\S]*@click="toggleWorkbenchPane"/)
 
-  assert.match(threadRail, /mobileOpen \? 'absolute inset-y-0 left-0 block w-64' : 'relative hidden md:block'/)
-  assert.match(threadRail, /!mobileOpen && \(anchored \? 'md:w-\[var\(--thread-rail-width\)\]' : 'md:w-0'\)/)
+  assert.match(conversationRail, /mobileOpen \? 'k-ai-conversation-rail--mobile-open' : 'k-ai-conversation-rail--desktop'/)
+  assert.match(conversationRail, /!mobileOpen && \(anchored \? 'k-ai-conversation-rail--anchored' : 'k-ai-conversation-rail--collapsed'\)/)
 })
 
 test('reveals the hidden workbench through every explicit tab and tool action', () => {
@@ -416,7 +416,7 @@ test('reveals the hidden workbench through every explicit tab and tool action', 
 
 test('coordinates the Workbench dock with the conversation layout and reduced motion', () => {
   assert.match(app, /<Transition name="workbench-pane">[\s\S]*data-app-studio-workbench-pane/)
-  assert.match(app, /<Transition name="workbench-divider">[\s\S]*ref="splitResizeDividerRef"/)
+  assert.match(app, /<Transition name="workbench-divider">[\s\S]*<AIPaneDivider/)
   assert.match(app, /'workbench-conversation-pane'/)
   assert.match(app, /workbenchVisible \? 'hidden workbench-conversation-entering' : 'flex workbench-conversation-leaving'/)
 

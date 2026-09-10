@@ -115,7 +115,7 @@ async function submit(): Promise<void> {
     authority.store.setPendingPrompt(agentName, searxngSetupPrompt({ connection, instance: instanceValue, size: size.value }))
     emit('create-success', {
       resource: 'connection', name: connection, item: result,
-      destination: { kind: 'agent', name: agentName, tab: 'config' },
+      destination: { kind: 'agent', name: agentName, tab: 'chat' },
       store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession,
     })
   } finally {

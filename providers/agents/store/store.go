@@ -115,6 +115,10 @@ type Run struct {
 	UpdatedAt    time.Time       `json:"updatedAt"`
 	StartedAt    *time.Time      `json:"startedAt,omitempty"`
 	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
+	// WorkedDurationMS is measured model-response and tool-callback time. It is
+	// nil when the run has no authoritative timing measurement; a non-nil zero
+	// is a measured zero and remains distinct from unknown.
+	WorkedDurationMS *int64 `json:"workedDurationMS,omitempty"`
 }
 
 // RunDelivery is where a run's output goes: the connection to answer on, the

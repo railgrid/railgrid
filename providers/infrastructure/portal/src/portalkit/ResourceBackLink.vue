@@ -18,8 +18,11 @@ const props = withDefaults(defineProps<{
   href: string
   /** Prevents the in-app event and native fallback while the resource is busy. */
   disabled?: boolean
+  /** Render the compact icon-only control used in conversation headers. */
+  iconOnly?: boolean
 }>(), {
   disabled: false,
+  iconOnly: false,
 })
 
 const emit = defineEmits<{
@@ -63,7 +66,7 @@ function handleAuxClick(event: MouseEvent): void {
 
 <template>
   <a
-    class="k-btn k-btn--ghost k-back-action"
+    :class="['k-btn k-btn--ghost k-back-action', { 'k-back-action--icon-only': iconOnly }]"
     :href="href"
     :aria-disabled="disabled ? 'true' : undefined"
     :tabindex="disabled ? -1 : undefined"
@@ -71,6 +74,6 @@ function handleAuxClick(event: MouseEvent): void {
     @auxclick="handleAuxClick"
   >
     <ArrowLeft :size="14" :stroke-width="1.75" aria-hidden="true" />
-    <slot>Back</slot>
+    <slot v-if="!iconOnly">Back</slot>
   </a>
 </template>

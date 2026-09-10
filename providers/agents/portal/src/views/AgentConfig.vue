@@ -42,7 +42,9 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   name: string
   authorityEpoch?: number
-}>(), { authorityEpoch: 0 })
+  /** Move the tools and automation cards into AgentDetail workbench panels. */
+  workbenchSections?: boolean
+}>(), { authorityEpoch: 0, workbenchSections: false })
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -503,6 +505,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div class="agents-form-actions"><button class="k-btn k-btn--primary" type="button" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> Save policy</button></div>
     </ResourceSectionCard>
 
+    <Teleport to="#agents-workbench-panel-tools" defer :disabled="!workbenchSections">
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
       <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
       <fieldset class="agents-wire-fs">
@@ -559,6 +562,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         </template>
       </fieldset>
     </ResourceSectionCard>
+    </Teleport>
 
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-channels-heading" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
       <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
@@ -605,13 +609,17 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <Automation :store="store" :api="api" kind="schedule" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
-    <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
+    <Teleport to="#agents-workbench-panel-automation" defer :disabled="!workbenchSections">
+      <Automation :store="store" :api="api" kind="schedule" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
+      <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
+    </Teleport>
 
     <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" heading-id="agent-delegates-heading" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
         <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
     </ResourceSectionCard>
+
+    <slot name="destructive-actions" />
   </template>
 </template>

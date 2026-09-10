@@ -207,8 +207,8 @@ function hydrateEdit(row: Automation): void {
   editing.value = row.metadata.name
 }
 
-function returnToConfig(): void {
-	if (!formBusy.value) emit('navigate', { kind: 'agent', name: props.agent, tab: 'config' })
+function returnToAutomation(): void {
+	if (!formBusy.value) emit('navigate', { kind: 'agent', name: props.agent, tab: 'automation' })
 }
 
 function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
@@ -265,8 +265,8 @@ async function save(): Promise<void> {
           failure: 'Create failed',
           reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
         })
-    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
-      emit('navigate', { kind: 'agent', name: props.agent, tab: 'config' })
+	    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
+	      emit('navigate', { kind: 'agent', name: props.agent, tab: 'automation' })
     }
   } finally {
     formBusy.value = false
@@ -406,7 +406,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
   </ResourceSectionCard>
 
   <div v-else class="agents-create-page k-create-page">
-    <ResourceBackLink :href="hashFor({ kind: 'agent', name: agent, tab: 'config' })" :disabled="formBusy" @back="returnToConfig">Agent config</ResourceBackLink>
+    <ResourceBackLink :href="hashFor({ kind: 'agent', name: agent, tab: 'automation' })" :disabled="formBusy" @back="returnToAutomation">Agent schedules &amp; triggers</ResourceBackLink>
     <header class="k-create-header">
       <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
       <p class="k-create-description">{{ meta.blurb }}</p>
@@ -445,7 +445,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         <label class="agents-check"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
       <div class="k-create-actions">
-        <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToConfig">Cancel</button>
+        <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToAutomation">Cancel</button>
         <button class="k-btn k-btn--primary" type="submit" :disabled="formBusy">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
       </div>
     </form>

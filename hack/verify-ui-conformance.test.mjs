@@ -184,7 +184,7 @@ test('keeps the canonical stylesheet handoff and native table-row contract', () 
   const hostCss = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
   const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
 
-  assert.match(styles, /import farosUIStyles from '\.\/faros-ui\.css\?raw'/)
+  assert.match(styles, /import farosUIStyles from '\.\/faros-ui\.css\?inline'/)
   assert.match(css, /--faros-ui-canonical:\s*1/)
   assert.match(hostCss, /@import "\.\/faros-ui\.css" layer\(components\);/)
   assert.match(styles, /Never mutate an existing style element/)
@@ -333,7 +333,9 @@ test('keeps ResourceBackLink browser affordances and disabled state canonical', 
   assert.match(back, /event\.preventDefault\(\)[\s\S]*emit\('back', event\)/)
   assert.match(back, /:aria-disabled="disabled \? 'true' : undefined"/)
   assert.match(back, /:tabindex="disabled \? -1 : undefined"/)
-  assert.match(back, /<slot>Back<\/slot>/)
+  assert.match(back, /iconOnly\?: boolean/)
+  assert.match(back, /iconOnly: false/)
+  assert.match(back, /<slot v-if="!iconOnly">Back<\/slot>/)
   assert.match(css, /\.k-back-action\[aria-disabled="true"\][\s\S]*opacity:\s*0\.4/)
   assert.match(css, /@media\s*\(pointer:\s*coarse\),\s*\(any-pointer:\s*coarse\)[\s\S]*\.k-back-action\s*\{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px;/)
 })
@@ -819,4 +821,21 @@ test('rejects unknown color token declarations in authority stylesheets', () => 
   })
   const result = fixture.run()
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.rule === RULES.UNKNOWN_COLOR_TOKEN && diagnostic.match === '--color-surafce'))
+})
+
+
+test('checks canonical AgentKit while excluding its verifier-owned distribution copies', () => {
+  const fixture = fixtureRepo({
+    'provider-sdk/agentkit/agent-ui.css': '.k-ai-fixture { color: #ff0000; }',
+    'providers/fixture/portal/src/agentkit/agent-ui.css': '.k-ai-fixture { color: #ff0000; }',
+    'providers/fixture/portal/src/feature.css': '.k-ai-fixture { padding: 1px; }',
+  })
+  const result = fixture.run({
+    canonicalRoots: ['provider-sdk/portalkit', 'provider-sdk/agentkit'],
+    vendoredSegments: ['portalkit', 'agentkit'],
+  })
+  assert.ok(result.files.includes('provider-sdk/agentkit/agent-ui.css'))
+  assert.ok(!result.files.some(file => file.includes('/src/agentkit/')))
+  assert.ok(result.diagnostics.some(d => d.path === 'provider-sdk/agentkit/agent-ui.css'))
+  assert.ok(result.diagnostics.some(d => d.path === 'providers/fixture/portal/src/feature.css' && d.rule === RULES.PROVIDER_K_SELECTOR))
 })

@@ -5,7 +5,8 @@
 //
 // Scheme:
 //   #/agents                          Agents grid (default)
-//   #/agents/<name>/config|runs       agent detail
+//   #/agents/<name>/chat|config|tools|automation|runs  agent detail
+//   #/agents/<name>/runs/<runID>      agent-scoped run detail
 //   #/activity                        run feed + approvals
 //   #/activity/<runID>                run trace
 //   #/connections #/models
@@ -20,16 +21,16 @@
 //   #/create/toolset #/create/model
 
 export type MenuKey = 'agents' | 'activity' | 'connections' | 'models'
-export type AgentTab = 'config' | 'runs'
+export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs'
 export type CreateResource = 'agent' | 'connection' | 'toolset' | 'model'
 export type AutomationResource = 'schedule' | 'trigger'
 
 export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'models']
-const AGENT_TABS: AgentTab[] = ['config', 'runs']
+const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs']
 
 export type Route =
   | { kind: 'menu'; menu: MenuKey }
-  | { kind: 'agent'; name: string; tab: AgentTab }
+  | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: 'connection' | 'toolset'; name: string }
   | { kind: 'create'; resource: CreateResource; type?: string }
@@ -67,7 +68,8 @@ export const DEFAULT_ROUTE: Route = { kind: 'menu', menu: 'agents' }
 
 // parseHash turns the current location.hash into a Route. Routes from the old
 // 7-tab scheme (inbox / schedules / triggers / toolsets, agent flow+settings
-// tabs) redirect one-way onto their new home.
+// tabs) redirect one-way onto their new home. An agent's conversational surface
+// is the default so a bare agent URL can be shared as the place to talk.
 export function parseHash(hash = location.hash): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
   const [head, second, third, fourth, fifth] = parts
@@ -86,6 +88,9 @@ export function parseHash(hash = location.hash): Route {
         kind: 'automation', resource: third === 'schedules' ? 'schedule' : 'trigger',
         agent: decodePart(second), action: 'edit', name: decodePart(fourth),
       }
+    }
+    if (third === 'runs' && fourth && parts.length === 4) {
+      return { kind: 'agent', name: decodePart(second), tab: 'runs', runID: decodePart(fourth) }
     }
     return { kind: 'agent', name: decodePart(second), tab: normalizeTab(third) }
   }
@@ -108,7 +113,9 @@ export function parseHash(hash = location.hash): Route {
 export function hashFor(route: Route): string {
   switch (route.kind) {
     case 'agent':
-      return `#/agents/${encodeURIComponent(route.name)}/${route.tab}`
+      return route.tab === 'runs' && route.runID
+        ? `#/agents/${encodeURIComponent(route.name)}/runs/${encodeURIComponent(route.runID)}`
+        : `#/agents/${encodeURIComponent(route.name)}/${route.tab}`
     case 'run':
       return `#/activity/${encodeURIComponent(route.id)}`
     case 'edit':
@@ -180,6 +187,7 @@ function decodePart(value: string): string {
 
 function normalizeTab(t: string | undefined): AgentTab {
   if (AGENT_TABS.includes(t as AgentTab)) return t as AgentTab
-  // flow / wiring / settings / chat all lived in what is now one Config pane.
-  return 'config'
+  if (t === 'flow' || t === 'wiring' || t === 'settings') return 'config'
+  // A missing or unknown tab opens the primary conversation surface.
+  return 'chat'
 }

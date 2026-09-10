@@ -50,9 +50,11 @@ package boundaries.
 must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
 `ensureFarosUIStyles()`: a computed `:root` marker
-`--faros-ui-canonical: 1` is accepted only when its `--faros-ui-version` is at
-least the bundle's required version. Otherwise the exact vendored stylesheet
-is appended under a versioned fallback ID with
+`--faros-ui-canonical: 1` is accepted only when its `--faros-ui-core-version` is at
+least the bundle's required core version (currently 15). Otherwise the
+canonical CSS is imported with Vite's `?inline` loader, so the embedded
+fallback uses Vite's minified form of the canonical rules and is appended
+under a versioned fallback ID with
 `data-faros-ui-source="portalkit-fallback"`. Existing style elements are never
 replaced, and a newer host stylesheet is never downgraded.
 
@@ -143,3 +145,11 @@ temporary legacy exception even though its portal is Vue: its provider-local
 subscription adapter continues to use the frozen framework-neutral bus. Agents
 migration and adoption by providers with no current toast usage remain out of
 scope.
+
+## Optional AgentKit
+
+AI conversation, workbench, and model presentation lives in
+[`provider-sdk/agentkit`](../agentkit/README.md) and `provider-sdk/agentkit-vue`.
+AgentKit depends on PortalKit tokens and primitives. PortalKit does not import
+AgentKit or include its styles. The same sync command distributes AgentKit only
+to the consumers declared in `AGENTKIT_PORTALS`.

@@ -43,6 +43,9 @@ type runSummary struct {
 	StartedAt    *time.Time `json:"startedAt,omitempty"`
 	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
 	DurationMS   int64      `json:"durationMS,omitempty"`
+	// WorkedDurationMS is measured model/tool time. It is kept separate from
+	// DurationMS, which is the wall-clock elapsed run duration.
+	WorkedDurationMS *int64 `json:"workedDurationMS,omitempty"`
 }
 
 // runStep is one tool call in a run's trace.
@@ -85,6 +88,9 @@ func summarize(run store.Run) runSummary {
 		HasOutput:    run.Output != "",
 		InputTokens:  run.InputTokens, OutputTokens: run.OutputTokens, USDMicros: run.USDMicros,
 		CreatedAt: run.CreatedAt, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
+	}
+	if run.WorkedDurationMS != nil && *run.WorkedDurationMS >= 0 {
+		rs.WorkedDurationMS = run.WorkedDurationMS
 	}
 	if run.StartedAt != nil && run.FinishedAt != nil {
 		rs.DurationMS = run.FinishedAt.Sub(*run.StartedAt).Milliseconds()
@@ -233,7 +239,18 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		// Not executing on this replica: stamp the terminal phase directly.
 		now := time.Now().UTC()
 		scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-		s.finishRun(r.Context(), scope, runID, runOutcome{Phase: store.RunPhaseAborted, Message: "cancelled by user"}, now)
+		startedAt := run.CreatedAt
+		if run.StartedAt != nil {
+			startedAt = *run.StartedAt
+		}
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		persistCtx, cancelPersist := boundedPersistContext(r.Context())
+		tracker := trackerForStored(run)
+		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(store.RunPhaseAborted), "", "cancelled by user")
+		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: store.RunPhaseAborted, Message: "cancelled by user", WorkedDurationMS: tracker.workedDurationMS()}, now)
+		cancelPersist()
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseAborted})
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})

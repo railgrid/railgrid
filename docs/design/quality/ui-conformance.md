@@ -13,9 +13,12 @@ unexpected assets.
 
 Standalone bundles use the shared `styles.ts` handoff. The computed
 `--faros-ui-canonical: 1` marker preserves a host stylesheet only when its
-`--faros-ui-version` is compatible. A stale or unversioned host remains
-untouched while exact vendored CSS is appended under a versioned fallback ID.
-Existing style elements are never replaced, and newer host CSS always wins.
+`--faros-ui-version` is compatible with the current version 7 contract. A
+stale or unversioned host remains untouched while canonical CSS imported
+through Vite's `?inline` loader is appended under a versioned fallback ID.
+Vite may minify that runtime fallback; the authored stylesheet and synced
+source copies remain byte-identical. Existing style elements are never
+replaced, and newer host CSS always wins.
 
 The scanner covers canonical `provider-sdk/portalkit` and
 `provider-sdk/portalkit-vue` roots plus host and `providers/*/portal/src` source.

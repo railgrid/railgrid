@@ -4,6 +4,7 @@
 import { ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
+import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
 import type { SSEEvent } from '../api'
@@ -41,6 +42,42 @@ function deferred<T>() {
 
 const session = (id: string, preview = id) => ({ id, preview, messageCount: 1, createdAt: '', lastActivity: '' })
 
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
+async function mountConversationRail(): Promise<MountedVue> {
+  const overlay = document.createElement('div')
+  overlay.id = 'app-studio-overlay-root'
+  document.body.appendChild(overlay)
+  const rail = await mountVue(AIConversationRail, {
+    threads: [
+      { id: 'thread-active', title: 'Current work', status: 'active' },
+      { id: 'thread-older', title: 'Previous incident review', status: 'idle' },
+    ],
+    activeThreadID: 'thread-active',
+    unreadThreadIDs: ['thread-older'],
+    pinnedThreadIDs: [],
+    capabilities: { create: true, pin: true, unread: true, archive: true },
+    overlayTarget: '#app-studio-overlay-root',
+    panelId: 'app-studio-thread-rail',
+    storageScope: 'app-studio-fixture',
+  })
+  mounted.push(rail)
+  await settle(4)
+  return rail
+}
+
 async function mountChat(chatStream: unknown, extra: Record<string, unknown> = {}) {
   const api = stubApi({ chatStream, listRuns: () => Promise.resolve({ items: [] }), ...extra })
   const store = makeStore(api)
@@ -62,10 +99,8 @@ async function send(el: HTMLElement, message: string): Promise<void> {
 }
 
 async function chooseSession(el: HTMLElement, label: string): Promise<void> {
-  el.querySelector<HTMLButtonElement>('.agents-session-picker [role="combobox"]')!.click()
-  await settle()
-  const option = [...document.querySelectorAll<HTMLButtonElement>('.k-form-select__option')]
-    .find(candidate => text(candidate) === label)
+  const option = [...el.querySelectorAll<HTMLButtonElement>('.k-ai-conversation-rail__item-select')]
+    .find(candidate => text(candidate).includes(label))
   expect(option).toBeDefined()
   option!.click()
   await settle()
@@ -79,9 +114,24 @@ describe('chat streaming', () => {
     const textarea = el.querySelector<HTMLTextAreaElement>('.agents-composer-input')!
     const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
 
+    const layout = el.querySelector<HTMLElement>('.k-ai-conversation-layout')!
+    const header = el.querySelector<HTMLElement>('.k-ai-conversation-header')!
+    expect(layout).not.toBeNull()
+    expect(header).not.toBeNull()
+    expect(header.parentElement?.classList.contains('agents-chat-shell')).toBe(true)
+    expect(header.parentElement).toBe(layout.parentElement)
+    expect(header.nextElementSibling).toBe(layout)
+    expect(el.querySelector('.k-ai-conversation-back')).toBeNull()
+    expect(el.querySelector('.agents-chat-title')).not.toBeNull()
+    expect(el.querySelector('.agents-log.k-ai-transcript-scroll .k-ai-transcript')).not.toBeNull()
     expect(surface).not.toBeNull()
     expect(textarea.rows).toBe(3)
     expect(textarea.getAttribute('aria-label')).toBe('Message scout')
+    expect(textarea.getAttribute('aria-describedby')).toBe('agents-composer-help')
+    expect(textarea.placeholder).toBe('Message scout…')
+    expect(text(el.querySelector('#agents-composer-help'))).toContain('Enter to send')
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
+    expect(textarea.title).toContain('Enter to send')
     expect(submit.classList.contains('agents-composer-primary')).toBe(true)
     expect(submit.getAttribute('aria-label')).toBe('Send')
     expect(submit.title).toBe('Send')
@@ -100,6 +150,183 @@ describe('chat streaming', () => {
     expect(chatStream).not.toHaveBeenCalled()
   })
 
+  it('opens the conversation rail on narrow screens and restores trigger focus', async () => {
+    const originalMatchMedia = window.matchMedia
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: true,
+        media: '(max-width: 767px)',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+    try {
+      localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+      const { el } = await mountChat(scripted([]), {
+        listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Second chat')]),
+      })
+      const trigger = el.querySelector<HTMLButtonElement>('.agents-mobile-rail-toggle')!
+      trigger.focus()
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+      trigger.click()
+      await settle(4)
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+      expect(el.querySelector('.agents-conversation-rail-shell.is-open')).not.toBeNull()
+      expect(el.querySelector('.k-ai-conversation-rail--mobile-open')).not.toBeNull()
+
+      el.querySelector<HTMLButtonElement>('.agents-mobile-rail-backdrop')!.click()
+      await settle(4)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(trigger)
+
+      trigger.click()
+      await settle(3)
+      const rail = el.querySelector<HTMLElement>('.k-ai-conversation-rail--mobile-open')!
+      rail.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+      await settle(4)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(el.querySelector('.k-ai-conversation-rail--mobile-open')).toBeNull()
+      expect(document.activeElement).toBe(trigger)
+
+      trigger.click()
+      await settle(3)
+      el.querySelector<HTMLButtonElement>('[data-thread-id="s2"]')!.click()
+      await settle(5)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(el.querySelector('.agents-conversation-rail-shell.is-open')).toBeNull()
+      expect(el.querySelector('.k-ai-conversation-rail--mobile-open')).toBeNull()
+      expect(document.activeElement).toBe(trigger)
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+    }
+  })
+
+  it('lets desktop users collapse and reopen the shared rail without swallowing Escape', async () => {
+    const originalMatchMedia = window.matchMedia
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        media: '(max-width: 767px)',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+    try {
+      const { el } = await mountChat(scripted([]))
+      const trigger = el.querySelector<HTMLButtonElement>('.agents-desktop-rail-toggle')!
+      const rail = el.querySelector<HTMLElement>('.k-ai-conversation-rail')!
+      trigger.focus()
+
+      expect(trigger.getAttribute('aria-label')).toBe('Toggle conversation panel')
+      expect(trigger.getAttribute('aria-controls')).toBe('agents-conversation-rail')
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+
+      trigger.click()
+      await settle(3)
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      expect(rail.classList.contains('k-ai-conversation-rail--collapsed')).toBe(true)
+      expect(document.activeElement).toBe(trigger)
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      rail.dispatchEvent(escape)
+      expect(escape.defaultPrevented).toBe(false)
+
+      trigger.click()
+      await settle(3)
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+      expect(rail.classList.contains('k-ai-conversation-rail--anchored')).toBe(true)
+      expect(document.activeElement).toBe(trigger)
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+    }
+  })
+
+  it('keeps App Studio context menus inside the viewport for pointer and Shift+F10', async () => {
+    const originalWidth = window.innerWidth
+    const originalHeight = window.innerHeight
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 })
+    const menuRect = domRect(0, 0, 192, 115)
+    const menuRectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('k-ai-conversation-rail__context-menu')) return menuRect
+      return originalGetBoundingClientRect.call(this)
+    })
+
+    const assertMenuBounds = (menu: HTMLElement): void => {
+      const left = Number.parseFloat(menu.style.left)
+      const top = Number.parseFloat(menu.style.top)
+      expect(Number.isFinite(left)).toBe(true)
+      expect(Number.isFinite(top)).toBe(true)
+      expect(left).toBe(1240)
+      expect(top).toBe(777)
+      expect(left).toBeGreaterThanOrEqual(8)
+      expect(top).toBeGreaterThanOrEqual(8)
+      expect(left + menuRect.width).toBeLessThanOrEqual(window.innerWidth - 8)
+      expect(top + menuRect.height).toBeLessThanOrEqual(window.innerHeight - 8)
+    }
+
+    try {
+      const rail = await mountConversationRail()
+      const select = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-older"]')!
+      const item = select.closest<HTMLElement>('.k-ai-conversation-rail__item')!
+      const targetRect = domRect(1320, 840, 110, 32)
+      Object.defineProperty(item, 'getBoundingClientRect', { configurable: true, value: () => targetRect })
+      Object.defineProperty(select, 'getBoundingClientRect', { configurable: true, value: () => targetRect })
+
+      const pointerEvent = new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 1428,
+        clientY: 888,
+      })
+      item.dispatchEvent(pointerEvent)
+      expect(pointerEvent.defaultPrevented).toBe(true)
+      await settle(6)
+
+      let menu = document.querySelector<HTMLElement>('#app-studio-overlay-root [role="menu"]')
+      expect(menu).not.toBeNull()
+      expect(menu?.getAttribute('aria-label')).toBe('Actions for Previous incident review')
+      assertMenuBounds(menu!)
+      expect(document.activeElement).toBe(menu!.querySelector('[role="menuitem"]'))
+
+      window.dispatchEvent(new Event('blur'))
+      await settle(3)
+      expect(document.querySelector('#app-studio-overlay-root [role="menu"]')).toBeNull()
+
+      select.focus()
+      const keyboardEvent = new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        key: 'F10',
+        shiftKey: true,
+      })
+      select.dispatchEvent(keyboardEvent)
+      expect(keyboardEvent.defaultPrevented).toBe(true)
+      await settle(6)
+
+      menu = document.querySelector<HTMLElement>('#app-studio-overlay-root [role="menu"]')
+      expect(menu).not.toBeNull()
+      assertMenuBounds(menu!)
+      expect(document.activeElement).toBe(menu!.querySelector('[role="menuitem"]'))
+    } finally {
+      menuRectSpy.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight })
+    }
+  })
+
   it('renders the user turn and streams assistant deltas as markdown', async () => {
     const { el } = await mountChat(
       scripted([
@@ -114,8 +341,12 @@ describe('chat streaming', () => {
     const msgs = el.querySelectorAll('.agents-msg')
     expect(msgs.length).toBe(2)
     expect(text(msgs[0])).toContain('hello')
+    expect(msgs[0].querySelector('.k-ai-message__content--bubble')).not.toBeNull()
+    expect(msgs[0].querySelector('.k-ai-message__before')).toBeNull()
+    expect(msgs[0].querySelector('.agents-body')?.classList.contains('k-ai-prose')).toBe(false)
     // Markdown is rendered, not escaped.
     expect(msgs[1].querySelector('strong')?.textContent).toBe('hi')
+    expect(msgs[1].querySelector('.agents-body')?.classList.contains('k-ai-prose')).toBe(true)
     // Per-turn usage footer.
     expect(text(msgs[1].querySelector('.agents-turn-usage'))).toContain('$0.0015')
   })
@@ -132,10 +363,10 @@ describe('chat streaming', () => {
 
     await send(el, 'hello')
 
-    expect(text(el)).toContain('Could not refresh chats. Showing the last loaded chats.')
+    expect(text(el)).toContain('Could not refresh conversations. Showing the last loaded conversations.')
     expect(text(el)).toContain('session refresh failed')
     await chooseSession(el, 'Second chat')
-    expect(text(el.querySelector('.agents-session-picker'))).toContain('Second chat')
+    expect(text(el.querySelector('.k-ai-conversation-rail'))).toContain('Second chat')
   })
 
   it('announces only the actively streaming assistant message', async () => {
@@ -216,18 +447,19 @@ describe('chat streaming', () => {
     const done = send(el, 'find issues')
     await settle(6)
 
-    const card = el.querySelector('.agents-toolcard')!
-    expect(card.className).toContain('is-pending')
-    expect(text(card)).toContain('github__list_issues')
-    expect(text(card)).toContain('running…')
+    const card = el.querySelector('.k-ai-action-row')!
+    expect(card.className).toContain('k-ai-action-row--busy')
+    expect(text(card)).toContain('Github list issues')
+    expect(text(card)).toContain('Running')
 
     release()
     await done
 
     // Expanding reveals the recorded args.
-    el.querySelector<HTMLButtonElement>('.agents-toolcard-head')!.click()
+    el.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settle()
-    expect(text(el.querySelector('.agents-toolcard-body'))).toContain('"repo"')
+    expect(text(el.querySelector('.k-ai-action-row__details'))).toContain('"repo"')
+    expect(text(el.querySelector('.k-ai-action-row__details'))).toContain('github__list_issues')
   })
 
   it('marks a tool card failed when tool_end carries an error', async () => {
@@ -240,9 +472,70 @@ describe('chat streaming', () => {
       ]),
     )
     await send(el, 'search')
-    const card = el.querySelector('.agents-toolcard')!
-    expect(card.className).toContain('is-err')
-    expect(text(card)).toContain('250ms')
+    const card = el.querySelector('.k-ai-action-row')!
+    expect(card.className).toContain('k-ai-action-row--error')
+    expect(text(card)).toContain('Elapsed 250ms')
+  })
+
+  it('allows manual collapse of running activity and preserves it after success', async () => {
+    const release = deferred<void>()
+    const chatStream = vi.fn(async function* () {
+      yield { event: 'start', data: { runID: 'r-activity', sessionID: 's-activity' } } as SSEEvent
+      yield { event: 'tool_start', data: { id: 't-activity', name: 'inspect_queue', args: '{}' } } as SSEEvent
+      await release.promise
+      yield { event: 'tool_end', data: { id: 't-activity', name: 'inspect_queue', args: '{}', result: '{"ok":true}', durationMS: 90 } } as SSEEvent
+      yield { event: 'done', data: { runID: 'r-activity', content: 'finished' } } as SSEEvent
+    })
+    const { el } = await mountChat(chatStream)
+    const sending = send(el, 'inspect the queue')
+    await settle(6)
+
+    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    trigger.click()
+    await settle(3)
+    // Match Studio: automatic expansion yields to the user's explicit choice.
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    release.resolve(undefined)
+    await sending
+    await settle(4)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    trigger.click()
+    await settle(3)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    trigger.click()
+    await settle(3)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('keeps failed status visible while allowing activity to collapse and reopen', async () => {
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r-error', sessionID: 's-error' } },
+      { event: 'tool_start', data: { id: 't-error', name: 'inspect_queue', args: '{}' } },
+      { event: 'tool_end', data: { id: 't-error', name: 'inspect_queue', args: '{}', error: 'permission denied', durationMS: 40 } },
+      { event: 'done', data: { runID: 'r-error', content: 'failed' } },
+    ]))
+    await send(el, 'inspect the queue')
+
+    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!
+    const card = el.querySelector<HTMLElement>('.k-ai-action-row')!
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(trigger.querySelector('.k-ai-activity__status--error')).not.toBeNull()
+    expect(card.classList.contains('k-ai-action-row--error')).toBe(true)
+
+    trigger.click()
+    await settle(3)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(trigger.querySelector('.k-ai-activity__status--error')).not.toBeNull()
+    trigger.click()
+    await settle(3)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+
+    card.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    await settle(3)
+    expect(text(card.querySelector('.k-ai-action-row__details'))).toContain('permission denied')
   })
 
   it('renders an approval card and resolves it through the inbox endpoint', async () => {
@@ -261,8 +554,10 @@ describe('chat streaming', () => {
 
     const card = el.querySelector('.agents-approval')!
     expect(text(card)).toContain('edges__pods_delete')
+    expect(card.querySelector('.agents-approval-head')).toBeNull()
+    expect(text(card.querySelector('.agents-approval-tool'))).toBe('edges__pods_delete')
 
-    card.querySelector<HTMLButtonElement>('.agents-approval-actions button')!.click()
+    card.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'approve')
     expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
@@ -283,7 +578,7 @@ describe('chat streaming', () => {
     )
     await send(el, 'delete it')
 
-    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')]
+    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.k-ai-interrupt__actions button')]
     approve.click()
     await settle(2)
 
@@ -315,7 +610,7 @@ describe('chat streaming', () => {
     )
     await send(el, 'delete it')
 
-    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')]
+    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.k-ai-interrupt__actions button')]
     expect(approve.disabled).toBe(true)
     expect(deny.disabled).toBe(false)
     expect(text(el.querySelector('.agents-approval-disclosure-error'))).toContain('Approval details are unavailable or malformed')
@@ -337,9 +632,9 @@ describe('chat streaming', () => {
       { resolveInbox: () => resolution.promise },
     )
     await send(el, 'delete it')
-    el.querySelector<HTMLButtonElement>('.agents-approval-actions button')!.click()
+    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
     await settle(2)
-    el.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click()
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
 
     resolution.reject(new Error('old approval failure'))
@@ -489,8 +784,8 @@ describe('chat streaming', () => {
     release()
     await done
     await settle(6)
-    expect(el.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.disabled).toBe(false)
-    el.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click()
+    expect(el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.disabled).toBe(false)
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
 
     cancellation.reject(new Error('old cancellation failure'))
@@ -499,25 +794,107 @@ describe('chat streaming', () => {
     expect(text(document.querySelector('.k-toast--error'))).not.toContain('old cancellation failure')
   })
 
-  it('does not show a failed deletion after the user leaves its session', async () => {
+  it('does not show a failed deletion after the user leaves its agent', async () => {
     const deletion = deferred<void>()
     localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
-    const { el } = await mountChat(scripted([]), {
+    const { el, view } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1')]),
       deleteSession: () => deletion.promise,
     })
 
-    el.querySelector<HTMLButtonElement>('button[aria-label="Delete this chat"]')!.click()
+    el.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
     await settle(2)
     resolveConfirm(true)
     await settle(2)
-    el.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click()
-    await settle(2)
+    await view.setProps({ name: 'ranger' })
 
     deletion.reject(new Error('old deletion failure'))
     await settle(4)
 
     expect(text(document.querySelector('.k-toast--error'))).not.toContain('old deletion failure')
+  })
+
+  it('shows a current-agent error when deleting an inactive session fails', async () => {
+    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    const deleteSession = vi.fn().mockRejectedValue(new Error('inactive deletion failed'))
+    const { el } = await mountChat(scripted([]), {
+      listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')]),
+      deleteSession,
+    })
+
+    const oldChat = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => item.querySelector('[data-thread-id="s2"]'))!
+    oldChat.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(2)
+    resolveConfirm(true)
+    await settle(4)
+
+    expect(deleteSession).toHaveBeenCalledWith('scout', 's2')
+    expect(text(document.querySelector('.k-toast--error'))).toContain('inactive deletion failed')
+  })
+
+  it('clears a pending session-list refresh when deleting an inactive session', async () => {
+    const pendingRefresh = deferred<ReturnType<typeof session>[]>()
+    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    const listSessions = vi.fn()
+      .mockResolvedValueOnce([session('s1', 'Active chat'), session('s2', 'Old chat')])
+      .mockRejectedValueOnce(new Error('session refresh failed'))
+      .mockImplementationOnce(() => pendingRefresh.promise)
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'done', data: { runID: 'r1', content: 'done' } },
+    ]), { listSessions, deleteSession: vi.fn().mockResolvedValue(undefined) })
+
+    await send(el, 'refresh the list')
+    const stale = el.querySelector<HTMLElement>('.k-stale')!
+    const retry = stale.querySelector<HTMLButtonElement>('button')!
+    retry.click()
+    await settle(2)
+    expect(retry.disabled).toBe(true)
+    expect(text(retry)).toContain('Retrying')
+
+    const oldChat = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => item.querySelector('[data-thread-id="s2"]'))!
+    oldChat.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(2)
+    resolveConfirm(true)
+    await settle(4)
+
+    expect(text(retry)).toContain('Retry')
+    expect(text(retry)).toBe('Retry')
+    expect(retry.disabled).toBe(false)
+
+    pendingRefresh.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')])
+    await settle(4)
+  })
+
+  it('keeps an active transcript read alive when deleting another session', async () => {
+    const activeHistory = deferred<TranscriptMessage[]>()
+    const listMessages = vi.fn((_agent: string, id: string) => id === 's1'
+      ? activeHistory.promise
+      : Promise.resolve([] as TranscriptMessage[]))
+    const deleteSession = vi.fn().mockResolvedValue(undefined)
+    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    const { el } = await mountChat(scripted([]), {
+      listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')]),
+      listMessages,
+      deleteSession,
+    })
+
+    await settle(2)
+    expect(listMessages).toHaveBeenCalledWith('scout', 's1')
+    const oldChat = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => item.querySelector('[data-thread-id="s2"]'))
+    expect(oldChat).not.toBeUndefined()
+    oldChat!.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(2)
+    resolveConfirm(true)
+    await settle(4)
+
+    expect(deleteSession).toHaveBeenCalledWith('scout', 's2')
+    activeHistory.resolve([{ id: 'active-message', role: 'user', content: 'active transcript' }])
+    await settle(6)
+    expect(text(el)).toContain('active transcript')
   })
 
   it('keeps chat deletion single-flight through confirmation and deletion', async () => {
@@ -529,12 +906,12 @@ describe('chat streaming', () => {
       deleteSession,
     })
 
-    const button = el.querySelector<HTMLButtonElement>('button[aria-label="Delete this chat"]')!
+    const button = el.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!
     button.click()
     button.click()
     await settle(2)
     expect(button.disabled).toBe(true)
-    expect(button.getAttribute('aria-busy')).toBe('true')
+    expect(el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__item-select')?.getAttribute('aria-busy')).toBe('true')
     resolveConfirm(true)
     await settle(3)
     expect(deleteSession).toHaveBeenCalledTimes(1)
@@ -543,7 +920,7 @@ describe('chat streaming', () => {
 
     deletion.resolve()
     await settle(6)
-    expect(el.querySelector<HTMLButtonElement>('button[aria-label="Delete this chat"]')?.disabled).toBe(false)
+    expect(el.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')?.disabled).toBe(false)
   })
 
   it('does not force-scroll when the user has scrolled up', async () => {
@@ -579,9 +956,9 @@ describe('chat read ownership', () => {
     mounted.push(sessionFailure)
     await settle(4)
 
-    expect(text(sessionFailure.element.querySelector('[role="alert"]'))).toContain('Could not load chats')
+    expect(text(sessionFailure.element.querySelector('[role="alert"]'))).toContain('Could not load conversations')
     expect(text(sessionFailure.element)).not.toContain('No messages yet')
-    expect(text(sessionFailure.element.querySelector('.agents-session-picker'))).not.toContain('New chat')
+    expect(text(sessionFailure.element.querySelector('.k-ai-conversation-rail'))).not.toContain('New chat')
 
     const messageAPI = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
@@ -632,7 +1009,7 @@ describe('chat read ownership', () => {
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
 
-    view.element.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click()
+    view.element.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
     const userSession = localStorage.getItem('faros:agents:session:org:ws:scout')
     expect(userSession).toBeTruthy()
@@ -642,7 +1019,7 @@ describe('chat read ownership', () => {
     await settle(6)
 
     expect(localStorage.getItem('faros:agents:session:org:ws:scout')).toBe(userSession)
-    expect(text(view.element.querySelector('.agents-session-picker'))).toContain('New chat')
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('New chat')
   })
 
   it('does not let initial session discovery replace a session that has started sending', async () => {
@@ -739,8 +1116,8 @@ describe('chat read ownership', () => {
     scoutSessions.resolve([session('scout-session', 'Scout chat')])
     await settle(4)
 
-    expect(text(view.element.querySelector('.agents-session-picker'))).toContain('Ranger chat')
-    expect(text(view.element.querySelector('.agents-session-picker'))).not.toContain('Scout chat')
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('Ranger chat')
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).not.toContain('Scout chat')
     expect(text(view.element)).toContain('ranger-session')
   })
 
@@ -843,11 +1220,34 @@ describe('transcript rehydration', () => {
     const el = view.element
     await settle(6)
 
-    const card = el.querySelector('.agents-toolcard')!
-    expect(text(card)).toContain('web_search')
+    const card = el.querySelector('.k-ai-action-row')!
+    expect(text(card)).toContain('Web search')
+    card.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    await settle()
+    expect(text(card.querySelector('.k-ai-execution-details'))).toContain('web_search')
     expect(text(card)).toContain('90ms')
     // A generous limit is requested so a long session comes back whole.
     expect(listMessages.mock.calls[0][2] ?? 200).toBeGreaterThanOrEqual(200)
+  })
+
+  it('shows one stable run link on the last assistant segment and falls back to an available message', async () => {
+    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    const listMessages = vi.fn().mockResolvedValue([
+      { id: '4', role: 'user', content: 'fallback', runID: 'r2' },
+      { id: '3', role: 'assistant', content: 'second segment', runID: 'r1' },
+      { id: '2', role: 'assistant', content: 'first segment', runID: 'r1' },
+      { id: '1', role: 'user', content: 'request', runID: 'r1' },
+    ])
+    const { el } = await mountChat(scripted([]), {
+      listSessions: () => Promise.resolve([session('s1')]),
+      listMessages,
+    })
+
+    const links = [...el.querySelectorAll<HTMLButtonElement>('.agents-message-run-link')]
+    expect(links).toHaveLength(2)
+    expect(links.map(link => link.id).sort()).toEqual(['agents-view-run-m3', 'agents-view-run-m4'])
+    expect(links.every(link => !link.classList.contains('k-dashboard-action'))).toBe(true)
+    expect(el.querySelector('#agents-view-run-m2')).toBeNull()
   })
 })
 
@@ -934,7 +1334,7 @@ describe('a run still working with nobody attached', () => {
     const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop it')) as HTMLButtonElement
     stop.click()
     await settle(2)
-    el.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click()
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
 
     cancellation.reject(new Error('old run failure'))

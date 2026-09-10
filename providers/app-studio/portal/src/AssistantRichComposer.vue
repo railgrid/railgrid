@@ -1186,8 +1186,8 @@ defineExpose({
       multiple
       @change="handleAttachmentInput"
     />
-    <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-2">
-      <div class="flex min-w-0 items-center gap-0.5">
+    <div class="k-ai-composer__controls">
+      <div class="k-ai-composer__control-group">
         <div ref="addMenuRootRef" class="contents">
           <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">
             <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Add</div>
@@ -1226,7 +1226,7 @@ defineExpose({
         </div>
         <slot name="controls" />
       </div>
-      <div class="ml-auto min-w-0 shrink">
+      <div class="k-ai-composer__actions">
         <slot name="actions" />
       </div>
     </div>

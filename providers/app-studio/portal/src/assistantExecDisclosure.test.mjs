@@ -90,3 +90,47 @@ test('does not render unknown disclosure fields', async () => {
   assert.doesNotMatch(html, /Command execution|rawArguments/)
   assert.doesNotMatch(html, /secret/)
 })
+
+test('shared execution details keeps unknown status neutral, escapes text, and rejects external links', async () => {
+  const { default: AIExecutionDetails } = await vite.ssrLoadModule('/src/agentkit/AIExecutionDetails.vue')
+  const html = await renderToString(createSSRApp(AIExecutionDetails, {
+    execution: {
+      command: '<danger> && echo ok',
+      output: ['<script>alert(1)</script>'],
+      status: 'future_status',
+      exitCode: 0,
+      detail: 'Review <the bounded output>',
+      detailURL: 'https://evil.example/steal',
+    },
+  }))
+  assert.match(html, /Status unavailable/)
+  assert.match(html, /&lt;danger&gt;/)
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+  assert.match(html, /Review &lt;the bounded output&gt;/)
+  assert.doesNotMatch(html, /k-ai-execution-details__status--success|href=/)
+})
+
+test('shared execution details keeps same-origin detail links and known success status', async () => {
+  const { default: AIExecutionDetails } = await vite.ssrLoadModule('/src/agentkit/AIExecutionDetails.vue')
+  const html = await renderToString(createSSRApp(AIExecutionDetails, {
+    execution: {
+      command: 'go test ./...',
+      status: 'succeeded',
+      duration: '1.2 s',
+      detailURL: '/runs/123?tab=output',
+    },
+  }))
+  assert.match(html, /Status unavailable|Success/)
+  assert.match(html, /k-ai-execution-details__status--success/)
+  assert.match(html, /href="&#x2F;runs&#x2F;123\?tab=output"|href="\/runs\/123\?tab=output"/)
+})
+
+
+test('does not present success when the execution has a failed exit code', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const html = await renderToString(createSSRApp(AssistantExecDetails, {
+    exec: { argv: ['npm', 'test'], status: 'succeeded', exitCode: 2 },
+  }))
+  assert.match(html, /Failed · exit 2/)
+  assert.doesNotMatch(html, /Success|k-ai-execution-details__status--success/)
+})

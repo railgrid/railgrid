@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import type { Credential, CredentialWrite, CredentialTestResult } from '../types'
 import { PROVIDER_PRESETS } from '../conn-defs'
-import ModelConnectionForm from '../portalkit/ModelConnectionForm.vue'
+import ModelConnectionForm from '../agentkit/ModelConnectionForm.vue'
 import { confirmDialog } from '../portalkit/confirm'
 
 const props = defineProps<{ api: ApiClient; credential?: Credential; busy: boolean; error?: string | null }>()

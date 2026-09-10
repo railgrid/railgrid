@@ -657,15 +657,17 @@ func TestFinishRunPersistsOutputAndSources(t *testing.T) {
 	now := time.Now().UTC()
 
 	if err := s.store.SaveRun(ctx, scope, store.Run{
-		ID: "r1", AgentName: "a", Phase: store.RunPhaseRunning, Input: "q", CreatedAt: now, UpdatedAt: now,
+		ID: "r1", AgentName: "a", Phase: store.RunPhaseRunning, Input: "q", Checkpoint: []byte(`{"workedDurationMS":1300}`), CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	worked := int64(3400)
 	s.finishRun(ctx, scope, "r1", runOutcome{
-		Phase:   store.RunPhaseSucceeded,
-		Usage:   engine.Usage{InputTokens: 10, OutputTokens: 20},
-		Output:  "the answer",
-		Sources: []string{"https://a.example/x"},
+		Phase:            store.RunPhaseSucceeded,
+		Usage:            engine.Usage{InputTokens: 10, OutputTokens: 20},
+		Output:           "the answer",
+		Sources:          []string{"https://a.example/x"},
+		WorkedDurationMS: &worked,
 	}, now)
 
 	got, err := s.store.GetRun(ctx, scope, "r1")
@@ -681,14 +683,21 @@ func TestFinishRunPersistsOutputAndSources(t *testing.T) {
 	if got.Phase != store.RunPhaseSucceeded {
 		t.Fatalf("phase = %q", got.Phase)
 	}
+	if got.WorkedDurationMS == nil || *got.WorkedDurationMS != worked {
+		t.Fatalf("worked duration = %v, want %d", got.WorkedDurationMS, worked)
+	}
+	if got.Checkpoint != nil {
+		t.Fatalf("terminal run retained checkpoint: %s", got.Checkpoint)
+	}
 
 	t.Run("a failure records the reason and no output", func(t *testing.T) {
+		zero := int64(0)
 		if err := s.store.SaveRun(ctx, scope, store.Run{
 			ID: "r2", AgentName: "a", Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		s.finishRun(ctx, scope, "r2", runOutcome{Phase: store.RunPhaseFailed, Message: "model unavailable"}, now)
+		s.finishRun(ctx, scope, "r2", runOutcome{Phase: store.RunPhaseFailed, Message: "model unavailable", WorkedDurationMS: &zero}, now)
 		got, err := s.store.GetRun(ctx, scope, "r2")
 		if err != nil {
 			t.Fatal(err)
@@ -698,6 +707,9 @@ func TestFinishRunPersistsOutputAndSources(t *testing.T) {
 		}
 		if got.Message != "model unavailable" {
 			t.Fatalf("message = %q", got.Message)
+		}
+		if got.WorkedDurationMS == nil || *got.WorkedDurationMS != 0 {
+			t.Fatalf("failed run worked duration = %v, want measured zero", got.WorkedDurationMS)
 		}
 	})
 }

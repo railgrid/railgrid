@@ -1,0 +1,254 @@
+/*
+ * AgentKit activity and execution recipes.
+ *
+ * This file is loaded only after a caller opts into AgentKit. It deliberately
+ * shares the core token vocabulary while keeping the optional activity
+ * surface out of PortalKit's global stylesheet.
+ */
+.k-ai-activity-feed {
+  min-width: 0;
+}
+.k-ai-activity-feed__groups {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.k-ai-activity-feed__group {
+  min-width: 0;
+}
+.k-ai-activity-feed__group-toggle {
+  display: inline-flex;
+  min-height: 32px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  color: var(--color-text-muted, #8587a1);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: left;
+  transition: color .15s ease;
+}
+.k-ai-activity-feed__group-toggle:hover { color: var(--color-text-secondary, #8a8ca6); }
+.k-ai-activity-feed__group-toggle:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-ai-activity-feed__group-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+.k-ai-activity-feed__group-icon :where(svg, img) {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.k-ai-activity-feed__group-status,
+.k-ai-activity-feed__row-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--color-text-muted, #8587a1);
+}
+.k-ai-activity-feed__group-status--busy { color: var(--color-accent, #8b6bff); animation: k-ai-activity-spin .9s linear infinite; }
+.k-ai-activity-feed__group-status--error { color: var(--color-danger, #ff5d5d); }
+.k-ai-activity-feed__group-status--attention { color: var(--color-warning, #f0a63a); }
+.k-ai-activity-feed__group-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-ai-activity-feed__group-chevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-inline-start: auto;
+  transition: transform .15s ease;
+}
+.k-ai-activity-feed__group-chevron.is-collapsed { transform: rotate(-90deg); }
+.k-ai-activity-feed__group-rows {
+  display: grid;
+  min-width: 0;
+  margin-inline-start: 20px;
+}
+.k-ai-activity-feed__group-rows--ungrouped { margin-inline-start: 0; }
+.k-ai-activity-feed__group-rows--scrollable {
+  max-height: 240px;
+  overflow-y: auto;
+  padding-inline-end: 4px;
+  padding-bottom: 28px;
+  -webkit-mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%);
+}
+.k-ai-activity-feed__empty {
+  color: var(--color-text-muted, #8587a1);
+  font-size: 12px;
+}
+
+.k-ai-execution-details {
+  min-width: 0;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface-raised, #111320) 70%, transparent);
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  line-height: 1.25rem;
+}
+.k-ai-execution-details--approval { padding: 10px; }
+.k-ai-execution-details--activity { padding: 10px 12px; }
+.k-ai-execution-details__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  line-height: 1rem;
+  text-transform: uppercase;
+}
+.k-ai-execution-details__heading-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--color-accent, #8b6bff);
+}
+.k-ai-execution-details__section { min-width: 0; margin-top: 8px; }
+.k-ai-execution-details__label {
+  margin-bottom: 4px;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  line-height: 1rem;
+  text-transform: uppercase;
+}
+.k-ai-execution-details__command,
+.k-ai-execution-details__argv-token,
+.k-ai-execution-details__output {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
+  font-size: 11px;
+}
+.k-ai-execution-details__command {
+  max-height: 80px;
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  border-radius: 4px;
+  background: var(--color-surface, #0a0b12);
+  padding: 6px 8px;
+  color: var(--color-text-primary, #e9e9f2);
+  white-space: pre-wrap;
+}
+.k-ai-execution-details__argv {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.k-ai-execution-details__argv-token {
+  max-width: 100%;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  border-radius: 3px;
+  background: var(--color-surface, #0a0b12);
+  padding: 2px 6px;
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-ai-execution-details__fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+}
+.k-ai-execution-details__fields dt {
+  color: var(--color-text-muted, #8587a1);
+  font-weight: 500;
+}
+.k-ai-execution-details__fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
+}
+.k-ai-execution-details__output {
+  max-height: 192px;
+  overflow: auto;
+  margin: 8px 0 0;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  border-radius: 4px;
+  background: var(--color-surface, #0a0b12);
+  padding: 8px;
+  color: var(--color-text-secondary, #8a8ca6);
+  white-space: pre-wrap;
+}
+.k-ai-execution-details__no-output {
+  margin-top: 8px;
+  color: var(--color-text-muted, #8587a1);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
+}
+.k-ai-execution-details__truncated,
+.k-ai-execution-details__detail {
+  margin-top: 8px;
+  color: var(--color-text-muted, #8587a1);
+}
+.k-ai-execution-details__detail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: 4px;
+  color: var(--color-accent, #8b6bff);
+  font-weight: 500;
+  text-decoration: none;
+}
+.k-ai-execution-details__detail-link:hover { color: var(--color-accent-hover, #a18aff); text-decoration: underline; }
+.k-ai-execution-details__detail-link:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-ai-execution-details__detail-link svg { width: 12px; height: 12px; }
+.k-ai-execution-details__footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--color-text-muted, #8587a1);
+}
+.k-ai-execution-details__status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  text-align: right;
+}
+.k-ai-execution-details__status-icon { width: 14px; height: 14px; flex: none; }
+.k-ai-execution-details__status--running { color: var(--color-accent, #8b6bff); }
+.k-ai-execution-details__status--success { color: var(--color-success, #2fd6a0); }
+.k-ai-execution-details__status--danger { color: var(--color-danger, #ff5d5d); }
+.k-ai-execution-details__status--attention { color: var(--color-warning, #f0a63a); }
+.k-ai-execution-details__status--muted { color: var(--color-text-muted, #8587a1); }
+.k-ai-execution-details__status-icon--running { animation: k-ai-activity-spin .9s linear infinite; }
+
+@media (max-width: 480px) {
+  .k-ai-execution-details__fields { grid-template-columns: 1fr; gap: 0; }
+  .k-ai-execution-details__fields dd { margin-bottom: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .k-ai-activity-feed__group-chevron,
+  .k-ai-execution-details__status-icon--running { transition: none; animation: none; }
+}

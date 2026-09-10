@@ -3,18 +3,29 @@
  * (--color-accent, --color-surface-raised, …) cascade in for light/dark parity.
  * Every selector is namespaced under faros-provider-agents.
  *
- * Layout: a four-tab nav over one routed view. The agent detail is a two-pane
- * split (config left, chat playground right) that collapses to one column on
- * narrow viewports. Nothing is sized off a hard-coded viewport offset — panes
- * bound themselves with min()/clamp() so the element survives being embedded at
- * any height.
+ * Layout: the agent detail keeps Chat primary and opens Config/Runs in a
+ * persistent workbench. Nothing is sized off a hard-coded viewport offset —
+ * surfaces bind themselves with min()/clamp() so the element survives being
+ * embedded at any height.
  */
 
 faros-provider-agents {
   display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   font: 14px/1.5 var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
   color: var(--color-text-primary, inherit);
   --agents-mono: var(--font-mono, "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace);
+}
+
+faros-provider-agents .agents-vue-root {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
 }
 
 /* Inline SVG icons inherit color + size from the shared PortalKit helper. */
@@ -23,8 +34,8 @@ faros-provider-agents .agents-card-chat, faros-provider-agents .agents-model-act
 faros-provider-agents .agents-health,
 faros-provider-agents .agents-chip, faros-provider-agents .agents-phase { display: inline-flex; align-items: center; gap: 5px; }
 
-faros-provider-agents .agents-app { display: flex; flex-direction: column; gap: 16px; min-height: 460px; }
-faros-provider-agents .agents-view { display: flex; flex-direction: column; gap: 18px; }
+faros-provider-agents .agents-app { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; }
+faros-provider-agents .agents-view { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-empty { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 faros-provider-agents .agents-menu { display: flex; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-create-page { display: flex; flex-direction: column; gap: 18px; width: 100%; }
@@ -84,14 +95,53 @@ faros-provider-agents .agents-card-chat:hover {
 
 /* --- detail shell --- */
 faros-provider-agents .agents-detail { display: flex; min-width: 0; flex-direction: column; gap: 14px; }
+faros-provider-agents .agents-detail--chat { min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-detail--chat .agents-resource-body { min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-detail--chat .agents-conversation-page { display: flex; min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-detail--workspace { min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-detail--workspace > .agents-resource-page { min-height: 0; flex: 1 1 auto; }
 faros-provider-agents .agents-resource-body { display: flex; min-width: 0; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-subnav { display: flex; gap: 4px; }
 
-/* config | chat split. The chat pane sticks while the (long) config scrolls. */
-faros-provider-agents .agents-split { display: grid; grid-template-columns: minmax(0, 42rem) minmax(0, 460px); gap: 20px; align-items: start; }
-faros-provider-agents .agents-split-config { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-faros-provider-agents .agents-split-config > * { display: flex; flex-direction: column; gap: 18px; }
-faros-provider-agents .agents-split-chat { position: sticky; top: 8px; min-width: 0; }
+/* Chat is mounted once so messages and drafts survive workbench changes. The
+ * workbench panels stay mounted after first visit for the same reason. */
+faros-provider-agents .agents-resource-body--workspace { min-height: 0; flex: 1 1 auto; gap: 0; }
+faros-provider-agents .agents-resource-body--workspace .agents-workspace { min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-conversation-page { display: flex; width: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; }
+faros-provider-agents .agents-workbench { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+faros-provider-agents .agents-workbench-panel { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: auto; }
+faros-provider-agents .agents-workbench-panel > .agents-panel { min-height: 100%; padding: 18px; }
+faros-provider-agents .agents-workbench-panel > .agents-detail { box-sizing: border-box; min-width: 0; min-height: 100%; padding: 16px; }
+faros-provider-agents .agents-chat-actions {
+  display: flex;
+  min-width: 0;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+faros-provider-agents .agents-chat-actions .agents-agent-status {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+faros-provider-agents .agents-chat-actions .agents-workbench-toggle {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+faros-provider-agents .agents-chat-actions .agents-workbench-toggle svg { width: 16px; height: 16px; }
+/* The shared workbench recipe owns tab geometry, states, and touch sizing;
+ * these hooks only keep the provider header constrained in its pane. */
+faros-provider-agents .agents-workbench-header { min-width: 0; }
+faros-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
 faros-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 
 faros-provider-agents input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
@@ -100,7 +150,7 @@ faros-provider-agents input[aria-invalid="true"] { border-color: var(--color-dan
  * specificity level with button:hover so it also suppresses the hover glow). */
 faros-provider-agents :is(button.secondary, .agents-navtab, .agents-subtab, .agents-card-chat,
     .agents-chip-x, .agents-modebtn,
-    .agents-seg button, .agents-step-head, .agents-toolcard-head, .agents-conn-tile, .agents-badge-btn,
+    .agents-seg button, .agents-conn-tile, .agents-badge-btn,
     .agents-code-copy, .agents-chip-btn) {
   box-shadow: none;
 }
@@ -260,58 +310,80 @@ faros-provider-agents .agents-child-summary.is-live { color: var(--color-text-pr
 faros-provider-agents .agents-runsources { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
 faros-provider-agents .agents-runsources ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
 faros-provider-agents .agents-runsources a { font-size: 12px; overflow-wrap: anywhere; }
+faros-provider-agents .agents-runmeta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+faros-provider-agents .agents-runmeta-cell { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+faros-provider-agents .agents-runmeta-k { color: var(--color-text-muted, #5d5f78); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+faros-provider-agents .agents-runmeta-v { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+faros-provider-agents .agents-runinput { display: flex; min-width: 0; flex-direction: column; gap: 4px; margin-top: 12px; }
+faros-provider-agents .agents-runinput pre { max-height: 260px; margin: 0; overflow: auto; white-space: pre-wrap; }
 faros-provider-agents .agents-kv pre.err { color: var(--color-danger, #ff5d5d); }
 faros-provider-agents .agents-kv { display: flex; flex-direction: column; gap: 3px; }
 faros-provider-agents .agents-kv > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #5d5f78); }
+faros-provider-agents .agents-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* --- run evidence ------------------------------------------------------ */
+faros-provider-agents .agents-run-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 18px;
+  align-items: start; min-width: 0;
+}
+/* activity.css supplies the standalone run view's flex layout. Embedded
+ * workbench runs keep the two-column grid at every width; the container query
+ * below still collapses that grid when its pane is narrow. */
+faros-provider-agents .agents-workbench-panel .agents-run-layout { display: grid; }
+faros-provider-agents .agents-run-main { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
+faros-provider-agents .agents-run-transcript { width: 100%; }
+faros-provider-agents .agents-run-message { width: 100%; }
+faros-provider-agents .agents-run-activity {
+  width: 100%; min-width: 0; border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); padding-top: 8px;
+}
+faros-provider-agents .agents-run-inspector {
+  width: 100%; min-width: 0; overflow: hidden; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px; background: var(--color-surface-raised, #111320);
+}
+faros-provider-agents .agents-run-inspector-toggle {
+  display: flex; width: 100%; min-height: 42px; align-items: center; justify-content: space-between; gap: 10px;
+  border: 0; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  background: transparent; color: var(--color-text-primary, inherit); padding: 10px 12px; text-align: left;
+  font: inherit; font-size: 13px; font-weight: 650;
+}
+faros-provider-agents .agents-run-inspector.is-collapsed .agents-run-inspector-toggle { border-bottom: 0; }
+faros-provider-agents .agents-run-inspector-panel { display: flex; min-width: 0; flex-direction: column; }
+faros-provider-agents .agents-run-inspector-section { display: flex; min-width: 0; flex-direction: column; gap: 10px; padding: 14px 12px; }
+faros-provider-agents .agents-run-inspector-section + .agents-run-inspector-section { border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+faros-provider-agents .agents-run-inspector-section h2 { margin: 0; font-size: 12px; font-weight: 650; color: var(--color-text-secondary, inherit); }
+faros-provider-agents .agents-run-inspector .agents-runmeta { grid-template-columns: 1fr; }
+faros-provider-agents .agents-run-inspector .agents-runinput { margin-top: 2px; }
+faros-provider-agents .agents-run-inspector .agents-runinput pre { max-height: 180px; overflow: auto; }
+
 /* --- chat --- */
+faros-provider-agents .agents-chat-shell {
+  display: flex; width: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden;
+}
 faros-provider-agents .agents-chat {
-  display: flex; flex-direction: column; gap: 8px;
-  height: min(72vh, 760px); min-height: 360px; overflow: hidden;
-  padding: 12px;
+  width: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden;
 }
-faros-provider-agents .agents-chat-head {
-  flex: none; display: flex; gap: 6px; align-items: center;
-  padding-bottom: 9px; border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+faros-provider-agents .agents-conversation-rail-shell { display: contents; }
+faros-provider-agents .agents-desktop-rail-toggle { display: none; }
+faros-provider-agents .agents-mobile-rail-toggle { display: none; }
+faros-provider-agents .agents-chat-main {
+  display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 0;
 }
-faros-provider-agents .agents-session-picker { flex: 1; min-width: 0; font-size: 12.5px; }
-faros-provider-agents .agents-log { flex: 1; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 14px; padding: 6px 2px; min-height: 0; }
+faros-provider-agents .agents-chat-head { min-width: 0; }
+faros-provider-agents .agents-chat-head--agent .agents-mobile-rail-toggle { flex: none; }
+faros-provider-agents .agents-chat-title { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+faros-provider-agents .agents-chat-title strong { font-size: 13px; font-weight: 650; }
+faros-provider-agents .agents-chat-title .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+faros-provider-agents .agents-log { flex: 1 1 auto; min-height: 0; }
 faros-provider-agents .agents-msg { display: flex; flex-direction: column; gap: 4px; }
-faros-provider-agents .agents-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, inherit); }
 faros-provider-agents .agents-body {
-  padding: 9px 12px; border-radius: 12px; word-break: break-word; max-width: 92%;
-  background: var(--color-surface-overlay, #171927);
+  word-break: break-word;
 }
 faros-provider-agents .agents-msg.user { align-items: flex-end; }
-faros-provider-agents .agents-msg.user .agents-body { white-space: pre-wrap; background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); border: 1px solid var(--color-accent, transparent); }
+faros-provider-agents .agents-msg.user .agents-body { white-space: pre-wrap; }
+faros-provider-agents .agents-message-footer { display: flex; align-items: center; gap: 8px; }
 faros-provider-agents .agents-turn-usage { font-size: 11px; color: var(--color-text-muted, #5d5f78); font-family: var(--agents-mono); }
-faros-provider-agents .agents-thinking { color: var(--color-text-muted, #5d5f78); font-style: italic; }
-faros-provider-agents .agents-caret { display: inline-block; width: 7px; height: 1em; vertical-align: -0.15em; margin-left: 2px; background: currentColor; opacity: 0.55; animation: agents-blink 1s steps(2) infinite; }
-faros-provider-agents .agents-dots { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: agents-blink 1s steps(2) infinite; }
-@keyframes agents-blink { 50% { opacity: 0.15; } }
-@media (prefers-reduced-motion: reduce) { faros-provider-agents .agents-caret, faros-provider-agents .agents-dots { animation: none; } }
 
-/* markdown inside assistant bubbles */
-faros-provider-agents .agents-body > :first-child { margin-top: 0; }
-faros-provider-agents .agents-body > :last-child { margin-bottom: 0; }
-faros-provider-agents .agents-body p { margin: 0 0 8px; }
-faros-provider-agents .agents-body h1, faros-provider-agents .agents-body h2, faros-provider-agents .agents-body h3,
-faros-provider-agents .agents-body h4 { margin: 12px 0 6px; font-size: 14.5px; font-weight: 650; }
-faros-provider-agents .agents-body ul, faros-provider-agents .agents-body ol { margin: 0 0 8px; padding-left: 20px; }
-faros-provider-agents .agents-body li { margin: 2px 0; }
-faros-provider-agents .agents-body blockquote {
-  margin: 8px 0; padding: 2px 0 2px 10px; color: var(--color-text-secondary, #8a8ca6);
-  border-left: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-}
-faros-provider-agents .agents-body a { color: var(--color-accent, #8b6bff); }
-faros-provider-agents .agents-body table { border-collapse: collapse; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
-faros-provider-agents .agents-body th, faros-provider-agents .agents-body td {
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); padding: 5px 9px; text-align: left;
-}
-faros-provider-agents .agents-body pre {
-  position: relative; margin: 8px 0; padding: 11px 12px; border-radius: 6px; overflow-x: auto;
-  background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-}
-faros-provider-agents .agents-body pre code { background: none; padding: 0; font-size: 12px; }
+/* Code-copy is provider behavior; prose geometry and typography come from the shared kit. */
+faros-provider-agents .agents-body pre { position: relative; }
 faros-provider-agents .agents-code-copy {
   position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; border-radius: 6px;
   background: var(--color-surface-overlay, #171927); color: var(--color-text-secondary, #8a8ca6);
@@ -320,60 +392,16 @@ faros-provider-agents .agents-code-copy {
 faros-provider-agents .agents-body pre:hover .agents-code-copy,
 faros-provider-agents .agents-code-copy:focus-visible { opacity: 1; }
 
-/* tool-call cards */
-faros-provider-agents .agents-toolcards { display: flex; flex-direction: column; gap: 6px; max-width: 92%; }
-faros-provider-agents .agents-toolcard {
-  border-radius: 6px; overflow: hidden; background: var(--color-surface, #0a0b12);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-}
-faros-provider-agents .agents-toolcard-head {
-  width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 10px; text-align: left; border-radius: 0;
-  background: transparent; color: var(--color-text-secondary, inherit); font: inherit; font-size: 12px; font-weight: 500;
-}
-faros-provider-agents .agents-toolcard-head:hover { background: var(--color-surface-hover, #1e2033); }
-faros-provider-agents .agents-toolcard-ic { flex: none; display: inline-flex; }
-faros-provider-agents .agents-toolcard-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
-faros-provider-agents .agents-toolcard-meta { font-size: 11px; color: var(--color-text-muted, #5d5f78); white-space: nowrap; }
-faros-provider-agents .agents-toolcard-chev { flex: none; transition: transform 0.12s; }
-faros-provider-agents .agents-toolcard-chev.open { transform: rotate(90deg); }
-faros-provider-agents .agents-toolcard-body { display: flex; flex-direction: column; gap: 8px; padding: 2px 10px 10px; }
-
-/* approval card */
-faros-provider-agents .agents-approval {
-  display: flex; flex-direction: column; gap: 9px; padding: 12px; border-radius: 6px; max-width: 92%;
-  background: var(--color-warning-subtle);
-  border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent);
-}
-faros-provider-agents .agents-approval-head { font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Provider-specific approval copy; the frame itself comes from PortalKit. */
+faros-provider-agents .agents-approval-head { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 600; }
+faros-provider-agents .agents-approval-head svg { width: 14px; height: 14px; flex: none; }
+faros-provider-agents .agents-approval-tool { color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
+faros-provider-agents .agents-approval-args { max-width: 100%; overflow: auto; white-space: pre-wrap; }
 faros-provider-agents .agents-approval-done { font-size: 12.5px; color: var(--color-text-secondary, #8a8ca6); }
 
 /* composer */
-faros-provider-agents .agents-composer { flex: none; padding-top: 9px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }
-faros-provider-agents .agents-composer-surface {
-  position: relative; min-width: 0; min-height: 72px; overflow: hidden;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 6px;
-  background: var(--color-surface, #0a0b12); transition: border-color 0.15s ease;
-}
-faros-provider-agents .agents-composer-surface:focus-within { border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 50%, transparent); }
-faros-provider-agents .agents-composer-input {
-  display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 72px; max-height: 180px;
-  padding: 10px 58px 12px 12px; resize: none; overflow-y: auto; border: 0; outline: 0;
-  background: transparent; color: var(--color-text-primary, #e9e9f2); font: inherit; font-size: 13px; line-height: 20px;
-}
-faros-provider-agents .agents-composer-input::placeholder { color: var(--color-text-muted, #8587a1); }
-faros-provider-agents .agents-composer-input:disabled { cursor: not-allowed; }
-faros-provider-agents .agents-composer-primary {
-  position: absolute; right: 8px; bottom: 8px; display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; padding: 0; border: 0; border-radius: 4px; cursor: pointer;
-  background: var(--color-accent, #8b6bff); color: var(--color-on-accent, #fff);
-  box-shadow: 0 0 16px var(--color-accent-glow); transition: background 0.15s ease, box-shadow 0.15s ease;
-}
-faros-provider-agents .agents-composer-primary:hover { background: var(--color-accent-hover, #a18aff); }
-faros-provider-agents .agents-composer-primary:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent); outline-offset: 2px; }
-faros-provider-agents .agents-composer-primary:disabled {
-  cursor: not-allowed; background: var(--color-surface-hover, #1e2033); color: var(--color-text-muted, #8587a1); box-shadow: none;
-}
-faros-provider-agents .agents-composer-primary.is-stop { width: 32px; height: 32px; border-radius: 50%; }
+faros-provider-agents .agents-composer { flex: none; padding: 12px; border-top: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); }
+faros-provider-agents .agents-composer-surface { min-width: 0; }
 
 /* --- connection picker + type-driven form --- */
 faros-provider-agents .agents-conn-picker { display: flex; flex-direction: column; gap: 12px; }
@@ -544,20 +572,71 @@ faros-provider-agents .agents-err {
 
 /* --- responsive --- */
 @container resource-page (max-width: 1100px) {
-  /* The chat pane stops being a sidebar and stacks under the config. */
-  faros-provider-agents .agents-split { grid-template-columns: 1fr; }
-  faros-provider-agents .agents-split-chat { position: static; }
-  faros-provider-agents .agents-chat { height: min(60vh, 620px); }
+  faros-provider-agents .agents-run-layout { grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 14px; }
 }
-@media (pointer: coarse), (any-pointer: coarse) {
-  faros-provider-agents .agents-composer-primary { right: 6px; bottom: 6px; }
-  faros-provider-agents .agents-composer-input { padding-right: 62px; }
+/* A workbench pane can be narrow while the browser remains wide. Use the
+ * ResourcePage container rather than the viewport so embedded run evidence
+ * keeps its transcript readable and moves the inspector below it. */
+@container resource-page (max-width: 720px) {
+  faros-provider-agents .agents-workbench-panel .agents-run-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  faros-provider-agents .agents-workbench-panel .agents-run-inspector { order: 2; }
 }
-@supports not (container-type: inline-size) {
-  @media (max-width: 1100px) {
-    faros-provider-agents .agents-split { grid-template-columns: 1fr; }
-    faros-provider-agents .agents-split-chat { position: static; }
-    faros-provider-agents .agents-chat { height: min(60vh, 620px); }
+@media (min-width: 768px) {
+  faros-provider-agents .agents-desktop-rail-toggle {
+    display: inline-flex; width: 32px; height: 32px; flex: none; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--color-text-muted, #8587a1);
+    padding: 0; cursor: pointer; transition: border-color 0.12s, background 0.12s, color 0.12s;
+  }
+  faros-provider-agents .agents-desktop-rail-toggle:hover {
+    border-color: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+    background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2);
+  }
+  faros-provider-agents .agents-desktop-rail-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 50%, transparent); outline-offset: 2px;
+  }
+  faros-provider-agents .agents-desktop-rail-toggle svg { width: 15px; height: 15px; }
+}
+@media (max-width: 767px) {
+  faros-provider-agents .agents-mobile-rail-toggle {
+    display: flex; width: auto; min-width: 0; min-height: 36px; flex: 1 1 auto; align-items: center; gap: 7px;
+    border: 0; border-radius: 5px; background: transparent; color: var(--color-text-primary, #e9e9f2);
+    padding: 5px 0; font: inherit; font-size: 12px; font-weight: 600; text-align: left;
+  }
+  faros-provider-agents .agents-mobile-rail-toggle:hover,
+  faros-provider-agents .agents-mobile-rail-toggle[aria-expanded="true"] {
+    background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  }
+  faros-provider-agents .agents-mobile-rail-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 50%, transparent);
+    outline-offset: 2px;
+  }
+  faros-provider-agents .agents-mobile-rail-toggle svg { width: 15px; height: 15px; flex: none; color: var(--color-accent, #8b6bff); }
+  faros-provider-agents .agents-chat-head--agent .agents-mobile-rail-toggle {
+    width: 36px; min-width: 36px; flex: 0 0 36px; justify-content: center; padding: 5px;
+  }
+  faros-provider-agents .agents-mobile-rail-current {
+    min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--color-text-muted, #8587a1); font-size: 11px; font-weight: 500;
+  }
+  faros-provider-agents .agents-chat-title { display: none; }
+  faros-provider-agents .agents-conversation-rail-shell {
+    position: absolute; inset: 0; z-index: var(--k-layer-menu, 1000); display: block; pointer-events: none;
+  }
+  faros-provider-agents .agents-conversation-rail-shell.is-open { pointer-events: auto; }
+  faros-provider-agents .agents-mobile-rail-backdrop {
+    position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; border: 0; padding: 0;
+    background: color-mix(in srgb, var(--color-surface, #0a0b12) 68%, transparent); cursor: default;
+  }
+  faros-provider-agents .agents-conversation-rail-shell > aside {
+    display: none;
+  }
+  faros-provider-agents .agents-conversation-rail-shell.is-open > aside {
+    position: absolute; inset: 0 auto 0 0; z-index: 2; display: block;
+    width: min(256px, calc(100% - 32px)); height: 100%;
   }
 }
 @media (max-width: 720px) {
@@ -566,6 +645,8 @@ faros-provider-agents .agents-err {
   faros-provider-agents .agents-model-grid { grid-template-columns: 1fr; }
   faros-provider-agents .agents-inbound-actions { margin-left: 0; }
   faros-provider-agents .agents-bar-row { grid-template-columns: 70px 1fr auto; }
+  faros-provider-agents .agents-run-layout { grid-template-columns: 1fr; gap: 14px; }
+  faros-provider-agents .agents-run-inspector { order: 2; }
 }
 
 /* --- dashboard tile (console dashboard card) ------------------------------

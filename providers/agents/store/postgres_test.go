@@ -169,6 +169,67 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 }
 
+func TestPostgres_RunWorkedDurationKeepsUnknownAndMeasuredZeroDistinct(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := ps.SaveRun(ctx, sc, Run{
+		ID: "unknown", AgentName: sc.AgentName, Trigger: "chat", Phase: RunPhaseSucceeded,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save unknown: %v", err)
+	}
+	unknown, err := ps.GetRun(ctx, sc, "unknown")
+	if err != nil {
+		t.Fatalf("get unknown: %v", err)
+	}
+	if unknown.WorkedDurationMS != nil {
+		t.Fatalf("unknown worked duration = %v, want nil", unknown.WorkedDurationMS)
+	}
+
+	zero := int64(0)
+	if err := ps.SaveRun(ctx, sc, Run{
+		ID: "zero", AgentName: sc.AgentName, Trigger: "chat", Phase: RunPhaseSucceeded,
+		CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second), WorkedDurationMS: &zero,
+	}); err != nil {
+		t.Fatalf("save measured zero: %v", err)
+	}
+	measuredZero, err := ps.GetRun(ctx, sc, "zero")
+	if err != nil {
+		t.Fatalf("get measured zero: %v", err)
+	}
+	if measuredZero.WorkedDurationMS == nil || *measuredZero.WorkedDurationMS != 0 {
+		t.Fatalf("measured zero worked duration = %v, want pointer to zero", measuredZero.WorkedDurationMS)
+	}
+
+	positive := int64(4200)
+	if err := ps.SaveRun(ctx, sc, Run{
+		ID: "positive", AgentName: sc.AgentName, Trigger: "chat", Phase: RunPhaseSucceeded,
+		CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second), WorkedDurationMS: &positive,
+	}); err != nil {
+		t.Fatalf("save positive: %v", err)
+	}
+	page, err := ps.QueryRuns(ctx, sc, RunQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("query runs: %v", err)
+	}
+	seen := map[string]*int64{}
+	for _, run := range page.Items {
+		seen[run.ID] = run.WorkedDurationMS
+	}
+	if seen["unknown"] != nil {
+		t.Fatalf("queried unknown worked duration = %v, want nil", seen["unknown"])
+	}
+	if seen["zero"] == nil || *seen["zero"] != 0 {
+		t.Fatalf("queried measured zero worked duration = %v, want pointer to zero", seen["zero"])
+	}
+	if seen["positive"] == nil || *seen["positive"] != positive {
+		t.Fatalf("queried positive worked duration = %v, want %d", seen["positive"], positive)
+	}
+}
+
 func TestPostgres_InboxMemoryTenantRefTeardown(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

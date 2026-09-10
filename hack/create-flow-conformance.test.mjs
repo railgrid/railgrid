@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const root = new URL('../', import.meta.url)
-const modelForm = 'provider-sdk/portalkit-vue/ModelConnectionForm.vue'
+const modelForm = 'provider-sdk/agentkit-vue/ModelConnectionForm.vue'
 
 async function source(path) {
   return readFile(new URL(path, root), 'utf8')

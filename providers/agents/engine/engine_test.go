@@ -10,6 +10,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -33,6 +34,22 @@ func (m *mockModel) Generate(_ context.Context, in []*schema.Message, _ ...einom
 func (m *mockModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.gotIn = in
 	return schema.StreamReaderFromArray(m.chunks), nil
+}
+
+type errorStreamModel struct{}
+
+func (errorStreamModel) Generate(context.Context, []*schema.Message, ...einomodel.Option) (*schema.Message, error) {
+	return nil, errors.New("generate unavailable")
+}
+
+func (errorStreamModel) Stream(_ context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	reader, writer := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer writer.Close()
+		writer.Send(&schema.Message{Role: schema.Assistant, Content: "partial"}, nil)
+		writer.Send(nil, errors.New("upstream disconnected"))
+	}()
+	return reader, nil
 }
 
 func TestStreamTurn_AccumulatesDeltasAndUsage(t *testing.T) {
@@ -64,6 +81,70 @@ func TestStreamTurn_AccumulatesDeltasAndUsage(t *testing.T) {
 	// System + user messages both forwarded to the model.
 	if len(m.gotIn) != 2 || m.gotIn[0].Role != schema.System || m.gotIn[1].Role != schema.User {
 		t.Fatalf("model received wrong messages: %+v", m.gotIn)
+	}
+}
+
+func TestStreamTurnWithTools_ReportsCompleteAssistantBoundaries(t *testing.T) {
+	m := &toolMockModel{}
+	var messages []AssistantMessage
+	res, err := New().StreamTurnWithTools(context.Background(), m,
+		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
+		[]Tool{{
+			Name: "get_weather", Desc: "current weather",
+			Params: map[string]Param{"city": {Type: "string", Required: true}},
+			Exec:   func(context.Context, string) (string, error) { return "sunny", nil },
+		}},
+		TurnConfig{MaxIters: 8}, Callbacks{OnAssistantMessage: func(message AssistantMessage) {
+			messages = append(messages, message)
+		}})
+	if err != nil {
+		t.Fatalf("StreamTurnWithTools: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("assistant messages = %+v, want one tool-call response and one final response", messages)
+	}
+	if messages[0].Content != "Checking… " || !messages[0].HasToolCalls {
+		t.Fatalf("first assistant message = %+v, want tool-call boundary", messages[0])
+	}
+	if !messages[0].Complete {
+		t.Fatalf("first assistant message = %+v, want complete tool-call response", messages[0])
+	}
+	if messages[1].Content != "It is sunny in Vilnius." || messages[1].HasToolCalls {
+		t.Fatalf("second assistant message = %+v, want final boundary", messages[1])
+	}
+	if !messages[1].Complete {
+		t.Fatalf("second assistant message = %+v, want complete final response", messages[1])
+	}
+	if messages[0].Duration < 0 || messages[1].Duration < 0 {
+		t.Fatalf("assistant durations must be non-negative: %+v", messages)
+	}
+	if res.Content != "Checking… It is sunny in Vilnius." {
+		t.Fatalf("result content = %q, want concatenated downstream result", res.Content)
+	}
+}
+
+func TestStreamTurnWithTools_ReportsFailedAssistantDurationWithoutCompletion(t *testing.T) {
+	var messages []AssistantMessage
+	var deltas []string
+	_, err := New().StreamTurnWithTools(context.Background(), errorStreamModel{},
+		[]Message{{Role: RoleUser, Content: "hello"}}, nil, TurnConfig{MaxIters: 1}, Callbacks{
+			OnDelta:            func(delta string) { deltas = append(deltas, delta) },
+			OnAssistantMessage: func(message AssistantMessage) { messages = append(messages, message) },
+		})
+	if err == nil || !strings.Contains(err.Error(), "upstream disconnected") {
+		t.Fatalf("error = %v, want upstream stream error", err)
+	}
+	if strings.Join(deltas, "") != "partial" {
+		t.Fatalf("deltas = %q, want partial output", strings.Join(deltas, ""))
+	}
+	if len(messages) != 1 {
+		t.Fatalf("assistant messages = %+v, want failed attempt", messages)
+	}
+	if messages[0].Complete {
+		t.Fatalf("failed assistant message = %+v, must not be complete", messages[0])
+	}
+	if messages[0].Duration < 0 {
+		t.Fatalf("failed assistant duration = %s, must be non-negative", messages[0].Duration)
 	}
 }
 

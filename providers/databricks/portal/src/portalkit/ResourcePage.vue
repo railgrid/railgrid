@@ -19,6 +19,9 @@ ensureFarosUIStyles()
 
 const props = withDefaults(defineProps<{
   title: string
+  fill?: boolean
+  /** Hide only the title/action header while retaining read-state handling. */
+  showHeader?: boolean
   kind?: string
   subtitle?: string
   loaded?: ResourceReadState['loaded']
@@ -28,6 +31,8 @@ const props = withDefaults(defineProps<{
   stale?: ResourceReadState['stale']
   retryable?: ResourceReadState['retryable']
 }>(), {
+  fill: false,
+  showHeader: true,
   kind: '',
   subtitle: '',
   // A null sentinel preserves the distinction between an omitted read
@@ -91,7 +96,11 @@ watch(() => props.error, error => {
 </script>
 
 <template>
-  <section class="k-resource-page" :aria-busy="ariaBusy">
+  <section
+    class="k-resource-page"
+    :class="{ 'k-resource-page--fill': fill }"
+    :aria-busy="ariaBusy"
+  >
     <!-- Keep read announcements out of layout while preserving the
       caller-owned body. Foreground refreshes, background updates, and initial
       retries use distinct, truthful copy in one polite live region. -->
@@ -104,21 +113,25 @@ watch(() => props.error, error => {
     >
       {{ refreshAnnouncement }}
     </span>
-    <header class="k-resource-page__header">
-      <div class="k-resource-page__heading">
-        <h1 class="k-resource-page__title">{{ title }}</h1>
-        <div v-if="kind || $slots.meta || $slots.status" class="k-resource-page__meta">
-          <span v-if="kind" class="k-resource-page__kind">{{ kind }}</span>
-          <span v-if="kind && ($slots.meta || $slots.status)" class="k-resource-page__separator" aria-hidden="true">·</span>
-          <template v-if="$slots.meta"><slot name="meta" /></template>
-          <span v-if="$slots.meta && $slots.status" class="k-resource-page__separator" aria-hidden="true">·</span>
-          <span v-if="$slots.status" class="k-resource-page__status"><slot name="status" /></span>
+    <!-- A narrow header slot replaces only this inner heading/action content;
+      the outer page header and all read-state surfaces remain authoritative. -->
+    <header v-if="showHeader" class="k-resource-page__header">
+      <slot name="header">
+        <div class="k-resource-page__heading">
+          <h1 class="k-resource-page__title">{{ title }}</h1>
+          <div v-if="kind || $slots.meta || $slots.status" class="k-resource-page__meta">
+            <span v-if="kind" class="k-resource-page__kind">{{ kind }}</span>
+            <span v-if="kind && ($slots.meta || $slots.status)" class="k-resource-page__separator" aria-hidden="true">·</span>
+            <template v-if="$slots.meta"><slot name="meta" /></template>
+            <span v-if="$slots.meta && $slots.status" class="k-resource-page__separator" aria-hidden="true">·</span>
+            <span v-if="$slots.status" class="k-resource-page__status"><slot name="status" /></span>
+          </div>
+          <p v-if="subtitle" class="k-resource-page__subtitle">{{ subtitle }}</p>
         </div>
-        <p v-if="subtitle" class="k-resource-page__subtitle">{{ subtitle }}</p>
-      </div>
-      <div v-if="$slots.actions" class="k-resource-page__header-side">
-        <div v-if="$slots.actions" class="k-resource-page__actions"><slot name="actions" /></div>
-      </div>
+        <div v-if="$slots.actions" class="k-resource-page__header-side">
+          <div v-if="$slots.actions" class="k-resource-page__actions"><slot name="actions" /></div>
+        </div>
+      </slot>
     </header>
 
     <div v-if="showInitialError" class="k-resource-page__read-error" role="alert" aria-live="assertive">

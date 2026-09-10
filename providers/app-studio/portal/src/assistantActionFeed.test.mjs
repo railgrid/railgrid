@@ -23,6 +23,8 @@ test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: undefined })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 0 })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 10_001 })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ status: 'future_status' })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ kind: 'future_kind' })]), [])
   assert.deepEqual(
     feed.parseAssistantActionFeed([action({ status: 'skipped', title: 'Skipped duplicate read' })]),
     [action({ status: 'skipped', title: 'Skipped duplicate read' })],

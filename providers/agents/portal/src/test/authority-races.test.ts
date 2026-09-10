@@ -82,7 +82,7 @@ describe('public shell authority rotation', () => {
   })
 
   it('aborts an active chat stream and detaches its server listener on authority rotation', async () => {
-    const element = await shell('#/agents/scout/config')
+    const element = await shell('#/agents/scout/chat')
     const oldStore = element.store!
     const oldApi = element.api!
     let streamSignal: AbortSignal | undefined

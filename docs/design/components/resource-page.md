@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.resource-page","title":"ResourcePage read shell","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourcePage owns the title hierarchy, read-state shell, action slot, and loading semantics while callers own action order, resource content, and fetches."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-page.md#resourcepage-read-shell","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourcePage.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.foundations.typography","relation":"prerequisite","path":"docs/design/foundations/typography.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"},{"id":"design.components.conditions-panel","relation":"see-also","path":"docs/design/components/conditions-panel.md"},{"id":"design.components.resource-stat-cards","relation":"see-also","path":"docs/design/components/resource-stat-cards.md"}]}
+{"schema":1,"id":"design.components.resource-page","title":"ResourcePage read shell","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourcePage owns the title hierarchy, read-state shell, action slot, and loading semantics while callers own action order, resource content, and fetches. Optional header, showHeader, and fill props support caller-owned compact and remaining-height layouts while preserving read handling."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-page.md#resourcepage-read-shell","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourcePage.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"reference"},{"path":"providers/agents/portal/src/views/AgentConfig.vue","role":"reference"},{"path":"provider-sdk/agentkit-vue/AIConversationIdentity.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceBackLink.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current PortalKit parity passed for the canonical and distributed asset sets."},{"kind":"browser","ref":"Historical Agents ResourcePage rendering (CSS v10/v11)","status":"passing","evidence":"Earlier Agents fixture cases covered the pre-v12 ResourcePage and workspace states at desktop/mobile sizes in light/dark themes. This evidence is historical and does not verify current AIWorkspace or CSS/runtime version 13."},{"kind":"browser","ref":"Current Agents header alignment rendered verification (CSS/runtime v14)","status":"passing","evidence":"Current actual Agents production bundle fixtures passed at the 1129px target with a simulated 216px host sidebar and at mobile 390x844, in light and dark themes (8 cases across Agents and App Studio). The loaded workspace header measured 56px with a 32px identity tile, 13px title, 11px context, centered controls, no horizontal overflow, and provider list navigation. Evidence: /tmp/header-alignment/shared-header-agents-final.log, /tmp/header-alignment/shared-header-studio-final-repair.log, /tmp/header-alignment/shared-header-studio-final-mobile.log. Parent visually reviewed four screenshots. No live backend, Tilt, or actual-host browser claim is made."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.foundations.typography","relation":"prerequisite","path":"docs/design/foundations/typography.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.content.ui-copy","relation":"see-also","path":"docs/design/content/ui-copy.md"},{"id":"design.components.conditions-panel","relation":"see-also","path":"docs/design/components/conditions-panel.md"},{"id":"design.components.resource-stat-cards","relation":"see-also","path":"docs/design/components/resource-stat-cards.md"}]}
 ---
 
 # ResourcePage read shell
@@ -16,23 +16,56 @@ content to the caller.
 Use `ResourcePage` for a resource detail/read surface that needs the shared
 title hierarchy, header actions, and read-state behavior. The only
 resource-type prop is `kind`; section cards retain their independent
-`eyebrow`.
+`eyebrow`. Set the optional `fill` prop only when the page is inside a
+parent-owned split or chat region and must absorb the remaining height. It
+defaults to `false`, preserving content-sized page geometry.
+The optional `showHeader` prop defaults to `true`. Set it to `false` when the
+caller supplies the title and actions through a parent-owned header; this hides
+only ResourcePage's title/action header.
 
 ## Avoid when
 
 Do not use the shell to encode resource-specific content or fetch ownership.
-Callers must not add title-size overrides, and header-side content is reserved
-for actions only.
+Callers must not add title-size overrides. When `showHeader` is `true`, a caller
+may use the optional `#header` slot when a route needs a compact
+identity/navigation header; that slot replaces only the inner heading/action
+content inside ResourcePage's outer header. When `showHeader` is `false`, the
+outer title/action header is omitted and the caller owns that composition; all
+read-state surfaces remain `ResourcePage`-owned.
 
 ## Anatomy and variants
 
-The header source order is fixed: title, optional resource `kind`, caller
-`#meta`, optional `#status`, then optional subtitle, with PortalKit-owned dot
-separators. The shell may render caller-provided `#loading` visuals; otherwise
-it supplies the three-bar skeleton fallback. The `#actions` slot is caller-owned
-and preserves caller order. A caller may choose a provider-specific primary
-action, `Refresh`, and an overflow menu containing `Delete`, but `ResourcePage`
-does not synthesize, reorder, or own those controls.
+With the default header, source order is fixed: title, optional resource `kind`,
+caller `#meta`, optional `#status`, then optional subtitle, with PortalKit-owned
+dot separators. The optional `#header` slot replaces that inner heading/action
+content for a route-specific compact header while the outer `<header>` remains
+present. With `showHeader="false"`, the title/action header is absent; read-state
+notices, the loading shell, summary, and body remain present. The optional
+`fill` prop adds the `k-resource-page--fill` modifier, which gives the root and
+body remaining-height flex sizing; it does not change read semantics or take
+ownership of the body. Agents opts into `fill` for Chat, Config, and Runs. For a
+valid loaded agent snapshot, Agents sets `showHeader` false and puts an
+icon-only `ResourceBackLink` in AgentChat's leading slot after the rail toggles.
+The link is named **Back to agents**, points to the `#/agents` list, and is
+disabled while deletion is busy. The heading slot uses `AIConversationIdentity`
+with the active thread as the primary title and the 13px agent `h1` as secondary
+context on two lines; the status badge and workbench toggle use the actions
+slot. These controls share AgentChat's existing 56px
+`AIConversationHeader`; there is no separate full-width resource toolbar or 18px
+gap. Config and Runs are tabs aligned with that conversation header, with
+no separate Workbench title or subtitle. When the agent is loading, absent, or
+has no loaded snapshot, ResourcePage retains its header and its read states. An
+embedded agent-scoped Run Detail adds its own Runs backlink and `h2` title inside
+the Runs panel. The shell may render caller-provided `#loading` visuals;
+otherwise it supplies the three-bar skeleton fallback. The `#actions` slot is
+caller-owned and preserves caller order. A caller may choose a provider-specific
+primary action or `Refresh`, but
+`ResourcePage` does not synthesize, reorder, or own those controls.
+
+Agents supplies deletion through AgentConfig's final `destructive-actions` slot
+from AgentDetail. Its existing confirmation, authority, busy, error, success,
+and navigation handling remains provider-owned; this document makes no live
+delete claim.
 
 ## Behavior
 

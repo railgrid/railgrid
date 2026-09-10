@@ -89,7 +89,8 @@ var agentsSchema = []string{
 		created_at TIMESTAMPTZ NOT NULL,
 		updated_at TIMESTAMPTZ NOT NULL,
 		started_at TIMESTAMPTZ,
-		finished_at TIMESTAMPTZ
+		finished_at TIMESTAMPTZ,
+		worked_duration_ms BIGINT
 	)`,
 	// Runs predating the result-on-the-run-record change carry neither column;
 	// migrate in place (idempotent).
@@ -97,6 +98,9 @@ var agentsSchema = []string{
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS sources JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS delivery JSONB`,
+	// Worked duration is nullable so historical runs without measured model/tool
+	// timing remain distinguishable from a measured zero.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS worked_duration_ms BIGINT`,
 	// Partial unique index: at most one run per (tenant, agent, key), while the
 	// overwhelming majority of runs carry no key at all and are unconstrained.
 	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_idx
@@ -438,25 +442,26 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 	_, err = p.db.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
-			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
 			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
 			checkpoint=EXCLUDED.checkpoint, input_tokens=EXCLUDED.input_tokens,
 			output_tokens=EXCLUDED.output_tokens, usd_micros=EXCLUDED.usd_micros,
-			updated_at=EXCLUDED.updated_at, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at`,
+			updated_at=EXCLUDED.updated_at, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at,
+			worked_duration_ms=EXCLUDED.worked_duration_ms`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
-		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt))
+		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS))
 	return err
 }
 
 // runColumns is the run SELECT list, shared by every read path so a schema
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
-		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at`
+		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	if err := scope.validate(); err != nil {
@@ -597,13 +602,14 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var phase string
 	var checkpoint, sources, delivery []byte
 	var started, finished sql.NullTime
+	var worked sql.NullInt64
 	dest := []any{}
 	if sc != nil {
 		dest = append(dest, &sc.OrgUUID, &sc.WorkspaceUUID)
 	}
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
-		&run.CreatedAt, &run.UpdatedAt, &started, &finished)
+		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -626,6 +632,10 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	if finished.Valid {
 		t := finished.Time.UTC()
 		run.FinishedAt = &t
+	}
+	if worked.Valid {
+		value := worked.Int64
+		run.WorkedDurationMS = &value
 	}
 	run.CreatedAt, run.UpdatedAt = run.CreatedAt.UTC(), run.UpdatedAt.UTC()
 	return run, nil
@@ -1045,6 +1055,13 @@ func nullTime(t *time.Time) any {
 		return nil
 	}
 	return t.UTC()
+}
+
+func nullInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 // Compile-time interface check.

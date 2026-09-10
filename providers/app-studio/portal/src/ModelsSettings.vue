@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Check, Cpu, KeyRound, Loader2, Pencil, Plus, Star, Trash2 } from 'lucide-vue-next'
-import ModelConnectionCard from './portalkit/ModelConnectionCard.vue'
-import ModelConnectionForm from './portalkit/ModelConnectionForm.vue'
-import ModelUsageSection from './portalkit/ModelUsageSection.vue'
+import ModelConnectionCard from './agentkit/ModelConnectionCard.vue'
+import ModelConnectionForm from './agentkit/ModelConnectionForm.vue'
+import ModelUsageSection from './agentkit/ModelUsageSection.vue'
 import type { LLMProviderPreset } from './llmDiscovery'
 import type { ProjectLLMDiscoveredModel, ProjectLLMSettings } from './types'
 

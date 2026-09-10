@@ -1,3 +1,3 @@
 <script lang="ts">
-export { default } from './portalkit/ModelIDSelector.vue'
+export { default } from './agentkit/ModelIDSelector.vue'
 </script>

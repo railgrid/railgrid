@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
   CircleHelp,
   FileSearch,
   GitCommitHorizontal,
@@ -12,9 +8,7 @@ import {
   Loader2,
   Pencil,
   Plug,
-  Square,
   TerminalSquare,
-  X,
 } from 'lucide-vue-next'
 import {
   assistantActionCount,
@@ -25,6 +19,8 @@ import {
 import { assistantExecStatusPresentation, formatAssistantExecCommand } from './assistantExecDisclosure'
 import type { ProjectAssistantActionFeedItem, ProjectAssistantActionKind, ProjectAssistantActionMediaKind, ProjectAssistantActionStatus } from './types'
 import AssistantExecDetails from './AssistantExecDetails.vue'
+import type { AIActivityGroup, AIActivityRow } from './agentkit/activity'
+import AIActivityFeed from './agentkit/AIActivityFeed.vue'
 
 const props = withDefaults(defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[]; stopping?: boolean }>(), { stopping: false })
 const openExecID = ref<string | null>(null)
@@ -135,6 +131,18 @@ function execActionTitle(item: typeof rows.value[number]): string {
   return `${execStatus(item)?.label || 'Ran'} ${command}`
 }
 
+/**
+ * Keep a group's presentation identity tied to its first source item. The
+ * group list is rebuilt while the assistant streams, so an array position
+ * would move when an earlier group appears or a group splits. The group key
+ * remains stable while later rows are appended or status changes split/merge
+ * adjacent groups, preserving a caller's manual collapse choice.
+ */
+function actionGroupKey(item: typeof rows.value[number]): string {
+  const scope = item.groupKey?.trim() || `${item.kind}:${item.mediaKind || 'default'}`
+  return `activity:${scope}:${item.id}`
+}
+
 const groups = computed<ActionGroup[]>(() => {
   const result: ActionGroup[] = []
   for (const item of rows.value) {
@@ -152,7 +160,7 @@ const groups = computed<ActionGroup[]>(() => {
       continue
     }
     result.push({
-      key: `${item.kind}-${result.length}`,
+      key: actionGroupKey(item),
       kind: item.kind,
       mediaKind: item.mediaKind,
       label,
@@ -165,21 +173,38 @@ const groups = computed<ActionGroup[]>(() => {
   return result
 })
 
+const activityGroups = computed<AIActivityGroup[]>(() => groups.value.map((group) => ({
+  key: group.key,
+  label: group.label,
+  busy: group.busy,
+  attention: group.attention,
+  error: group.error,
+  scrollable: groupScrollable(group),
+  iconKey: group.mediaKind === 'image' ? 'image' : group.kind,
+  rows: group.items.map((item): AIActivityRow => ({
+    id: item.id,
+    title: item.exec ? execActionTitle(item) : item.title,
+    status: item.status,
+    statusLabel: item.exec ? execStatus(item)?.label : assistantActionStatusLabel(item.status, item.severity),
+    target: item.exec ? '' : item.target,
+    outcome: item.exec ? '' : item.outcome,
+    busy: isBusyItem(item),
+    attention: isAttentionItem(item),
+    error: isErrorItem(item),
+    canceled: isCanceledItem(item),
+    expandable: Boolean(item.exec),
+    detailsId: `${panelID}-${item.id}-exec`,
+    iconKey: item.mediaKind === 'image' ? 'image' : item.kind,
+  })),
+})))
+
 function toggleLog() {
   if (requiresVisibility.value) manuallyCollapsed.value = expanded.value
   else userExpanded.value = !userExpanded.value
 }
 
-function groupCollapsed(group: ActionGroup): boolean {
-  return collapsedGroups.value.has(group.key)
-}
-
 function groupScrollable(group: ActionGroup): boolean {
   return group.items.length > 6
-}
-
-function groupPanelID(group: ActionGroup): string {
-  return `${panelID}-${group.key}`
 }
 
 function toggleGroup(group: ActionGroup) {
@@ -187,6 +212,19 @@ function toggleGroup(group: ActionGroup) {
   if (next.has(group.key)) next.delete(group.key)
   else next.add(group.key)
   collapsedGroups.value = next
+}
+
+function toggleGroupByKey(key: string): void {
+  const group = groups.value.find((candidate) => candidate.key === key)
+  if (group) toggleGroup(group)
+}
+
+function toggleRowByID(id: string): void {
+  openExecID.value = openExecID.value === id ? null : id
+}
+
+function execForRow(row: AIActivityRow) {
+  return rows.value.find((item) => item.id === row.id)?.exec
 }
 
 function kindIcon(kind: ProjectAssistantActionKind) {
@@ -200,101 +238,51 @@ function kindIcon(kind: ProjectAssistantActionKind) {
   }
 }
 
-function itemIcon(item: typeof rows.value[number]) {
-  return item.mediaKind === 'image' ? Image : kindIcon(item.kind)
-}
-
 </script>
 
 <template>
-  <div v-if="rows.length" class="mb-2 min-w-0 text-[12px]">
-    <button
-      type="button"
-      class="group inline-flex min-h-8 max-w-full items-center gap-1.5 text-left text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-      :aria-expanded="expanded"
-      :aria-controls="panelID"
-      @click="toggleLog"
-    >
-      <Loader2 v-if="hasBusyAction" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-      <CircleAlert v-else-if="hasErrorAction" class="h-3.5 w-3.5 shrink-0 text-danger" :stroke-width="1.75" />
-      <CircleAlert v-else-if="hasAttentionAction" class="h-3.5 w-3.5 shrink-0 text-warning" :stroke-width="1.75" />
-      <Check v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-      <span class="min-w-0 truncate">
-        <span class="font-medium text-text-secondary">{{ count }} action{{ count === 1 ? '' : 's' }}</span>
-        <span v-if="summary" class="text-text-muted"> · {{ summary }}</span>
-      </span>
-      <ChevronRight class="h-3.5 w-3.5 shrink-0 transition-transform" :class="expanded ? 'rotate-90' : ''" :stroke-width="1.75" aria-hidden="true" />
-    </button>
-
-    <div v-show="expanded" :id="panelID" class="grid max-h-[min(40vh,320px)] overflow-auto">
-      <section v-for="group in groups" :key="group.key" class="min-w-0">
-        <button
-          type="button"
-          class="flex min-h-8 max-w-full items-center gap-1.5 text-left font-medium text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-          :aria-expanded="!groupCollapsed(group)"
-          :aria-controls="groupPanelID(group)"
-          @click="toggleGroup(group)"
-        >
-          <Loader2 v-if="group.busy && group.mediaKind !== 'image'" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-          <component v-else :is="group.mediaKind === 'image' ? Image : kindIcon(group.kind)" class="h-3.5 w-3.5 shrink-0" :class="group.error ? 'text-danger' : group.attention ? 'text-warning' : 'text-text-muted'" :stroke-width="1.75" />
-          <span class="truncate">{{ group.label }}</span>
-          <ChevronDown class="h-3.5 w-3.5 shrink-0 transition-transform" :class="groupCollapsed(group) ? '-rotate-90' : ''" :stroke-width="1.75" aria-hidden="true" />
-        </button>
-
-        <div
-          v-show="!groupCollapsed(group)"
-          :id="groupPanelID(group)"
-          class="grid"
-          :class="groupScrollable(group) ? 'action-chain-fade max-h-[240px] overflow-y-auto pb-7 pr-1' : ''"
-        >
-          <div v-for="item in group.items" :key="item.id" class="min-w-0">
-            <div class="flex min-h-7 min-w-0 items-center gap-1.5 leading-5 text-text-muted">
-              <Loader2 v-if="isBusyItem(item)" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-              <Square v-else-if="isAttentionItem(item)" class="h-2.5 w-2.5 shrink-0 fill-current text-warning" :stroke-width="2" />
-              <X v-else-if="isErrorItem(item)" class="h-3.5 w-3.5 shrink-0 text-danger" :stroke-width="1.75" />
-              <X v-else-if="isCanceledItem(item)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <component v-else :is="itemIcon(item)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <span class="sr-only">{{ item.exec ? execStatus(item)?.label : assistantActionStatusLabel(item.status, item.severity) }}:</span>
-              <button
-                v-if="item.exec"
-                type="button"
-                class="group/exec flex min-h-7 min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-                :aria-expanded="openExecID === item.id"
-                :aria-controls="`${panelID}-${item.id}-exec`"
-                @click="openExecID = openExecID === item.id ? null : item.id"
-              >
-                <span class="min-w-0 truncate text-text-secondary transition group-hover/exec:text-text-primary">{{ execActionTitle(item) }}</span>
-                <ChevronRight
-                  class="ml-auto h-3.5 w-3.5 shrink-0 text-text-muted transition-transform"
-                  :class="openExecID === item.id ? 'rotate-90' : ''"
-                  :stroke-width="1.75"
-                  aria-hidden="true"
-                />
-              </button>
-              <template v-else>
-                <span class="min-w-0 truncate text-text-secondary">{{ item.title }}</span>
-                <span v-if="item.target" class="min-w-0 truncate font-mono text-[11px] text-text-muted">{{ item.target }}</span>
-                <span v-if="item.outcome" class="ml-auto shrink-0 truncate text-[11px]" :class="isError(item.status, item.severity) ? 'text-danger' : 'text-text-muted'">{{ item.outcome }}</span>
-              </template>
-            </div>
-            <div
-              v-if="item.exec && openExecID === item.id"
-              :id="`${panelID}-${item.id}-exec`"
-              class="mb-1 ml-5 min-w-0"
-            >
-              <AssistantExecDetails :exec="item.exec" variant="activity" />
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  </div>
+  <AIActivityFeed
+    v-if="rows.length"
+    :panel-id="panelID"
+    :groups="activityGroups"
+    :count="count"
+    :summary="summary"
+    :expanded="expanded"
+    :busy="hasBusyAction"
+    :error="hasErrorAction"
+    :attention="hasAttentionAction"
+    :collapsed-group-keys="Array.from(collapsedGroups)"
+    :expanded-row-keys="openExecID ? [openExecID] : []"
+    @toggle="toggleLog"
+    @toggle-group="toggleGroupByKey"
+    @toggle-row="toggleRowByID"
+  >
+    <template #group-icon="{ group }">
+      <Loader2
+        v-if="group.busy && group.iconKey !== 'image'"
+        class="k-ai-activity-feed__group-status k-ai-activity-feed__group-status--busy animate-spin motion-reduce:animate-none text-accent"
+        :stroke-width="1.75"
+        aria-hidden="true"
+      />
+      <component
+        :is="group.iconKey === 'image' ? Image : kindIcon(group.iconKey as ProjectAssistantActionKind)"
+        v-else
+        class="k-ai-activity-feed__group-status"
+        :class="group.error ? 'k-ai-activity-feed__group-status--error text-danger' : group.attention ? 'k-ai-activity-feed__group-status--attention text-warning' : undefined"
+        :stroke-width="1.75"
+        aria-hidden="true"
+      />
+    </template>
+    <template #row-icon="{ row }">
+      <component
+        :is="row.iconKey === 'image' ? Image : kindIcon(row.iconKey as ProjectAssistantActionKind)"
+        class="k-ai-activity-feed__row-icon"
+        :stroke-width="1.75"
+        aria-hidden="true"
+      />
+    </template>
+    <template #details="{ row }">
+      <AssistantExecDetails v-if="execForRow(row)" :exec="execForRow(row)" variant="activity" />
+    </template>
+  </AIActivityFeed>
 </template>
-
-<style scoped>
-.action-chain-fade {
-  /* Keep long tool chains bounded while softly indicating continuation. */
-  -webkit-mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%);
-  mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%);
-}
-</style>

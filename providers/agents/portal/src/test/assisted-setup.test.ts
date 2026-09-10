@@ -321,7 +321,7 @@ describe('assisted setup flow', () => {
     expect(body.baseURL).toBeUndefined()
     expect(body.secret).toBeUndefined()
 
-    expect(destination).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+    expect(destination).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
     const handed = store.takePendingPrompt('scout')
     expect(handed).toContain('name: `search`')
   })

@@ -1,4 +1,5 @@
 import type { ProviderFetch } from './portalkit/tenant'
+import type { AITurnProgressStatus } from './agentkit/conversation'
 
 // Shared types for the agents micro-frontend.
 //
@@ -170,6 +171,8 @@ export interface RunSummary {
   createdAt: string
   startedAt?: string
   finishedAt?: string
+  /** Measured model/tool time; unlike durationMS, this excludes idle pauses. */
+  workedDurationMS?: number
   durationMS?: number
 }
 
@@ -210,6 +213,30 @@ export interface ToolCall {
   pending: boolean
 }
 
+/** One ordered, server-classified detail in an assistant turn. */
+export type ChatTraceBlock =
+  | {
+      readonly id: string
+      readonly kind: 'commentary'
+      readonly content: string
+      readonly createdAt?: string
+    }
+  | {
+      readonly id: string
+      readonly kind: 'tool'
+      readonly tool: ToolCall
+      readonly createdAt?: string
+    }
+
+/** Provider-owned turn progress projected for AgentKit presentation. */
+export interface ChatProgress {
+  readonly status: AITurnProgressStatus
+  readonly startedAt?: string
+  /** Active model/tool milliseconds; waiting/recovery time is excluded. */
+  readonly durationMS?: number
+  readonly trace: readonly ChatTraceBlock[]
+}
+
 export interface TurnUsage {
   inputTokens: number
   outputTokens: number
@@ -232,12 +259,15 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /** Server-created timestamp for persisted messages; absent on optimistic rows. */
+  createdAt?: string
   error?: string
   runID?: string
   tools: ToolCall[]
   usage?: TurnUsage
   approval?: PendingApproval
   streaming?: boolean
+  progress?: ChatProgress
 }
 
 // TranscriptMessage is one persisted store.Message. Tool turns are stored as
@@ -249,7 +279,17 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool' | 'system' | string
   content: string
   runID?: string
-  metadata?: { tool?: string; args?: string; error?: string; durationMS?: number }
+  metadata?: {
+    tool?: string
+    args?: string
+    error?: string | boolean
+    durationMS?: number
+    turnPhase?: string
+    turnStatus?: string
+    startedAt?: string
+    segmentDurationMS?: number
+    turnError?: string
+  }
   createdAt?: string
 }
 

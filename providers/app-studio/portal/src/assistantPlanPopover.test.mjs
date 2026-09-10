@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
-import { createSSRApp } from 'vue'
+import { createCommentVNode, createSSRApp, h } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
@@ -43,24 +43,31 @@ test('supports explicit collapse and releases the mobile sheet at the desktop br
 
 test('keeps action details, assistant progress prose, working status, and plan details as separate surfaces', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /<AIConversationTurn[\s\S]*:turn-id="message\.id"/)
+  assert.match(appSource, /import AITimestamp from '\.\/agentkit\/AITimestamp\.vue'/)
+  assert.match(appSource, /<AITimestamp[\s\S]*:value="message\.createdAt"/)
+  assert.match(appSource, /<template[\s\S]*v-if="\(message\.role === 'user' && userMessageHasVisibleContent\(message\)\) \|\| \(message\.role === 'assistant'/)
+  assert.doesNotMatch(appSource, /expandedMessageTimestampID|messageTimestampLabel|toggleMessageTimestamp/)
+  assert.match(appSource, /<AITurnProgress[\s\S]*:status="assistantTurnProgressStatus\(message\)"/)
+  assert.match(appSource, /:duration="assistantWorkedLabel\(message\)"/)
+  assert.match(appSource, /<template v-if="assistantTraceBlocks\(message\)\.length" #details>[\s\S]*assistantTraceBlocks\(message\)/)
+  assert.match(appSource, /<template v-if="message\.role === 'user' && \(assistantAttachmentsForMessage\(message\)\.length \|\| assistantAnnotationsForMessage\(message\)\.length\)" #before>/)
   assert.match(appSource, /<AssistantActionLog[\s\S]*v-if="hasAssistantResponseContent\(message\)"/)
-  assert.match(appSource, /Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
-  assert.match(appSource, /assistantProgressStopping\(message\) \? 'Stopping after' : 'Working for'/)
+  assert.match(appSource, /function assistantTurnProgressStatus\(message:[\s\S]*return 'stopping'/)
   assert.match(appSource, /function assistantProgressHeaderVisible\(message:[\s\S]*message\.progress \|\| \(assistantMessageOwnsActiveRun\(message\) && !assistantProgressClosed\(message\)\)/)
-  assert.match(appSource, /<template v-if="assistantProgressHeaderVisible\(message\)">/)
-  assert.match(appSource, /flex min-h-7 flex-wrap items-center gap-2 border-b border-border-subtle pb-1/)
+  assert.match(appSource, /A persisted progress snapshot without an authoritative run status[\s\S]*return 'pending'/)
+  assert.match(appSource, /<template v-if="message\.role === \'assistant\' && assistantProgressHeaderVisible\(message\)" #progress>/)
   assert.match(appSource, /assistantDurationTimer = window\.setInterval[\s\S]*assistantDurationNowMs\.value = Date\.now\(\)/)
   assert.match(appSource, /function projectMessageAssistantStatus\(message:[\s\S]*normalizeAssistantRunStatus\(message\.metadata\?\.assistantStatus\)/)
   assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)
-  assert.match(appSource, /message\.viewStatus === 'interrupted'[\s\S]*text-warning\/80[\s\S]*<span>Interrupted<\/span>/)
-  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted/)
+  assert.match(appSource, /message\.viewStatus === 'interrupted'[\s\S]*text-warning\/80[\s\S]*Interrupted/)
+  assert.match(appSource, /v-if="message\.role === 'assistant' && message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted/)
   assert.doesNotMatch(appSource, /Interrupted before completion/)
-  assert.match(appSource, /v-if="assistantProgressClosed\(message\)"/)
-  assert.match(appSource, /:aria-expanded="assistantProgressExpanded\(message\)"/)
+  assert.match(appSource, /:expanded="assistantProgressExpanded\(message\)"/)
   assert.match(appSource, /parseAssistantProgress\(message\.metadata\?\.assistantProgress\)/)
   assert.match(appSource, /rawItem\.data\?\.assistantProgress[\s\S]*assistantProgress: rawItem\.data\.assistantProgress/)
   assert.match(appSource, /v-if="message\.actionFeed\?\.length && !message\.progress"/)
-  assert.match(appSource, /v-show="assistantProgressExpanded\(message\)"[\s\S]*v-for="\(traceBlock, traceIndex\) in assistantTraceBlocks\(message\)"[\s\S]*traceBlock\.kind === 'actions'[\s\S]*renderMessageContent\(traceBlock\.message, 'assistant'\)/)
+  assert.match(appSource, /v-for="\(traceBlock, traceIndex\) in assistantTraceBlocks\(message\)"[\s\S]*traceBlock\.kind === 'actions'[\s\S]*renderMessageContent\(traceBlock\.message, 'assistant'\)/)
   assert.match(appSource, /:message-id="`\$\{message\.id\}-trace-\$\{traceIndex\}`"/)
   assert.match(appSource, /activeAssistantRun\?\.activeMessageID === message\.id \? 'status'[\s\S]*aria-live="messageStreaming && activeAssistantRun\?\.activeMessageID === message\.id \? 'polite'/)
   assert.match(appSource, /v-if="conversationWorkingLabel"[\s\S]*role="status"/)
@@ -84,10 +91,26 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
 })
 
-test('keeps the active plan step spinner rotating until its status changes', async () => {
+test('does not create an output frame for a progress-only conditional turn', async () => {
+  const { default: AIConversationTurn } = await vite.ssrLoadModule('/src/agentkit/AIConversationTurn.vue')
+  const { default: AITurnProgress } = await vite.ssrLoadModule('/src/agentkit/AITurnProgress.vue')
+  const html = await renderToString(createSSRApp({
+    render: () => h(AIConversationTurn, { role: 'assistant', turnId: 'progress-only' }, {
+      progress: () => h(AITurnProgress, { status: 'running', turnId: 'progress-only' }),
+      // Vue represents the parent's false v-if slot branch as a comment vnode.
+      default: () => [createCommentVNode('v-if', true)],
+    }),
+  }))
+
+  assert.match(html, /k-ai-turn-progress[^>]*data-status="running"/)
+  assert.doesNotMatch(html, /k-ai-message__content/)
+})
+
+test('routes plan steps through the canonical AgentKit list', async () => {
   const source = await readFile(new URL('./AssistantPlanSteps.vue', import.meta.url), 'utf8')
-  assert.match(source, /v-else-if="step\.status === 'in_progress'"[\s\S]*animate-spin/)
-  assert.doesNotMatch(source, /motion-reduce:animate-none/)
+  assert.match(source, /import AIPlanSteps from '\.\/agentkit\/AIPlanSteps\.vue'/)
+  assert.match(source, /:plan="plan"/)
+  assert.match(source, /:mobile="mobile"/)
 })
 
 test('protects live plan progress from stale sequence or revision events', async () => {
@@ -169,6 +192,6 @@ test('an action-only terminal turn activates the collapsed combined disclosure',
   }])
 
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(appSource, /<template v-if="assistantProgressHeaderVisible\(message\)">[\s\S]*Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /<AITurnProgress[\s\S]*:duration="assistantWorkedLabel\(message\)"/)
   assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)
 })

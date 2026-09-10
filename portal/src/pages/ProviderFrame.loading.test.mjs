@@ -18,6 +18,22 @@ import test from 'node:test'
 
 const source = await readFile(new URL('./ProviderFrame.vue', import.meta.url), 'utf8')
 
+test('workspace layout requests are restricted to the AI providers and boolean values', () => {
+  const body = source.match(/function onLayoutChange\(e: Event\) \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(body)
+  const handler = new Function('props', 'providerFullBleedOverride', 'e',
+    body.replace('(e as CustomEvent<{ fullBleed?: unknown }>)', 'e'))
+  for (const providerName of ['agents', 'app-studio', 'code']) {
+    const state = { value: null }
+    handler({ providerName }, state, { detail: { fullBleed: true } })
+    assert.equal(state.value, providerName === 'code' ? null : true)
+    handler({ providerName }, state, { detail: { fullBleed: 'false' } })
+    assert.equal(state.value, providerName === 'code' ? null : true)
+    handler({ providerName }, state, { detail: { fullBleed: false } })
+    assert.equal(state.value, providerName === 'code' ? null : false)
+  }
+})
+
 test('provider bundle loading is delayed so cached navigation does not flash', () => {
   assert.match(source, /import \{ useDelayedLoading \} from '@\/portalkit\/useDelayedLoading'/)
   assert.match(source, /const providerLoadPending = computed\(\(\) => loadState\.value === 'loading'\)/)

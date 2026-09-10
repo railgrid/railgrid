@@ -20,7 +20,7 @@ describe('agents list card semantics', () => {
     const remove = mounted.element.querySelector<HTMLButtonElement>('button[aria-label="Delete agent scout"]')!
     expect(card.getAttribute('role')).toBeNull()
     expect(card.getAttribute('tabindex')).toBeNull()
-    expect(link.getAttribute('href')).toBe('#/agents/scout/config')
+    expect(link.getAttribute('href')).toBe('#/agents/scout/chat')
     expect(remove.classList.contains('k-icon-action')).toBe(true)
     expect(remove.classList.contains('agents-iconbtn')).toBe(false)
     const sharedStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/faros-ui.css'), 'utf8')

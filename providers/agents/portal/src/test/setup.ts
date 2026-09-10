@@ -2,6 +2,7 @@
 // anything stubbed here is something a test can't assert on.
 
 import { afterEach, vi } from 'vitest'
+import { clearToasts } from '../ui/toast'
 import { unmountVueApps } from './vue-helper'
 
 // Some Node 25 installations expose an incomplete experimental localStorage
@@ -46,6 +47,10 @@ if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView 
 
 afterEach(() => {
   unmountVueApps()
+  // Toasts own real auto-dismiss timers. Clear them before the jsdom document
+  // is replaced so a callback cannot run after the test environment is torn
+  // down and dereference an unavailable document.
+  clearToasts()
   document.body.replaceChildren()
   localStorage.clear()
 })

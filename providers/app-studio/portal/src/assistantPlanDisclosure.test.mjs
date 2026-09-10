@@ -31,12 +31,10 @@ test('renders a collapsed plan history disclosure with accessible details', asyn
   assert.match(html, /Verify the preview/)
 })
 
-test('keeps plan history keyboard-operable through native button semantics', async () => {
+test('adapts the history surface to AgentKit disclosure semantics', async () => {
   const source = await readFile(new URL('./AssistantPlanDisclosure.vue', import.meta.url), 'utf8')
-  assert.match(source, /<button[\s\S]*type="button"[\s\S]*:aria-expanded="expanded"/)
-  assert.match(source, /:aria-controls="panelID"/)
-  assert.match(source, /@click="togglePlan"/)
-  assert.match(source, /function togglePlan\(\)[\s\S]*expanded\.value = !expanded\.value/)
-  assert.match(source, /v-show="expanded"[\s\S]*role="region"/)
-  assert.match(source, /focus-visible:ring-2 focus-visible:ring-accent\/30/)
+  assert.match(source, /import AIPlanDisclosure from '\.\/agentkit\/AIPlanDisclosure\.vue'/)
+  assert.match(source, /:message-id="messageId"/)
+  assert.match(source, /:panel-id="`app-studio-assistant-plan-history-/)
+  assert.match(source, /:plan="plan"/)
 })

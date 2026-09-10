@@ -5,13 +5,22 @@ import test from 'node:test'
 import ts from 'typescript'
 
 const source = await readFile(new URL('./assistantProgress.ts', import.meta.url), 'utf8')
+const conversationSource = await readFile(new URL('../../../../provider-sdk/agentkit-vue/conversation.ts', import.meta.url), 'utf8')
+const { outputText: conversationOutput } = ts.transpileModule(conversationSource, {
+  compilerOptions: {
+    module: ts.ModuleKind.ES2022,
+    target: ts.ScriptTarget.ES2022,
+  },
+})
+const conversationModuleURL = `data:text/javascript;base64,${Buffer.from(conversationOutput).toString('base64')}`
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ES2022,
     target: ts.ScriptTarget.ES2022,
   },
 })
-const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
+const rewrittenOutput = outputText.replace(/from ['"]\.\/agentkit\/conversation['"]/g, `from '${conversationModuleURL}'`)
+const moduleURL = `data:text/javascript;base64,${Buffer.from(rewrittenOutput).toString('base64')}`
 const { AssistantWorkedDurationClock, formatAssistantWorkedDuration, parseAssistantProgress } = await import(moduleURL)
 
 test('parses the bounded versioned assistant progress contract', () => {
@@ -68,6 +77,7 @@ test('rejects malformed, unknown, and oversized progress metadata', () => {
 
 test('formats Codex-style worked durations', () => {
   assert.equal(formatAssistantWorkedDuration(200), '1s')
+  assert.equal(formatAssistantWorkedDuration(3_400), '3s')
   assert.equal(formatAssistantWorkedDuration(83_400), '1m 23s')
   assert.equal(formatAssistantWorkedDuration(3_780_000), '1h 3m')
 })

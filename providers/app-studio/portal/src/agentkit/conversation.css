@@ -1,0 +1,372 @@
+/*
+ * CANONICAL SOURCE — provider-sdk/agentkit/conversation.css.
+ *
+ * AgentKit owns only the additional conversation-turn, progress, and plan
+ * recipes. The composed AIMessage frame remains the shared AgentKit frame.
+ * Colors deliberately use the Faros semantic tokens so host light/dark themes
+ * remain authoritative in standalone and embedded provider bundles.
+ */
+
+.k-ai-conversation-turn__progress,
+.k-ai-conversation-turn__trace,
+.k-ai-conversation-turn__interrupt,
+.k-ai-conversation-turn__metadata,
+.k-ai-conversation-turn__before,
+.k-ai-conversation-turn__after {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.k-ai-conversation-turn__progress,
+.k-ai-conversation-turn__trace {
+  width: 100%;
+}
+
+.k-ai-conversation-turn__interrupt,
+.k-ai-conversation-turn__metadata {
+  width: 100%;
+  margin-block-start: 4px;
+}
+
+.k-ai-turn-progress {
+  width: 100%;
+  min-width: 0;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 12px;
+  line-height: 1.25rem;
+}
+
+.k-ai-turn-progress__trigger,
+.k-ai-turn-progress__status {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding-block: 4px;
+  color: var(--color-text-muted, #8587a1);
+  text-align: left;
+}
+
+.k-ai-turn-progress__trigger {
+  border: 0;
+  background: transparent;
+  padding-inline: 0;
+  transition: color .15s ease;
+}
+
+.k-ai-turn-progress__trigger:hover {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+.k-ai-turn-progress__trigger:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+
+.k-ai-turn-progress__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.k-ai-turn-progress__interrupted {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-warning, #f0a63a);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.k-ai-turn-progress__interrupted svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.k-ai-turn-progress__chevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  transition: transform .15s ease;
+}
+
+.k-ai-turn-progress__chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.k-ai-turn-progress__details {
+  display: grid;
+  min-width: 0;
+  margin-block-end: 12px;
+  gap: 12px;
+}
+
+.k-ai-turn-progress__details[role='log'] {
+  overflow-anchor: none;
+}
+
+.k-ai-turn-progress--interrupted .k-ai-turn-progress__label {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+.k-ai-timestamp {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 11px;
+  line-height: 1rem;
+}
+
+.k-ai-timestamp__button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0 4px;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-decoration: none;
+  transition: color .15s ease;
+}
+
+.k-ai-timestamp__button:hover {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+.k-ai-timestamp__button:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+
+.k-ai-timestamp__time {
+  white-space: nowrap;
+}
+
+.k-ai-timestamp__tooltip {
+  pointer-events: none;
+  position: absolute;
+  z-index: var(--k-ai-tooltip-layer, 70);
+  inset-block-start: 100%;
+  inset-inline-end: 0;
+  margin-block-start: 4px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  border-radius: 4px;
+  background: var(--color-surface-raised, #111320);
+  padding: 4px 8px;
+  color: var(--color-text-secondary, #8a8ca6);
+  white-space: nowrap;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--color-surface, #0a0b12) 55%, transparent);
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.k-ai-timestamp:hover .k-ai-timestamp__tooltip,
+.k-ai-timestamp:focus-within .k-ai-timestamp__tooltip {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-ai-timestamp__button,
+  .k-ai-timestamp__tooltip { transition: none; }
+}
+
+.k-ai-plan-disclosure {
+  width: 100%;
+  min-width: 0;
+  margin-block-end: 8px;
+  color: var(--color-text-muted, #8587a1);
+  font-size: 12px;
+  line-height: 1.25rem;
+}
+
+.k-ai-plan-disclosure__trigger {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  color: var(--color-text-muted, #8587a1);
+  text-align: left;
+  transition: color .15s ease;
+}
+
+.k-ai-plan-disclosure__trigger:hover {
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+.k-ai-plan-disclosure__trigger:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+
+.k-ai-plan-disclosure__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--color-accent, #8b6bff);
+}
+
+.k-ai-plan-disclosure__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.k-ai-plan-disclosure__title {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-weight: 500;
+}
+
+.k-ai-plan-disclosure__count {
+  color: var(--color-text-muted, #8587a1);
+}
+
+.k-ai-plan-disclosure__chevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  transition: transform .15s ease;
+}
+
+.k-ai-plan-disclosure__chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.k-ai-plan-disclosure__panel {
+  display: grid;
+  min-width: 0;
+  margin-block-start: 4px;
+}
+
+.k-ai-plan-steps {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.k-ai-plan-steps--mobile {
+  max-height: min(48vh, 360px);
+  overflow: auto;
+  gap: 2px;
+  padding: 12px;
+}
+
+.k-ai-plan-step {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 4px 8px;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.25rem;
+}
+
+.k-ai-plan-step--in_progress {
+  background: var(--color-accent-subtle, color-mix(in srgb, var(--color-accent, #8b6bff) 12%, transparent));
+  color: var(--color-text-primary, #e9e9f2);
+}
+
+.k-ai-plan-step__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.k-ai-plan-step__icon--completed {
+  color: var(--color-success, #2fd6a0);
+}
+
+.k-ai-plan-step__icon--active {
+  color: var(--color-accent, #8b6bff);
+  animation: k-ai-plan-spin .9s linear infinite;
+}
+
+.k-ai-plan-step__icon--pending {
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-muted, #8587a1);
+}
+
+.k-ai-plan-step__content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.k-ai-plan-step__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.k-ai-plan-steps--mobile .k-ai-plan-step {
+  min-height: 44px;
+  gap: 12px;
+  border-radius: 12px;
+  padding-inline: 12px;
+  font-size: 13px;
+}
+
+.k-ai-plan-steps--mobile .k-ai-plan-step__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.k-ai-plan-steps--mobile .k-ai-plan-step__icon--pending {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes k-ai-plan-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-ai-turn-progress__trigger,
+  .k-ai-plan-disclosure__trigger,
+  .k-ai-turn-progress__chevron,
+  .k-ai-plan-disclosure__chevron {
+    transition: none;
+  }
+
+  .k-ai-plan-step__icon--active {
+    animation: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .k-ai-turn-progress__trigger,
+  .k-ai-plan-disclosure__trigger {
+    min-height: 44px;
+  }
+}

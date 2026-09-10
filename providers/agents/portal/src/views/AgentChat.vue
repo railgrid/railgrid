@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { AlertCircle, ArrowUp, Clock, LoaderCircle, Plus, RefreshCw, Square, Trash2 } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
-import FormSelect from '../portalkit/FormSelect.vue'
+import AIComposer from '../agentkit/AIComposer.vue'
+import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
+import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
+import AIConversationRail from '../agentkit/AIConversationRail.vue'
+import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
+import AITranscript from '../agentkit/AITranscript.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
 import type { AppStore, ServerEvent } from '../store'
-import { sessionLabel, type ChatMessage, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { sessionLabel, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
+import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
@@ -16,15 +23,35 @@ const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
 
 interface StartData { runID: string; sessionID: string }
+interface RunStartedData { runID: string; sessionID?: string; status?: string; startedAt?: string }
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
 interface ToolEndData extends ToolStartData { result?: string; error?: string; durationMS?: number }
-interface ApprovalData { runID: string; inboxID: string; tool: string; args: string; content?: string }
-interface DoneData { runID: string; content: string; usage?: { inputTokens: number; outputTokens: number; usdMicros: number } }
-interface ErrorData { runID?: string; message: string }
+interface ApprovalData { runID: string; inboxID: string; tool: string; args: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
+interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
+interface DoneData {
+  runID: string
+  content: string
+  finalContent?: string
+  status?: string
+  startedAt?: string
+  finishedAt?: string
+  durationMS?: number
+  usage?: { inputTokens: number; outputTokens: number; usdMicros: number }
+}
+interface ErrorData { runID?: string; message: string; status?: string; startedAt?: string; finishedAt?: string; durationMS?: number }
+interface ConversationRailHandle {
+  openAndFocus?: () => void
+  toggle?: (returnFocus?: HTMLElement | null) => void
+  expanded?: boolean
+}
 
 const props = defineProps<{ store: AppStore; api: ApiClient; name: string }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
+// The standalone chat keeps its Conversation heading. AgentDetail supplies a
+// leading navigation control, compact identity heading, and actions when the
+// chat is embedded in its resource workspace; the header still owns the rail
+// controls in both cases.
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
@@ -35,7 +62,9 @@ const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
 const sessionID = ref('')
+const selectingSessionID = ref('')
 const streaming = ref(false)
+const messagesLoading = ref(false)
 const loadError = ref<string | null>(null)
 const draft = ref('')
 const orphanRun = ref<RunSummary | null>(null)
@@ -47,10 +76,12 @@ const cancelingRunID = ref('')
 const approvalBusy = ref<Record<string, 'approve' | 'deny'>>({})
 const orphanCancelBusyID = ref('')
 const deletingSessionID = ref('')
+const mobileRailOpen = ref(false)
+const mobileRailTrigger = ref<HTMLButtonElement | null>(null)
+const conversationRail = ref<ConversationRailHandle | null>(null)
+const conversationRailExpanded = computed(() => conversationRail.value?.expanded ?? true)
 const log = ref<HTMLElement | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
-const sessionLabelID = `agents-chat-session-${useId()}`
-
 let mounted = false
 let initializedFor = ''
 let boundStore: AppStore | null = null
@@ -71,6 +102,7 @@ let streamSerial = 0
 let chatOwnershipSerial = 0
 let liveCancellationSerial = 0
 let terminalTranscriptRefresh: { name: string; api: ApiClient; session: string } | null = null
+let traceSequence = 0
 
 const agent = computed(() => {
   revision.value
@@ -84,10 +116,125 @@ const sessionOptions = computed(() => {
   }
   return list
 })
-const sessionSelectOptions = computed(() => sessionOptions.value.map(session => ({
-  value: session.id,
-  label: sessionLabel(session),
+const conversationItems = computed<AIConversationItem[]>(() => sessionOptions.value.map(session => ({
+  id: session.id,
+  title: sessionLabel(session),
+  status: session.id === sessionID.value && streaming.value ? 'active' : undefined,
+  createdAt: session.createdAt,
+  updatedAt: session.lastActivity,
 })))
+const runLinkMessageIDs = computed(() => {
+  const candidates = new Map<string, { fallback: string; assistant?: string }>()
+  for (const message of messages.value) {
+    const runID = message.runID
+    if (!runID) continue
+    const candidate = candidates.get(runID)
+    if (candidate) {
+      // Keep the fallback current while history is loading or a run has not
+      // produced an assistant segment yet. Once one exists, the last assistant
+      // segment owns the quiet navigation link for that run.
+      candidate.fallback = message.id
+      if (message.role === 'assistant') candidate.assistant = message.id
+    } else {
+      candidates.set(runID, {
+        fallback: message.id,
+        assistant: message.role === 'assistant' ? message.id : undefined,
+      })
+    }
+  }
+  return new Set([...candidates.values()].map(candidate => candidate.assistant || candidate.fallback))
+})
+const sessionRailScope = computed(() => {
+  const tenant = props.api.tenant()
+  const user = props.api.context()?.user
+  const userKey = user?.sub || user?.userId || user?.email || ''
+  return ['agents', tenant.orgUUID || '', tenant.workspaceUUID || '', userKey, props.name].join(':')
+})
+const activeSessionLabel = computed(() => {
+  const active = sessionOptions.value.find(session => session.id === sessionID.value)
+  return active ? sessionLabel(active) : 'New chat'
+})
+const primaryActionState = computed<AIPrimaryActionState>(() => {
+  if (!streaming.value) return 'send'
+  return stopRequested.value ? 'stopping' : 'stop'
+})
+const composerHelp = computed(() => streaming.value
+  ? 'Draft your next message while the agent works.'
+  : 'Enter to send · Shift+Enter for a new line')
+
+function progressStatusForRunPhase(phase: string | undefined): AITurnProgressStatus | undefined {
+  switch ((phase || '').trim().toLowerCase()) {
+    case 'pending': return 'pending'
+    case 'running': return 'running'
+    case 'pendingapproval':
+    case 'pending_approval':
+    case 'waiting': return 'waiting'
+    case 'succeeded':
+    case 'completed': return 'completed'
+    case 'failed': return 'failed'
+    case 'aborted': return 'aborted'
+    case 'interrupted': return 'interrupted'
+    case 'stopping': return 'stopping'
+    default: return undefined
+  }
+}
+
+function validDuration(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function progressPatch(message: ChatMessage, patch: Partial<ChatProgress> & { status?: AITurnProgressStatus }): ChatProgress {
+  const current = message.progress
+  const status = patch.status || current?.status || 'pending'
+  return {
+    ...(current?.startedAt ? { startedAt: current.startedAt } : {}),
+    ...(current?.durationMS !== undefined ? { durationMS: current.durationMS } : {}),
+    trace: current?.trace ? [...current.trace] : [],
+    ...patch,
+    status,
+  }
+}
+
+function patchProgress(id: string, patch: Partial<ChatProgress> & { status?: AITurnProgressStatus }): void {
+  messages.value = messages.value.map(message => message.id === id
+    ? { ...message, progress: progressPatch(message, patch) }
+    : message)
+}
+
+function appendLiveTrace(id: string, block: ChatTraceBlock, status?: AITurnProgressStatus): void {
+  messages.value = messages.value.map(message => {
+    if (message.id !== id) return message
+    const progress = progressPatch(message, status ? { status } : {})
+    const index = progress.trace.findIndex(candidate => candidate.id === block.id)
+    const trace = [...progress.trace]
+    if (index === -1) trace.push(block)
+    else trace[index] = block
+    return { ...message, progress: { ...progress, trace } }
+  })
+}
+
+function syncLiveToolTrace(messageID: string, tool: ToolCall): void {
+  appendLiveTrace(messageID, {
+    id: `tool-${tool.id}`,
+    kind: 'tool',
+    tool: { ...tool },
+  }, tool.pending ? 'running' : undefined)
+}
+
+function applyRunProgress(run: RunSummary): void {
+  const status = progressStatusForRunPhase(run.phase)
+  if (!status) return
+  messages.value = messages.value.map(message => {
+    if (message.role !== 'assistant' || message.runID !== run.id) return message
+    return {
+      ...message,
+      progress: progressPatch(message, {
+        status,
+        ...(run.startedAt ? { startedAt: run.startedAt } : {}),
+      }),
+    }
+  })
+}
 
 function contextIsCurrent(name: string, api: ApiClient): boolean {
   return mounted && props.name === name && props.api === api
@@ -195,6 +342,7 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
       streaming.value
     ) return
     orphanRun.value = page.items.find(run => LIVE_RUN_PHASES.has(run.phase)) ?? null
+    if (orphanRun.value) applyRunProgress(orphanRun.value)
     orphanHasSnapshot.value = true
     orphanError.value = null
   } catch (error) {
@@ -206,9 +354,58 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
   }
 }
 
+function isNarrowViewport(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 767px)').matches
+}
+
+function openMobileRail(): void {
+  if (mobileRailOpen.value) return
+  mobileRailOpen.value = true
+  if (!isNarrowViewport()) return
+  // The shared rail owns its mobile state and focus target. The trigger is
+  // active when this handler runs, so openAndFocus records it for restoration.
+  void nextTick(() => conversationRail.value?.openAndFocus?.())
+}
+
+function closeMobileRail(): void {
+  if (!mobileRailOpen.value) return
+  mobileRailOpen.value = false
+  if (isNarrowViewport()) conversationRail.value?.toggle?.()
+  void nextTick(() => mobileRailTrigger.value?.focus())
+}
+
+function toggleMobileRail(): void {
+  if (mobileRailOpen.value) closeMobileRail()
+  else openMobileRail()
+}
+
+function toggleDesktopRail(event: MouseEvent): void {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  conversationRail.value?.toggle?.(trigger)
+  // The shared rail does not move focus for desktop flyouts. Keep the trigger
+  // as the stable keyboard anchor across both collapse and reopen.
+  void nextTick(() => {
+    if (trigger?.isConnected && !trigger.hasAttribute('disabled')) trigger.focus()
+  })
+}
+
+function handleRailShellEscape(event: KeyboardEvent): void {
+  if (!mobileRailOpen.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  closeMobileRail()
+}
+
+function syncMobileRailViewport(): void {
+  if (mobileRailOpen.value && !isNarrowViewport()) mobileRailOpen.value = false
+}
+
 async function loadMessages(session: string, name = props.name, api = props.api): Promise<boolean> {
   const serial = ++messageReadSerial
   if (streaming.value || !session) return false
+  messagesLoading.value = true
   try {
     const items = await api.listMessages(name, session)
     if (
@@ -225,6 +422,10 @@ async function loadMessages(session: string, name = props.name, api = props.api)
     if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
     loadError.value = (error as Error).message
     return false
+  } finally {
+    if (serial === messageReadSerial && contextIsCurrent(name, api) && sessionID.value === session) {
+      messagesLoading.value = false
+    }
   }
   if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
   void findOrphanRun(session, name, api)
@@ -239,6 +440,7 @@ async function openAgent(): Promise<void> {
   initializedFor = ''
   invalidateStream()
   messageReadSerial += 1
+  messagesLoading.value = false
   messages.value = []
   messagesHasSnapshot.value = false
   sessions.value = []
@@ -246,6 +448,7 @@ async function openAgent(): Promise<void> {
   sessionsHasSnapshot.value = false
   sessionsLoading.value = false
   sessionID.value = ''
+  selectingSessionID.value = ''
   resetOrphanRead()
   loadError.value = null
 
@@ -278,6 +481,7 @@ function maybeAutoSend(): void {
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
   messageReadSerial += 1
+  messagesLoading.value = false
   sessionID.value = newSessionID()
   remember(sessionID.value)
   messages.value = []
@@ -329,6 +533,8 @@ function setTool(id: string, patch: Partial<ToolCall>, create?: ToolCall): void 
     ? current.tools.map(tool => tool.id === id ? { ...tool, ...patch } : tool)
     : create ? [...current.tools, create] : current.tools
   patchMessage(current.id, { tools })
+  const updated = tools.find(tool => tool.id === id)
+  if (updated) syncLiveToolTrace(current.id, updated)
 }
 
 function streamIsCurrent(serial: number, controller: AbortController, name: string, api: ApiClient): boolean {
@@ -412,6 +618,7 @@ async function send(): Promise<void> {
   // that started before this turn must not replace the newly streamed messages
   // if it settles after a fast response completes.
   messageReadSerial += 1
+  messagesLoading.value = false
   if (!sessionID.value) {
     sessionID.value = newSessionID()
     remember(sessionID.value)
@@ -434,7 +641,14 @@ async function send(): Promise<void> {
   messages.value = [
     ...messages.value,
     { id: userID, role: 'user', content: text, tools: [] },
-    { id: assistantID, role: 'assistant', content: '', tools: [], streaming: true },
+    {
+      id: assistantID,
+      role: 'assistant',
+      content: '',
+      tools: [],
+      streaming: true,
+      progress: { status: 'pending', trace: [] },
+    },
   ]
   messagesHasSnapshot.value = true
   streaming.value = true
@@ -454,15 +668,77 @@ async function send(): Promise<void> {
             remember(data.sessionID, name, api)
           }
           liveRunSessionID = data.sessionID || requestSession
+          patchProgress(assistantID, { status: 'pending' })
           if (stopRequested.value) {
             await cancelLiveRun(data.runID, data.sessionID || requestSession, name, api, controller)
             return
           }
           break
         }
+        case 'run_started': {
+          const data = event.data as RunStartedData
+          if (data.runID) {
+            liveRunID = data.runID
+            patchMessage(assistantID, { runID: data.runID })
+          }
+          if (data.sessionID) {
+            liveRunSessionID = data.sessionID
+          }
+          const status = progressStatusForRunPhase(data.status) || 'running'
+          if (data.startedAt) {
+            // The server writes the user row and the Running record at the
+            // same lifecycle boundary. Attach that authoritative timestamp to
+            // the optimistic user row so a live transcript matches reload.
+            patchMessage(userID, { createdAt: data.startedAt })
+          }
+          patchProgress(assistantID, {
+            status,
+            ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+          })
+          break
+        }
         case 'delta':
           queueDelta((event.data as DeltaData).text || '', serial)
           break
+        case 'assistant_message': {
+          const data = event.data as AssistantMessageData
+          flushNow(serial)
+          const current = currentMessage()
+          if (!current) break
+          if (data.phase !== 'commentary' && data.phase !== 'final') break
+          const createdAt = typeof data.createdAt === 'string' && data.createdAt ? data.createdAt : undefined
+          const segmentDurationMS = validDuration(data.segmentDurationMS)
+          if (data.phase === 'commentary') {
+            // Deltas are provisional until the server classifies the complete
+            // response. Move that text into the ordered trace so a later final
+            // response can occupy the answer body without duplication.
+            patchMessage(assistantID, {
+              content: '',
+              ...(createdAt ? { createdAt } : {}),
+            })
+            appendLiveTrace(assistantID, {
+              id: `commentary-${++traceSequence}`,
+              kind: 'commentary',
+              content: data.content,
+              ...(createdAt ? { createdAt } : {}),
+            }, 'running')
+            if (segmentDurationMS !== undefined) {
+              const duration = current.progress?.durationMS || 0
+              patchProgress(assistantID, { status: 'running', durationMS: duration + segmentDurationMS })
+            }
+          } else {
+            patchMessage(assistantID, {
+              content: data.content,
+              ...(createdAt ? { createdAt } : {}),
+            })
+            patchProgress(assistantID, {
+              status: 'running',
+              ...(createdAt ? { startedAt: current.progress?.startedAt || createdAt } : {}),
+              ...(segmentDurationMS !== undefined ? { durationMS: (current.progress?.durationMS || 0) + segmentDurationMS } : {}),
+            })
+          }
+          break
+        }
         case 'tool_start': {
           const data = event.data as ToolStartData
           flushNow(serial)
@@ -480,6 +756,14 @@ async function send(): Promise<void> {
             durationMS: data.durationMS,
             pending: false,
           })
+          const toolDurationMS = validDuration(data.durationMS)
+          if (toolDurationMS !== undefined) {
+            const current = currentMessage()
+            patchProgress(assistantID, {
+              status: 'running',
+              durationMS: (current?.progress?.durationMS || 0) + toolDurationMS,
+            })
+          }
           break
         }
         case 'approval_required': {
@@ -487,8 +771,19 @@ async function send(): Promise<void> {
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
-            content: data.content || current?.content || '',
             approval: { runID: data.runID, inboxID: data.inboxID, tool: data.tool, args: data.args },
+          })
+          const hasClassifiedCommentary = Boolean(current?.progress?.trace.some(block => block.kind === 'commentary'))
+          if (!hasClassifiedCommentary && data.content && !current?.content) {
+            // Older servers do not emit assistant_message boundaries. Keep the
+            // legacy concatenated content visible only when there is no typed
+            // trace that would make it duplicate commentary.
+            patchMessage(assistantID, { content: data.content })
+          }
+          patchProgress(assistantID, {
+            status: 'waiting',
+            ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+            ...(validDuration(data.durationMS) !== undefined ? { durationMS: validDuration(data.durationMS) } : {}),
           })
           liveRunID = data.runID
           liveRunSessionID = sessionID.value
@@ -499,7 +794,22 @@ async function send(): Promise<void> {
           const data = event.data as DoneData
           flushNow(serial)
           const current = currentMessage()
-          patchMessage(assistantID, { content: data.content || current?.content || '', usage: data.usage })
+          const status = data.status === undefined
+            ? 'completed'
+            : progressStatusForRunPhase(data.status) || 'failed'
+          const finalContent = data.finalContent !== undefined
+            ? data.finalContent
+            : current?.content || data.content || ''
+          patchMessage(assistantID, {
+            content: finalContent,
+            usage: data.usage,
+            ...(data.finishedAt ? { createdAt: data.finishedAt } : {}),
+          })
+          patchProgress(assistantID, {
+            status,
+            ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+            ...(validDuration(data.durationMS) !== undefined ? { durationMS: validDuration(data.durationMS) } : {}),
+          })
           liveRunID = ''
           liveRunSessionID = ''
           break
@@ -507,7 +817,15 @@ async function send(): Promise<void> {
         case 'error': {
           const data = event.data as ErrorData
           flushNow(serial)
+          const status = data.status === undefined
+            ? 'failed'
+            : progressStatusForRunPhase(data.status) || 'failed'
           patchMessage(assistantID, { error: data.message || 'stream error' })
+          patchProgress(assistantID, {
+            status,
+            ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+            ...(validDuration(data.durationMS) !== undefined ? { durationMS: validDuration(data.durationMS) } : {}),
+          })
           liveRunID = ''
           liveRunSessionID = ''
           break
@@ -517,9 +835,11 @@ async function send(): Promise<void> {
   } catch (error) {
     if (!streamIsCurrent(serial, controller, name, api)) return
     flushNow(serial)
+    const clientStopped = (error as Error).name === 'AbortError' && stopRequested.value
     patchMessage(assistantID, {
-      error: (error as Error).name === 'AbortError' ? 'Stopped.' : `Chat failed: ${(error as Error).message}`,
+      error: clientStopped ? 'Stopping…' : `Chat failed: ${(error as Error).message}`,
     })
+    patchProgress(assistantID, { status: clientStopped ? 'stopping' : 'failed' })
   } finally {
     if (!streamIsCurrent(serial, controller, name, api)) return
     flushNow(serial)
@@ -607,10 +927,12 @@ async function cancelOrphan(): Promise<void> {
   }
 }
 
-function switchSession(id: string): void {
-  if (!id || id === sessionID.value || streaming.value) return
+async function switchSession(id: string): Promise<void> {
+  if (!id || id === sessionID.value || streaming.value || selectingSessionID.value) return
   claimChatOwnership()
+  selectingSessionID.value = id
   messageReadSerial += 1
+  messagesLoading.value = false
   sessionID.value = id
   remember(id)
   messages.value = []
@@ -618,13 +940,18 @@ function switchSession(id: string): void {
   resetOrphanRead()
   liveRunID = ''
   liveRunSessionID = ''
-  void loadMessages(id)
+  try {
+    await loadMessages(id)
+  } finally {
+    if (selectingSessionID.value === id) selectingSessionID.value = ''
+  }
 }
 
 function newChat(): void {
   if (streaming.value) return
   claimChatOwnership()
   messageReadSerial += 1
+  messagesLoading.value = false
   sessionID.value = newSessionID()
   remember(sessionID.value)
   messages.value = []
@@ -635,8 +962,17 @@ function newChat(): void {
   void nextTick(() => composer.value?.focus())
 }
 
-async function deleteSession(): Promise<void> {
-  const id = sessionID.value
+function selectConversation(id: string): void {
+  closeMobileRail()
+  void switchSession(id)
+}
+
+function createConversation(): void {
+  closeMobileRail()
+  newChat()
+}
+
+async function deleteSession(id = sessionID.value): Promise<void> {
   if (!id || streaming.value || deletingSessionID.value) return
   deletingSessionID.value = id
   const authority = captureAuthority()
@@ -650,11 +986,16 @@ async function deleteSession(): Promise<void> {
     })
     if (!ok || !authorityIsCurrent(authority)) return
     await authority.api.deleteSession(name, id)
-    if (!authorityIsCurrent(authority) || sessionID.value !== id) return
+    if (!authorityIsCurrent(authority) || props.name !== name) return
     toast('ok', 'Chat deleted.')
     sessionReadSerial += 1
-    messageReadSerial += 1
+    // No replacement list read follows deletion. Clear the invalidated
+    // request's loading state so a pending background refresh cannot strand
+    // the rail in its retrying state.
+    sessionsLoading.value = false
     sessions.value = sessions.value.filter(session => session.id !== id)
+    if (sessionID.value !== id) return
+    messageReadSerial += 1
     messages.value = []
     messagesHasSnapshot.value = false
     resetOrphanRead()
@@ -662,7 +1003,7 @@ async function deleteSession(): Promise<void> {
     remember(sessionID.value)
     await loadMessages(sessionID.value)
   } catch (error) {
-    if (authorityIsCurrent(authority) && sessionID.value === id) toast('error', `Delete failed: ${(error as Error).message}`)
+    if (authorityIsCurrent(authority) && props.name === name) toast('error', `Delete failed: ${(error as Error).message}`)
   } finally {
     if (deletingSessionID.value === id) deletingSessionID.value = ''
   }
@@ -674,6 +1015,20 @@ function onServerEvent(event: Event): void {
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id
   if (!watched || !TERMINAL_RUN_PHASES.has(detail.data.phase || '')) return
+  const status = progressStatusForRunPhase(detail.data.phase)
+  if (status) {
+    const runData = detail.data as ServerEvent['data'] & { startedAt?: string }
+    messages.value = messages.value.map(message => {
+      if (message.role !== 'assistant' || message.runID !== detail.data.id) return message
+      return {
+        ...message,
+        progress: progressPatch(message, {
+          status,
+          ...(runData.startedAt ? { startedAt: runData.startedAt } : {}),
+        }),
+      }
+    })
+  }
   orphanReadSerial += 1
   if (watchedLive) {
     liveRunID = ''
@@ -723,6 +1078,7 @@ function resizeComposer(): void {
 
 function onComposerKeydown(event: KeyboardEvent): void {
   if (event.isComposing || composing) return
+  if (streaming.value) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     void send()
@@ -737,12 +1093,18 @@ watch([() => props.store, () => props.api, () => props.name], () => {
   bindServer(props.store)
   void openAgent()
 }, { flush: 'post' })
+watch(() => conversationRail.value?.expanded, (expanded) => {
+  if (expanded !== false || !mobileRailOpen.value || !isNarrowViewport()) return
+  mobileRailOpen.value = false
+  void nextTick(() => mobileRailTrigger.value?.focus())
+})
 watch(revision, () => queueMicrotask(maybeAutoSend))
 watch(messages, scrollToBottom)
 
 onMounted(() => {
   mounted = true
   bindServer(props.store)
+  window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
 })
 
@@ -751,6 +1113,7 @@ onBeforeUnmount(() => {
   initializedFor = ''
   invalidateReads()
   invalidateStream()
+  window.removeEventListener('resize', syncMobileRailViewport)
   bindServer(null)
 })
 
@@ -760,147 +1123,209 @@ defineExpose({
 </script>
 
 <template>
-  <div class="agents-chat k-card">
-    <div class="agents-chat-head">
-      <FormSelect
-        class="agents-session-picker"
-        :model-value="sessionID"
-        :options="sessionSelectOptions"
-        :labelledby="sessionLabelID"
-        :disabled="streaming"
-        @update:model-value="switchSession"
-      />
-      <span :id="sessionLabelID" class="sr-only">Chat session</span>
-      <button class="k-icon-action" type="button" aria-label="New chat" title="New chat" :disabled="streaming" @click="newChat">
-        <Plus aria-hidden="true" />
+  <div class="agents-chat-shell">
+    <AIConversationHeader
+      class="agents-chat-head"
+      :class="{ 'agents-chat-head--agent': $slots.heading }"
+      aria-label="Conversation controls"
+    >
+      <button
+        ref="mobileRailTrigger"
+        class="agents-mobile-rail-toggle"
+        type="button"
+        aria-controls="agents-conversation-rail"
+        :aria-label="$slots.heading ? 'Open conversations' : undefined"
+        :aria-expanded="mobileRailOpen ? 'true' : 'false'"
+        @click="toggleMobileRail"
+      >
+        <MessageSquare aria-hidden="true" />
+        <template v-if="!$slots.heading">
+          <span>Conversations</span>
+          <span class="agents-mobile-rail-current">{{ activeSessionLabel }}</span>
+        </template>
       </button>
       <button
-        class="k-icon-action agents-iconbtn-danger"
+        class="agents-desktop-rail-toggle"
         type="button"
-        :aria-label="deletingSessionID ? 'Deleting this chat' : 'Delete this chat'"
-        :title="deletingSessionID ? 'Deleting this chat…' : 'Delete this chat'"
-        :aria-busy="deletingSessionID ? 'true' : undefined"
-        :disabled="streaming || !!deletingSessionID"
-        @click="deleteSession"
+        aria-label="Toggle conversation panel"
+        title="Toggle conversation panel"
+        :aria-expanded="conversationRailExpanded"
+        aria-controls="agents-conversation-rail"
+        @click="toggleDesktopRail"
       >
-        <LoaderCircle v-if="deletingSessionID" class="agents-spinner k-spin" aria-hidden="true" />
-        <Trash2 v-else aria-hidden="true" />
+        <PanelLeft aria-hidden="true" />
       </button>
-    </div>
-
-    <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-      <span><AlertCircle aria-hidden="true" /> Could not load chats: {{ sessionsError }}</span>
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
-        <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
-      </button>
-    </div>
-    <div v-else-if="sessionsError" class="k-stale" role="status">
-      Could not refresh chats. Showing the last loaded chats. {{ sessionsError }}
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
-        <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
-      </button>
-    </div>
-    <div v-else-if="sessionsLoading && !sessionsHasSnapshot" class="k-loading-reveal muted" role="status">Loading chats…</div>
-
-    <div v-if="!hasModel" class="agents-warn-banner">
-      No model assigned — pick a model credential in the Config pane to start chatting.
-    </div>
-
-    <div v-if="orphanRun && !streaming" class="agents-orphan-banner" role="status">
-      <Clock aria-hidden="true" />
-      <span class="agents-orphan-text">
-        This chat has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
-      </span>
-      <button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
-        View progress
-      </button>
-      <button
-        class="k-btn k-btn--ghost secondary"
-        type="button"
-        :disabled="orphanCancelBusyID === orphanRun.id"
-        :aria-busy="orphanCancelBusyID === orphanRun.id ? 'true' : undefined"
-        @click="cancelOrphan"
-      >
-        <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner k-spin" aria-hidden="true" />
-        {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop it' }}
-      </button>
-    </div>
-
-    <div v-if="orphanError && !orphanHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-      <span><AlertCircle aria-hidden="true" /> Could not check for an active run: {{ orphanError }}</span>
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
-        <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
-      </button>
-    </div>
-    <div v-else-if="orphanError" class="k-stale" role="status">
-      Could not refresh run status. Showing the last loaded status. {{ orphanError }}
-      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
-        <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
-      </button>
-    </div>
-
-    <div v-if="loadError && !messagesHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-      <span><AlertCircle aria-hidden="true" /> Could not load this chat: {{ loadError }}</span>
-      <button class="k-btn k-btn--ghost secondary" type="button" @click="loadMessages(sessionID)">
-        <RefreshCw aria-hidden="true" /> Retry
-      </button>
-    </div>
-    <div v-else-if="loadError" class="k-stale" role="status">
-      Could not refresh this chat. Showing the last loaded transcript. {{ loadError }}
-      <button class="k-dashboard-action" type="button" @click="loadMessages(sessionID)">Retry</button>
-    </div>
-
-    <div ref="log" class="agents-log" :aria-busy="streaming" @scroll="onScroll">
-      <ChatMessageView
-        v-for="message in messages"
-        :key="message.id"
-        :message="message"
-        :announce="message.role === 'assistant' && message.streaming"
-        :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
-        @approval="resolveApproval($event.inboxID, $event.decision)"
-      />
-      <p v-if="messagesHasSnapshot && messages.length === 0" class="muted">No messages yet. Say hi.</p>
-    </div>
-
-    <form class="agents-composer" @submit.prevent="send">
-      <div class="agents-composer-surface">
-        <textarea
-          ref="composer"
-          v-model="draft"
-          class="agents-composer-input"
-          rows="3"
-          :aria-label="`Message ${name}`"
-          :placeholder="`Message ${name}…  (Enter to send, Shift+Enter for a newline)`"
-          :disabled="!hasModel"
-          @input="resizeComposer"
-          @compositionstart="onCompositionStart"
-          @compositionend="onCompositionEnd"
-          @keydown="onComposerKeydown"
-        ></textarea>
-        <button
-          v-if="streaming"
-          class="k-btn k-btn--primary agents-composer-primary agents-stop is-stop"
-          type="button"
-          :title="stopRequested ? 'Stopping generation…' : 'Stop generating'"
-          :aria-label="stopRequested ? 'Stopping generation' : 'Stop generating'"
-          :aria-busy="stopRequested ? 'true' : undefined"
-          :disabled="stopRequested"
-          @click="stop"
-        >
-          <LoaderCircle v-if="stopRequested" class="agents-spinner k-spin" aria-hidden="true" />
-          <Square v-else aria-hidden="true" />
-        </button>
-        <button
-          v-else
-          class="k-btn k-btn--primary agents-composer-primary"
-          type="submit"
-          title="Send"
-          aria-label="Send"
-          :disabled="!hasModel || !draft.trim()"
-        >
-          <ArrowUp aria-hidden="true" />
-        </button>
+      <slot name="leading" />
+      <slot name="heading" :active-session-label="activeSessionLabel">
+        <div class="agents-chat-title">
+          <strong>Conversation</strong>
+          <span class="muted">{{ activeSessionLabel }}</span>
+        </div>
+      </slot>
+      <span v-if="selectingSessionID" class="muted" role="status">Loading conversation…</span>
+      <div v-if="$slots.actions" class="agents-chat-actions agents-detail-actions" role="group" aria-label="Agent workspace actions">
+        <slot name="actions" />
       </div>
-    </form>
+    </AIConversationHeader>
+
+    <AIConversationLayout class="agents-chat" aria-label="Agent conversation">
+      <div
+        class="agents-conversation-rail-shell"
+        :class="{ 'is-open': mobileRailOpen }"
+        @keydown.capture.esc="handleRailShellEscape"
+      >
+        <button
+          v-if="mobileRailOpen"
+          class="agents-mobile-rail-backdrop"
+          type="button"
+          aria-label="Close conversations"
+          @click="closeMobileRail"
+        ></button>
+        <AIConversationRail
+          ref="conversationRail"
+          panel-id="agents-conversation-rail"
+          :threads="conversationItems"
+          :active-thread-i-d="sessionID"
+          :disabled="streaming"
+          :loading="sessionsLoading && !sessionsHasSnapshot"
+          :selecting-thread-i-d="selectingSessionID"
+          :actioning-thread-i-d="deletingSessionID"
+          :capabilities="{ create: true, delete: true }"
+          :storage-scope="sessionRailScope"
+          delete-label="Delete chat"
+          @select="selectConversation"
+          @create="createConversation"
+          @delete="deleteSession"
+        />
+      </div>
+
+      <div class="agents-chat-main">
+        <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+          <span><AlertCircle aria-hidden="true" /> Could not load conversations: {{ sessionsError }}</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
+            <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
+          </button>
+        </div>
+        <div v-else-if="sessionsError" class="k-stale" role="status">
+          Could not refresh conversations. Showing the last loaded conversations. {{ sessionsError }}
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
+            <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
+          </button>
+        </div>
+
+        <div v-if="!hasModel" class="agents-warn-banner">
+          No model assigned — pick a model credential in the Config tab to start chatting.
+        </div>
+
+        <div v-if="orphanRun && !streaming" class="agents-orphan-banner" role="status">
+          <Clock aria-hidden="true" />
+          <span class="agents-orphan-text">
+            This conversation has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
+          </span>
+          <button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
+            View progress
+          </button>
+          <button
+            class="k-btn k-btn--ghost secondary"
+            type="button"
+            :disabled="orphanCancelBusyID === orphanRun.id"
+            :aria-busy="orphanCancelBusyID === orphanRun.id ? 'true' : undefined"
+            @click="cancelOrphan"
+          >
+            <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner k-spin" aria-hidden="true" />
+            {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop it' }}
+          </button>
+        </div>
+
+        <div v-if="orphanError && !orphanHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+          <span><AlertCircle aria-hidden="true" /> Could not check for an active run: {{ orphanError }}</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+            <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
+          </button>
+        </div>
+        <div v-else-if="orphanError" class="k-stale" role="status">
+          Could not refresh run status. Showing the last loaded status. {{ orphanError }}
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+            <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
+          </button>
+        </div>
+
+        <div v-if="loadError && !messagesHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
+          <span><AlertCircle aria-hidden="true" /> Could not load this conversation: {{ loadError }}</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" @click="loadMessages(sessionID)">
+            <RefreshCw aria-hidden="true" /> Retry
+          </button>
+        </div>
+        <div v-else-if="loadError" class="k-stale" role="status">
+          Could not refresh this conversation. Showing the last loaded transcript. {{ loadError }}
+          <button class="k-dashboard-action" type="button" @click="loadMessages(sessionID)">Retry</button>
+        </div>
+
+        <div
+          ref="log"
+          class="agents-log k-ai-transcript-scroll"
+          :aria-busy="streaming"
+          aria-label="Conversation transcript"
+          role="region"
+          tabindex="-1"
+          @scroll="onScroll"
+        >
+          <AITranscript>
+            <ChatMessageView
+              v-for="message in messages"
+              :key="message.id"
+              :message="message"
+              :announce="message.role === 'assistant' && message.streaming"
+              :show-run-link="runLinkMessageIDs.has(message.id)"
+              :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
+              @approval="resolveApproval($event.inboxID, $event.decision)"
+              @view-run="emit('navigate', { kind: 'run', id: $event })"
+            />
+            <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
+            <p v-if="messagesHasSnapshot && messages.length === 0" class="muted">No messages yet. Say hi.</p>
+          </AITranscript>
+        </div>
+
+        <form class="agents-composer" @submit.prevent="send">
+          <AIComposer class="agents-composer-surface" :disabled="!hasModel">
+            <template #editor>
+              <textarea
+                ref="composer"
+                v-model="draft"
+                class="agents-composer-input"
+                rows="3"
+                :aria-label="`Message ${name}`"
+                aria-describedby="agents-composer-help"
+                :title="composerHelp"
+                :placeholder="`Message ${name}…`"
+                :disabled="!hasModel"
+                @input="resizeComposer"
+                @compositionstart="onCompositionStart"
+                @compositionend="onCompositionEnd"
+                @keydown="onComposerKeydown"
+              ></textarea>
+              <span id="agents-composer-help" class="sr-only">{{ composerHelp }}</span>
+            </template>
+            <template #primary>
+              <AIPrimaryAction
+                v-if="streaming"
+                class="agents-composer-primary agents-stop is-stop"
+                :state="primaryActionState"
+                type="button"
+                :disabled="stopRequested"
+                @click="stop"
+              />
+              <AIPrimaryAction
+                v-else
+                class="agents-composer-primary"
+                state="send"
+                type="submit"
+                :disabled="!hasModel || !draft.trim()"
+              />
+            </template>
+          </AIComposer>
+        </form>
+      </div>
+    </AIConversationLayout>
   </div>
 </template>

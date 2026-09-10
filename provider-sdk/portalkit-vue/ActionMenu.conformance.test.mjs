@@ -7,6 +7,10 @@ const component = readFileSync(new URL('./ActionMenu.vue', import.meta.url), 'ut
 const stylesheet = readFileSync(new URL('../portalkit/faros-ui.css', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../portalkit/styles.ts', import.meta.url), 'utf8')
 const resourceTable = readFileSync(new URL('./ResourceTable.vue', import.meta.url), 'utf8')
+const cssVersion = stylesheet.match(/--faros-ui-core-version:\s*(\d+);/)?.[1]
+const runtimeVersion = styles.match(/FAROS_UI_CORE_VERSION = (\d+)/)?.[1]
+assert.ok(cssVersion, 'canonical stylesheet declares a version')
+assert.ok(runtimeVersion, 'style handoff declares a version')
 
 function sourceBlock(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker)
@@ -41,6 +45,7 @@ function styleNode(id, textContent = '') {
 function executableStylesHelper({ canonical = '1', version = '', existingNodes = [] } = {}) {
   const computedValues = new Map([
     ['--faros-ui-canonical', canonical],
+    ['--faros-ui-core-version', version],
     ['--faros-ui-version', version],
   ])
   const nodes = new Map(existingNodes.map(node => [node.id, node]))
@@ -67,7 +72,7 @@ function executableStylesHelper({ canonical = '1', version = '', existingNodes =
         // A real browser incorporates the newly appended stylesheet into the
         // computed root style before a second provider bundle can run.
         computedValues.set('--faros-ui-canonical', '1')
-        computedValues.set('--faros-ui-version', node.getAttribute('data-faros-ui-version') ?? '')
+        computedValues.set('--faros-ui-core-version', node.getAttribute('data-faros-ui-core-version') ?? '')
         return node
       },
     },
@@ -224,16 +229,16 @@ test('ActionMenu geometry survives broad provider descendant constraints', () =>
 })
 
 test('standalone style recovery distinguishes a stale host stylesheet', () => {
-  assert.match(styles, /export const FAROS_UI_VERSION_MARKER = '--faros-ui-version'/)
-  assert.match(styles, /export const FAROS_UI_VERSION = 3/)
+  assert.match(styles, /export const FAROS_UI_CORE_VERSION_MARKER = '--faros-ui-core-version'/)
+  assert.equal(runtimeVersion, cssVersion, 'style handoff and canonical CSS must use the same version')
   assert.match(styles, /getPropertyValue\(FAROS_UI_CANONICAL_MARKER\)\.trim\(\) === FAROS_UI_CANONICAL_VALUE/)
   assert.match(styles, /function hasRequiredVersion\(value: string\): boolean/)
-  assert.match(styles, /Number\.isFinite\(version\) && version >= FAROS_UI_VERSION/)
-  assert.match(styles, /hasRequiredVersion\(styles\.getPropertyValue\(FAROS_UI_VERSION_MARKER\)\)/)
+  assert.match(styles, /Number\.isFinite\(version\) && version >= FAROS_UI_CORE_VERSION/)
+  assert.match(styles, /hasRequiredVersion\(styles\.getPropertyValue\(FAROS_UI_CORE_VERSION_MARKER\)\)/)
   assert.doesNotMatch(styles, /if \(document\.getElementById\(FAROS_UI_STYLE_ID\) \|\| hostStylesAreLoaded\(\)\) return/)
   assert.match(styles, /const fallbackStyleID = document\.getElementById\(FAROS_UI_STYLE_ID\)/)
-  assert.match(styles, /`\$\{FAROS_UI_STYLE_ID\}-v\$\{FAROS_UI_VERSION\}`/)
-  assert.match(styles, /style\.setAttribute\('data-faros-ui-version', String\(FAROS_UI_VERSION\)\)/)
+  assert.match(styles, /`\$\{FAROS_UI_STYLE_ID\}-v\$\{FAROS_UI_CORE_VERSION\}`/)
+  assert.match(styles, /style\.setAttribute\('data-faros-ui-core-version', String\(FAROS_UI_CORE_VERSION\)\)/)
 })
 
 test('standalone style recovery executes the stale/current/newer host matrix', () => {
@@ -241,19 +246,19 @@ test('standalone style recovery executes the stale/current/newer host matrix', (
   const stale = executableStylesHelper({ existingNodes: [staleHost] })
   stale.ensureFarosUIStyles()
   assert.equal(stale.document.head.children.length, 1)
-  assert.equal(stale.document.head.children[0].id, 'k-faros-ui-v3')
+  assert.equal(stale.document.head.children[0].id, `k-faros-ui-v${cssVersion}`)
   assert.equal(stale.document.head.children[0].textContent, 'current-faros-ui')
-  assert.equal(stale.document.head.children[0].getAttribute('data-faros-ui-version'), '3')
+  assert.equal(stale.document.head.children[0].getAttribute('data-faros-ui-core-version'), cssVersion)
   assert.equal(staleHost.textContent, 'stale-host-css')
   assert.equal(staleHost.getAttribute('data-faros-ui-version'), null)
   stale.ensureFarosUIStyles()
   assert.equal(stale.document.head.children.length, 1)
 
-  const current = executableStylesHelper({ version: '3' })
+  const current = executableStylesHelper({ version: cssVersion })
   current.ensureFarosUIStyles()
   assert.equal(current.document.head.children.length, 0)
 
-  const newerHost = executableStylesHelper({ version: '4', existingNodes: [styleNode('k-faros-ui', 'future-host-css')] })
+  const newerHost = executableStylesHelper({ version: String(Number(cssVersion) + 1), existingNodes: [styleNode('k-faros-ui', 'future-host-css')] })
   newerHost.ensureFarosUIStyles()
   assert.equal(newerHost.document.head.children.length, 0)
   assert.equal(newerHost.document.getElementById('k-faros-ui').textContent, 'future-host-css')

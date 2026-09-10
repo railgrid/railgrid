@@ -98,10 +98,30 @@ type ToolEvent struct {
 	Duration time.Duration
 }
 
+// AssistantMessage is one model response attempt in a tool-call turn. The
+// callback is deliberately emitted only after a successful streamed response
+// has been concatenated, because only then is HasToolCalls authoritative. A
+// failed stream still emits an attempt with Complete=false so callers can
+// account for the model time without classifying partial deltas as a final
+// answer. Duration is the active model time for this response; callers that
+// need a whole-turn duration can accumulate it with ToolEvent.Duration.
+type AssistantMessage struct {
+	Content      string
+	HasToolCalls bool
+	Complete     bool
+	Duration     time.Duration
+}
+
 // Callbacks stream run progress to the caller. All fields are optional.
 type Callbacks struct {
 	// OnDelta receives assistant content deltas as they stream.
 	OnDelta func(string)
+	// OnAssistantMessage fires once a streamed model response attempt finishes.
+	// Complete is false when streaming failed, in which case Content may be
+	// incomplete and must not be treated as a final answer. Successful callbacks
+	// run before the response's tool calls are executed, when any, and before the
+	// loop asks the model for its next response.
+	OnAssistantMessage func(AssistantMessage)
 	// OnToolStart fires when a tool call begins executing.
 	OnToolStart func(id, name, args string)
 	// OnTool fires when a tool call completes (or fails).
@@ -119,6 +139,12 @@ type Callbacks struct {
 func (c Callbacks) delta(s string) {
 	if c.OnDelta != nil {
 		c.OnDelta(s)
+	}
+}
+
+func (c Callbacks) assistantMessage(message AssistantMessage) {
+	if c.OnAssistantMessage != nil {
+		c.OnAssistantMessage(message)
 	}
 }
 
@@ -167,9 +193,16 @@ type Usage struct {
 // turn did not complete: a gated tool call paused the run, and Interrupt
 // carries the checkpoint to resume from once the user decides.
 type Result struct {
-	Content   string
-	Usage     Usage
-	Interrupt *Interrupt
+	// Content retains the historical concatenated turn result, including model
+	// commentary and the tool-limit notice when a turn is truncated.
+	Content string
+	// FinalContent is the presentation answer for the latest model boundary. It
+	// is the latest model response on success, or the standalone tool-limit
+	// notice when the loop exhausts its allowance without a final response.
+	// Interrupts and errors leave it empty.
+	FinalContent string
+	Usage        Usage
+	Interrupt    *Interrupt
 }
 
 // Engine runs turns against a chat model. It holds no per-request state, so a
@@ -319,12 +352,18 @@ func (e *Engine) loop(
 					Iter:     iter,
 				})
 			}
+			started := time.Now()
 			full, err := e.streamOnce(ctx, active, in, content, usage, cb.OnDelta)
 			if err != nil {
+				cb.assistantMessage(AssistantMessage{Duration: time.Since(started)})
 				return Result{}, err
 			}
+			cb.assistantMessage(AssistantMessage{
+				Content: full.Content, HasToolCalls: len(full.ToolCalls) > 0,
+				Complete: true, Duration: time.Since(started),
+			})
 			if len(full.ToolCalls) == 0 {
-				return Result{Content: content.String(), Usage: *usage}, nil
+				return Result{Content: content.String(), FinalContent: full.Content, Usage: *usage}, nil
 			}
 			// Feed the assistant's tool-call message back, then execute each
 			// call and append its observation.
@@ -393,8 +432,9 @@ func (e *Engine) loop(
 
 	// Ran out of iterations mid-loop: surface what we have plus a marker so
 	// the transcript is honest about the truncation.
-	content.WriteString("\n\n[stopped: reached the tool-call limit for one turn]")
-	return Result{Content: content.String(), Usage: *usage}, nil
+	const toolCallLimitNotice = "[stopped: reached the tool-call limit for one turn]"
+	content.WriteString("\n\n" + toolCallLimitNotice)
+	return Result{Content: content.String(), FinalContent: toolCallLimitNotice, Usage: *usage}, nil
 }
 
 // execute runs one tool call, preferring the rich executor. The returned error

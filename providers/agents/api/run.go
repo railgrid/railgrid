@@ -76,10 +76,23 @@ func budgetName(b *agentsv1alpha1.AgentBudget) string {
 // runResult is the outcome of a non-streaming agent execution. A non-nil
 // Pending means the run paused on an approval gate rather than finishing.
 type runResult struct {
-	RunID   string       `json:"runID"`
-	Content string       `json:"content"`
-	Pending *pendingInfo `json:"pending,omitempty"`
-	Usage   struct {
+	RunID   string `json:"runID"`
+	Content string `json:"content"`
+	// FinalContent is the last model response only, except that a turn stopped at
+	// the tool-call limit carries the engine's standalone explanatory notice.
+	// Content intentionally keeps the historical concatenated result used by
+	// background callers and the run record; the chat projection uses
+	// FinalContent so completed commentary is not shown a second time as the
+	// answer.
+	FinalContent string         `json:"finalContent,omitempty"`
+	Pending      *pendingInfo   `json:"pending,omitempty"`
+	Phase        store.RunPhase `json:"phase,omitempty"`
+	StartedAt    *time.Time     `json:"startedAt,omitempty"`
+	FinishedAt   *time.Time     `json:"finishedAt,omitempty"`
+	// DurationMS is active work accumulated from model response and tool
+	// callbacks. Approval/recovery idle time is intentionally excluded.
+	DurationMS int64 `json:"durationMS,omitempty"`
+	Usage      struct {
 		InputTokens  int64 `json:"inputTokens"`
 		OutputTokens int64 `json:"outputTokens"`
 		USDMicros    int64 `json:"usdMicros"`
@@ -102,6 +115,11 @@ type runCheckpoint struct {
 	InboxID       string            `json:"inboxID"`
 	SourceName    string            `json:"sourceName,omitempty"`
 	NotifyChannel string            `json:"notifyChannel,omitempty"`
+	// WorkedDurationMS is the active model/tool time already represented by the
+	// engine checkpoint. Keeping it beside the opaque engine payload lets a
+	// resumed run continue its timing without counting approval or recovery idle
+	// time, and does not require a store schema change.
+	WorkedDurationMS int64 `json:"workedDurationMS,omitempty"`
 }
 
 // taskRun bundles everything one agent execution needs. Creds reads the model
@@ -171,6 +189,12 @@ type taskRun struct {
 	OnDelta     func(string)
 	OnToolStart func(id, name, args string)
 	OnTool      func(engine.ToolEvent)
+	// OnRunStarted runs after the durable Running record is written. It is used
+	// by chat SSE to expose the server-owned start timestamp.
+	OnRunStarted func(startedAt time.Time)
+	// OnAssistantMessage receives complete model responses, after their tool-call
+	// status is known. The timestamp is assigned at the persistence boundary.
+	OnAssistantMessage func(engine.AssistantMessage, time.Time)
 }
 
 // delivery describes where this run's answer should go, for the run record. A
@@ -267,22 +291,30 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	// depth-limited worker has no spawn tool and must not be told to fan out.
 	msgs := s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
 
+	// The detached starter may have created a Pending record while this run was
+	// queued. Start the active turn clock only when executeTask is ready to write
+	// the durable Running record; queue/model/toolset setup is not worked time.
+	runStartedAt := time.Now().UTC()
 	_ = s.store.AppendMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-		Role: "user", Content: run.Task, CreatedAt: now,
+		Role: "user", Content: run.Task, CreatedAt: runStartedAt,
 	})
 	_ = s.store.SaveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
 		Delivery: run.delivery(),
-		Phase:    store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
+		Phase:    store.RunPhaseRunning, Input: run.Task, CreatedAt: runStartedAt, UpdatedAt: runStartedAt, StartedAt: &runStartedAt,
 	})
+	if run.OnRunStarted != nil {
+		run.OnRunStarted(runStartedAt)
+	}
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
-	cb := s.runCallbacks(ctx, run, sessionID)
+	tracker := newTurnProgressTracker(0)
+	cb := s.runCallbacks(ctx, run, sessionID, runStartedAt, tracker)
 	// Periodic checkpoints make a long run recoverable: if this replica dies, the
 	// sweep (api/sweep.go) resumes from the last one instead of losing the work.
-	cb.OnCheckpoint = s.checkpointRecorder(ctx, run, sessionID)
+	cb.OnCheckpoint = s.checkpointRecorder(ctx, run, sessionID, func() int64 { return tracker.durationMS() })
 	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, engine.TurnConfig{
 		MaxIters:            maxIters,
 		ContextBudgetTokens: turnContextBudget(modelName),
@@ -296,9 +328,13 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		if ctx.Err() != nil {
 			phase = store.RunPhaseAborted
 		}
-		s.finishRun(ctx, scope, runID, runOutcome{Phase: phase, Message: err.Error()}, end)
+		workedDurationMS := tracker.workedDurationMS()
+		persistCtx, cancelPersist := boundedPersistContext(ctx)
+		defer cancelPersist()
+		s.appendTurnTerminal(persistCtx, scope, run, sessionID, runStartedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), err.Error())
+		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: phase, Message: err.Error(), WorkedDurationMS: workedDurationMS}, end)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
-		return runResult{RunID: runID}, err
+		return runResult{RunID: runID, Content: tracker.partialText(), Phase: phase, StartedAt: &runStartedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, err
 	}
 
 	// Estimate cost from the catalog so budgets enforce dollars (not just
@@ -315,6 +351,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ck := runCheckpoint{
 			Engine: res.Interrupt.Checkpoint, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args,
 			InboxID: res.Interrupt.RequestID, SourceName: run.SourceName, NotifyChannel: run.NotifyChannel,
+			WorkedDurationMS: tracker.durationMS(),
 		}
 		ckJSON, _ := json.Marshal(ck)
 		if stored, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
@@ -323,11 +360,14 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 			stored.InputTokens = res.Usage.InputTokens
 			stored.OutputTokens = res.Usage.OutputTokens
 			stored.USDMicros = costMicros
+			stored.WorkedDurationMS = tracker.workedDurationMS()
 			stored.UpdatedAt = end
 			_ = s.store.SaveRun(ctx, scope, stored)
 		}
+		s.appendTurnTerminal(ctx, scope, run, sessionID, runStartedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
-		out := runResult{RunID: runID, Content: res.Content,
+		out := runResult{RunID: runID, Content: res.Content, Phase: store.RunPhasePendingApproval,
+			StartedAt: &runStartedAt, FinishedAt: &end, DurationMS: tracker.durationMS(),
 			Pending: &pendingInfo{InboxID: res.Interrupt.RequestID, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args}}
 		out.Usage.InputTokens = res.Usage.InputTokens
 		out.Usage.OutputTokens = res.Usage.OutputTokens
@@ -335,22 +375,23 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		return out, nil
 	}
 
-	_ = s.store.AppendMessage(ctx, scope, store.Message{
-		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-		Role: "assistant", Content: res.Content, CreatedAt: end,
-	})
+	finalContent := tracker.finalText(res.FinalContent)
+	s.appendTurnFinal(ctx, scope, run, sessionID, runStartedAt, end, tracker, finalContent)
 	// The answer goes on the run record too, so a programmatic reader (the parent
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
 	// phase instead of having to locate the session and dig out its last message.
 	body, sources := splitSources(res.Content)
 	fin := runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
-		Output: body, Sources: sources,
+		Output: body, Sources: sources, WorkedDurationMS: tracker.workedDurationMS(),
 	}
-	s.finishRun(ctx, scope, runID, fin, end)
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	s.finishRun(persistCtx, scope, runID, fin, end)
+	cancelPersist()
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 
-	out := runResult{RunID: runID, Content: res.Content}
+	out := runResult{RunID: runID, Content: res.Content, FinalContent: finalContent,
+		Phase: store.RunPhaseSucceeded, StartedAt: &runStartedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}
 	out.Usage.InputTokens = res.Usage.InputTokens
 	out.Usage.OutputTokens = res.Usage.OutputTokens
 	out.Usage.USDMicros = costMicros
@@ -418,15 +459,40 @@ func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
 	}
 }
 
-// runCallbacks chains the caller's streaming callbacks with tool-step
-// persistence: every completed tool call lands in the session transcript so
-// follow-up turns (and the transcript view) can see what the run actually did.
-func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string) engine.Callbacks {
+// runCallbacks chains the caller's streaming callbacks with transcript
+// persistence. Complete model responses that led to a tool call are persisted
+// immediately as commentary; the final response is persisted by executeTask
+// after the run reaches a terminal phase so it can carry authoritative timing.
+func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string, startedAt time.Time, tracker *turnProgressTracker) engine.Callbacks {
+	if tracker == nil {
+		tracker = newTurnProgressTracker(0)
+	}
 	return engine.Callbacks{
-		OnDelta:     run.OnDelta,
+		OnDelta: func(delta string) {
+			tracker.delta(delta)
+			if run.OnDelta != nil {
+				run.OnDelta(delta)
+			}
+		},
+		OnAssistantMessage: func(message engine.AssistantMessage) {
+			tracker.assistant(message)
+			at := time.Now().UTC()
+			if message.Complete && message.HasToolCalls && strings.TrimSpace(message.Content) != "" {
+				s.appendProgressMessage(ctx, run.Scope, store.Message{
+					ID: uuid.NewString(), AgentName: run.Agent.Name, SessionID: sessionID, RunID: run.RunID,
+					Role: "assistant", Content: safeTruncate(message.Content, maxStoredOutput),
+					Metadata:  turnMetadata("commentary", "running", startedAt, 0, message.Duration.Milliseconds(), ""),
+					CreatedAt: at,
+				})
+			}
+			if run.OnAssistantMessage != nil {
+				run.OnAssistantMessage(message, at)
+			}
+		},
 		OnToolStart: run.OnToolStart,
 		OnTool: func(ev engine.ToolEvent) {
-			_ = s.store.AppendMessage(ctx, run.Scope, store.Message{
+			tracker.tool(ev)
+			s.appendProgressMessage(ctx, run.Scope, store.Message{
 				ID: uuid.NewString(), AgentName: run.Agent.Name, SessionID: sessionID, RunID: run.RunID,
 				Role: "tool", Content: safeTruncate(ev.Result, 8*1024),
 				Metadata: map[string]any{
@@ -446,12 +512,13 @@ func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string
 // "" on success); Output/Sources carry the answer, so a caller reading the run
 // record gets the result and not just the phase.
 type runOutcome struct {
-	Phase      store.RunPhase
-	Message    string
-	Usage      engine.Usage
-	CostMicros int64
-	Output     string
-	Sources    []string
+	Phase            store.RunPhase
+	Message          string
+	Usage            engine.Usage
+	CostMicros       int64
+	Output           string
+	Sources          []string
+	WorkedDurationMS *int64
 }
 
 // finishRun stamps a run's terminal phase, result, usage, and timestamps, and
@@ -476,6 +543,13 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	if out.CostMicros > 0 {
 		stored.USDMicros = out.CostMicros
+	}
+	if out.WorkedDurationMS != nil {
+		value := *out.WorkedDurationMS
+		if value < 0 {
+			value = 0
+		}
+		stored.WorkedDurationMS = &value
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
@@ -593,6 +667,12 @@ func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mc
 	for _, m := range history {
 		switch m.Role {
 		case "assistant":
+			// Terminal presentation markers carry chat status/timing for the
+			// portal; they are not model prose and must not become empty turns on
+			// the next request.
+			if phase, _ := m.Metadata["turnPhase"].(string); phase == "terminal" {
+				continue
+			}
 			msgs = append(msgs, engine.Message{Role: engine.RoleAssistant, Content: m.Content})
 		case "tool":
 			// Replay persisted tool steps as compact context so a follow-up turn

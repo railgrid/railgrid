@@ -53,6 +53,37 @@ describe('edit routes', () => {
 })
 
 describe('agent automation routes', () => {
+  it('opens a bare agent route in Chat', () => {
+    const route: Route = { kind: 'agent', name: 'scout', tab: 'chat' }
+    expect(parseHash('#/agents/scout')).toEqual(route)
+    expect(hashFor(route)).toBe('#/agents/scout/chat')
+  })
+
+  it.each(['settings', 'flow', 'wiring'])('folds the legacy %s tab into Config', (legacyTab) => {
+    const route: Route = { kind: 'agent', name: 'scout', tab: 'config' }
+    expect(parseHash(`#/agents/scout/${legacyTab}`)).toEqual(route)
+    expect(hashFor(route)).toBe('#/agents/scout/config')
+  })
+
+  it('keeps unknown agent tabs on the primary Chat surface', () => {
+    expect(parseHash('#/agents/scout/unknown')).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
+  })
+
+  it.each<[string, Route]>([
+    ['#/agents/scout/tools', { kind: 'agent', name: 'scout', tab: 'tools' }],
+    ['#/agents/scout/automation', { kind: 'agent', name: 'scout', tab: 'automation' }],
+  ])('round-trips the %s workbench tab', (hash, route) => {
+    expect(parseHash(hash)).toEqual(route)
+    expect(hashFor(route)).toBe(hash)
+  })
+
+  it('round-trips an agent-scoped run detail route', () => {
+    const route: Route = { kind: 'agent', name: 'team/bot', tab: 'runs', runID: 'run/42' }
+    const hash = '#/agents/team%2Fbot/runs/run%2F42'
+    expect(parseHash(hash)).toEqual(route)
+    expect(hashFor(route)).toBe(hash)
+  })
+
   it.each<[string, Route]>([
     ['#/agents/team%2Fbot/schedules/create', { kind: 'automation', resource: 'schedule', agent: 'team/bot', action: 'create' }],
     ['#/agents/team%2Fbot/schedules/daily%2Fdigest/edit', { kind: 'automation', resource: 'schedule', agent: 'team/bot', action: 'edit', name: 'daily/digest' }],
@@ -65,8 +96,8 @@ describe('agent automation routes', () => {
   })
 
   it('does not mistake malformed automation paths for a focused form', () => {
-    expect(parseHash('#/agents/scout/schedules/create/extra')).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
-    expect(parseHash('#/agents/scout/triggers/edit')).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+    expect(parseHash('#/agents/scout/schedules/create/extra')).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
+    expect(parseHash('#/agents/scout/triggers/edit')).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
   })
 })
 
@@ -128,6 +159,6 @@ describe('hash history writes', () => {
   })
 
   it('does not throw on malformed externally supplied encoded segments', () => {
-    expect(parseHash('#/agents/%E0%A4%A')).toEqual({ kind: 'agent', name: '%E0%A4%A', tab: 'config' })
+    expect(parseHash('#/agents/%E0%A4%A')).toEqual({ kind: 'agent', name: '%E0%A4%A', tab: 'chat' })
   })
 })

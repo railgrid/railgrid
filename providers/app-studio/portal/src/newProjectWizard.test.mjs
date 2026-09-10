@@ -250,7 +250,9 @@ test('landing intake uses a compact Faros composer with concrete prompts and a r
   assert.match(appSource, /ref="landingImportDialogRef"[\s\S]*role="dialog"[\s\S]*tabindex="-1"/)
   assert.match(appSource, /ref="landingImportTriggerRef"/)
   assert.match(appSource, /<template #menu>[\s\S]*Import repository[\s\S]*landing-import-popover/)
-  assert.doesNotMatch(appSource, /<template #leading>/)
+  const landingComposerSource = appSource.match(/<AssistantPreProjectComposer[\s\S]*?<\/AssistantPreProjectComposer>/)?.[0]
+  assert.ok(landingComposerSource, 'landing composer remains present')
+  assert.doesNotMatch(landingComposerSource, /<template #leading>/)
   assert.match(appSource, /aria-haspopup="dialog"[\s\S]*aria-controls="landing-import-popover"[\s\S]*:aria-expanded="landingImportOpen"/)
   assert.match(appSource, /id="landing-import-popover"[\s\S]*role="dialog"[\s\S]*aria-label="Import an existing repository"/)
   assert.match(appSource, /Loading repositories…/)

@@ -2,7 +2,9 @@
   "version": 1,
   "canonicalRoots": [
     "provider-sdk/portalkit",
-    "provider-sdk/portalkit-vue"
+    "provider-sdk/portalkit-vue",
+    "provider-sdk/agentkit",
+    "provider-sdk/agentkit-vue"
   ],
   "providerRoots": [
     "portal",
@@ -11,7 +13,8 @@
   ],
   "vendoredSegments": [
     "portalkit",
-    "portalkit-vue"
+    "portalkit-vue",
+    "agentkit"
   ],
   "canonicalConsumerPaths": [
     "portal/src/assets/faros-ui.css"

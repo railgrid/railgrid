@@ -3,9 +3,9 @@ import {
   ensureFarosUIStyles,
   FAROS_UI_CANONICAL_MARKER,
   FAROS_UI_CANONICAL_VALUE,
+  FAROS_UI_CORE_VERSION,
+  FAROS_UI_CORE_VERSION_MARKER,
   FAROS_UI_STYLE_ID,
-  FAROS_UI_VERSION,
-  FAROS_UI_VERSION_MARKER,
 } from './portalkit/styles'
 
 interface FakeStyle {
@@ -54,7 +54,7 @@ function installFakeHost(initialVersion = ''): {
     getComputedStyle: () => ({
       getPropertyValue(name: string): string {
         if (name === FAROS_UI_CANONICAL_MARKER) return FAROS_UI_CANONICAL_VALUE
-        if (name === FAROS_UI_VERSION_MARKER) return version
+        if (name === FAROS_UI_CORE_VERSION_MARKER) return version
         return ''
       },
     }),
@@ -87,11 +87,11 @@ describe('PortalKit stylesheet compatibility', () => {
 
       expect(host.stale.textContent).toBe('stale host stylesheet')
       expect(host.appended).toHaveLength(1)
-      expect(host.appended[0].id).toBe(`${FAROS_UI_STYLE_ID}-v${FAROS_UI_VERSION}`)
+      expect(host.appended[0].id).toBe(`${FAROS_UI_STYLE_ID}-v${FAROS_UI_CORE_VERSION}`)
       expect(host.appended[0].attributes['data-faros-ui-source']).toBe('portalkit-fallback')
-      expect(host.appended[0].attributes['data-faros-ui-version']).toBe(String(FAROS_UI_VERSION))
+      expect(host.appended[0].attributes['data-faros-ui-core-version']).toBe(String(FAROS_UI_CORE_VERSION))
 
-      host.setVersion(String(FAROS_UI_VERSION))
+      host.setVersion(String(FAROS_UI_CORE_VERSION))
       ensureFarosUIStyles()
       expect(host.appended).toHaveLength(1)
     } finally {
@@ -99,7 +99,7 @@ describe('PortalKit stylesheet compatibility', () => {
     }
   })
 
-  it.each([String(FAROS_UI_VERSION), String(FAROS_UI_VERSION + 1)])(
+  it.each([String(FAROS_UI_CORE_VERSION), String(FAROS_UI_CORE_VERSION + 1)])(
     'accepts a current or newer host stylesheet version (%s)',
     version => {
       const host = installFakeHost(version)

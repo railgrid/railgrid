@@ -45,6 +45,7 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
   outputTokens: 300,
   usdMicros: 4200,
   createdAt: new Date().toISOString(),
+  workedDurationMS: 3400,
   durationMS: 3400,
   ...over,
 })
@@ -401,8 +402,41 @@ describe('RunDetail.vue', () => {
 
     expect(text(view.element.querySelector('.k-resource-page__title'))).toBe('Run')
     expect(text(view.element.querySelector('.k-resource-page__subtitle'))).toBe('pending-run')
-    expect(view.element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/activity')
+    const back = view.element.querySelector<HTMLAnchorElement>('.k-back-action')!
+    expect(back.getAttribute('href')).toBe('#/activity')
+    back.click()
+    expect(view.navigations).toEqual([{ kind: 'menu', menu: 'activity' }])
     expect(view.element.querySelector('.k-resource-page__loading')).not.toBeNull()
+  })
+
+  it('uses the owning agent Runs route and a compact h2 when embedded', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail()) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5', embeddedAgent: 'scout' })
+    const back = view.element.querySelector<HTMLAnchorElement>('.k-back-action')!
+
+    expect(text(back)).toBe('Runs')
+    expect(back.getAttribute('href')).toBe('#/agents/scout/runs')
+    expect(view.element.querySelector('h1.k-resource-page__title')).toBeNull()
+    expect(text(view.element.querySelector('h2.k-resource-page__title'))).toBe('Run')
+    expect(text(view.element.querySelector('.agents-run-heading-meta'))).toContain('r5')
+    expect(text(view.element.querySelector('.agents-run-heading-meta'))).toContain('scout')
+
+    back.click()
+    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'runs' }])
+  })
+
+  it('keeps an agent-scoped deep link honest when the run belongs elsewhere', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ agent: 'operator' })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5', embeddedAgent: 'scout' })
+    const mismatch = view.element.querySelector<HTMLElement>('.agents-run-mismatch')!
+    const globalLink = mismatch.querySelector<HTMLAnchorElement>('a')!
+
+    expect(text(mismatch)).toContain('belongs to agent operator')
+    expect(text(mismatch)).toContain('scoped to scout')
+    expect(globalLink.getAttribute('href')).toBe('#/activity/r5')
+    expect(view.element.querySelector('.agents-run-layout')).toBeNull()
+    expect(view.element.querySelector('.agents-run-inspector')).toBeNull()
+    expect(view.navigations).toEqual([])
   })
 
   it('renders trace/output/source behavior and expands tool steps', async () => {
@@ -410,32 +444,72 @@ describe('RunDetail.vue', () => {
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
 
     expect(text(view.element.querySelector('.k-resource-page__title'))).toBe('Run')
-    expect(view.element.querySelector('.k-resource-page__kind')).toBeNull()
+    expect(text(view.element.querySelector('.k-resource-page__kind'))).toBe('Run')
     expect(text(view.element.querySelector('.k-resource-page__subtitle'))).toBe('r5')
     expect(view.element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/activity')
     expect(text(view.element.querySelector('.agents-runmeta'))).toContain('scout')
-    expect(view.element.querySelectorAll('.agents-step')).toHaveLength(2)
-    expect(text(view.element.querySelector('[data-k-resource-section-card] h2'))).toBe('Output')
-    expect(text(view.element.querySelector('#run-input-heading'))).toBe('Input')
-    expect(text(view.element.querySelector('#run-steps-heading'))).toBe('Tool steps (2)')
+    expect(view.element.querySelector('.k-ai-message--user')).not.toBeNull()
+    expect(view.element.querySelector('.k-ai-message--assistant')).not.toBeNull()
+    expect(view.element.querySelectorAll('.k-ai-action-row')).toHaveLength(2)
+    expect(view.element.querySelector('.agents-run-main')).not.toBeNull()
+    expect(view.element.querySelector('.agents-run-main > .k-ai-transcript')).not.toBeNull()
+    expect(view.element.querySelector('.agents-run-inspector')).not.toBeNull()
     expect(view.element.querySelector('.agents-panel.k-card')).toBeNull()
-    expect(view.element.querySelectorAll('.agents-step')[1].className).toContain('is-err')
-    buttonWithText(view.element.querySelector('.agents-step')!, 'edges__pods_list').click()
+    expect(view.element.querySelectorAll('.k-ai-action-row')[1].className).toContain('k-ai-action-row--error')
+    buttonWithText(view.element.querySelector('.k-ai-action-row')!, 'edges__pods_list').click()
     await settleVue()
-    expect(text(view.element.querySelector('.agents-step-body'))).toContain('"ns"')
+    expect(text(view.element.querySelector('.k-ai-action-row__details'))).toContain('"ns"')
     expect(view.element.querySelector('.agents-body strong')?.textContent).toBe('Answer')
     expect(view.element.querySelector<HTMLAnchorElement>('.agents-runsources a')?.rel).toContain('noopener')
+
+    const inspectorToggle = view.element.querySelector<HTMLButtonElement>('.agents-run-inspector-toggle')!
+    expect(inspectorToggle.getAttribute('aria-expanded')).toBe('true')
+    inspectorToggle.click()
+    await settleVue()
+    expect(inspectorToggle.getAttribute('aria-expanded')).toBe('false')
+    expect(view.element.querySelector('.agents-run-inspector-panel')?.getAttribute('style')).toContain('display: none')
   })
 
   it('keeps secondary metadata inspectable beside the trace', async () => {
     const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ sessionID: 'session-full-id', parentRunID: 'parent-run-id', attempt: 2 })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
-    const facts = view.element.querySelector('.agents-run-aside')!
+    const facts = view.element.querySelector('.agents-run-inspector-section')!
     expect(text(facts)).toContain('session-full-id')
     expect([...facts.querySelectorAll('.agents-runmeta-cell')].map(cell => [...cell.children].map(child => text(child)))).toContainEqual(['attempt', '2'])
     buttonWithText(facts, 'parent-r').click()
     expect(view.navigations).toEqual([{ kind: 'run', id: 'parent-run-id' }])
     expect(text(view.element.querySelector('.agents-runmeta'))).toContain('1.2k in')
+  })
+
+  it('uses measured work for Worked for while retaining elapsed duration separately', async () => {
+    const completedApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      output: 'Done', workedDurationMS: 3400, durationMS: 30 * 60 * 1000,
+    })) })
+    const completed = await mount(RunDetail, { store: makeStore(completedApi), api: completedApi, runId: 'r5' })
+    expect(text(completed.element.querySelector('.k-ai-turn-progress'))).toContain('Worked for 3.4s')
+    expect(text(completed.element.querySelector('.agents-runmeta'))).toContain('30m 0s')
+
+    const legacyApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      workedDurationMS: undefined, durationMS: 30 * 60 * 1000,
+    })) })
+    const legacy = await mount(RunDetail, { store: makeStore(legacyApi), api: legacyApi, runId: 'r5' })
+    const legacyProgress = legacy.element.querySelector('.k-ai-turn-progress__label')!
+    expect(text(legacyProgress)).toBe('Worked')
+    expect(text(legacyProgress)).not.toContain('30m')
+
+    const measuredZeroApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      workedDurationMS: 0, durationMS: 30 * 60 * 1000,
+    })) })
+    const measuredZero = await mount(RunDetail, { store: makeStore(measuredZeroApi), api: measuredZeroApi, runId: 'r5' })
+    expect(text(measuredZero.element.querySelector('.k-ai-turn-progress__label'))).toBe('Worked for 0ms')
+
+    const pendingApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      phase: 'Pending', workedDurationMS: undefined, durationMS: undefined, startedAt: undefined,
+      createdAt: '2020-01-01T00:00:00Z',
+    })) })
+    const pending = await mount(RunDetail, { store: makeStore(pendingApi), api: pendingApi, runId: 'r5' })
+    expect(text(pending.element.querySelector('.k-ai-turn-progress'))).not.toContain('for')
+    expect(pending.element.querySelector('.k-ai-turn-progress')?.getAttribute('data-status')).toBe('pending')
   })
 
   it('keeps a loaded trace visible after a background refresh failure', async () => {
@@ -451,6 +525,50 @@ describe('RunDetail.vue', () => {
 
     expect(text(view.element.querySelector('.agents-runmeta'))).toContain('scout')
     expect(text(view.element.querySelector('.k-resource-page__stale'))).toContain('Showing the last successful result')
+  })
+
+  it('keeps an unknown step outcome unresolved in the shared action row', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      steps: [{ id: 'future', tool: 'future_tool', outcome: 'paused_by_new_policy', args: '{}' , at: new Date().toISOString() }],
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+
+    const step = view.element.querySelector('.k-ai-action-row')!
+    const activity = view.element.querySelector('.k-ai-activity__trigger')!
+    expect(step.classList.contains('k-ai-action-row--attention')).toBe(true)
+    expect(step.classList.contains('k-ai-action-row--error')).toBe(false)
+    expect(text(step)).toContain('Unknown outcome')
+    expect(text(step)).toContain('paused_by_new_policy')
+    expect(text(activity)).toContain('1 unresolved')
+    expect(activity.querySelector('.k-ai-activity__status--attention')).not.toBeNull()
+    expect(activity.querySelector('.k-ai-activity__status--busy')).toBeNull()
+  })
+
+  it('marks approval-gated steps as attention without a running spinner', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      phase: 'PendingApproval',
+      steps: [{ id: 'approval', tool: 'edges__pods_delete', outcome: 'pending_approval', args: '{}', at: new Date().toISOString() }],
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+
+    const activity = view.element.querySelector('.k-ai-activity__trigger')!
+    expect(text(activity)).toContain('1 approval request')
+    expect(activity.querySelector('.k-ai-activity__status--attention')).not.toBeNull()
+    expect(activity.querySelector('.k-ai-activity__status--busy')).toBeNull()
+  })
+
+  it('shows historical approval requests without implying a terminal run is still waiting', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      phase: 'Succeeded',
+      steps: [{ id: 'approval', tool: 'edges__pods_delete', outcome: 'pending_approval', args: '{}', at: new Date().toISOString() }],
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const activity = view.element.querySelector('.k-ai-activity__trigger')!
+    expect(text(activity)).toContain('1 approval request')
+    expect(text(view.element.querySelector('.k-ai-action-row'))).toContain('Approval requested')
+    expect(text(activity)).not.toContain('awaiting approval')
+    expect(activity.querySelector('.k-ai-activity__status--attention')).toBeNull()
+    expect(activity.querySelector('.k-ai-activity__status--busy')).toBeNull()
   })
 
   it('discards an older response when the run identity changes', async () => {
@@ -617,9 +735,8 @@ describe('RunDetail.vue', () => {
 
     expect(text(view.element.querySelector('.agents-err'))).toContain('model unavailable')
     expect(text(view.element)).toContain('Partial output')
-    expect(text(view.element.querySelector('.agents-body'))).toContain('got this far')
+    expect(text(view.element.querySelector('.agents-run-output-message .agents-body'))).toContain('got this far')
     expect(view.element.querySelector('.agents-runsources a')?.getAttribute('href')).toBe('https://example.com/evidence')
-    expect(view.element.querySelector('.agents-run-failure')!.compareDocumentPosition(view.element.querySelector('.agents-body')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('summarizes running, queued, approval-gated, completed, and failed children', async () => {
@@ -678,7 +795,7 @@ describe('RunDetail.vue', () => {
     store.agents.data[0].spec.tools!.interactive!.families = ['core', 'spawn']
     store.dispatchEvent(new Event('change'))
     await settleVue()
-    expect(text(view.element)).toContain('this run answered directly')
+    expect(text(view.element)).toContain('answered this request directly')
   })
 })
 
@@ -762,7 +879,7 @@ describe('Automation.vue', () => {
     expect(createSchedule).toHaveBeenCalledTimes(1)
     pendingCreate.resolve({ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron' } })
     await settleVue()
-    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'config' }])
+    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'automation' }])
   })
 
   it('associates and announces a required automation name error', async () => {
@@ -829,15 +946,15 @@ describe('Automation.vue', () => {
     ])
   })
 
-  it('returns a routed automation form to Agent Config on cancel', async () => {
+  it('returns a routed automation form to the Schedules & triggers tab on cancel', async () => {
     const api = stubApi()
     const store = storeWithAgent(api)
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
 
-    expect(view.element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/config')
+    expect(view.element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/automation')
     buttonWithText(view.element, 'Cancel').click()
 
-    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'config' }])
+    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'automation' }])
   })
 
   it('does not navigate from a late save after its routed form unmounts', async () => {

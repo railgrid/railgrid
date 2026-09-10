@@ -62,6 +62,66 @@ function populateToolsets(element: AgentsElement, toolsets: Toolset[]): void {
 }
 
 describe('public Agents shell routing', () => {
+  it('follows host sidebar navigation without a native hashchange and preserves deep links', async () => {
+    const element = await mountShell('#/agents/scout/config', ctx({ subPath: '' }))
+    expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+    const layouts: boolean[] = []
+    element.addEventListener('faros-layout-change', event => {
+      layouts.push((event as CustomEvent<{ fullBleed: boolean }>).detail.fullBleed)
+    })
+
+    // Host Vue Router commits the sidebar destination with pushState. The
+    // provider receives fresh context, but the path-only subPath stays empty.
+    history.pushState(null, '', location.pathname)
+    element.farosContext = ctx({ subPath: '' })
+    await settleVue(6)
+    expect(element.route).toEqual({ kind: 'menu', menu: 'agents' })
+    expect(location.hash).toBe('')
+    expect(layouts.at(-1)).toBe(false)
+    expect(element.querySelector('.agents-nav-wrap')).not.toBeNull()
+
+    history.replaceState(null, '', '#/agents/scout/chat')
+    element.farosContext = ctx({ subPath: '' })
+    await settleVue(6)
+    expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
+    expect(location.hash).toBe('#/agents/scout/chat')
+    expect(layouts.at(-1)).toBe(true)
+    element.farosContext = ctx({ subPath: '', theme: 'dark' })
+    await settleVue(6)
+    expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
+    element.remove()
+  })
+
+  it('requests workspace layout on agent routes and releases it on exit and authority loss', async () => {
+    const element = await mountShell()
+    const layouts: boolean[] = []
+    element.addEventListener('faros-layout-change', event => {
+      layouts.push((event as CustomEvent<{ fullBleed: boolean }>).detail.fullBleed)
+    })
+    const routeTo = async (hash: string) => {
+      history.replaceState(null, '', hash)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      await settleVue(6)
+    }
+    await routeTo('#/agents/scout/chat')
+    expect(layouts.at(-1)).toBe(true)
+    layouts.length = 0
+    await routeTo('#/agents/scout/config')
+    expect(layouts.at(-1)).toBe(true)
+    layouts.length = 0
+    element.farosContext = ctx({ subPath: 'agents/scout/config' })
+    await settleVue(6)
+    expect(layouts.at(-1)).toBe(true)
+    await routeTo('#/agents')
+    expect(layouts.at(-1)).toBe(false)
+    await routeTo('#/agents/scout/runs')
+    expect(layouts.at(-1)).toBe(true)
+    element.farosContext = null
+    await settleVue(6)
+    expect(layouts.at(-1)).toBe(false)
+    element.remove()
+  })
+
   it('preserves a dashboard run deep link when the host supplies context after mounting', async () => {
     history.replaceState(null, '', '#/activity/run%2F42')
     const element = document.createElement('faros-provider-agents') as AgentsElement
@@ -272,19 +332,21 @@ describe('public Agents shell routing', () => {
     expect(location.hash).toBe('#/agents/scout/schedules/create')
     expect(push).toHaveBeenCalledWith(null, '', '#/agents/scout/schedules/create')
     expect(text(element.querySelector('h1'))).toBe('New schedule')
-    expect(element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/config')
+    expect(element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/automation')
     expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
 
     buttonWithText(element, 'Cancel').click()
     await settleVue(5, 5)
-    expect(location.hash).toBe('#/agents/scout/config')
-    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/config')
+    expect(location.hash).toBe('#/agents/scout/automation')
+    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/automation')
     expect(text(element)).toContain('Schedules')
     expect(text(element)).toContain('Triggers')
-    expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
+    const workspaceTitle = element.querySelector<HTMLElement>('[data-agent-workspace-title]')
+    expect(workspaceTitle).not.toBeNull()
+    expect(document.activeElement).toBe(workspaceTitle)
   })
 
-  it('deep-links an automation edit form and returns to Config after save', async () => {
+  it('deep-links an automation edit form and returns to Schedules & triggers after save', async () => {
     const element = await mountShell('#/agents/scout/triggers/on%2Fissue/edit')
     const store = element.store!
     store.agents.data = [agentFixture('scout')]
@@ -311,9 +373,11 @@ describe('public Agents shell routing', () => {
     await settleVue(7, 120)
 
     expect(element.api!.patchTrigger).toHaveBeenCalledWith('on/issue', expect.objectContaining({ task: 'new task' }))
-    expect(location.hash).toBe('#/agents/scout/config')
-    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/config')
-    expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
+    expect(location.hash).toBe('#/agents/scout/automation')
+    expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/automation')
+    const workspaceTitle = element.querySelector<HTMLElement>('[data-agent-workspace-title]')
+    expect(workspaceTitle).not.toBeNull()
+    expect(document.activeElement).toBe(workspaceTitle)
   })
 
   it('keeps an automation edit deep link useful while loading and when missing', async () => {

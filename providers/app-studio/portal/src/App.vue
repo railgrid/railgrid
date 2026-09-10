@@ -30,7 +30,6 @@ import {
   Search,
   Send,
   Settings2,
-  Square,
   Plug,
   TriangleAlert,
   Trash2,
@@ -43,7 +42,19 @@ import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ToastHost from './portalkit/ToastHost.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import Tabs from './portalkit/Tabs.vue'
+import AIConversationTurn from './agentkit/AIConversationTurn.vue'
+import AITurnProgress from './agentkit/AITurnProgress.vue'
+import AITimestamp from './agentkit/AITimestamp.vue'
+import AIInterrupt from './agentkit/AIInterrupt.vue'
+import AIComposer from './agentkit/AIComposer.vue'
+import AIPrimaryAction from './agentkit/AIPrimaryAction.vue'
+import AIConversationIdentity from './agentkit/AIConversationIdentity.vue'
+import AIConversationLayout from './agentkit/AIConversationLayout.vue'
+import AITranscript from './agentkit/AITranscript.vue'
+import AIWorkbenchTabs from './agentkit/AIWorkbenchTabs.vue'
+import AIPaneDivider from './agentkit/AIPaneDivider.vue'
 import LayoutSelector from './portalkit/LayoutSelector.vue'
+import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import { useDelayedLoading } from './portalkit/useDelayedLoading'
@@ -93,7 +104,6 @@ import {
   type AssistantProgress,
 } from './assistantProgress'
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
-import { assistantVerificationBanner } from './assistantVerification'
 import {
   appendAssistantCommentaryToMessage,
   assistantContentPartsFromThreadItem,
@@ -135,9 +145,12 @@ import {
 } from './assistantAnnotationDraft'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
+import { isValidTimestamp } from './agentkit/timestamp'
+import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
+import type { AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import CodeExplorer from './CodeExplorer.vue'
-import ThreadRail from './ThreadRail.vue'
+import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
@@ -227,6 +240,7 @@ import {
 import StatusBadge from './portalkit/StatusBadge.vue'
 import ReleasePipeline from './ReleasePipeline.vue'
 import ProjectHistory from './ProjectHistory.vue'
+const AIWorkbenchLauncher = defineAsyncComponent(() => import('./agentkit/AIWorkbenchLauncher.vue'))
 const ModelsSettings = defineAsyncComponent({
   loader: () => import('./ModelsSettings.vue'),
   delay: 0,
@@ -533,86 +547,6 @@ assistantMarkdown.renderer.rules.link_open = (tokens, index, options, env, self)
   token.attrSet('rel', 'noopener noreferrer')
   return defaultLinkOpenRule ? defaultLinkOpenRule(tokens, index, options, env, self) : self.renderToken(tokens, index, options)
 }
-const assistantMarkdownClass = [
-  'max-w-none',
-  'overflow-x-auto',
-  '[&>*:first-child]:mt-0',
-  '[&>*:last-child]:mb-0',
-  '[&_a]:text-accent',
-  '[&_a]:underline',
-  '[&_a]:underline-offset-2',
-  '[&_blockquote]:my-2',
-  '[&_blockquote]:border-l-2',
-  '[&_blockquote]:border-border-default',
-  '[&_blockquote]:pl-3',
-  '[&_blockquote]:text-text-secondary',
-  '[&_code]:rounded',
-  '[&_code]:border',
-  '[&_code]:border-border-subtle',
-  '[&_code]:bg-surface-overlay',
-  '[&_code]:px-1',
-  '[&_code]:py-0.5',
-  '[&_code]:text-[12px]',
-  '[&_h1]:mb-2',
-  '[&_h1]:mt-3',
-  '[&_h1]:text-[18px]',
-  '[&_h1]:font-semibold',
-  '[&_h1]:leading-6',
-  '[&_h1]:text-text-primary',
-  '[&_h2]:mb-1.5',
-  '[&_h2]:mt-3',
-  '[&_h2]:text-[16px]',
-  '[&_h2]:font-semibold',
-  '[&_h2]:leading-6',
-  '[&_h2]:text-text-primary',
-  '[&_h3]:mb-1',
-  '[&_h3]:mt-2.5',
-  '[&_h3]:text-[14px]',
-  '[&_h3]:font-semibold',
-  '[&_h3]:leading-5',
-  '[&_h3]:text-text-primary',
-  '[&_h4]:mb-1',
-  '[&_h4]:mt-2',
-  '[&_h4]:font-semibold',
-  '[&_h4]:text-text-primary',
-  '[&_hr]:my-3',
-  '[&_hr]:border-border-subtle',
-  '[&_li]:my-1',
-  '[&_ol]:my-2',
-  '[&_ol]:list-decimal',
-  '[&_ol]:pl-5',
-  '[&_p]:my-2',
-  '[&_pre]:my-2',
-  '[&_pre]:overflow-x-auto',
-  '[&_pre]:rounded-md',
-  '[&_pre]:border',
-  '[&_pre]:border-border-subtle',
-  '[&_pre]:bg-surface-overlay',
-  '[&_pre]:p-3',
-  '[&_pre_code]:border-0',
-  '[&_pre_code]:bg-transparent',
-  '[&_pre_code]:p-0',
-  '[&_strong]:font-semibold',
-  '[&_strong]:text-text-primary',
-  '[&_table]:my-2',
-  '[&_table]:w-full',
-  '[&_table]:border-collapse',
-  '[&_td]:border',
-  '[&_td]:border-border-subtle',
-  '[&_td]:px-2',
-  '[&_td]:py-1',
-  '[&_th]:border',
-  '[&_th]:border-border-subtle',
-  '[&_th]:px-2',
-  '[&_th]:py-1',
-  '[&_th]:text-left',
-  '[&_th]:font-semibold',
-  '[&_th]:text-text-primary',
-  '[&_ul]:my-2',
-  '[&_ul]:list-disc',
-  '[&_ul]:pl-5',
-].join(' ')
-
 const projects = ref<Project[]>([])
 const projectDeletion = createProjectDeletionController()
 const APP_STUDIO_ICON_URL = '/ui/providers/app-studio/icon.svg'
@@ -647,6 +581,10 @@ const assistantSkillsWarnings = ref<string[]>([])
 let assistantSkillsLoadSerial = 0
 
 const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
+const assistantConversationRailStorageScope = computed(() => {
+  const projectName = selected.value?.name?.trim() || ''
+  return projectName ? assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName)) : ''
+})
 watch(
   () => [
     selected.value?.name ?? '',
@@ -794,6 +732,7 @@ const assistantComposerRef = ref<{
 const threadRailRef = ref<{
   open?: () => void
   openAndFocus?: () => void
+  close?: (options?: { restoreFocus?: boolean }) => void
   expanded?: boolean
   layoutWidth?: number
   panelID?: string
@@ -991,7 +930,6 @@ const reviewedGitConnection = ref('')
 const createGitError = ref('')
 const setupCompletionVisible = ref(false)
 const messagesRef = ref<HTMLDivElement | null>(null)
-const expandedMessageTimestampID = ref<string | null>(null)
 const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
 const assistantDurationNowMs = ref(Date.now())
 const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespace: 'app-studio' })
@@ -999,7 +937,6 @@ const assistantPlanAnnouncement = ref('')
 const promptRef = ref<{ focus: () => void; setSelectionRange: (start: number, end: number) => void } | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const splitRegionRef = ref<HTMLDivElement | null>(null)
-const splitResizeDividerRef = ref<HTMLElement | null>(null)
 const splitRegionWidth = ref(0)
 const splitResizing = ref(false)
 const toolHostRef = ref<HTMLDivElement | null>(null)
@@ -2551,6 +2488,22 @@ const activeWorkbenchTab = computed<WorkbenchTabDescriptor | null>(() => {
   return workbench.value.tabs.find((tab) => tab.id === workbench.value.activeTabID) ?? workbench.value.tabs[0] ?? null
 })
 
+const workbenchTabItems = computed<AIWorkbenchTabView[]>(() => workbench.value.tabs.map((tab) => ({
+  id: tab.id,
+  controlId: workbenchTabControlID(tab),
+  dataTabId: tab.id,
+  title: tab.title,
+  selected: workbench.value.activeTabID === tab.id,
+  active: workbench.value.activeTabID === tab.id,
+  dragged: draggedWorkbenchTabID.value === tab.id,
+  dragOver: dragOverWorkbenchTabID.value === tab.id,
+  dropPlacement: dragOverWorkbenchTabID.value === tab.id ? dragOverWorkbenchTabPlacement.value : undefined,
+  draggable: true,
+  controls: workbenchTabPanelID(tab),
+  tabindex: workbench.value.activeTabID === tab.id ? 0 : -1,
+  closeable: tab.closeable,
+})))
+
 // Keep the complete catalog for the Providers tab and for tabs opened from it.
 // Only the direct launcher/landing promotion layer omits provider resource
 // views that App Studio previously elevated itself.
@@ -2584,13 +2537,21 @@ const activeProviderTool = computed<ProviderTool | null>(() => {
 
 const workbenchLauncherQueryNormalized = computed(() => workbenchLauncherQuery.value.trim().toLowerCase())
 
-const launcherExistingTabs = computed(() => {
+const launcherExistingTabs = computed<AIWorkbenchLauncherItemView[]>(() => {
   const q = workbenchLauncherQueryNormalized.value
-  return workbench.value.tabs.filter((tab) => {
-    if (tab.id === workbench.value.activeTabID) return false
-    if (!q) return true
-    return `${tab.title} ${tab.subtitle ?? ''}`.toLowerCase().includes(q)
-  })
+  return workbench.value.tabs
+    .filter((tab) => {
+      if (tab.id === workbench.value.activeTabID) return false
+      if (!q) return true
+      return `${tab.title} ${tab.subtitle ?? ''}`.toLowerCase().includes(q)
+    })
+    .map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      subtitle: tab.subtitle || (tab.kind === 'preview' ? 'Preview your app' : 'Open tab'),
+      icon: workbenchTabIcon(tab),
+      ...(tab.kind === 'provider' && tab.providerTool?.iconURL ? { iconURL: tab.providerTool.iconURL } : {}),
+    }))
 })
 
 const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
@@ -6934,6 +6895,10 @@ function toggleThreadPanel(event?: MouseEvent) {
   threadRailRef.value?.toggle?.(returnFocus)
 }
 
+function closeThreadPanel() {
+  threadRailRef.value?.close?.()
+}
+
 function previewThreadPanel() {
   threadRailRef.value?.previewEnter?.()
 }
@@ -6947,7 +6912,11 @@ function openWorkbenchLauncher() {
   openBuiltInWorkbenchTab('launcher')
 }
 
-function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
+function openWorkbenchLauncherItem(itemOrID: WorkbenchLauncherItem | string) {
+  const item = typeof itemOrID === 'string'
+    ? launcherSuggestedItems.value.find((candidate) => candidate.id === itemOrID)
+    : itemOrID
+  if (!item) return
   revealWorkbenchPane()
   if (item.providerTool) {
     workbench.value = selectWorkbenchLauncherProviderTool(workbench.value, item.providerTool)
@@ -7004,6 +6973,21 @@ function dropWorkbenchTab(event: DragEvent, tab: WorkbenchTabDescriptor) {
   clearWorkbenchTabDragState()
 }
 
+function startWorkbenchTabDragByID(tabID: string, event: DragEvent) {
+  const tab = workbench.value.tabs.find((item) => item.id === tabID)
+  if (tab) startWorkbenchTabDrag(event, tab)
+}
+
+function dragOverWorkbenchTabByID(tabID: string, event: DragEvent) {
+  const tab = workbench.value.tabs.find((item) => item.id === tabID)
+  if (tab) dragOverWorkbenchTab(event, tab)
+}
+
+function dropWorkbenchTabByID(tabID: string, event: DragEvent) {
+  const tab = workbench.value.tabs.find((item) => item.id === tabID)
+  if (tab) dropWorkbenchTab(event, tab)
+}
+
 function clearWorkbenchTabDragState() {
   draggedWorkbenchTabID.value = null
   dragOverWorkbenchTabID.value = null
@@ -7015,19 +6999,6 @@ function workbenchTabDropPlacement(event: DragEvent): WorkbenchTabDropPlacement 
   if (!(target instanceof HTMLElement)) return 'before'
   const rect = target.getBoundingClientRect()
   return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before'
-}
-
-function workbenchTabButtonClass(tab: WorkbenchTabDescriptor): string {
-  const classes = workbench.value.activeTabID === tab.id
-    ? 'border-accent/40 bg-accent/10 text-accent'
-    : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary'
-  const dragClasses = [
-    draggedWorkbenchTabID.value === tab.id ? 'opacity-60' : '',
-    dragOverWorkbenchTabID.value === tab.id ? 'border-accent/60 bg-accent/10' : '',
-    dragOverWorkbenchTabID.value === tab.id && dragOverWorkbenchTabPlacement.value === 'after' ? 'shadow-[inset_-2px_0_0_var(--color-accent)]' : '',
-    dragOverWorkbenchTabID.value === tab.id && dragOverWorkbenchTabPlacement.value === 'before' ? 'shadow-[inset_2px_0_0_var(--color-accent)]' : '',
-  ].filter(Boolean).join(' ')
-  return dragClasses ? `${classes} ${dragClasses}` : classes
 }
 
 function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
@@ -7042,6 +7013,24 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'skills') return Plug
   if (tab.kind === 'launcher') return Plus
   return Wrench
+}
+
+function workbenchTabByID(tabID: string): WorkbenchTabDescriptor | null {
+  return workbench.value.tabs.find((tab) => tab.id === tabID) ?? null
+}
+
+function workbenchTabIconByID(tabID: string): Component {
+  const tab = workbenchTabByID(tabID)
+  return tab ? workbenchTabIcon(tab) : Wrench
+}
+
+function workbenchTabProviderIconURL(tabID: string): string | undefined {
+  const tab = workbenchTabByID(tabID)
+  return tab?.kind === 'provider' ? tab.providerTool?.iconURL : undefined
+}
+
+function workbenchTabIsReview(tabID: string): boolean {
+  return workbenchTabByID(tabID)?.kind === 'review'
 }
 
 function workbenchTabPanelID(tab: WorkbenchTabDescriptor): string {
@@ -7066,6 +7055,10 @@ function onWorkbenchTabKeydown(event: KeyboardEvent, tabID: string): void {
   const nextTab = tabs[nextIndex]
   activateWorkbenchTabByID(nextTab.id)
   void nextTick(() => document.getElementById(workbenchTabControlID(nextTab))?.focus())
+}
+
+function onWorkbenchTabKeydownByID(tabID: string, event: KeyboardEvent): void {
+  onWorkbenchTabKeydown(event, tabID)
 }
 
 async function requestDeleteProject(project: Project) {
@@ -8009,6 +8002,32 @@ function assistantProgressStopping(message: ProjectMessageView): boolean {
   return assistantRunStatusForMessage(message) === 'stopping'
 }
 
+/** Map the provider-owned run lifecycle onto AgentKit's neutral progress view. */
+function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgressStatus {
+  if (message.viewStatus === 'interrupted') return 'interrupted'
+  switch (assistantRunStatusForMessage(message)) {
+    case 'pending_permission':
+    case 'pending_input':
+      return 'waiting'
+    case 'running':
+      return 'running'
+    case 'stopping':
+      return 'stopping'
+    case 'completed':
+      return 'completed'
+    case 'failed':
+      return 'failed'
+    case 'interrupted':
+      return 'interrupted'
+    case 'aborted':
+      return 'aborted'
+    default:
+      // A persisted progress snapshot without an authoritative run status is
+      // unresolved; it must not be presented as actively running.
+      return 'pending'
+  }
+}
+
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
   return Boolean(message.progress || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
@@ -8049,6 +8068,8 @@ function observeAssistantWorkedDuration(message: ProjectMessage, run: { status?:
 }
 
 function assistantWorkedLabel(message: ProjectMessageView): string {
+  const progressStatus = assistantTurnProgressStatus(message)
+  if (progressStatus === 'pending' || progressStatus === 'waiting') return ''
   const status = assistantRunStatusForMessage(message)
   const durationMs = observeAssistantWorkedDuration(message, { status })
   return formatAssistantWorkedDuration(durationMs)
@@ -8364,15 +8385,6 @@ function projectTimestamp(project: Project): string {
   return formatRelativeTime(project.updatedAt ?? project.createdAt)
 }
 
-function messageTimestampLabel(message: ProjectMessageView): string {
-  if (expandedMessageTimestampID.value === message.id) return formatFullTime(message.createdAt)
-  return formatRelativeTime(message.createdAt, 'always')
-}
-
-function toggleMessageTimestamp(messageID: string) {
-  expandedMessageTimestampID.value = expandedMessageTimestampID.value === messageID ? null : messageID
-}
-
 function formatRelativeTime(value?: string | null, numeric: Intl.RelativeTimeFormatNumeric = 'auto'): string {
   if (!value) return ''
   const date = new Date(value)
@@ -8394,21 +8406,6 @@ function formatRelativeTime(value?: string | null, numeric: Intl.RelativeTimeFor
     }
   }
   return ''
-}
-
-function formatFullTime(value?: string | null): string {
-  if (!value) return ''
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(new Date(value))
-  } catch {
-    return value
-  }
 }
 
 function escapeHtml(value: string): string {
@@ -9159,7 +9156,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         workbenchVisible ? 'hidden workbench-conversation-entering' : 'flex workbench-conversation-leaving',
         splitResizing ? 'transition-none' : '',
       ]">
-        <header data-app-studio-titlebar class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3">
+        <header data-app-studio-titlebar class="k-ai-conversation-header flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3">
           <button
             type="button"
             class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -9168,6 +9165,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :aria-expanded="threadRailExpanded"
             aria-controls="app-studio-thread-rail"
             @click="toggleThreadPanel"
+            @keydown.esc.stop.prevent="closeThreadPanel"
             @pointerenter="previewThreadPanel"
             @pointerleave="closeThreadPanelPreview"
             @focusin="previewThreadPanel"
@@ -9175,44 +9173,56 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           >
             <PanelLeft class="h-4 w-4" :stroke-width="1.75" />
           </button>
-          <div class="mx-1 h-6 w-px shrink-0 bg-border-subtle" aria-hidden="true" />
-          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-            <img :src="APP_STUDIO_ICON_URL" alt="" class="h-4 w-4 object-contain" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <div v-if="!selected" class="shimmer h-3.5 w-32 rounded bg-surface-overlay" aria-hidden="true" />
-            <input
-              v-if="editingAssistantThreadTitle"
-              ref="assistantThreadTitleInput"
-              v-model="assistantThreadTitleDraft"
-              type="text"
-              class="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              aria-label="Rename thread"
-              :disabled="threadMutationBusy"
-              @keydown.enter.exact.prevent="commitAssistantThreadTitleRename"
-              @keydown.esc.stop.prevent="cancelAssistantThreadTitleRename"
-              @blur="commitAssistantThreadTitleRename"
-            />
-            <button
-              v-else
-              type="button"
-              class="flex max-w-full min-w-0 items-center rounded-sm text-left text-[13px] font-semibold text-text-primary transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
-              :disabled="!activeAssistantThread || threadActionsDisabled"
-              :title="activeAssistantThread ? `Rename thread: ${activeAssistantThreadTitle}` : undefined"
-              aria-label="Rename thread"
-              @click="beginAssistantThreadTitleRename"
-            >
-              <span class="truncate">{{ activeAssistantThreadTitle }}</span>
-            </button>
-            <div v-if="!selected" class="mt-2 shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
-            <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
-              <span class="truncate">{{ selected.displayName || selected.name || 'Project' }}</span>
-              <span aria-hidden="true">·</span>
-              <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
-              <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-              <button v-else type="button" class="text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
-            </div>
-          </div>
+          <ResourceBackLink
+            class="k-ai-conversation-back"
+            icon-only
+            :href="props.ctx?.basePath || '/ui/providers/app-studio'"
+            aria-label="Back to projects"
+            title="Back to projects"
+            @back="props.navigate('')"
+          />
+          <div class="k-ai-conversation-header__divider" aria-hidden="true" />
+          <AIConversationIdentity class="min-w-0 flex-1">
+            <template #icon>
+              <img :src="APP_STUDIO_ICON_URL" alt="" class="h-4 w-4 object-contain" />
+            </template>
+            <template #title>
+              <div v-if="!selected" class="shimmer h-3.5 w-32 rounded bg-surface-overlay" aria-hidden="true" />
+              <input
+                v-if="editingAssistantThreadTitle"
+                ref="assistantThreadTitleInput"
+                v-model="assistantThreadTitleDraft"
+                type="text"
+                class="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                aria-label="Rename thread"
+                :disabled="threadMutationBusy"
+                @keydown.enter.exact.prevent="commitAssistantThreadTitleRename"
+                @keydown.esc.stop.prevent="cancelAssistantThreadTitleRename"
+                @blur="commitAssistantThreadTitleRename"
+              />
+              <button
+                v-else
+                type="button"
+                class="flex max-w-full min-w-0 items-center rounded-sm text-left text-[13px] font-semibold text-text-primary transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!activeAssistantThread || threadActionsDisabled"
+                :title="activeAssistantThread ? `Rename thread: ${activeAssistantThreadTitle}` : undefined"
+                aria-label="Rename thread"
+                @click="beginAssistantThreadTitleRename"
+              >
+                <span class="truncate">{{ activeAssistantThreadTitle }}</span>
+              </button>
+            </template>
+            <template #context>
+              <div v-if="!selected" class="shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
+              <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
+                <span class="truncate">{{ selected.displayName || selected.name || 'Project' }}</span>
+                <span aria-hidden="true">·</span>
+                <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
+                <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
+                <button v-else type="button" class="text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
+              </div>
+            </template>
+          </AIConversationIdentity>
           <button
             ref="workbenchToggleRef"
             type="button"
@@ -9240,8 +9250,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-          <ThreadRail
+        <AIConversationLayout class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+          <AIConversationRail
             ref="threadRailRef"
             :threads="assistantThreads"
             :active-thread-i-d="activeAssistantThreadID"
@@ -9252,6 +9262,34 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :actioning-thread-i-d="threadActioningID"
             :disabled="threadActionsDisabled"
             :busy="threadMutationBusy"
+            :capabilities="{ create: true, pin: true, unread: true, archive: true }"
+            :labels="{
+              heading: 'Threads',
+              create: 'New thread',
+              createDisabled: 'Finish or stop the current run before starting another thread',
+              search: 'Search threads',
+              loading: 'Loading threads',
+              list: 'Assistant threads',
+              unread: 'Unread thread',
+              updating: 'Updating thread',
+              pin: 'Pin thread',
+              unpin: 'Unpin thread',
+              archive: 'Archive thread',
+              pinned: 'Pinned',
+              threads: 'Threads',
+              pinMenu: 'Pin',
+              unpinMenu: 'Unpin',
+              markRead: 'Mark read',
+              markUnread: 'Mark unread',
+              archiveMenu: 'Archive',
+              resize: 'Resize thread panel',
+              empty: 'No threads yet.',
+              emptySearch: 'No threads match this search.',
+            }"
+            :storage-scope="assistantConversationRailStorageScope"
+            overlay-target="#app-studio-overlay-root"
+            panel-id="app-studio-thread-rail"
+            aria-label="Project conversation threads"
             @select="selectAssistantThread"
             @create="createAssistantThread"
             @archive="archiveAssistantThread"
@@ -9291,7 +9329,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div class="relative min-h-0 flex-1">
           <div
             ref="messagesRef"
-            class="h-full overflow-auto px-4 py-3"
+            class="k-ai-transcript-scroll h-full"
             :class="activePlanMessage ? 'md:pb-16' : ''"
             :aria-busy="messageStreaming || conversationLoading || conversationRefreshing || assistantThreadOlderLoading"
             aria-label="Conversation transcript"
@@ -9376,7 +9414,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </div>
             </div>
           </div>
-          <div v-else class="mx-auto flex w-full max-w-[820px] flex-col gap-5">
+          <AITranscript v-else>
             <div v-if="assistantThreadOlderCursor || assistantThreadViewingOlderHistory || assistantThreadOlderError" class="flex flex-col items-center gap-2" role="group" aria-label="Older conversation history">
               <button
                 v-if="assistantThreadViewingOlderHistory"
@@ -9406,16 +9444,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 {{ assistantThreadOlderError }}
               </div>
             </div>
-            <div
+            <AIConversationTurn
               v-for="message in conversationMessages"
               :key="message.id"
-              class="flex w-full"
-              :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
+              :turn-id="message.id"
+              :role="message.role"
+              :bubble="message.role === 'user' && userMessageHasVisibleContent(message)"
+              :aria-label="message.role === 'user' ? 'Your message' : 'Assistant message'"
             >
-              <div
-                v-if="message.role === 'user'"
-                class="flex max-w-[86%] flex-col items-end gap-1 sm:max-w-[72%]"
-              >
+              <template v-if="message.role === 'user' && (assistantAttachmentsForMessage(message).length || assistantAnnotationsForMessage(message).length)" #before>
                 <AssistantMessageAttachments
                   :attachments="assistantAttachmentsForMessage(message)"
                   :ctx="props.ctx"
@@ -9426,11 +9463,110 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   :current-document-id="developmentPreviewAnnotationDocumentID"
                   :disclosure-id="`assistant-message-annotations-${message.id}`"
                 />
+              </template>
+              <template v-if="message.role === 'assistant' && assistantProgressHeaderVisible(message)" #progress>
+                <AITurnProgress
+                  v-if="message.progress"
+                  :turn-id="message.id"
+                  :region-id="assistantProgressRegionID(message.id)"
+                  :status="assistantTurnProgressStatus(message)"
+                  :duration="assistantWorkedLabel(message)"
+                  :interrupted="message.viewStatus === 'interrupted'"
+                  :expanded="assistantProgressExpanded(message)"
+                  @toggle="toggleAssistantProgress(message.id)"
+                >
+                  <template v-if="assistantTraceBlocks(message).length" #details>
+                    <template
+                      v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
+                      :key="traceBlock.key"
+                    >
+                      <AssistantActionLog
+                        v-if="traceBlock.kind === 'actions'"
+                        :message-id="`${message.id}-trace-${traceIndex}`"
+                        :items="traceBlock.items"
+                        :stopping="assistantProgressStopping(message)"
+                      />
+                      <div
+                        v-else
+                        class="k-ai-prose"
+                        v-html="renderMessageContent(traceBlock.message, 'assistant')"
+                      />
+                    </template>
+                  </template>
+                </AITurnProgress>
+                <AITurnProgress
+                  v-else
+                  :turn-id="message.id"
+                  :status="assistantTurnProgressStatus(message)"
+                  :duration="assistantWorkedLabel(message)"
+                  :interrupted="message.viewStatus === 'interrupted'"
+                />
+              </template>
+              <template
+                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || (message.actionFeed?.length && !message.progress) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
+                #default
+              >
                 <div
-                  v-if="userMessageHasVisibleContent(message)"
-                  class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[13px] leading-5 text-text-primary shadow-sm"
+                  v-if="message.role === 'user' && userMessageHasVisibleContent(message)"
                   v-html="renderMessageContent(message.content, message.role, message)"
                 />
+                <div
+                  v-else-if="message.role === 'assistant'"
+                >
+                  <AssistantPlanDisclosure
+                    v-if="assistantPlanDisclosureVisible(message)"
+                    :message-id="message.id"
+                    :plan="message.plan!"
+                  />
+                  <AssistantActionLog
+                    v-if="message.actionFeed?.length && !message.progress"
+                    :message-id="message.id"
+                    :items="message.actionFeed"
+                    :stopping="assistantProgressStopping(message)"
+                  />
+                  <div
+                    v-if="hasAssistantResponseContent(message)"
+                    class="k-ai-prose"
+                    :role="messageStreaming && activeAssistantRun?.activeMessageID === message.id ? 'status' : undefined"
+                    :aria-live="messageStreaming && activeAssistantRun?.activeMessageID === message.id ? 'polite' : undefined"
+                    aria-atomic="false"
+                    v-html="renderAssistantResponse(message)"
+                  />
+                  <div
+                    v-if="assistantRunErrorForMessage(message.id)"
+                    class="mt-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger"
+                    role="alert"
+                  >
+                    {{ assistantRunErrorForMessage(message.id) }}
+                  </div>
+                  <button
+                    v-if="canImplementPlan(message)"
+                    type="button"
+                    class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    @click="implementPlan(message)"
+                  >
+                    Implement plan
+                    <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+                  </button>
+                </div>
+              </template>
+              <template #interrupt>
+                <div
+                  v-if="message.role === 'assistant' && message.viewStatus === 'interrupted' && !message.progress"
+                  class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-text-muted"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  title="The assistant stopped before completing this turn"
+                >
+                  <TriangleAlert class="h-3 w-3 text-warning/80" :stroke-width="2" aria-hidden="true" />
+                  Interrupted
+                </div>
+              </template>
+              <template
+                v-if="message.role === 'user' && (assistantSkillsForMessage(message).length || assistantContextResourcesForMessage(message).length || isValidTimestamp(message.createdAt))"
+                #after
+              >
                 <div
                   v-if="!assistantContentPartsForMessage(message).length && assistantSkillsForMessage(message).length"
                   class="flex max-w-full flex-wrap justify-end gap-1.5"
@@ -9463,156 +9599,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <span class="max-w-24 truncate text-text-muted">{{ resource.resourceRef.kind }}</span>
                   </span>
                 </div>
-                <div class="group/timestamp relative max-w-full">
-                  <button
-                    type="button"
-                    class="max-w-full whitespace-nowrap px-1 text-[11px] leading-4 text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                    :title="formatFullTime(message.createdAt)"
-                    :aria-label="formatFullTime(message.createdAt)"
-                    @click="toggleMessageTimestamp(message.id)"
-                  >
-                    <time :datetime="message.createdAt">{{ messageTimestampLabel(message) }}</time>
-                  </button>
-                  <div
-                    v-if="expandedMessageTimestampID !== message.id"
-                    class="pointer-events-none absolute right-0 top-full [z-index:var(--app-studio-z-tooltip)] mt-1 whitespace-nowrap rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-[11px] leading-4 text-text-secondary opacity-0 shadow-lg transition group-hover/timestamp:opacity-100 group-focus-within/timestamp:opacity-100"
-                  >
-                    {{ formatFullTime(message.createdAt) }}
-                  </div>
-                </div>
-              </div>
-              <div
-                v-else
-                class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
-              >
-                <div
-                  v-if="assistantVerificationBanner(message.metadata)"
-                  role="alert"
-                  class="mb-3 rounded-md border px-3 py-2 text-[12.5px] leading-5"
-                  :class="assistantVerificationBanner(message.metadata)?.tone === 'error'
-                    ? 'border-danger/30 bg-danger-subtle text-danger'
-                    : 'border-warning/30 bg-warning/5 text-warning'"
-                  data-testid="assistant-verification-banner"
-                >
-                  <div class="flex items-center gap-1.5 font-semibold">
-                    <TriangleAlert class="h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
-                    <span>{{ assistantVerificationBanner(message.metadata)?.title }}</span>
-                  </div>
-                  <p class="mt-1 text-text-secondary">{{ assistantVerificationBanner(message.metadata)?.summary }}</p>
-                  <ul
-                    v-if="assistantVerificationBanner(message.metadata)?.blockers.length"
-                    class="mt-1 list-disc space-y-0.5 pl-5 text-text-secondary"
-                  >
-                    <li v-for="(blocker, blockerIndex) in assistantVerificationBanner(message.metadata)?.blockers" :key="blockerIndex">{{ blocker }}</li>
-                  </ul>
-                </div>
-                <template v-if="assistantProgressHeaderVisible(message)">
-                  <div class="mb-3 flex min-h-7 flex-wrap items-center gap-2 border-b border-border-subtle pb-1">
-                    <button
-                      v-if="assistantProgressClosed(message)"
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-md py-0.5 text-[12px] font-medium text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                      :aria-expanded="assistantProgressExpanded(message)"
-                      :aria-controls="assistantProgressRegionID(message.id)"
-                      :aria-label="`Worked for ${assistantWorkedLabel(message)}.${message.viewStatus === 'interrupted' ? ' Interrupted.' : ''} ${assistantProgressExpanded(message) ? 'Hide' : 'Show'} task details.`"
-                      @click="toggleAssistantProgress(message.id)"
-                    >
-                      <span>Worked for {{ assistantWorkedLabel(message) }}</span>
-                      <span v-if="message.viewStatus === 'interrupted'" class="inline-flex items-center gap-1 text-warning/80" title="The assistant stopped before completing this turn">
-                        <span class="text-text-muted" aria-hidden="true">·</span>
-                        <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
-                        <span>Interrupted</span>
-                      </span>
-                      <ChevronRight
-                        class="h-3.5 w-3.5 transition-transform"
-                        :class="assistantProgressExpanded(message) ? 'rotate-90' : ''"
-                        :stroke-width="1.75"
-                        aria-hidden="true"
-                      />
-                    </button>
-                    <span
-                      v-if="!assistantProgressClosed(message)"
-                      class="py-0.5 text-[12px] font-medium text-text-muted"
-                    >
-                      {{ assistantProgressStopping(message) ? 'Stopping after' : 'Working for' }} {{ assistantWorkedLabel(message) }}
-                    </span>
-                  </div>
-                  <div
-                    v-if="message.progress"
-                    v-show="assistantProgressExpanded(message)"
-                    :id="assistantProgressRegionID(message.id)"
-                    class="mb-3 space-y-3"
-                    :role="assistantProgressClosed(message) || assistantProgressStopping(message) ? undefined : 'log'"
-                    :aria-live="assistantProgressClosed(message) || assistantProgressStopping(message) ? undefined : 'polite'"
-                    :aria-relevant="assistantProgressClosed(message) ? undefined : 'additions'"
-                    aria-atomic="false"
-                  >
-                    <template
-                      v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
-                      :key="traceBlock.key"
-                    >
-                      <AssistantActionLog
-                        v-if="traceBlock.kind === 'actions'"
-                        :message-id="`${message.id}-trace-${traceIndex}`"
-                        :items="traceBlock.items"
-                        :stopping="assistantProgressStopping(message)"
-                      />
-                      <div
-                        v-else
-                        :class="assistantMarkdownClass"
-                        v-html="renderMessageContent(traceBlock.message, 'assistant')"
-                      />
-                    </template>
-                  </div>
-                </template>
-                <AssistantPlanDisclosure
-                  v-if="assistantPlanDisclosureVisible(message)"
-                  :message-id="message.id"
-                  :plan="message.plan!"
+                <AITimestamp
+                  v-if="isValidTimestamp(message.createdAt)"
+                  :value="message.createdAt"
                 />
-                <AssistantActionLog
-                  v-if="message.actionFeed?.length && !message.progress"
-                  :message-id="message.id"
-                  :items="message.actionFeed"
-                  :stopping="assistantProgressStopping(message)"
-                />
-                <div
-                  v-if="hasAssistantResponseContent(message)"
-                  :class="assistantMarkdownClass"
-                  :role="messageStreaming && activeAssistantRun?.activeMessageID === message.id ? 'status' : undefined"
-                  :aria-live="messageStreaming && activeAssistantRun?.activeMessageID === message.id ? 'polite' : undefined"
-                  aria-atomic="false"
-                  v-html="renderAssistantResponse(message)"
-                />
-                <div
-                  v-if="assistantRunErrorForMessage(message.id)"
-                  class="mt-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger"
-                  role="alert"
-                >
-                  {{ assistantRunErrorForMessage(message.id) }}
-                </div>
-                <button
-                  v-if="canImplementPlan(message)"
-                  type="button"
-                  class="mt-3 inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  @click="implementPlan(message)"
-                >
-                  Implement plan
-                  <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                </button>
-                <div
-                  v-if="message.viewStatus === 'interrupted' && !message.progress"
-                  class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-text-muted"
-                  role="status"
-                  aria-live="polite"
-                  aria-atomic="true"
-                  title="The assistant stopped before completing this turn"
-                >
-                  <TriangleAlert class="h-3 w-3 text-warning/80" :stroke-width="2" aria-hidden="true" />
-                  Interrupted
-                </div>
-              </div>
-            </div>
+              </template>
+            </AIConversationTurn>
             <div
               v-if="conversationWorkingLabel"
               class="flex w-full justify-start"
@@ -9632,7 +9624,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </span>
               </div>
             </div>
-            </div>
+          </AITranscript>
           </div>
 
           <AssistantPlanPopover
@@ -9644,137 +9636,110 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
-          <div
+          <AIInterrupt
             v-if="pendingFollowUp"
-            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+            class="mb-2"
+            kind="follow-up"
+            :busy="followUpBusyState(pendingFollowUp.interrupt)"
+            title="Clarification needed"
+            :description="pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.'"
+            :error="followUpError(pendingFollowUp.interrupt) || ''"
+            aria-label="Clarification needed"
           >
-            <div class="flex min-w-0 items-start gap-3">
-              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-                <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
-                <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                  {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
-                </div>
-                <div v-if="pendingFollowUp.interrupt.questions?.length" class="mt-3 grid gap-3">
-                  <div
-                    v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
-                    :key="question.id"
-                    class="rounded-xl border border-border-subtle bg-surface p-3"
-                  >
-                    <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
-                    <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
-                    <div v-if="question.options?.length" class="mt-2 grid gap-2">
-                      <button
-                        v-for="option in question.options"
-                        :key="option.label"
-                        type="button"
-                        class="rounded-md border px-3 py-2 text-left transition"
-                        :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
-                        :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                        @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
-                      >
-                        <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
-                        <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
-                      </button>
-                    </div>
-                    <input
-                      v-if="question.isOther !== false"
-                      class="mt-2 h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                      :aria-label="`${question.header || 'Clarification'} other answer`"
-                      placeholder="Other..."
-                      :value="followUpAnswer(pendingFollowUp.interrupt, question)"
-                      :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                      @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
-                    />
-                  </div>
-                </div>
-                <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
-                  {{ followUpError(pendingFollowUp.interrupt) }}
-                </div>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
+            <div v-if="pendingFollowUp.interrupt.questions?.length" class="grid gap-3">
+              <div
+                v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
+                :key="question.id"
+                class="rounded-xl border border-border-subtle bg-surface p-3"
+              >
+                <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
+                <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
+                <div v-if="question.options?.length" class="mt-2 grid gap-2">
                   <button
+                    v-for="option in question.options"
+                    :key="option.label"
                     type="button"
-                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
-                    @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+                    class="rounded-md border px-3 py-2 text-left transition"
+                    :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
+                    :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                    @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
                   >
-                    <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                    <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Continue
+                    <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
+                    <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
                   </button>
                 </div>
+                <input
+                  v-if="question.isOther !== false"
+                  class="mt-2 h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  :aria-label="`${question.header || 'Clarification'} other answer`"
+                  placeholder="Other..."
+                  :value="followUpAnswer(pendingFollowUp.interrupt, question)"
+                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
+                />
               </div>
             </div>
-          </div>
-          <div
+            <template #actions>
+              <button
+                type="button"
+                class="k-btn k-btn--primary"
+                :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
+                @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+              >
+                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Continue
+              </button>
+            </template>
+          </AIInterrupt>
+          <AIInterrupt
             v-else-if="pendingApproval"
-            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+            class="mb-2"
+            kind="approval"
+            :busy="Boolean(permissionBusyState(pendingApproval.interrupt))"
+            :invalid="pendingApproval.interrupt.execDisclosureInvalid"
+            :error="permissionError(pendingApproval.interrupt) || (pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable, so allowing this request is disabled. Deny it and retry.' : '')"
+            title="Approval required"
+            :description="pendingApproval.interrupt.description || 'Review this action before it runs.'"
+            aria-label="Approval required"
           >
-            <div class="flex min-w-0 items-start gap-3">
-              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-                <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="flex min-w-0 items-start justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
-                    <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                      {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
-                    </div>
-                    <AssistantExecDetails
-                      v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-                      :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-                      variant="approval"
-                    />
-                    <div
-                      v-if="pendingApproval.interrupt.execDisclosureInvalid"
-                      class="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-danger"
-                      role="alert"
-                    >
-                      <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
-                      <span>Command details are unavailable, so allowing this request is disabled. Deny it and retry.</span>
-                    </div>
-                  </div>
-                </div>
-                <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
-                  {{ permissionError(pendingApproval.interrupt) }}
-                </div>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
-                    :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
-                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
-                  >
-                    <Loader2
-                      v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
-                      class="h-3.5 w-3.5 animate-spin"
-                      :stroke-width="1.75"
-                    />
-                    <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Allow
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
-                  >
-                    <Loader2
-                      v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
-                      class="h-3.5 w-3.5 animate-spin"
-                      :stroke-width="1.75"
-                    />
-                    <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    Deny
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+            <AssistantExecDetails
+              v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+              :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+              variant="approval"
+            />
+            <template #actions>
+              <button
+                type="button"
+                class="k-btn k-btn--primary"
+                :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
+                :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
+                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
+              >
+                <Loader2
+                  v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
+                  class="h-3.5 w-3.5 animate-spin"
+                  :stroke-width="1.75"
+                />
+                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Allow
+              </button>
+              <button
+                type="button"
+                class="k-btn k-btn--ghost"
+                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
+              >
+                <Loader2
+                  v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
+                  class="h-3.5 w-3.5 animate-spin"
+                  :stroke-width="1.75"
+                />
+                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Deny
+              </button>
+            </template>
+          </AIInterrupt>
           <div v-if="approvalModeError" class="mb-2 text-[11px] leading-4 text-danger" role="alert">
             {{ approvalModeError }}
           </div>
@@ -9791,11 +9756,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @toggle-queueing="toggleAssistantQueueing"
           />
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
-          <div
-            class="relative min-h-[72px] border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50"
-            :class="queuedAssistantMessages.length ? 'rounded-b-md' : 'rounded-md'"
+          <AIComposer
+            :has-queued-messages="queuedAssistantMessages.length > 0"
+            :disabled="busy || assistantResumeBusy || conversationInteractionBusy || llmSettingsLoading"
           >
-            <AssistantRichComposer
+            <template #editor>
+              <AssistantRichComposer
               ref="assistantComposerRef"
               v-model="prompt"
               :content-parts="assistantComposerParts"
@@ -9840,31 +9806,28 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   @select="selectedLLMModelID = $event"
                 />
               </template>
-            </AssistantRichComposer>
-            <button
-              :type="assistantComposerShowsStop ? 'button' : 'submit'"
-              class="app-studio-touch-target absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              :class="assistantComposerShowsStop
-                ? 'rounded-full bg-accent text-on-accent enabled:hover:bg-accent-hover disabled:cursor-default'
-                : 'rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none'"
-              :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || !canSendPrompt"
-              :title="assistantComposerShowsStop
-                ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
-                : !llmConfigured ? 'Configure a model before sending'
-                : messageStreaming
-                  ? assistantQueueingEnabled ? 'Queue message · Command+Enter to steer now' : 'Steer now · Queueing is off'
-                : 'Send'"
-              :aria-label="assistantComposerShowsStop
-                ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
-                : !llmConfigured ? 'Configure a model before sending'
-                : messageStreaming ? assistantQueueingEnabled ? 'Queue message' : 'Steer now'
-                : 'Send'"
-              @click="handleAssistantComposerPrimaryAction"
-            >
-              <Square v-if="assistantComposerShowsStop" class="h-3 w-3 fill-current" :stroke-width="1.75" />
-              <ArrowUp v-else class="h-4 w-4" :stroke-width="1.75" />
-            </button>
-          </div>
+              </AssistantRichComposer>
+            </template>
+            <template #primary>
+              <AIPrimaryAction
+                :state="assistantComposerShowsStop ? assistantComposerStopDisabled ? 'stopping' : 'stop' : 'send'"
+                :type="assistantComposerShowsStop ? 'button' : 'submit'"
+                :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || !canSendPrompt"
+                :title="assistantComposerShowsStop
+                  ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
+                  : !llmConfigured ? 'Configure a model before sending'
+                  : messageStreaming
+                    ? assistantQueueingEnabled ? 'Queue message · Command+Enter to steer now' : 'Steer now · Queueing is off'
+                  : 'Send'"
+                :aria-label="assistantComposerShowsStop
+                  ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
+                  : !llmConfigured ? 'Configure a model before sending'
+                  : messageStreaming ? assistantQueueingEnabled ? 'Queue message' : 'Steer now'
+                  : 'Send'"
+                @click="handleAssistantComposerPrimaryAction"
+              />
+            </template>
+          </AIComposer>
         </form>
       </template>
 
@@ -9872,13 +9835,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         {{ loading ? 'Loading projects...' : 'Select or create a project.' }}
       </div>
           </section>
-        </div>
+        </AIConversationLayout>
       </section>
 
       <Transition name="workbench-divider">
-        <div
+        <AIPaneDivider
           v-show="workbenchVisible"
-          ref="splitResizeDividerRef"
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize conversation and workbench panes"
@@ -9887,17 +9849,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :aria-valuenow="renderedSplitWidth"
           :aria-valuetext="`${Math.round(renderedSplitWidth)}% conversation pane`"
           tabindex="0"
-          class="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border-subtle transition hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none md:flex"
-          :class="splitResizing ? 'transition-none' : ''"
+          desktop-only
+          :resizing="splitResizing"
           title="Resize"
           @pointerdown="startResize"
           @pointerup="stopResize"
           @pointercancel="stopResize"
           @lostpointercapture="stopResize"
           @keydown="handleResizeKeydown"
-        >
-          <GripVertical class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
-        </div>
+        />
       </Transition>
 
       <Transition name="workbench-pane">
@@ -9919,73 +9879,43 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <ArrowLeft class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <div class="flex min-w-0 flex-1 items-center gap-1">
-          <div class="w-fit max-w-full min-w-0 flex-initial overflow-x-auto">
-            <div
-              class="flex min-w-max items-center gap-1"
-              role="tablist"
-              aria-label="Workbench tabs"
-            >
-              <div
-                v-for="tab in workbench.tabs"
-                :key="tab.id"
-                class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing [@media(hover:none)]:h-11 [@media(any-pointer:coarse)]:h-11"
-                :class="workbenchTabButtonClass(tab)"
-                draggable="true"
-                @dragstart="startWorkbenchTabDrag($event, tab)"
-                @dragover="dragOverWorkbenchTab($event, tab)"
-                @drop="dropWorkbenchTab($event, tab)"
-                @dragend="clearWorkbenchTabDragState"
-              >
-                <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="2" aria-hidden="true" />
-                <button
-                  type="button"
-                  role="tab"
-                  class="app-studio-touch-target inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-                  :id="workbenchTabControlID(tab)"
-                  :aria-selected="workbench.activeTabID === tab.id"
-                  :aria-controls="workbenchTabPanelID(tab)"
-                  :tabindex="workbench.activeTabID === tab.id ? 0 : -1"
-                  :title="tab.title"
-                  @click="activateWorkbenchTabByID(tab.id)"
-                  @keydown="onWorkbenchTabKeydown($event, tab.id)"
-                >
-                  <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-                  <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                  <span class="min-w-0 max-w-[9rem] flex-1 truncate">{{ tab.title }}</span>
-                  <span
-                    v-if="tab.kind === 'review' && hasPendingReview"
-                    class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                    aria-hidden="true"
-                  />
-                </button>
-                <button
-                  v-if="tab.closeable"
-                  type="button"
-                  class="app-studio-touch-target mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
-                  :title="`Close ${tab.title}`"
-                  :aria-label="`Close ${tab.title}`"
-                  @click="closeWorkbenchTabByID(tab.id)"
-                >
-                  <X class="h-3 w-3" :stroke-width="2" />
-                </button>
-              </div>
-            </div>
-          </div>
-          <button
-            type="button"
-            class="app-studio-touch-target relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
-            :class="hasPendingReview ? 'text-accent' : ''"
-            title="New tab"
-            aria-label="New tab"
-            @click="openWorkbenchLauncher"
+          <AIWorkbenchTabs
+            :tabs="workbenchTabItems"
+            class="min-w-0 flex-1"
+            aria-label="Workbench tabs"
+            launcher
+            :launcher-active="hasPendingReview"
+            @dragstart="startWorkbenchTabDragByID"
+            @dragover="dragOverWorkbenchTabByID"
+            @drop="dropWorkbenchTabByID"
+            @dragend="clearWorkbenchTabDragState"
+            @select="activateWorkbenchTabByID"
+            @keydown="onWorkbenchTabKeydownByID"
+            @close="closeWorkbenchTabByID"
+            @launch="openWorkbenchLauncher"
           >
-            <Plus class="h-4 w-4" :stroke-width="1.75" />
-            <span
-              v-if="hasPendingReview"
-              class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
-              aria-hidden="true"
-            />
-          </button>
+            <template #leading>
+              <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="1.75" aria-hidden="true" />
+            </template>
+            <template #icon="{ tab }">
+              <img v-if="workbenchTabProviderIconURL(tab.id)" :src="workbenchTabProviderIconURL(tab.id)" alt="" class="object-contain" />
+              <component v-else :is="workbenchTabIconByID(tab.id)" :stroke-width="1.75" aria-hidden="true" />
+            </template>
+            <template #after-label="{ tab }">
+              <span
+                v-if="workbenchTabIsReview(tab.id) && hasPendingReview"
+                class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                aria-hidden="true"
+              />
+            </template>
+            <template #launcher-indicator>
+              <span
+                v-if="hasPendingReview"
+                class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
+                aria-hidden="true"
+              />
+            </template>
+          </AIWorkbenchTabs>
         </div>
         <div class="flex shrink-0 items-center gap-1">
           <button
@@ -10060,76 +9990,18 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <template v-else>
       <div
         v-if="activeWorkbenchTab?.kind === 'launcher'"
-        class="min-h-0 flex-1 overflow-auto p-4"
+        class="min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <div class="mx-auto grid w-full max-w-2xl gap-4">
-          <div class="relative min-w-0">
-            <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
-            <input
-              v-model="workbenchLauncherQuery"
-              class="h-9 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
-              placeholder="Search for tools..."
-              aria-label="Search workbench tools"
-            />
-            <button
-              v-if="workbenchLauncherQuery"
-              class="absolute right-1 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
-              title="Clear search"
-              aria-label="Clear search"
-              @click="workbenchLauncherQuery = ''"
-            >
-              <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-          </div>
-
-          <section v-if="launcherExistingTabs.length" class="grid gap-1.5">
-            <h3 class="px-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Jump to existing tab</h3>
-            <button
-              v-for="tab in launcherExistingTabs"
-              :key="tab.id"
-              type="button"
-              class="group flex min-h-[56px] w-full items-center gap-3 rounded-md border border-transparent bg-surface-hover/60 px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
-              @click="selectExistingWorkbenchLauncherTab(tab.id)"
-            >
-              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-                <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-5 w-5 object-contain" />
-                <component v-else :is="workbenchTabIcon(tab)" class="h-4 w-4 text-accent" :stroke-width="1.75" />
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-[13px] font-semibold text-text-primary">{{ tab.title }}</div>
-                <div class="truncate text-[12px] text-text-muted">{{ tab.subtitle || (tab.kind === 'preview' ? 'Preview your app' : 'Open tab') }}</div>
-              </div>
-              <ArrowRight class="h-4 w-4 shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100" :stroke-width="1.75" />
-            </button>
-          </section>
-
-          <section class="grid gap-1.5">
-            <h3 class="px-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Suggested</h3>
-            <button
-              v-for="item in launcherSuggestedItems"
-              :key="item.id"
-              type="button"
-              class="group flex min-h-[56px] w-full items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
-              @click="openWorkbenchLauncherItem(item)"
-            >
-              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-                <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-5 w-5 object-contain" />
-                <component v-else :is="item.icon" class="h-4 w-4 text-accent" :stroke-width="1.75" />
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="truncate text-[13px] font-semibold text-text-primary">{{ item.title }}</div>
-                <div class="line-clamp-2 text-[12px] leading-5 text-text-muted">{{ item.subtitle }}</div>
-              </div>
-              <ArrowRight class="h-4 w-4 shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100" :stroke-width="1.75" />
-            </button>
-            <div v-if="launcherSuggestedItems.length === 0" class="rounded-md border border-border-subtle bg-surface/80 p-4 text-center text-[13px] text-text-muted">
-              No workbench tabs found.
-            </div>
-          </section>
-        </div>
+        <AIWorkbenchLauncher
+          v-model:query="workbenchLauncherQuery"
+          :existing-tabs="launcherExistingTabs"
+          :suggested-items="launcherSuggestedItems"
+          @select-existing="selectExistingWorkbenchLauncherTab"
+          @select="openWorkbenchLauncherItem"
+        />
       </div>
 
       <div
@@ -10298,15 +10170,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
         <div class="grid gap-3">
-          <div v-if="pendingFollowUp" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
-            <div class="flex min-w-0 items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
-                <div class="mt-1 text-[12px] leading-5 text-text-secondary">
-                  {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
-                </div>
-              </div>
-            </div>
+          <AIInterrupt
+            v-if="pendingFollowUp"
+            kind="follow-up"
+            :busy="followUpBusyState(pendingFollowUp.interrupt)"
+            title="Clarification needed"
+            :description="pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.'"
+            :error="followUpError(pendingFollowUp.interrupt) || ''"
+            aria-label="Clarification needed"
+          >
             <div v-if="pendingFollowUp.interrupt.questions?.length" class="grid gap-3">
               <div
                 v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
@@ -10340,13 +10212,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 />
               </div>
             </div>
-            <div v-if="followUpError(pendingFollowUp.interrupt)" class="text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
-              {{ followUpError(pendingFollowUp.interrupt) }}
-            </div>
-            <div class="flex flex-wrap gap-2">
+            <template #actions>
               <button
                 type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                class="k-btn k-btn--primary"
                 :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
                 title="Continue"
                 @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
@@ -10355,37 +10224,27 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Continue
               </button>
-            </div>
-          </div>
-          <div v-else-if="pendingApproval" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
-            <div class="flex min-w-0 items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
-                <div class="mt-1 text-[12px] leading-5 text-text-secondary">
-                  {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
-                </div>
-                <AssistantExecDetails
-                  v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-                  :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-                  variant="approval"
-                />
-                <div
-                  v-if="pendingApproval.interrupt.execDisclosureInvalid"
-                  class="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-danger"
-                  role="alert"
-                >
-                  <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
-                  <span>Command details are unavailable, so allowing this request is disabled. Deny it and retry.</span>
-                </div>
-              </div>
-            </div>
-            <div v-if="permissionError(pendingApproval.interrupt)" class="text-[11px] leading-4 text-danger" role="alert" aria-live="assertive" aria-atomic="true">
-              {{ permissionError(pendingApproval.interrupt) }}
-            </div>
-            <div class="flex flex-wrap gap-2">
+            </template>
+          </AIInterrupt>
+          <AIInterrupt
+            v-else-if="pendingApproval"
+            kind="approval"
+            :busy="Boolean(permissionBusyState(pendingApproval.interrupt))"
+            :invalid="pendingApproval.interrupt.execDisclosureInvalid"
+            :error="permissionError(pendingApproval.interrupt) || (pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable, so allowing this request is disabled. Deny it and retry.' : '')"
+            title="Approval required"
+            :description="pendingApproval.interrupt.description || 'Review this action before it runs.'"
+            aria-label="Approval required"
+          >
+            <AssistantExecDetails
+              v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+              :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+              variant="approval"
+            />
+            <template #actions>
               <button
                 type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                class="k-btn k-btn--primary"
                 :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
                 :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
                 @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
@@ -10396,7 +10255,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
               <button
                 type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                class="k-btn k-btn--ghost"
                 :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
                 title="Deny"
                 @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
@@ -10405,8 +10264,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Deny
               </button>
-            </div>
-          </div>
+            </template>
+          </AIInterrupt>
           <div v-else class="rounded-md border border-border-subtle bg-surface/80 p-3 text-[12px] text-text-muted">
             No reviews are waiting.
           </div>
@@ -11087,7 +10946,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
             <button
               type="button"
-              class="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-on-accent transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
+              class="k-btn k-btn--danger-solid"
               title="Delete project"
               :disabled="busy || isProjectDeleting(settingsProject)"
               @click="requestDeleteProject(settingsProject)"

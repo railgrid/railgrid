@@ -123,7 +123,7 @@ function primaryChannel(agent: Agent): string {
         <article v-for="agent in agents.data" :key="agent.metadata.name" class="agents-card k-card">
           <a
             class="agents-card-link"
-            :href="hashFor({ kind: 'agent', name: agent.metadata.name, tab: 'config' })"
+            :href="hashFor({ kind: 'agent', name: agent.metadata.name, tab: 'chat' })"
             :aria-label="`Open agent ${agent.spec?.displayName || agent.metadata.name}`"
           >
             <div class="agents-card-glyph"><Bot aria-hidden="true" /></div>
@@ -141,7 +141,7 @@ function primaryChannel(agent: Agent): string {
             </div>
           </a>
           <div class="agents-card-actions">
-            <button class="k-btn k-btn--ghost agents-card-chat" type="button" @click="navigate({ kind: 'agent', name: agent.metadata.name, tab: 'config' })">
+            <button class="k-btn k-btn--ghost agents-card-chat" type="button" @click="navigate({ kind: 'agent', name: agent.metadata.name, tab: 'chat' })">
               <MessageSquare aria-hidden="true" /> Open
             </button>
             <button class="k-btn k-btn--ghost secondary" type="button" @click="navigate({ kind: 'agent', name: agent.metadata.name, tab: 'runs' })">
