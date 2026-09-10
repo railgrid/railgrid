@@ -399,6 +399,27 @@ lint-app-studio-mcp-access: $(GOLANGCI_LINT) ## Lint the MCP authorization integ
 	$(GOLANGCI_LINT) run ./pkg/hub/mcpaggregate
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./controller/project ./hubmcp
 
+.PHONY: test-auth fmt-auth lint-auth
+test-auth: ## Verify standalone auth and status-page surfaces
+	go test -count=1 ./pkg/cli/auth ./pkg/hub/appauth
+	cd hack/dex && go test -count=1 ./...
+	cd provider-sdk && go test -count=1 ./statuspage
+	cd providers/agents && go test -count=1 ./api
+	cd providers/code && go test -count=1 ./oauthgithub
+
+fmt-auth: $(GOLANGCI_LINT) ## Format auth and status-page sources with the pinned formatter
+	$(GOLANGCI_LINT) fmt pkg/cli/auth/authenticator.go pkg/cli/auth/authenticator_test.go pkg/hub/appauth/appauth.go pkg/hub/appauth/appauth_test.go
+	cd hack/dex && $(CURDIR)/$(GOLANGCI_LINT) fmt web/web_test.go
+	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) fmt statuspage/statuspage.go statuspage/statuspage_test.go
+	cd providers/agents && $(CURDIR)/$(GOLANGCI_LINT) fmt api/oauth.go
+	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) fmt oauthgithub/oauth.go oauthgithub/oauth_test.go
+
+lint-auth: $(GOLANGCI_LINT) ## Lint auth and status-page sources with the pinned linter
+	$(GOLANGCI_LINT) run $(ARGS) ./pkg/cli/auth ./pkg/hub/appauth
+	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run $(ARGS) ./statuspage
+	cd providers/agents && $(CURDIR)/$(GOLANGCI_LINT) run $(ARGS) ./api
+	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) run $(ARGS) ./oauthgithub
+
 .PHONY: test-code-provider test-code-provider-race lint-code-provider fix-lint-code-provider
 test-code-provider: ## Run standalone Code provider tests
 	cd providers/code && go test -count=1 ./...

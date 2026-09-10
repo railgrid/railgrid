@@ -38,6 +38,7 @@ import (
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/llm"
+	"github.com/faroshq/provider-sdk/statuspage"
 )
 
 // oauthPreset holds a provider's endpoints and quirks.
@@ -306,9 +307,12 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	_, _ = dyn.Resource(agentsclient.ConnectionGVR).UpdateStatus(r.Context(), obj, metav1.UpdateOptions{})
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<html><body style="font-family:sans-serif;text-align:center;margin-top:20vh">
-		<h2>✅ %s connected</h2><p>You can close this tab and return to faros.</p></body></html>`,
-		conn.Spec.OAuth.Provider)
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   "OAuth connection complete",
+		Heading: conn.Spec.OAuth.Provider + " connected",
+		Message: "You can close this tab and return to Faros.",
+		State:   statuspage.Success,
+	})
 }
 
 type oauthToken struct {

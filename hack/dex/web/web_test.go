@@ -55,8 +55,16 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	header := readEmbedded(t, assets, "templates/header.html")
 	if !strings.Contains(header, "<title>Faros — Sign in</title>") ||
 		!strings.Contains(header, "Sign in to Faros securely") ||
-		!strings.Contains(header, `static/faros-mark.svg`) {
+		!strings.Contains(header, `static/faros-mark.svg`) ||
+		!strings.Contains(header, `<html lang="en">`) ||
+		!strings.Contains(header, `class="brand-mark"`) {
 		t.Fatalf("header lost Faros title, description, or mark: %s", header)
+	}
+	mark := readEmbedded(t, assets, "static/faros-mark.svg")
+	if !strings.Contains(mark, `viewBox="0 0 24 24"`) ||
+		!strings.Contains(mark, `d="M21 16V8a2 2 0 0 0-1-1.73`) ||
+		strings.Contains(mark, `M8 7v18`) {
+		t.Fatalf("Faros mark is not the canonical Lucide Hexagon: %s", mark)
 	}
 
 	login := readEmbedded(t, assets, "templates/login.html")
@@ -64,8 +72,19 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 		t.Fatalf("connector action copy is not Faros sign-in copy: %s", login)
 	}
 	password := readEmbedded(t, assets, "templates/password.html")
-	if !strings.Contains(password, "Sign in with Faros") {
+	if !strings.Contains(password, "Sign in with Faros") ||
+		strings.Contains(password, "tabindex=") ||
+		!strings.Contains(password, `aria-describedby="login-error"`) ||
+		!strings.Contains(password, `aria-errormessage="login-error"`) ||
+		!strings.Contains(password, `role="alert"`) {
 		t.Fatalf("password action does not identify Faros: %s", password)
+	}
+	device := readEmbedded(t, assets, "templates/device.html")
+	if strings.Contains(device, "tabindex=") ||
+		!strings.Contains(device, "Verify code") ||
+		!strings.Contains(device, `aria-describedby="login-error"`) ||
+		!strings.Contains(device, `role="alert"`) {
+		t.Fatalf("device form lost native order, error association, or action copy: %s", device)
 	}
 
 	var pages strings.Builder
@@ -90,6 +109,15 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 		}
 	}
 	content := pages.String()
+	css := readEmbedded(t, assets, "static/main.css")
+	for _, want := range []string{
+		"--faros-text-muted: #8587a1",
+		"--faros-on-accent: #0a0b12",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("Dex stylesheet is missing canonical dark token %q", want)
+		}
+	}
 	for _, forbidden := range []string{
 		"fonts.googleapis.com",
 		"fonts.gstatic.com",

@@ -35,6 +35,7 @@ You may obtain a copy of the License at
 package oauthgithub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/faroshq/provider-sdk/statuspage"
 	"golang.org/x/oauth2"
 	ghoauth "golang.org/x/oauth2/github"
 )
@@ -227,7 +229,7 @@ func fetchUser(ctx context.Context, token string) (login, scopes string, err err
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	scopes = resp.Header.Get("X-OAuth-Scopes")
 	if resp.StatusCode != http.StatusOK {
 		return "", scopes, fmt.Errorf("github /user: %s", resp.Status)
@@ -264,7 +266,24 @@ func (h *Handler) renderResult(w http.ResponseWriter, res callbackResult) {
 			"error":  res.Error,
 		})),
 	}
-	_ = callbackTmpl.Execute(w, data)
+	var script bytes.Buffer
+	_ = callbackScriptTmpl.Execute(&script, data)
+
+	state := statuspage.Success
+	heading := "GitHub connected"
+	message := "Connected — you can close this window."
+	if res.Error != "" {
+		state = statuspage.Error
+		heading = "GitHub connection failed"
+		message = "GitHub could not be connected."
+	}
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   "GitHub connection",
+		Heading: heading,
+		Message: message,
+		State:   state,
+		Script:  template.HTML(script.String()),
+	})
 }
 
 func mustJSON(v any) string {
@@ -272,19 +291,17 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-var callbackTmpl = template.Must(template.New("cb").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Connecting…</title></head>
-<body style="font-family:system-ui,sans-serif;background:#0d0d14;color:#eeeef3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<p id="m">Completing GitHub connection…</p>
-<script>
+var callbackScriptTmpl = template.Must(template.New("cb-script").Parse(`<script>
 (function(){
   var payload = {{ .Payload }};
   try {
     // {{ .Origin }} is rendered by html/template as a quoted JS string literal.
     if (window.opener) { window.opener.postMessage(payload, {{ .Origin }}); }
   } catch (e) {}
-  document.getElementById('m').textContent = payload.error ? ('Failed: ' + payload.error) : 'Connected — you can close this window.';
+  var message = document.getElementById('status-message');
+  if (message) {
+    message.textContent = payload.error ? ('Failed: ' + payload.error) : 'Connected — you can close this window.';
+  }
   setTimeout(function(){ window.close(); }, payload.error ? 4000 : 600);
 })();
-</script>
-</body></html>`))
+</script>`))

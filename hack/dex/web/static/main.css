@@ -60,8 +60,8 @@
   --faros-danger-subtle: rgba(255, 93, 93, 0.12);
   --faros-text-primary: #e9e9f2;
   --faros-text-secondary: #8a8ca6;
-  --faros-text-muted: #5d5f78;
-  --faros-on-accent: #ffffff;
+  --faros-text-muted: #8587a1;
+  --faros-on-accent: #0a0b12;
   /* design.quality.exceptions: provider identity tiles keep the provider's brand-approved ground. */
   --faros-brand-tile-google: #ffffff;
   --faros-brand-tile-light: #f5f5f5;
@@ -156,10 +156,7 @@ body::before {
 }
 
 .brand-name {
-  background: linear-gradient(90deg, var(--faros-accent-hover), var(--faros-text-primary));
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--faros-text-primary);
 }
 
 .theme-panel {

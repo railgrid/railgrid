@@ -362,6 +362,42 @@ func TestAuthorizeDeniedRendersBrandedForbidden(t *testing.T) {
 	}
 }
 
+func TestRenderErrorPreservesSecurityHeadersAndEscapesDisplayText(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&Handler{}).renderError(rec, http.StatusForbidden, `Denied <title>`, `Reason <script>alert(1)</script>`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if got, want := rec.Header().Get("Content-Type"), "text/html; charset=utf-8"; got != want {
+		t.Fatalf("Content-Type = %q, want %q", got, want)
+	}
+	for header, want := range map[string]string{
+		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "no-referrer",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<html lang="en">`,
+		`<meta name="viewport" content="width=device-width, initial-scale=1">`,
+		`role="alert" aria-live="assertive"`,
+		`Denied &lt;title&gt;`,
+		`Reason &lt;script&gt;alert(1)&lt;/script&gt;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("error page missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Fatalf("error detail was not escaped: %s", body)
+	}
+}
+
 func TestAuthorizePolicyOutageFailsClosed(t *testing.T) {
 	f := newFixture(t)
 	f.sarErr = http.ErrServerClosed

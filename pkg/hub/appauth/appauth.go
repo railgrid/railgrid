@@ -58,6 +58,8 @@ import (
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/provider-sdk/statuspage"
+
 	"github.com/faroshq/faros/pkg/browsersession"
 )
 
@@ -603,16 +605,10 @@ func (h *Handler) renderError(w http.ResponseWriter, status int, title, detail s
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>%s</title><style>
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0c0a14;color:#e8e6f0;font:16px/1.5 system-ui,sans-serif}
-main{max-width:26rem;padding:2rem;text-align:center}
-h1{font-size:1.15rem;margin:0 0 .6rem}
-p{margin:0;color:#a9a4bd;font-size:.92rem}
-</style></head><body><main><h1>%s</h1><p>%s</p></main></body></html>`,
-		htmlEscape(title), htmlEscape(title), htmlEscape(detail))
-}
-
-func htmlEscape(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
-	return r.Replace(s)
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   title,
+		Heading: title,
+		Message: detail,
+		State:   statuspage.Error,
+	})
 }

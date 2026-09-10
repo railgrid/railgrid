@@ -9,18 +9,18 @@
         <label for="user_code">Device code</label>
       </div>
       {{ if( .UserCode  )}}
-      <input tabindex="2" required id="user_code" name="user_code" type="text" class="theme-form-input" autocomplete="off" value="{{.UserCode}}" {{ if .Invalid }} autofocus {{ end }}/>
+      <input required id="user_code" name="user_code" type="text" class="theme-form-input" autocomplete="off" value="{{.UserCode}}" {{ if .Invalid }} autofocus aria-invalid="true" aria-describedby="login-error" aria-errormessage="login-error" {{ end }}/>
       {{ else }}
-      <input tabindex="2" required id="user_code" name="user_code" type="text" class="theme-form-input" placeholder="XXXX-XXXX" autocomplete="off"  {{ if .Invalid }} autofocus {{ end }}/>
+      <input required id="user_code" name="user_code" type="text" class="theme-form-input" placeholder="XXXX-XXXX" autocomplete="off"  {{ if .Invalid }} autofocus aria-invalid="true" aria-describedby="login-error" aria-errormessage="login-error" {{ end }}/>
       {{ end }}
     </div>
 
     {{ if .Invalid }}
-    <div id="login-error" class="dex-error-box">
+    <div id="login-error" class="dex-error-box" role="alert" aria-live="assertive" aria-atomic="true">
       That code is invalid or expired — check the value on your device and try again.
     </div>
     {{ end }}
-    <button tabindex="3" id="submit-login" type="submit" class="dex-btn theme-btn--primary">Continue</button>
+    <button id="submit-login" type="submit" class="dex-btn theme-btn--primary">Verify code</button>
   </form>
 </div>
 

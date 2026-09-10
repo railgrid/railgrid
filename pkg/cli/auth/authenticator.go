@@ -27,6 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/faroshq/provider-sdk/statuspage"
+
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
@@ -129,7 +131,12 @@ func (a *LocalhostCallbackAuthenticator) callback(w http.ResponseWriter, r *http
 	a.response = resp
 
 	w.Header().Set("Content-Type", "text/html")
-	_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>`)
+	_ = statuspage.Render(w, statuspage.Page{
+		Title:   "Login successful",
+		Heading: "Login successful",
+		Message: "You can close this tab and return to the terminal.",
+		State:   statuspage.Success,
+	})
 
 	a.once.Do(func() { close(a.done) })
 }
