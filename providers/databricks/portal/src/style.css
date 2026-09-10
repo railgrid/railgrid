@@ -501,7 +501,7 @@ faros-provider-databricks .import-dialog--route {
 
 /* Route-owned browse fills the shared AppLayout column. Keeping the stepper,
  * body and actions in one primary column makes their left and right edges
- * agree at every step until the ultrawide task layout takes over. */
+ * agree at every step, including the compact laptop layout. */
 faros-provider-databricks .import-workbench {
   display: flex;
   flex: 1 1 auto;
@@ -602,14 +602,13 @@ faros-provider-databricks .import-route > header > p {
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-@container import-route (min-width: 1200px) {
-  /* Reserve a stable 20–24rem context rail only once there is room for two
-   * columns. Below this breakpoint the rail follows the primary task. */
+@container import-route (min-width: 680px) {
+  /* Fit the task and a compact summary beside each other on laptop content
+   * columns. Use available route width, not the viewport behind the sidebar. */
   faros-provider-databricks .import-route .import-workbench {
     align-items: start;
-    column-gap: clamp(24px, 2vw, 32px);
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+    grid-template-columns: minmax(0, 1fr) clamp(14rem, 28%, 24rem);
   }
 
   faros-provider-databricks .import-route .import-primary {
@@ -625,6 +624,17 @@ faros-provider-databricks .import-route > header > p {
     grid-row: 1;
     min-height: 100%;
     padding-block: 18px 24px;
+    padding-inline: 16px;
+  }
+}
+
+@container import-route (min-width: 1200px) {
+  faros-provider-databricks .import-route .import-workbench {
+    column-gap: clamp(24px, 2vw, 32px);
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  }
+
+  faros-provider-databricks .import-route .import-context-rail {
     padding-inline: 24px 18px;
   }
 }

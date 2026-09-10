@@ -452,7 +452,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       </div>
       <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
-          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
+          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button
           type="button"
@@ -513,7 +513,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       <template #typeLabel="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
-      <template #credentials="{ row }"><Check v-if="row.hasCredentials" :size="16" class="ok-check" /><span v-else class="muted">—</span></template>
+      <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.hasCredentials ? 'Configured' : 'Missing' }}</span></span></template>
       <template #actions="{ row }"><div class="row-actions"><ResourceTableEditButton :label="`Edit service ${String(row.name)}`" @click="openEdit(row as unknown as EdgeService)" /><ResourceTableDeleteButton :label="`Delete service ${String(row.name)}`" @click="onDelete(row as unknown as EdgeService)" /></div></template>
     </ResourceTable>
   </div>

@@ -34,6 +34,7 @@ const loaded = ref(false)
 const loadError = ref<string | null>(null)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+const fieldErrors = ref<Record<string, string>>({})
 const nameInput = ref<HTMLInputElement | null>(null)
 const connectionInput = ref<{ focus: () => void } | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
@@ -130,6 +131,29 @@ async function focusFormError(message: string, generation: number, expectedConte
   if (isCurrentMutation(generation, expectedContext)) formErrorRef.value?.focus()
 }
 
+function clearFieldErrors(): void {
+  fieldErrors.value = {}
+}
+
+function clearFieldError(field: string): void {
+  if (!fieldErrors.value[field]) return
+  const next = { ...fieldErrors.value }
+  delete next[field]
+  fieldErrors.value = next
+}
+
+function fieldDescribedBy(hintID: string, field: string): string {
+  return [hintID, fieldErrors.value[field] ? `table-${field}-error` : undefined].filter(Boolean).join(' ')
+}
+
+async function focusFieldError(message: string, field: string, controlID: string, generation: number, expectedContext: number): Promise<void> {
+  if (!isCurrentMutation(generation, expectedContext)) return
+  formError.value = null
+  fieldErrors.value = { ...fieldErrors.value, [field]: message }
+  await nextTick()
+  if (isCurrentMutation(generation, expectedContext)) document.getElementById(controlID)?.focus()
+}
+
 // Prefill the Databricks-provided samples catalog (readable in every
 // workspace) so a first import needs no lookup: samples.nyctaxi.trips.
 function fillDemo(): void {
@@ -139,6 +163,7 @@ function fillDemo(): void {
   form.schema = 'nyctaxi'
   form.table = 'trips'
   formError.value = null
+  clearFieldErrors()
 }
 
 async function submit(): Promise<void> {
@@ -146,6 +171,7 @@ async function submit(): Promise<void> {
   const generation = ++mutationGeneration
   const expectedContext = contextGeneration.value
   formError.value = null
+  clearFieldErrors()
   if (!loaded.value) {
     await focusFormError(
       editing.value
@@ -160,13 +186,15 @@ async function submit(): Promise<void> {
     await focusFormError(tableImportBlocker.value, generation, expectedContext)
     return
   }
-  if (!form.name || !form.connectionRef || !form.warehouseRef || !form.catalog || !form.schema || !form.table) {
-    await focusFormError('All table fields are required.', generation, expectedContext)
-    return
-  }
+  if (!form.name.trim()) { await focusFieldError('Name is required.', 'name', 'table-name', generation, expectedContext); return }
+  if (!form.connectionRef) { await focusFieldError('Connection is required.', 'connection', 'table-connection', generation, expectedContext); return }
+  if (!form.warehouseRef) { await focusFieldError('Warehouse is required.', 'warehouse', 'table-warehouse', generation, expectedContext); return }
+  if (!form.catalog.trim()) { await focusFieldError('Catalog is required.', 'catalog', 'table-catalog', generation, expectedContext); return }
+  if (!form.schema.trim()) { await focusFieldError('Schema is required.', 'schema', 'table-schema', generation, expectedContext); return }
+  if (!form.table.trim()) { await focusFieldError('Table is required.', 'table', 'table-table', generation, expectedContext); return }
   const nameError = resourceNameError(form.name, 'Name')
   if (nameError) {
-    await focusFormError(nameError, generation, expectedContext)
+    await focusFieldError(nameError, 'name', 'table-name', generation, expectedContext)
     return
   }
   const desiredName = (props.editName ?? form.name).trim()
@@ -287,8 +315,9 @@ watch(() => form.connectionRef, connectionRef => {
           <div class="form-grid">
             <label class="field" for="table-name">
               <span class="field-label">Name</span>
-              <input id="table-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" :readonly="editing" autocomplete="off" placeholder="order-history" required aria-required="true" aria-describedby="table-name-hint table-form-error" :aria-invalid="!!formError" />
+              <input id="table-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" :readonly="editing" autocomplete="off" placeholder="order-history" required aria-required="true" :aria-describedby="fieldDescribedBy('table-name-hint', 'name')" :aria-invalid="fieldErrors.name ? 'true' : undefined" @input="clearFieldError('name')" />
               <span id="table-name-hint" class="field-hint">The stable tableRef exposed to App Studio. Use lowercase letters, numbers, and hyphens; the name is preserved exactly{{ editing ? ' and cannot be changed.' : '.' }}</span>
+              <span v-if="fieldErrors.name" id="table-name-error" class="field-error" role="alert">{{ fieldErrors.name }}</span>
             </label>
             <div class="field">
               <label id="table-connection-label" class="field-label" for="table-connection">Connection</label>
@@ -301,11 +330,12 @@ watch(() => form.connectionRef, connectionRef => {
                 placeholder="Select connection"
                 :disabled="loading || submitting || !hasConnections"
                 required
-                :invalid="!!formError"
+                :invalid="!!fieldErrors.connection"
                 labelledby="table-connection-label"
-                describedby="table-connection-hint table-form-error"
+                :describedby="fieldDescribedBy('table-connection-hint', 'connection')"
               />
               <span id="table-connection-hint" class="field-hint">The Databricks workspace connection for this table.</span>
+              <span v-if="fieldErrors.connection" id="table-connection-error" class="field-error" role="alert">{{ fieldErrors.connection }}</span>
             </div>
             <div class="field">
               <label id="table-warehouse-label" class="field-label" for="table-warehouse">Warehouse</label>
@@ -317,26 +347,30 @@ watch(() => form.connectionRef, connectionRef => {
                 :placeholder="formWarehouses.length ? 'Select warehouse' : 'No warehouses for this connection'"
                 :disabled="loading || submitting || !formWarehouses.length"
                 required
-                :invalid="!!formError"
+                :invalid="!!fieldErrors.warehouse"
                 labelledby="table-warehouse-label"
-                describedby="table-warehouse-hint table-form-error"
+                :describedby="fieldDescribedBy('table-warehouse-hint', 'warehouse')"
               />
               <span id="table-warehouse-hint" class="field-hint">A warehouse that belongs to the selected connection.</span>
+              <span v-if="fieldErrors.warehouse" id="table-warehouse-error" class="field-error" role="alert">{{ fieldErrors.warehouse }}</span>
             </div>
             <label class="field" for="table-catalog">
               <span class="field-label">Catalog</span>
-              <input id="table-catalog" class="k-input" v-model="form.catalog" :disabled="loading || submitting" autocomplete="off" placeholder="sales" required aria-required="true" aria-describedby="table-catalog-hint table-form-error" :aria-invalid="!!formError" />
+              <input id="table-catalog" class="k-input" v-model="form.catalog" :disabled="loading || submitting" autocomplete="off" placeholder="sales" required aria-required="true" :aria-describedby="fieldDescribedBy('table-catalog-hint', 'catalog')" :aria-invalid="fieldErrors.catalog ? 'true' : undefined" @input="clearFieldError('catalog')" />
               <span id="table-catalog-hint" class="field-hint">The Databricks catalog containing the table.</span>
+              <span v-if="fieldErrors.catalog" id="table-catalog-error" class="field-error" role="alert">{{ fieldErrors.catalog }}</span>
             </label>
             <label class="field" for="table-schema">
               <span class="field-label">Schema</span>
-              <input id="table-schema" class="k-input" v-model="form.schema" :disabled="loading || submitting" autocomplete="off" placeholder="gold" required aria-required="true" aria-describedby="table-schema-hint table-form-error" :aria-invalid="!!formError" />
+              <input id="table-schema" class="k-input" v-model="form.schema" :disabled="loading || submitting" autocomplete="off" placeholder="gold" required aria-required="true" :aria-describedby="fieldDescribedBy('table-schema-hint', 'schema')" :aria-invalid="fieldErrors.schema ? 'true' : undefined" @input="clearFieldError('schema')" />
               <span id="table-schema-hint" class="field-hint">The Databricks schema containing the table.</span>
+              <span v-if="fieldErrors.schema" id="table-schema-error" class="field-error" role="alert">{{ fieldErrors.schema }}</span>
             </label>
             <label class="field" for="table-table">
               <span class="field-label">Table</span>
-              <input id="table-table" class="k-input" v-model="form.table" :disabled="loading || submitting" autocomplete="off" placeholder="order_history" required aria-required="true" aria-describedby="table-table-hint table-form-error" :aria-invalid="!!formError" />
+              <input id="table-table" class="k-input" v-model="form.table" :disabled="loading || submitting" autocomplete="off" placeholder="order_history" required aria-required="true" :aria-describedby="fieldDescribedBy('table-table-hint', 'table')" :aria-invalid="fieldErrors.table ? 'true' : undefined" @input="clearFieldError('table')" />
               <span id="table-table-hint" class="field-hint">The exact table identifier in the selected catalog and schema.</span>
+              <span v-if="fieldErrors.table" id="table-table-error" class="field-error" role="alert">{{ fieldErrors.table }}</span>
             </label>
           </div>
         </div>

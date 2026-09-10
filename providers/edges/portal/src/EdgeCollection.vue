@@ -83,10 +83,10 @@ onActivated(() => emit('activated'))
       </div>
       <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="props.foregroundLoading" @click="emit('refresh')">
-          <RefreshCw :size="14" :class="{ spin: props.foregroundLoading }" /> {{ props.foregroundLoading ? 'Refreshing…' : 'Refresh' }}
+          <RefreshCw :size="14" :class="{ spin: props.foregroundLoading }" aria-hidden="true" /> {{ props.foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button class="k-btn k-btn--primary" @click="emit('connect')">
-          <Plus :size="14" /> Connect edge
+          <Plus :size="14" aria-hidden="true" /> Connect edge
         </button>
       </div>
     </header>
@@ -127,7 +127,7 @@ onActivated(() => emit('activated'))
       @row-click="emit('open', $event)"
     >
       <template #name="{ value, row }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="emit('open', row)">{{ value }}</button></template>
-      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : Boxes" :size="12" />{{ value }}</span></template>
+      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #lastHeartbeat="{ value }"><span class="muted">{{ value }}</span></template>

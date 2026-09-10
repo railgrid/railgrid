@@ -38,6 +38,7 @@ const editWarehouseID = ref('')
 const saving = ref(false)
 const deleting = ref(false)
 const saveError = ref<string | null>(null)
+const saveFieldErrors = ref<Record<string, string>>({})
 const mutationError = ref<string | null>(null)
 const editIDInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
@@ -179,6 +180,7 @@ function startEdit() {
   if (operationLocked(warehouse.value.name)) return
   editWarehouseID.value = warehouse.value.warehouseID
   saveError.value = null
+  saveFieldErrors.value = {}
   editing.value = true
   void nextTick(() => editIDInput.value?.focus())
 }
@@ -189,11 +191,31 @@ async function focusSaveError(message: string) {
   saveErrorRef.value?.focus()
 }
 
+function clearSaveFieldError(field: string): void {
+  if (!saveFieldErrors.value[field]) return
+  const next = { ...saveFieldErrors.value }
+  delete next[field]
+  saveFieldErrors.value = next
+}
+
+function fieldDescribedBy(hintID: string, field: string): string {
+  return [hintID, saveFieldErrors.value[field] ? `warehouse-edit-${field}-error` : undefined].filter(Boolean).join(' ')
+}
+
+async function focusSaveFieldError(message: string, field: string, controlID: string): Promise<void> {
+  saveError.value = null
+  saveFieldErrors.value = { ...saveFieldErrors.value, [field]: message }
+  await nextTick()
+  document.getElementById(controlID)?.focus()
+}
+
 async function saveEdit() {
   if (!warehouse.value) return
   const nextID = editWarehouseID.value.trim()
+  saveError.value = null
+  saveFieldErrors.value = {}
   if (!nextID) {
-    await focusSaveError('Warehouse ID is required.')
+    await focusSaveFieldError('Warehouse ID is required.', 'id', 'warehouse-edit-id')
     return
   }
   const lock = operationKey('warehouse', warehouse.value.name)
@@ -202,7 +224,6 @@ async function saveEdit() {
     return
   }
   saving.value = true
-  saveError.value = null
   mutationError.value = null
   try {
     const current = warehouse.value
@@ -366,8 +387,9 @@ onUnmounted(() => {
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="warehouse-edit-id">Warehouse ID</label>
-            <input id="warehouse-edit-id" class="k-input" ref="editIDInput" v-model="editWarehouseID" :disabled="saving" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-edit-id-hint warehouse-edit-error" :aria-invalid="!!saveError" />
+            <input id="warehouse-edit-id" class="k-input" ref="editIDInput" v-model="editWarehouseID" :disabled="saving" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" :aria-describedby="fieldDescribedBy('warehouse-edit-id-hint', 'id')" :aria-invalid="saveFieldErrors.id ? 'true' : undefined" @input="clearSaveFieldError('id')" />
             <span id="warehouse-edit-id-hint" class="field-hint">Use the 16-character ID from SQL Warehouses → Connection details (/sql/1.0/warehouses/&lt;id&gt;), not the numeric ?o= workspace ID.</span>
+            <span v-if="saveFieldErrors.id" id="warehouse-edit-id-error" class="field-error" role="alert">{{ saveFieldErrors.id }}</span>
           </div>
         <div class="actions">
             <button class="k-btn k-btn--primary" type="submit" :disabled="saving || operationLocked(warehouse.name)">{{ saving ? 'Saving…' : 'Save' }}</button>

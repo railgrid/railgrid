@@ -387,7 +387,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       </div>
       <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
-          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
+          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button
           type="button"
@@ -450,7 +450,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
               <p class="market-desc">{{ app.description }}</p>
               <div class="market-meta muted mono">{{ app.chart.chart }}@{{ app.chart.version }} · :{{ app.port }}</div>
               <button class="k-btn k-btn--primary compact-control" :disabled="!hasKubernetesEdges" @click="emit('deploy', app)">
-                <Rocket :size="13" /> Deploy
+                <Rocket :size="13" aria-hidden="true" /> Deploy
               </button>
             </div>
           </div>
@@ -495,7 +495,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
           :aria-expanded="expanded === row.name"
           @click.stop="toggle(String(row.name))"
         >
-          <component :is="expanded === row.name ? ChevronDown : ChevronRight" :size="14" />
+          <component :is="expanded === row.name ? ChevronDown : ChevronRight" :size="14" aria-hidden="true" />
         </button>
       </template>
       <template #name="{ value }"><span class="name">{{ value }}</span></template>

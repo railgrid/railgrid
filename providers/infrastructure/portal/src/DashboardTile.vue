@@ -234,7 +234,7 @@ function dotFor(phase: string) {
               <span :class="tileClass.rowSecondary">
                 {{ i.template }}<template v-if="phaseFor(i) === 'Deleting'"> · Deleting</template>
               </span>
-              <ChevronRight v-if="phaseFor(i) !== 'Deleting'" :class="tileClass.chevron" :stroke-width="2" />
+              <ChevronRight v-if="phaseFor(i) !== 'Deleting'" :class="tileClass.chevron" :stroke-width="2" aria-hidden="true" />
             </button>
           </li>
         </ul>

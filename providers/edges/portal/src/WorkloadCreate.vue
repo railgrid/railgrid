@@ -245,7 +245,7 @@ onUnmounted(() => {
 
     <div v-if="error" class="banner error" role="alert">{{ error }}</div>
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="spin" /> Loading edges…
+      <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading edges…
     </div>
 
     <div v-else-if="edgeLoadError" class="k-create-surface">
@@ -309,7 +309,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="!canSubmit">
-          <Loader2 v-if="busy" :size="14" class="spin" />
+          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
           <Rocket v-else :size="14" aria-hidden="true" />
           {{ busy ? 'Deploying…' : 'Deploy' }}
         </button>
@@ -363,7 +363,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="!canSubmit">
-          <Loader2 v-if="busy" :size="14" class="spin" />
+          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
           {{ busy ? 'Creating…' : 'Create workload' }}
         </button>
       </div>

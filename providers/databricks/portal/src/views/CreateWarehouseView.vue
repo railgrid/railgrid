@@ -27,6 +27,7 @@ const loaded = ref(false)
 const loadError = ref<string | null>(null)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+const fieldErrors = ref<Record<string, string>>({})
 const nameInput = ref<HTMLInputElement | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
 const operations = createOperationLocks()
@@ -92,22 +93,45 @@ async function focusFormError(message: string, generation: number, expectedConte
   if (isCurrentMutation(generation, expectedContext)) formErrorRef.value?.focus()
 }
 
+function clearFieldErrors(): void {
+  fieldErrors.value = {}
+}
+
+function clearFieldError(field: string): void {
+  if (!fieldErrors.value[field]) return
+  const next = { ...fieldErrors.value }
+  delete next[field]
+  fieldErrors.value = next
+}
+
+function fieldDescribedBy(hintID: string, field: string): string {
+  return [hintID, fieldErrors.value[field] ? `warehouse-${field}-error` : undefined].filter(Boolean).join(' ')
+}
+
+async function focusFieldError(message: string, field: string, controlID: string, generation: number, expectedContext: number): Promise<void> {
+  if (!isCurrentMutation(generation, expectedContext)) return
+  formError.value = null
+  fieldErrors.value = { ...fieldErrors.value, [field]: message }
+  await nextTick()
+  if (isCurrentMutation(generation, expectedContext)) document.getElementById(controlID)?.focus()
+}
+
 async function submit(): Promise<void> {
   if (!mounted || submitting.value) return
   const generation = ++mutationGeneration
   const expectedContext = contextGeneration.value
   formError.value = null
+  clearFieldErrors()
   if (!loaded.value) {
     await focusFormError('Connection list is still loading. Retry the read before creating a warehouse.', generation, expectedContext)
     return
   }
-  if (!form.name || !form.connectionRef || !form.warehouseID) {
-    await focusFormError('Name, connection, and warehouse ID are required.', generation, expectedContext)
-    return
-  }
+  if (!form.connectionRef) { await focusFieldError('Connection is required.', 'connection', 'warehouse-connection', generation, expectedContext); return }
+  if (!form.name.trim()) { await focusFieldError('Name is required.', 'name', 'warehouse-name', generation, expectedContext); return }
+  if (!form.warehouseID.trim()) { await focusFieldError('Warehouse ID is required.', 'warehouseID', 'warehouse-id', generation, expectedContext); return }
   const nameError = resourceNameError(form.name, 'Name')
   if (nameError) {
-    await focusFormError(nameError, generation, expectedContext)
+    await focusFieldError(nameError, 'name', 'warehouse-name', generation, expectedContext)
     return
   }
   const desiredName = form.name.trim()
@@ -208,21 +232,24 @@ onBeforeUnmount(() => {
                 placeholder="Select connection"
                 :disabled="loading || submitting || !hasConnections"
                 required
-                :invalid="!!formError"
+                :invalid="!!fieldErrors.connection"
                 labelledby="warehouse-connection-label"
-                describedby="warehouse-connection-hint warehouse-form-error"
+                :describedby="fieldDescribedBy('warehouse-connection-hint', 'connection')"
               />
               <span id="warehouse-connection-hint" class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
+              <span v-if="fieldErrors.connection" id="warehouse-connection-error" class="field-error" role="alert">{{ fieldErrors.connection }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="warehouse-name">Object name</label>
-              <input id="warehouse-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" aria-describedby="warehouse-name-hint warehouse-form-error" :aria-invalid="!!formError" />
+              <input id="warehouse-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" :aria-describedby="fieldDescribedBy('warehouse-name-hint', 'name')" :aria-invalid="fieldErrors.name ? 'true' : undefined" @input="clearFieldError('name')" />
               <span id="warehouse-name-hint" class="field-hint">How this warehouse is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+              <span v-if="fieldErrors.name" id="warehouse-name-error" class="field-error" role="alert">{{ fieldErrors.name }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="warehouse-id">Warehouse ID</label>
-              <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="loading || submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
+              <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="loading || submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" :aria-describedby="fieldDescribedBy('warehouse-id-hint', 'warehouseID')" :aria-invalid="fieldErrors.warehouseID ? 'true' : undefined" @input="clearFieldError('warehouseID')" />
               <span id="warehouse-id-hint" class="field-hint">Use the warehouse’s 16-character ID. The connection token needs “Can use” permission.</span>
+              <span v-if="fieldErrors.warehouseID" id="warehouse-warehouseID-error" class="field-error" role="alert">{{ fieldErrors.warehouseID }}</span>
               <details class="field-disclosure">
                 <summary>Where to find the warehouse ID</summary>
                 <p>In Databricks, open SQL → SQL Warehouses → your warehouse → Connection details. Copy the value after <code>/sql/1.0/warehouses/</code>, not the numeric <code>?o=</code> workspace ID.</p>

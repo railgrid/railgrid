@@ -309,7 +309,7 @@ onUnmounted(() => {
             </select>
           </label>
           <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
-          <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
+          <label class="field field-check k-checkbox-hit"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
         </div>

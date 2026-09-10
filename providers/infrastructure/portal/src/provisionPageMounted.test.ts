@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { createApp, nextTick, type App } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProvisionPage from './views/ProvisionPage.vue'
 import { api } from './api'
@@ -102,6 +102,81 @@ describe('mounted Infrastructure provisioning workflow', () => {
     expect(toastMock).toHaveBeenCalledWith('info', 'Provisioning started for demo-instance.')
   })
 
+  it('blocks submission when an untouched nested required child is missing', async () => {
+    vi.mocked(api.getTemplate).mockResolvedValueOnce({
+      template: {
+        name: 'nested-template',
+        version: 'v1',
+        displayName: 'Nested template',
+        description: 'A nested test template',
+        kind: 'Nested',
+        inputsSchema: {
+          type: 'object',
+          required: ['database'],
+          properties: {
+            database: {
+              type: 'object',
+              required: ['region'],
+              properties: { region: { type: 'string', description: 'Deployment region' } },
+            },
+          },
+        },
+        sampleValues: { database: {} },
+      },
+    })
+    app = createApp(ProvisionPage, { templateName: 'nested-template' })
+    app.mount(host)
+    await flush()
+
+    const name = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    name.value = 'nested-instance'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+
+    expect(api.createInstance).not.toHaveBeenCalled()
+    expect(host.querySelector('.dynform-group input')?.getAttribute('aria-invalid')).toBe('true')
+    expect(host.querySelector('.dynform-group .dynform-error')?.textContent).toContain('region is required')
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+  })
+
+  it('materializes valid empty nested objects and maps in the create payload', async () => {
+    vi.mocked(api.getTemplate).mockResolvedValueOnce({
+      template: {
+        name: 'empty-template',
+        version: 'v1',
+        displayName: 'Empty template',
+        description: 'An empty test template',
+        kind: 'Empty',
+        inputsSchema: {
+          type: 'object',
+          required: ['database', 'labels'],
+          properties: {
+            database: { type: 'object', properties: { region: { type: 'string' } } },
+            labels: { type: 'object', additionalProperties: { type: 'string' } },
+          },
+        },
+        sampleValues: { database: {}, labels: {} },
+      },
+    })
+    app = createApp(ProvisionPage, { templateName: 'empty-template' })
+    app.mount(host)
+    await flush()
+
+    const name = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    name.value = 'empty-instance'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+
+    expect(api.createInstance).toHaveBeenCalledWith({
+      templateName: 'empty-template',
+      templateVersion: 'v1',
+      name: 'empty-instance',
+      values: { database: {}, labels: {} },
+    })
+  })
+
   it('keeps a failed provision contextual and does not toast', async () => {
     vi.mocked(api.createInstance).mockRejectedValueOnce({ message: 'quota exceeded' })
     app = createApp(ProvisionPage, { templateName: 'demo-template' })
@@ -115,6 +190,59 @@ describe('mounted Infrastructure provisioning workflow', () => {
     await flush()
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('quota exceeded')
+    expect(toastMock).not.toHaveBeenCalled()
+  })
+
+  it('latches before async validation and ignores duplicate submit events', async () => {
+    let resolveCreate: ((value: { name: string }) => void) | undefined
+    vi.mocked(api.createInstance).mockImplementationOnce(() => new Promise(resolve => {
+      resolveCreate = value => resolve(value as never)
+    }))
+    app = createApp(ProvisionPage, { templateName: 'demo-template' })
+    app.mount(host)
+    await flush()
+
+    const name = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    name.value = 'demo-instance'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    const form = host.querySelector('form')!
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+
+    expect(api.createInstance).toHaveBeenCalledTimes(1)
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    resolveCreate?.({ name: 'demo-instance' })
+    await flush()
+    expect(toastMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not commit a provision result after the template context changes', async () => {
+    let resolveCreate: ((value: { name: string }) => void) | undefined
+    vi.mocked(api.createInstance).mockImplementationOnce(() => new Promise(resolve => {
+      resolveCreate = value => resolve(value as never)
+    }))
+    const templateName = ref('demo-template')
+    const provisioned = vi.fn()
+    app = createApp(defineComponent({
+      setup: () => () => h(ProvisionPage, { templateName: templateName.value, onProvisioned: provisioned }),
+    }))
+    app.mount(host)
+    await flush()
+
+    const name = host.querySelector<HTMLInputElement>('#infrastructure-instance-name')!
+    name.value = 'demo-instance'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(api.createInstance).toHaveBeenCalledTimes(1)
+
+    templateName.value = 'other-template'
+    await flush()
+    resolveCreate?.({ name: 'demo-instance' })
+    await flush()
+
+    expect(provisioned).not.toHaveBeenCalled()
     expect(toastMock).not.toHaveBeenCalled()
   })
 })

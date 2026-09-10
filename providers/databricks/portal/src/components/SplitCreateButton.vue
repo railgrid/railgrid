@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="split-create" @keydown="handleKeydown">
     <div class="split-create-actions">
       <button ref="mainButton" class="k-btn k-btn--primary split-create-main" type="button" :data-split-create-trigger="kind" :disabled="disabled" @click="primaryClick">
-        <Plus class="button-icon" :stroke-width="1.75" />
+        <Plus class="button-icon" :stroke-width="1.75" aria-hidden="true" />
         {{ primaryLabel }}
       </button>
       <button
@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
         :aria-expanded="open"
         @click="toggleMenu"
       >
-        <ChevronDown class="button-icon" :stroke-width="1.75" />
+        <ChevronDown class="button-icon" :stroke-width="1.75" aria-hidden="true" />
       </button>
     </div>
 

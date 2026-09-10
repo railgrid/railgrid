@@ -13,12 +13,14 @@ describe('DynamicForm field identity', () => {
           'a-b': { type: 'string', description: 'hyphen description' },
           'a b': { type: 'string', description: 'space description' },
           database: {
+            description: 'database settings description',
             type: 'object',
             properties: {
               size: { type: 'string', description: 'database size description' },
             },
           },
           cache: {
+            description: 'cache settings description',
             type: 'object',
             properties: {
               size: { type: 'string', description: 'cache size description' },
@@ -40,6 +42,7 @@ describe('DynamicForm field identity', () => {
       expect(html).toContain(`aria-describedby="${id}-description"`)
       expect(html).toContain(`id="${id}-description"`)
     }
+    expect(html).toMatch(/<fieldset[^>]*aria-describedby="[^"]+-description"[^>]*>/)
   })
 
   it('uses the shared native checkbox recipe for boolean inputs', async () => {

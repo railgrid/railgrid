@@ -22,6 +22,7 @@ const loaded = ref(false)
 const loadError = ref<string | null>(null)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+const fieldErrors = ref<Record<string, string>>({})
 const nameInput = ref<HTMLInputElement | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
 const operations = createOperationLocks()
@@ -80,22 +81,45 @@ async function focusFormError(message: string, generation: number, expectedConte
   if (isCurrentMutation(generation, expectedContext)) formErrorRef.value?.focus()
 }
 
+function clearFieldErrors(): void {
+  fieldErrors.value = {}
+}
+
+function clearFieldError(field: string): void {
+  if (!fieldErrors.value[field]) return
+  const next = { ...fieldErrors.value }
+  delete next[field]
+  fieldErrors.value = next
+}
+
+function fieldDescribedBy(hintID: string, field: string): string {
+  return [hintID, fieldErrors.value[field] ? `connection-${field}-error` : undefined].filter(Boolean).join(' ')
+}
+
+async function focusFieldError(message: string, field: string, generation: number, expectedContext: number): Promise<void> {
+  if (!isCurrentMutation(generation, expectedContext)) return
+  formError.value = null
+  fieldErrors.value = { ...fieldErrors.value, [field]: message }
+  await nextTick()
+  if (isCurrentMutation(generation, expectedContext)) document.getElementById(`connection-${field}`)?.focus()
+}
+
 async function submit(): Promise<void> {
   if (!mounted || submitting.value) return
   const generation = ++mutationGeneration
   const expectedContext = contextGeneration.value
   formError.value = null
+  clearFieldErrors()
   if (!loaded.value) {
     await focusFormError('Connection list is still loading. Retry the read before creating a connection.', generation, expectedContext)
     return
   }
-  if (!form.name || !form.host || !form.token) {
-    await focusFormError('Name, workspace host, and token are required.', generation, expectedContext)
-    return
-  }
+  if (!form.name.trim()) { await focusFieldError('Name is required.', 'name', generation, expectedContext); return }
+  if (!form.host.trim()) { await focusFieldError('Workspace host is required.', 'host', generation, expectedContext); return }
+  if (!form.token.trim()) { await focusFieldError('Token is required.', 'token', generation, expectedContext); return }
   const nameError = resourceNameError(form.name, 'Name')
   if (nameError) {
-    await focusFormError(nameError, generation, expectedContext)
+    await focusFieldError(nameError, 'name', generation, expectedContext)
     return
   }
   const desiredName = form.name.trim()
@@ -175,18 +199,21 @@ onBeforeUnmount(() => {
           <div class="manual-create-fields-grid manual-create-fields-grid--connection">
             <div class="field">
               <label class="field-label" for="connection-name">Name</label>
-              <input id="connection-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" aria-describedby="connection-name-hint connection-form-error" :aria-invalid="!!formError" />
+              <input id="connection-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" :aria-describedby="fieldDescribedBy('connection-name-hint', 'name')" :aria-invalid="fieldErrors.name ? 'true' : undefined" @input="clearFieldError('name')" />
               <span id="connection-name-hint" class="field-hint">How this workspace is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+              <span v-if="fieldErrors.name" id="connection-name-error" class="field-error" role="alert">{{ fieldErrors.name }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="connection-host">Workspace host</label>
-              <input id="connection-host" class="k-input" v-model="form.host" :disabled="loading || submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" aria-describedby="connection-host-hint connection-form-error" :aria-invalid="!!formError" />
+              <input id="connection-host" class="k-input" v-model="form.host" :disabled="loading || submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" :aria-describedby="fieldDescribedBy('connection-host-hint', 'host')" :aria-invalid="fieldErrors.host ? 'true' : undefined" @input="clearFieldError('host')" />
               <span id="connection-host-hint" class="field-hint">Use the HTTPS root URL from the Databricks browser address bar (AWS, Azure, or GCP), with no path.</span>
+              <span v-if="fieldErrors.host" id="connection-host-error" class="field-error" role="alert">{{ fieldErrors.host }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="connection-token">Token</label>
-              <input id="connection-token" class="k-input" v-model="form.token" :disabled="loading || submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
+              <input id="connection-token" class="k-input" v-model="form.token" :disabled="loading || submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" :aria-describedby="fieldDescribedBy('connection-token-hint', 'token')" :aria-invalid="fieldErrors.token ? 'true' : undefined" @input="clearFieldError('token')" />
               <span id="connection-token-hint" class="field-hint">Use a Databricks personal access token with access to the resources you plan to import.</span>
+              <span v-if="fieldErrors.token" id="connection-token-error" class="field-error" role="alert">{{ fieldErrors.token }}</span>
               <details class="field-disclosure">
                 <summary>Where to find it and required access</summary>
                 <p>In Databricks, open your avatar → Settings → Developer → Access tokens. The token identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</p>

@@ -422,7 +422,7 @@ onUnmounted(() => {
       </div>
       <div class="actions">
         <button v-if="loaded && !showFirstRun" class="k-btn k-btn--ghost icon-text" type="button" :disabled="loading" :aria-busy="loading || undefined" @click="load">
-          <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" />
+          <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" aria-hidden="true" />
           {{ loading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <SplitCreateButton v-if="loaded && !showFirstRun" kind="table" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />

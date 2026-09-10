@@ -9,6 +9,15 @@ import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import { toast } from '../portalkit/toast'
 import { REASON_CLOUD_CREDENTIALS_MISSING, REASON_API_BINDING_MISSING, REASON_TENANT_MISSING } from '../types'
 
+interface DynamicFormValidation {
+  valid: boolean
+  values: Record<string, unknown>
+}
+
+interface DynamicFormHandle {
+  validate: () => Promise<DynamicFormValidation>
+}
+
 const props = defineProps<{ templateName: string }>()
 const emit = defineEmits<{
   (e: 'navigate', view: string, payload?: unknown): void
@@ -19,15 +28,19 @@ const template = ref<Template | null>(null)
 const values = ref<Record<string, unknown>>({})
 const instanceName = ref('')
 const provisionForm = ref<HTMLFormElement | null>(null)
+const dynamicForm = ref<DynamicFormHandle | null>(null)
 const loading = ref(true)
 const loaded = ref(false)
 const initialReadPending = computed(() => loading.value && !loaded.value)
 const showInitialLoading = useDelayedLoading(initialReadPending)
 const readError = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
+const instanceNameFieldError = ref<string | null>(null)
 const submitting = ref(false)
 let loadSerial = 0
 let active = true
+
+const INSTANCE_NAME_PATTERN = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/
 
 // Templates conventionally expose spec.name because the runtime CR needs it,
 // while the platform Instance also has metadata.name. Show one authoritative
@@ -43,13 +56,12 @@ const inputSchema = computed(() => {
   }
 })
 
-const schemaUsesName = computed(() => Boolean(template.value?.inputsSchema?.properties?.name))
-
 async function load() {
   const serial = ++loadSerial
   loading.value = true
   readError.value = null
   mutationError.value = null
+  instanceNameFieldError.value = null
   const firstLoad = template.value === null || template.value.name !== props.templateName
   if (firstLoad) {
     loaded.value = false
@@ -83,33 +95,54 @@ onUnmounted(() => {
   loadSerial += 1
 })
 
+function submissionStillCurrent(serial: number, currentTemplate: Template): boolean {
+  return active
+    && serial === loadSerial
+    && loaded.value
+    && !loading.value
+    && template.value === currentTemplate
+}
+
 async function submit() {
   if (!template.value || !loaded.value || loading.value || submitting.value) return
   const currentTemplate = template.value
-  if (!instanceName.value.trim()) {
-    mutationError.value = 'Enter an instance name.'
-    provisionForm.value?.querySelector<HTMLInputElement>('#infrastructure-instance-name')?.focus()
-    return
-  }
-  mutationError.value = null
+  const submissionSerial = loadSerial
   submitting.value = true
+
   try {
+    mutationError.value = null
+    instanceNameFieldError.value = null
+    const normalizedName = instanceName.value.trim()
+    if (!normalizedName) {
+      instanceNameFieldError.value = 'Enter an instance name.'
+      provisionForm.value?.querySelector<HTMLInputElement>('#infrastructure-instance-name')?.focus()
+      return
+    }
+    if (normalizedName.length > 253 || !INSTANCE_NAME_PATTERN.test(normalizedName)) {
+      instanceNameFieldError.value = 'Use lowercase letters, numbers, hyphens, and periods; start and end with a letter or number.'
+      provisionForm.value?.querySelector<HTMLInputElement>('#infrastructure-instance-name')?.focus()
+      return
+    }
+    const validation = await dynamicForm.value?.validate()
+    if (!submissionStillCurrent(submissionSerial, currentTemplate)) return
+    if (validation && !validation.valid) return
+    if (validation) values.value = validation.values
     const writableValues = createWritableValues(currentTemplate.inputsSchema, values.value)
-    if (schemaUsesName.value && !currentTemplate.inputsSchema?.properties?.name?.readOnly) {
-      writableValues.name = instanceName.value.trim()
+    if (currentTemplate.inputsSchema?.properties?.name && !currentTemplate.inputsSchema.properties.name.readOnly) {
+      writableValues.name = normalizedName
     }
     const inst = await api.createInstance({
       templateName: currentTemplate.name,
       templateVersion: currentTemplate.version,
-      name: instanceName.value.trim(),
+      name: normalizedName,
       values: writableValues,
     })
-    if (active) {
+    if (submissionStillCurrent(submissionSerial, currentTemplate)) {
       toast('info', `Provisioning started for ${inst.name}.`)
       emit('provisioned', inst.name)
     }
   } catch (e: unknown) {
-    if (!active || isContextChangedError(e)) return
+    if (!submissionStillCurrent(submissionSerial, currentTemplate) || isContextChangedError(e)) return
     const err = e as ErrorResponse
     if (err.reason === REASON_CLOUD_CREDENTIALS_MISSING) {
       emit('navigate', 'missing-credentials')
@@ -159,7 +192,7 @@ async function submit() {
         <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
-      <form ref="provisionForm" class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" @submit.prevent="submit">
+      <form ref="provisionForm" class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" novalidate @submit.prevent="submit">
         <div class="k-create-body">
           <div class="provision-identity">
             <div class="dynform-row">
@@ -177,13 +210,15 @@ async function submit() {
                 aria-required="true"
                 pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?"
                 maxlength="253"
-                :aria-invalid="mutationError && !instanceName.trim() ? 'true' : undefined"
-                :aria-describedby="mutationError ? 'infrastructure-provision-error' : undefined"
+                :aria-invalid="instanceNameFieldError ? 'true' : undefined"
+                :aria-describedby="instanceNameFieldError ? 'infrastructure-instance-name-error' : undefined"
+                @input="instanceNameFieldError = null"
               />
+              <span v-if="instanceNameFieldError" id="infrastructure-instance-name-error" class="dynform-error" role="alert">{{ instanceNameFieldError }}</span>
             </div>
           </div>
           <div class="provision-generated-fields">
-            <DynamicForm :schema="inputSchema" v-model:values="values" />
+            <DynamicForm ref="dynamicForm" :schema="inputSchema" v-model:values="values" />
           </div>
           <div v-if="mutationError" id="infrastructure-provision-error" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>

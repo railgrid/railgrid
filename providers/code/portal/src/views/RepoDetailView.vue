@@ -940,7 +940,7 @@ onUnmounted(() => {
             <form class="form" @submit.prevent="addKey">
               <label class="field"><span class="field-label">Title</span><input v-model="keyTitle" class="k-input" :disabled="repositoryDeleting" placeholder="ci-deploy" autocomplete="off" /></label>
               <label class="field"><span class="field-label">Public key (leave empty to generate)</span><textarea v-model="keyPublic" class="k-input" :disabled="repositoryDeleting" rows="2" placeholder="ssh-ed25519 AAAA…" /></label>
-              <label class="field field-check"><input v-model="keyReadOnly" type="checkbox" :disabled="repositoryDeleting" /> read-only</label>
+              <label class="field field-check k-checkbox-hit"><input v-model="keyReadOnly" type="checkbox" :disabled="repositoryDeleting" /> read-only</label>
               <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
               <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
             </form>

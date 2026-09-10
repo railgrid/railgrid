@@ -248,7 +248,7 @@ onUnmounted(() => {
 
     <div v-if="error" class="banner error" role="alert">{{ error }}</div>
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
-      <Loader2 :size="14" class="spin" /> Loading service types and edges…
+      <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading service types and edges…
     </div>
 
     <FirstRunGuide
@@ -308,17 +308,17 @@ onUnmounted(() => {
         </label>
       </div>
 
-      <label class="fld">
-        <span class="lbl">Target</span>
-        <div class="service-create-target-modes">
-          <label>
-            <input v-model="targetMode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
+      <div class="fld">
+        <span id="service-create-target-label" class="lbl">Target</span>
+        <div class="service-create-target-modes" role="group" aria-labelledby="service-create-target-label">
+          <label class="k-checkbox-hit">
+            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
           </label>
-          <label :class="{ 'is-disabled': selectedEdgeIsServer || hostRequired }">
-            <input v-model="targetMode" type="radio" value="kube" :disabled="selectedEdgeIsServer || hostRequired" /> Kubernetes Service
+          <label class="k-checkbox-hit" :class="{ 'is-disabled': selectedEdgeIsServer || hostRequired }">
+            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsServer || hostRequired" /> Kubernetes Service
           </label>
         </div>
-      </label>
+      </div>
 
       <div v-if="targetMode === 'host'" class="service-create-grid">
         <label class="fld">
@@ -355,7 +355,7 @@ onUnmounted(() => {
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">Cancel</button>
         <button type="submit" class="k-btn k-btn--primary" :disabled="busy || !canCreate">
-          <Loader2 v-if="busy" :size="14" class="spin" />
+          <Loader2 v-if="busy" :size="14" class="spin" aria-hidden="true" />
           <Plus v-else :size="14" aria-hidden="true" />
           {{ busy ? 'Creating…' : 'Create service' }}
         </button>

@@ -39,6 +39,7 @@ const editToken = ref('')
 const saving = ref(false)
 const deleting = ref(false)
 const saveError = ref<string | null>(null)
+const saveFieldErrors = ref<Record<string, string>>({})
 const mutationError = ref<string | null>(null)
 const editHostInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
@@ -172,6 +173,7 @@ function startEdit() {
   editHost.value = conn.value.host
   editToken.value = ''
   saveError.value = null
+  saveFieldErrors.value = {}
   editing.value = true
   void nextTick(() => editHostInput.value?.focus())
 }
@@ -182,11 +184,31 @@ async function focusSaveError(message: string) {
   saveErrorRef.value?.focus()
 }
 
+function clearSaveFieldError(field: string): void {
+  if (!saveFieldErrors.value[field]) return
+  const next = { ...saveFieldErrors.value }
+  delete next[field]
+  saveFieldErrors.value = next
+}
+
+function fieldDescribedBy(hintID: string, field: string): string {
+  return [hintID, saveFieldErrors.value[field] ? `connection-edit-${field}-error` : undefined].filter(Boolean).join(' ')
+}
+
+async function focusSaveFieldError(message: string, field: string, controlID: string): Promise<void> {
+  saveError.value = null
+  saveFieldErrors.value = { ...saveFieldErrors.value, [field]: message }
+  await nextTick()
+  document.getElementById(controlID)?.focus()
+}
+
 async function saveEdit() {
   if (!conn.value) return
   const host = editHost.value.trim()
+  saveError.value = null
+  saveFieldErrors.value = {}
   if (!host) {
-    await focusSaveError('Workspace host is required.')
+    await focusSaveFieldError('Workspace host is required.', 'host', 'connection-edit-host')
     return
   }
   const lock = operationKey('connection', conn.value.name)
@@ -195,7 +217,6 @@ async function saveEdit() {
     return
   }
   saving.value = true
-  saveError.value = null
   mutationError.value = null
   try {
     const current = conn.value
@@ -372,13 +393,15 @@ onUnmounted(() => {
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="connection-edit-host">Workspace host</label>
-            <input id="connection-edit-host" class="k-input" ref="editHostInput" v-model="editHost" :disabled="saving" autocomplete="url" required aria-required="true" aria-describedby="connection-edit-host-hint connection-edit-error" :aria-invalid="!!saveError" />
+            <input id="connection-edit-host" class="k-input" ref="editHostInput" v-model="editHost" :disabled="saving" autocomplete="url" required aria-required="true" :aria-describedby="fieldDescribedBy('connection-edit-host-hint', 'host')" :aria-invalid="saveFieldErrors.host ? 'true' : undefined" @input="clearSaveFieldError('host')" />
             <span id="connection-edit-host-hint" class="field-hint">Use the HTTPS root URL from Databricks, with no path.</span>
+            <span v-if="saveFieldErrors.host" id="connection-edit-host-error" class="field-error" role="alert">{{ saveFieldErrors.host }}</span>
           </div>
           <div class="field">
             <label class="field-label" for="connection-edit-token">New token <span class="muted">(optional)</span></label>
-            <input id="connection-edit-token" class="k-input" v-model="editToken" :disabled="saving" type="password" autocomplete="new-password" placeholder="Leave blank to keep current token" aria-describedby="connection-edit-token-hint connection-edit-error" :aria-invalid="!!saveError" />
+            <input id="connection-edit-token" class="k-input" v-model="editToken" :disabled="saving" type="password" autocomplete="new-password" placeholder="Leave blank to keep current token" :aria-describedby="fieldDescribedBy('connection-edit-token-hint', 'token')" :aria-invalid="saveFieldErrors.token ? 'true' : undefined" @input="clearSaveFieldError('token')" />
             <span id="connection-edit-token-hint" class="field-hint">Create a replacement personal access token in Databricks before pasting it here. The existing token remains in place when this is blank.</span>
+            <span v-if="saveFieldErrors.token" id="connection-edit-token-error" class="field-error" role="alert">{{ saveFieldErrors.token }}</span>
           </div>
           <div class="actions">
             <button class="k-btn k-btn--primary" type="submit" :disabled="saving || operationLocked(conn.name)">{{ saving ? 'Saving…' : 'Save changes' }}</button>

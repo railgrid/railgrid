@@ -448,10 +448,10 @@ onUnmounted(() => {
                 </label>
                 <label class="fld"><span class="lbl">Port</span><input v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" /></label>
               </div>
-              <div class="service-detail__target-mode" role="group" aria-label="Service target mode">
-                <span class="lbl">Target</span>
-                <label><input v-model="targetMode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
-                <label :class="{ 'is-disabled': edgeIsServer }"><input v-model="targetMode" type="radio" value="kube" :disabled="busy || !service || edgeIsServer" /> Kubernetes Service</label>
+              <div class="service-detail__target-mode" role="group" aria-labelledby="service-edit-target-label">
+                <span id="service-edit-target-label" class="lbl">Target</span>
+                <label class="k-checkbox-hit"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
+                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsServer }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsServer" /> Kubernetes Service</label>
               </div>
               <div v-if="targetMode === 'host'" class="service-detail__form-grid">
                 <label class="fld"><span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" class="muted service-detail__field-help">{{ entry.hostHelp }}</span></label>

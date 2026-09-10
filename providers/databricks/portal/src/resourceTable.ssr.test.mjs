@@ -3644,10 +3644,10 @@ test('import surfaces preserve modal caps and route width contracts through ultr
   const routeWorkbench = style.match(/faros-provider-databricks \.import-route \.import-workbench\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.match(routeWorkbench, /max-inline-size:\s*none/)
   assert.match(routeWorkbench, /width:\s*100%/)
-  const splitOffset = style.indexOf('@container import-route (min-width: 1200px)')
-  assert.ok(splitOffset >= 0, 'route context split has an explicit 1200px container threshold')
+  const splitOffset = style.indexOf('@container import-route (min-width: 680px)')
+  assert.ok(splitOffset >= 0, 'route context split fits laptop content columns at 680px')
   const split = style.slice(splitOffset, style.indexOf('\n}', style.indexOf('grid-template-columns', splitOffset)) + 2)
-  assert.match(split, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(20rem,\s*24rem\)/)
+  assert.match(split, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+clamp\(14rem,\s*28%,\s*24rem\)/)
   const splitRailOffset = style.indexOf('faros-provider-databricks .import-route .import-context-rail {', splitOffset)
   const splitRail = style.slice(splitRailOffset, style.indexOf('\n}', splitRailOffset) + 2)
   assert.match(splitRail, /align-self:\s*stretch/)

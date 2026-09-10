@@ -232,7 +232,7 @@ function fmt(s: number) {
       <li v-for="(l, i) in stepLabels" :key="l"
           class="wiz-step" :class="{ done: step > i + 1, active: step === i + 1 }"
           :aria-current="step === i + 1 ? 'step' : undefined">
-        <CircleDot :size="12" /> {{ l }}
+        <CircleDot :size="12" aria-hidden="true" /> {{ l }}
       </li>
     </ol>
     <span class="wiz-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ connectionAnnouncement }}</span>
@@ -267,9 +267,9 @@ function fmt(s: number) {
               <ArrowLeft :size="14" aria-hidden="true" /> {{ props.cancelLabel }}
             </button>
             <button type="button" class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
-              <Loader2 v-if="saving" :size="14" class="spin" />
+              <Loader2 v-if="saving" :size="14" class="spin" aria-hidden="true" />
               {{ saving ? 'Creating…' : 'Create & continue' }}
-              <ArrowRight v-if="!saving" :size="14" />
+              <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -290,7 +290,7 @@ function fmt(s: number) {
         <b>{{ trimmed }}</b> connects.</p>
 
       <div v-if="tokenError" class="banner warn" role="alert" aria-live="assertive">{{ tokenError }}</div>
-      <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="spin" /> Generating join token…</div>
+      <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="spin" aria-hidden="true" /> Generating join token…</div>
 
       <template v-if="joinToken || tokenError">
         <div v-if="edgeType === 'kubernetes'" class="snippet">
@@ -331,7 +331,7 @@ function fmt(s: number) {
 
       <span class="wiz-sr-only" role="status" aria-live="polite">{{ copyFeedback }}</span>
 
-      <div class="waiting"><Loader2 :size="14" class="spin" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
+      <div class="waiting"><Loader2 :size="14" class="spin" aria-hidden="true" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       <div class="wiz-actions">
         <button type="button" class="k-btn k-btn--ghost" @click="leaveWizard('cancel')">{{ props.cancelLabel }}</button>
         <button type="button" class="k-btn k-btn--ghost" @click="leaveWizard('created')">Skip waiting — continue</button>
@@ -340,11 +340,11 @@ function fmt(s: number) {
 
     <!-- Step 3 -->
     <div v-else class="wiz-card k-card center">
-      <PartyPopper :size="30" />
+      <PartyPopper :size="30" aria-hidden="true" />
       <h3 id="edge-wizard-step-heading" tabindex="-1"><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
       <div class="wiz-actions">
-        <button type="button" class="k-btn k-btn--primary" @click="leaveWizard('created')">Continue <ArrowRight :size="14" /></button>
+        <button type="button" class="k-btn k-btn--primary" @click="leaveWizard('created')">Continue <ArrowRight :size="14" aria-hidden="true" /></button>
       </div>
     </div>
   </div>
