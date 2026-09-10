@@ -594,7 +594,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       {{ filterPending ? 'Updating table results…' : explicitReadState && loading && loaded ? 'Updating…' : '' }}
     </span>
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
-      <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
+      <AlertCircle class="k-table__error-icon" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-table__error-message">{{ error }}</span>
       <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
     </div>
@@ -641,7 +641,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 
     <template v-else>
       <div v-if="explicitReadState && error" class="k-table__stale" :role="staleMessageRole" :aria-live="staleMessageLive">
-        <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
+        <AlertCircle class="k-table__error-icon" :stroke-width="1.75" aria-hidden="true" />
         <span class="k-table__error-message">
           {{ stale ? 'Showing the last successful result. ' : '' }}{{ error }}
         </span>
@@ -653,7 +653,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
           <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search {{ tableAriaLabel }}</span>
           <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
           <input :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
-          <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" /></button>
+          <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" aria-hidden="true" /></button>
         </label>
         <ResourceTableFilter
           v-for="filter in filters"
@@ -707,7 +707,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
               <p class="k-table__pending-label">{{ pendingBodyText }}</p>
             </td></tr>
             <tr v-else-if="visibleRows.length === 0"><td :colspan="renderedColumnCount" class="k-table__empty-cell">
-              <Inbox class="k-table__empty-icon" :stroke-width="1.25" />
+              <Inbox class="k-table__empty-icon" :stroke-width="1.25" aria-hidden="true" />
               <p class="k-table__empty-label">{{ activeFilters ? noMatchText : emptyText }}</p>
             </td></tr>
           </tbody>
@@ -727,12 +727,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
           </select>
         </label>
         <div class="k-table__page-actions">
-          <button class="k-table__page-button" type="button" aria-label="Previous page" :disabled="!canPrevious" @click="previousPage"><ChevronLeft :stroke-width="1.75" /></button>
+          <button class="k-table__page-button" type="button" aria-label="Previous page" :disabled="!canPrevious" @click="previousPage"><ChevronLeft :stroke-width="1.75" aria-hidden="true" /></button>
           <span class="k-table__page-indicator" aria-live="polite">
             <template v-if="isServerPagination && serverTotal === null">Page {{ currentPage }}</template>
             <template v-else>{{ currentPage }} / {{ totalPages }}</template>
           </span>
-          <button class="k-table__page-button" type="button" aria-label="Next page" :disabled="!canNext" @click="nextPage"><ChevronRight :stroke-width="1.75" /></button>
+          <button class="k-table__page-button" type="button" aria-label="Next page" :disabled="!canNext" @click="nextPage"><ChevronRight :stroke-width="1.75" aria-hidden="true" /></button>
         </div>
       </footer>
     </template>

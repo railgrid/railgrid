@@ -73,6 +73,15 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        passes: 2,
+      },
+      format: {
+        comments: /@license|@preserve|^!/i,
+      },
+    },
     cssCodeSplit: true,
     manifest: true,
     modulePreload: false,

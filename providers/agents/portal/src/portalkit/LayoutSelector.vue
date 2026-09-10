@@ -3,6 +3,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { Check, ChevronDown, Grid2X2, List } from 'lucide-vue-next'
 import { layoutModes, nextLayoutMenuIndex, type LayoutMode } from './layoutPreference'
+import { useAnchoredPopover } from './useAnchoredPopover'
 
 const props = withDefaults(defineProps<{
   modelValue: LayoutMode
@@ -16,22 +17,26 @@ const emit = defineEmits<{
 }>()
 
 const root = ref<HTMLElement | null>(null)
-const trigger = ref<HTMLButtonElement | null>(null)
-const open = ref(false)
+const {
+  open,
+  triggerRef: trigger,
+  panelRef,
+  panelStyle,
+  close: closePopover,
+} = useAnchoredPopover({ width: 154, gap: 5, align: 'end' })
 const instanceID = useId()
 const menuID = `k-layout-selector-menu-${instanceID}`
 const labelID = `k-layout-selector-label-${instanceID}`
 const currentLabel = computed(() => labelFor(props.modelValue))
 const triggerLabel = computed(() => `${props.ariaLabel}: ${currentLabel.value}`)
-let deferredCloseTimer: ReturnType<typeof setTimeout> | undefined
 
 function labelFor(mode: LayoutMode): string {
   return mode === 'grid' ? 'Grid' : 'List'
 }
 
 function menuItems(): HTMLButtonElement[] {
-  return root.value
-    ? [...root.value.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+  return panelRef.value
+    ? [...panelRef.value.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
     : []
 }
 
@@ -40,28 +45,23 @@ function focusItem(index: number): void {
 }
 
 function openMenu(index = 0): void {
+  if (open.value) return
   open.value = true
   focusItem(index)
 }
 
 function closeMenu(restoreFocus = false): void {
-  if (deferredCloseTimer !== undefined) {
-    clearTimeout(deferredCloseTimer)
-    deferredCloseTimer = undefined
-  }
   if (!open.value) return
-  open.value = false
-  if (restoreFocus) void nextTick(() => trigger.value?.focus())
+  closePopover({ restoreFocus })
 }
 
 function closeMenuAfterTab(): void {
-  if (deferredCloseTimer !== undefined) return
-  // Leave the focused, tabindex=-1 menu item mounted while the browser performs
-  // its normal Tab move. The selector closes immediately after that move.
-  deferredCloseTimer = setTimeout(() => {
-    deferredCloseTimer = undefined
-    closeMenu()
-  }, 0)
+  // The panel is teleported after the owning trigger in document order. Close
+  // it and put focus back on that trigger before allowing the browser's native
+  // Tab default to run; this keeps exit relative to the trigger and removes
+  // teleported menu items from the sequential focus order.
+  closeMenu()
+  trigger.value?.focus()
 }
 
 function toggleMenu(): void {
@@ -103,11 +103,13 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 function closeFromOutsidePointer(event: PointerEvent): void {
-  if (open.value && root.value && !root.value.contains(event.target as Node)) closeMenu()
+  const target = event.target as Node | null
+  if (open.value && target && !root.value?.contains(target) && !panelRef.value?.contains(target)) closeMenu()
 }
 
 function closeFromOutsideFocus(event: FocusEvent): void {
-  if (open.value && root.value && !root.value.contains(event.target as Node)) closeMenu()
+  const target = event.target as Node | null
+  if (open.value && target && !root.value?.contains(target) && !panelRef.value?.contains(target)) closeMenu()
 }
 
 onMounted(() => {
@@ -118,7 +120,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', closeFromOutsidePointer)
   document.removeEventListener('focusin', closeFromOutsideFocus)
-  if (deferredCloseTimer !== undefined) clearTimeout(deferredCloseTimer)
 })
 </script>
 
@@ -140,24 +141,35 @@ onBeforeUnmount(() => {
       <ChevronDown class="k-layout-selector__chevron" :stroke-width="1.75" aria-hidden="true" />
     </button>
 
-    <div v-if="open" :id="menuID" class="k-menu k-layout-selector__menu" role="menu" :aria-labelledby="labelID">
-      <div :id="labelID" class="k-layout-selector__label">{{ ariaLabel }}</div>
-      <button
-        v-for="mode in layoutModes"
-        :key="mode"
-        type="button"
-        class="k-menu-item k-layout-selector__item"
-        :class="{ 'is-selected': mode === modelValue }"
-        role="menuitemradio"
-        :aria-checked="mode === modelValue"
-        tabindex="-1"
-        @click="choose(mode)"
+    <Teleport to="body">
+      <div
+        v-if="open"
+        :id="menuID"
+        ref="panelRef"
+        class="k-menu k-layout-selector__menu"
+        :style="panelStyle"
+        role="menu"
+        :aria-labelledby="labelID"
+        @keydown="handleKeydown"
       >
-        <Grid2X2 v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
-        <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
-        <span>{{ labelFor(mode) }}</span>
-        <Check v-if="mode === modelValue" class="k-layout-selector__check" :stroke-width="1.75" aria-hidden="true" />
-      </button>
-    </div>
+        <div :id="labelID" class="k-layout-selector__label">{{ ariaLabel }}</div>
+        <button
+          v-for="mode in layoutModes"
+          :key="mode"
+          type="button"
+          class="k-menu-item k-layout-selector__item"
+          :class="{ 'is-selected': mode === modelValue }"
+          role="menuitemradio"
+          :aria-checked="mode === modelValue"
+          tabindex="-1"
+          @click="choose(mode)"
+        >
+          <Grid2X2 v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
+          <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
+          <span>{{ labelFor(mode) }}</span>
+          <Check v-if="mode === modelValue" class="k-layout-selector__check" :stroke-width="1.75" aria-hidden="true" />
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>

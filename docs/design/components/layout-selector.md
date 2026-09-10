@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.layout-selector","title":"LayoutSelector","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"LayoutSelector is a controlled two-mode menu with storage as a non-fatal preference."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/layout-selector.md#layoutselector","role":"design"},{"path":"provider-sdk/portalkit-vue/LayoutSelector.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/layoutPreference.ts","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"pending","evidence":"No browser or mounted behavior audit was run in this checkout."}]},"relatedDocuments":[{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.components.resource-table","relation":"see-also","path":"docs/design/components/resource-table.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"}]}
+{"schema":1,"id":"design.components.layout-selector","title":"LayoutSelector","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"LayoutSelector is a controlled two-mode menu with storage as a non-fatal preference."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/layout-selector.md#layoutselector","role":"design"},{"path":"provider-sdk/portalkit-vue/LayoutSelector.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/layoutPreference.ts","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current byte-for-byte PortalKit and AgentKit copy and manifest parity passed."},{"kind":"browser","ref":"Core and provider rendered fixture matrices","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed with actual fonts loaded; this is shared fixture evidence, not a dedicated LayoutSelector interaction case."}]},"relatedDocuments":[{"id":"design.components.menu","relation":"see-also","path":"docs/design/components/menu.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.components.resource-table","relation":"see-also","path":"docs/design/components/resource-table.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"}]}
 ---
 
 # LayoutSelector
@@ -36,10 +36,11 @@ accent-subtle menu state and no glow.
 
 Click, Enter, and Space select. Closed ArrowDown/ArrowUp opens on the first or
 last item; open arrows wrap; Home/End jump; Escape closes and restores trigger
-focus. Tab closes after ordinary focus movement without trapping. Pointer or
-focus movement outside closes the menu. `layoutPreference.ts` validates stored
-values, defaults to `grid`, and treats unavailable or failing browser storage as
-a non-fatal preference miss.
+focus. When Tab is pressed, the teleported menu closes and synchronously returns
+focus to its own trigger before native adjacent focus movement; focus is not
+trapped after that handoff. Pointer or focus movement outside closes the menu.
+`layoutPreference.ts` validates stored values, defaults to `grid`, and treats
+unavailable or failing browser storage as a non-fatal preference miss.
 
 ## Content
 
@@ -48,9 +49,10 @@ documented choices, and the trigger's accessible name includes the current mode.
 
 ## Layout and responsive behavior
 
-The trigger is compact and shows the current-layout icon plus chevron. Its menu
-uses the shared layout-selector/menu geometry; selection uses
-`accent-subtle` and never glows.
+The trigger is compact and shows the current-layout icon plus chevron. The menu
+is teleported to `body` and uses `useAnchoredPopover` for viewport-bounded,
+resize/scroll-updated placement with above-trigger fallback when needed.
+Selection uses `accent-subtle` and never glows.
 
 ## Accessibility
 
@@ -61,7 +63,8 @@ focus-return, and native Tab-exit behavior above is part of the contract.
 
 ## Code and evidence
 
-Canonical implementations are [`LayoutSelector.vue`](../../../provider-sdk/portalkit-vue/LayoutSelector.vue)
+Canonical implementations are [`LayoutSelector.vue`](../../../provider-sdk/portalkit-vue/LayoutSelector.vue),
+[`useAnchoredPopover.ts`](../../../provider-sdk/portalkit-vue/useAnchoredPopover.ts),
 and [`layoutPreference.ts`](../../../provider-sdk/portalkit-vue/layoutPreference.ts).
 Distribution is checked by `make verify-portalkit`.
 

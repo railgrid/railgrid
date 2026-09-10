@@ -7,6 +7,7 @@
   operation. Toasts remain for transient success and context-free feedback.
 -->
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Check, Info, TriangleAlert, X } from 'lucide-vue-next'
 import { ensureFarosUIStyles } from '../portalkit/styles'
 
@@ -18,6 +19,8 @@ const props = withDefaults(defineProps<{
   title?: string
   message?: string
   actionLabel?: string
+  /** Accessible in-flight action. Falls back to the visible action label. */
+  actionBusyLabel?: string
   actionBusy?: boolean
   /** Select the live channel; `off` leaves the notification silent. */
   announce?: InlineNotificationAnnouncement
@@ -28,6 +31,7 @@ const props = withDefaults(defineProps<{
   title: '',
   message: '',
   actionLabel: '',
+  actionBusyLabel: '',
   actionBusy: false,
   announce: 'auto',
   dismissible: false,
@@ -50,6 +54,9 @@ const liveMode = () => {
   if (props.announce === 'off') return undefined
   return liveRole() === 'alert' ? 'assertive' : 'polite'
 }
+const actionButtonLabel = computed(() => props.actionBusy
+  ? props.actionBusyLabel || `${props.actionLabel}…`
+  : props.actionLabel)
 </script>
 
 <template>
@@ -73,10 +80,11 @@ const liveMode = () => {
       type="button"
       class="k-inline-notification__action"
       :disabled="actionBusy"
+      :aria-label="actionButtonLabel"
       :aria-busy="actionBusy ? 'true' : undefined"
       @click="emit('action')"
     >
-      {{ actionBusy ? 'Working…' : actionLabel }}
+      {{ actionButtonLabel }}
     </button>
     <button
       v-if="dismissible"

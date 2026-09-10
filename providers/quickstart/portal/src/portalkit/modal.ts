@@ -26,6 +26,8 @@ export interface ConfirmOptions {
   danger?: boolean
 }
 
+let modalSequence = 0
+
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
 }
@@ -38,13 +40,16 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
     const overlay = document.createElement('div')
     overlay.className = 'k-modal-overlay'
     const danger = opts.danger ? ' k-modal--danger' : ''
+    const titleID = `k-modal-title-${++modalSequence}`
+    const messageID = `k-modal-message-${modalSequence}`
+    const describedBy = opts.message ? ` aria-describedby="${messageID}"` : ''
     overlay.innerHTML = `
-      <div class="k-modal k-modal--vanilla${danger}" role="dialog" aria-modal="true" aria-label="${esc(opts.title)}">
+      <div class="k-modal k-modal--confirm k-modal--vanilla${danger}" role="${showCancel ? 'alertdialog' : 'dialog'}" aria-modal="true" aria-labelledby="${titleID}"${describedBy}>
         <div class="k-modal__head">
-          <span class="k-modal__icon">${ic(opts.danger ? 'trash' : 'circle')}</span>
-          <h2 class="k-modal__title">${esc(opts.title)}</h2>
+          <span class="k-modal__icon" aria-hidden="true">${ic(opts.danger ? 'trash' : 'circle')}</span>
+          <h2 id="${titleID}" class="k-modal__title">${esc(opts.title)}</h2>
         </div>
-        ${opts.message ? `<div class="k-modal__body">${esc(opts.message)}</div>` : ''}
+        ${opts.message ? `<div id="${messageID}" class="k-modal__body"><p class="k-modal__message">${esc(opts.message)}</p></div>` : ''}
         <div class="k-modal__foot">
           ${showCancel ? `<button class="k-modal-btn k-modal-btn--cancel" data-k-modal-cancel>${esc(opts.cancelLabel || 'Cancel')}</button>` : ''}
           <button class="k-modal-btn k-modal-btn--confirm${opts.danger ? ' k-modal-btn--danger' : ''}" data-k-modal-confirm>${esc(opts.confirmLabel || (showCancel ? 'Confirm' : 'OK'))}</button>
@@ -57,7 +62,7 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
       done = true
       overlay.removeEventListener('keydown', onKey)
       overlay.remove()
-      previouslyFocused?.focus?.()
+      if (previouslyFocused?.isConnected) previouslyFocused.focus()
       resolve(v)
     }
     // Keydown is scoped to the dialog (not window) and Enter is deliberately
@@ -66,6 +71,7 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
     // destructive confirm no matter where focus was.
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
+        e.preventDefault()
         e.stopPropagation()
         close(false)
         return

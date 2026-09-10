@@ -20,19 +20,20 @@ const props = withDefaults(defineProps<{
   icon: Component
   /** Accessible resource-specific action, for example "Rotate API key". */
   label: string
-  /** Accessible in-flight action. Defaults to "Working…". */
+  /** Accessible in-flight action. Falls back to the resource-specific label. */
   busyLabel?: string
   busy?: boolean
   disabled?: boolean
   tone?: ResourceTableActionTone
 }>(), {
-  busyLabel: 'Working…',
   busy: false,
   disabled: false,
   tone: 'neutral',
 })
 
-const accessibleLabel = computed(() => props.busy ? props.busyLabel : props.label)
+const accessibleLabel = computed(() => props.busy
+  ? props.busyLabel || `${props.label}…`
+  : props.label)
 
 const emit = defineEmits<{
   click: [event: MouseEvent]

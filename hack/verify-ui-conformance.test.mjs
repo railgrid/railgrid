@@ -484,6 +484,91 @@ test('keeps ResourceTable quiet color roles above their contrast floors in both 
   }
 })
 
+test('keeps selected and tinted PortalKit controls readable in both themes', () => {
+  const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const dark = host.match(/@theme\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const light = host.match(/html\.light\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+
+  const token = (block, name) => {
+    const value = block.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6});`))?.[1]
+    assert.ok(value, `${name} must be an opaque hex token for contrast verification`)
+    return value
+  }
+  const rgbaToken = block => {
+    const match = block.match(/--color-accent-subtle:\s*rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\);/)
+    assert.ok(match, 'accent-subtle must expose an rgba token for contrast verification')
+    return {
+      color: [Number(match[1]), Number(match[2]), Number(match[3])],
+      alpha: Number(match[4]),
+    }
+  }
+  const channels = value => [1, 3, 5].map(offset => Number.parseInt(value.slice(offset, offset + 2), 16))
+  const mix = (foreground, background, amount) => foreground
+    .map((value, index) => Math.round(value * amount + background[index] * (1 - amount)))
+  const luminance = color => color
+    .map(value => value / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0)
+  const contrast = (left, right) => {
+    const [lighter, darker] = [luminance(left), luminance(right)].sort((a, b) => b - a)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
+  const rule = (selector, fromEnd = false) => {
+    const start = fromEnd ? css.lastIndexOf(selector) : css.indexOf(selector)
+    assert.ok(start >= 0, `canonical stylesheet contains ${selector}`)
+    const end = css.indexOf('}', start)
+    assert.ok(end > start, `${selector} has a complete rule`)
+    return css.slice(start, end)
+  }
+
+  assert.match(rule('.k-menu-item.is-selected'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-layout-selector__item.is-selected', true), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-tab--active'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-table__filter.is-active .k-table__filter-label'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-table__filter-option[aria-selected="true"]'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-toast__action'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-inline-notification__action {'), /color:\s*var\(--color-accent-hover/)
+  assert.match(rule('.k-btn--primary'), /background:\s*var\(--color-accent[\s\S]*?color:\s*var\(--color-on-accent/)
+  assert.match(css, /\.k-tab__count[\s\S]*?background:\s*var\(--color-accent,[\s\S]*?color:\s*var\(--color-on-accent/)
+
+  for (const theme of [dark, light]) {
+    const accent = channels(token(theme, 'color-accent'))
+    const accentHover = channels(token(theme, 'color-accent-hover'))
+    const raised = channels(token(theme, 'color-surface-raised'))
+    const overlay = channels(token(theme, 'color-surface-overlay'))
+    const subtle = rgbaToken(theme)
+    const selectedSurface = mix(subtle.color, raised, subtle.alpha)
+    const actionHoverSurface = mix(accent, raised, 0.22)
+    const activeFilterLabelSurface = mix(raised, overlay, 0.78)
+    for (const surface of [selectedSurface, actionHoverSurface, activeFilterLabelSurface]) {
+      assert.ok(contrast(accentHover, surface) >= 4.5, `accent-hover must meet WCAG AA on tinted surface (${contrast(accentHover, surface).toFixed(2)}:1)`)
+    }
+  }
+})
+
+test('keeps PortalKit confirmations scoped, safe, and geometry-compatible', () => {
+  const vue = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ConfirmDialog.vue', import.meta.url), 'utf8')
+  const vanilla = fs.readFileSync(new URL('../provider-sdk/portalkit/modal.ts', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+
+  assert.match(vue, /@keydown="onKeydown"/)
+  assert.doesNotMatch(vue, /window\.addEventListener\('keydown'/)
+  assert.match(vue, /confirmState\.danger \? cancelBtn\.value : confirmBtn\.value/)
+  assert.match(vue, /target instanceof Node\).*modalRef\.value\?\.contains\(target\)/)
+  assert.match(vue, /if \(e\.key === 'Tab'\)/)
+  assert.match(vue, /target\?\.isConnected && target\.focus\(\)/)
+  assert.match(vue, /class="k-modal k-modal--confirm"/)
+  assert.match(vanilla, /k-modal k-modal--confirm k-modal--vanilla/)
+  assert.match(vanilla, /opts\.danger && showCancel \? '\[data-k-modal-cancel\]' : '\[data-k-modal-confirm\]'/)
+  assert.match(vanilla, /overlay\.addEventListener\('keydown', onKey\)/)
+  assert.match(vanilla, /if \(previouslyFocused\?\.isConnected\) previouslyFocused\.focus\(\)/)
+  const confirmRule = css.match(/\.k-modal--confirm\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(confirmRule, /max-height:\s*min\(640px, calc\(100vh - 48px\)\)/)
+  assert.match(confirmRule, /max-height:\s*min\(640px, calc\(100dvh - 48px\)\)/)
+  assert.match(css, /\.k-modal--confirm \.k-modal__body\s*\{[\s\S]*?overflow-y: auto;/)
+})
+
 test('gives every ResourceTable caller a descriptive table and scroll-region name', () => {
   const sourceRoots = [
     path.resolve(new URL('../portal/', import.meta.url).pathname),

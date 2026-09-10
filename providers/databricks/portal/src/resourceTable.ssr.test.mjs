@@ -70,6 +70,10 @@ const columns = [{ key: 'name', label: 'Name' }]
 
 function createHostRenderer() {
   const textNode = (text, parent = null) => ({ type: '#text', text, parent })
+  // ActionMenu and LayoutSelector use a body Teleport in the browser. Give the
+  // custom renderer a real target so mount/unmount removes teleported nodes
+  // from their owning parent instead of handing Vue a null target.
+  const body = { type: 'body', props: {}, children: [], parent: null }
   const renderer = createRenderer({
     patchProp(node, key, _previous, value) {
       node.props[key] = value
@@ -96,6 +100,9 @@ function createHostRenderer() {
         parent: null,
         addEventListener() {},
         removeEventListener() {},
+        getBoundingClientRect() {
+          return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }
+        },
         querySelectorAll(selector) {
           const matches = []
           const visit = current => {
@@ -138,8 +145,8 @@ function createHostRenderer() {
       const index = siblings.indexOf(node)
       return index >= 0 ? siblings[index + 1] ?? null : null
     },
-    querySelector() {
-      return null
+    querySelector(selector) {
+      return selector === 'body' ? body : null
     },
     setScopeId() {},
     cloneNode(node) {
@@ -149,7 +156,7 @@ function createHostRenderer() {
       return [textNode(''), textNode('')]
     },
   })
-  return { renderer, root: { type: '#root', props: {}, children: [], parent: null } }
+  return { renderer, root: { type: '#root', props: {}, children: [], parent: null }, body }
 }
 
 function findHostNode(node, predicate) {
@@ -175,7 +182,7 @@ async function mountInteractiveTable(ResourceTable, props) {
     innerHeight: 900,
     innerWidth: 1200,
   }
-  const { renderer, root } = createHostRenderer()
+  const { renderer, root, body } = createHostRenderer()
   const app = renderer.createApp(ResourceTable, props)
   // Vite's SSR SFC transform wraps setup with useSSRContext even though this
   // test mounts through a host renderer. Supply the same minimal context that
@@ -193,7 +200,7 @@ async function mountInteractiveTable(ResourceTable, props) {
   return {
     root,
     instance: app._instance,
-    find: predicate => findHostNode(root, predicate),
+    find: predicate => findHostNode(root, predicate) ?? findHostNode(body, predicate),
     unmount() {
       app.unmount()
       if (previousWindow === undefined) delete globalThis.window
@@ -336,7 +343,7 @@ function mountDetailView(Component, props, components, provides = {}) {
     innerHeight: 900,
     innerWidth: 1200,
   }
-  const { renderer, root } = createHostRenderer()
+  const { renderer, root, body } = createHostRenderer()
   const app = renderer.createApp(Component, props)
   for (const [name, component] of Object.entries(components ?? {})) app.component(name, component)
   Object.assign(app._context.provides, provides)
@@ -345,7 +352,7 @@ function mountDetailView(Component, props, components, provides = {}) {
   return {
     root,
     instance: app._instance,
-    find: predicate => findHostNode(root, predicate),
+    find: predicate => findHostNode(root, predicate) ?? findHostNode(body, predicate),
     unmount() {
       app.unmount()
       if (previousDocument === undefined) delete globalThis.document
@@ -2104,10 +2111,13 @@ test('canonical fallback keeps semantic tokens valid without overriding host val
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.live-dot\s*\{ animation: none; \}/)
 })
 
-test('canonical confirm dialog treats Enter on Cancel as cancellation', async () => {
+test('canonical confirm dialog scopes keyboard ownership and starts danger actions on Cancel', async () => {
   const source = await readFile(new URL('../../../../provider-sdk/portalkit-vue/ConfirmDialog.vue', import.meta.url), 'utf8')
   assert.match(source, /const cancelBtn = ref<HTMLButtonElement \| null>\(null\)/)
-  assert.match(source, /if \(document\.activeElement === cancelBtn\.value\) onCancel\(\)/)
+  assert.match(source, /const target = e\.target[\s\S]*?modalRef\.value\?\.contains\(target\)/)
+  assert.doesNotMatch(source, /else if \(e\.key === 'Enter'\)/)
+  assert.match(source, /const initial = confirmState\.danger \? cancelBtn\.value : confirmBtn\.value/)
+  assert.match(source, /initial\?\.focus\(\)/)
   assert.match(source, /<button ref="cancelBtn"[^>]*k-modal-btn--cancel/)
 })
 

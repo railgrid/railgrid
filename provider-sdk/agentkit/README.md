@@ -52,8 +52,11 @@ when unused Vue components can be eliminated by the bundler.
 `--faros-agent-ui-canonical: 1` and `--faros-agent-ui-version`. Its fallback uses
 `k-agent-ui` or a versioned ID and never rewrites an existing style element.
 
-Core PortalKit uses `--faros-ui-core-version: 15`; the current AgentKit
-presentation style/runtime version is 3, and the versioning remains independent.
+Core PortalKit uses `--faros-ui-core-version: 18` (the
+`FAROS_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
+AgentKit presentation style/runtime version is 6 (the `AGENT_UI_VERSION`
+constant in `styles.ts`), and the versioning remains independent. PortalKit
+does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
 vocabulary across providers. Deploy the host and its providers from the current
 split together; legacy full-UI bundles are outside this migration's

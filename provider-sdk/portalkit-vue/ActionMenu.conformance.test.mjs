@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 
 const component = readFileSync(new URL('./ActionMenu.vue', import.meta.url), 'utf8')
+const layoutSelector = readFileSync(new URL('./LayoutSelector.vue', import.meta.url), 'utf8')
 const stylesheet = readFileSync(new URL('../portalkit/faros-ui.css', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../portalkit/styles.ts', import.meta.url), 'utf8')
 const resourceTable = readFileSync(new URL('./ResourceTable.vue', import.meta.url), 'utf8')
@@ -122,7 +123,7 @@ test('ActionMenu renders tones and keeps disabled or busy items out of the rovin
     assert.match(itemType, new RegExp(field), `typed item field ${field}`)
   }
 
-  const itemTemplate = templateBlock(component, '<button\n        v-for="(item, index)')
+  const itemTemplate = templateBlock(component, '<button\n            type="button"\n            class="k-menu-item k-action-menu__item"')
   assert.match(itemTemplate, /:class="item\.tone \? `k-menu-item--\$\{item\.tone\}` : undefined"/)
   assert.match(itemTemplate, /:disabled="item\.disabled \|\| item\.busy"/)
   assert.match(itemTemplate, /:aria-disabled="item\.disabled \|\| item\.busy \? 'true' : undefined"/)
@@ -161,7 +162,16 @@ test('ActionMenu keyboard paths activate, wrap, restore focus, and dismiss', () 
   assert.match(triggerHandler, /if \(event\.key === 'Escape'\)[\s\S]*?closeMenu\(true\)/)
   assert.match(triggerHandler, /if \(event\.key === 'Tab'\)[\s\S]*?closeMenuAfterTab\(\)/)
   assert.match(menuHandler, /if \(event\.key === 'Tab'\)[\s\S]*?closeMenuAfterTab\(\)/)
-  assert.match(component, /deferredCloseTimer = setTimeout\(\(\) => \{[\s\S]*?closeMenu\(\)[\s\S]*?\}, 0\)/)
+  assert.match(component, /function closeMenuAfterTab\(\)[\s\S]*?closeMenu\(\)[\s\S]*?trigger\.value\?\.focus\(\)/)
+  assert.doesNotMatch(component, /deferredCloseTimer/)
+})
+
+test('teleported LayoutSelector keeps native Tab navigation relative to its trigger', () => {
+  assert.match(layoutSelector, /<Teleport to="body">/)
+  assert.match(layoutSelector, /ref="panelRef"/)
+  assert.match(layoutSelector, /@keydown="handleKeydown"/)
+  assert.match(layoutSelector, /function closeMenuAfterTab\(\)[\s\S]*?closeMenu\(\)[\s\S]*?trigger\.value\?\.focus\(\)/)
+  assert.doesNotMatch(layoutSelector, /deferredCloseTimer/)
 })
 
 test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissal guards', () => {
@@ -172,8 +182,9 @@ test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissa
   assert.match(triggerTemplate, /:aria-expanded="open"/)
   assert.match(triggerTemplate, /:disabled="disabled"/)
 
-  const menuTemplate = sourceBlock(component, '<div\n      v-if="open"', '      <button\n        v-for="(item, index)')
+  const menuTemplate = sourceBlock(component, '<div\n        v-if="open"', '        <template v-for="(item, index)')
   assert.match(menuTemplate, /role="menu"/)
+  assert.match(menuTemplate, /ref="panelRef"/)
   assert.match(menuTemplate, /:aria-label="label"/)
   assert.match(menuTemplate, /:aria-labelledby="triggerID"/)
   assert.match(component, /role="menuitem"/)
@@ -181,9 +192,11 @@ test('ActionMenu exposes the trigger/menu ARIA relationship and outside dismissa
 
   assert.match(component, /document\.addEventListener\('pointerdown', closeFromOutsidePointer, true\)/)
   assert.match(component, /document\.addEventListener\('focusin', closeFromOutsideFocus\)/)
+  assert.match(component, /<Teleport to="body">/)
+  assert.match(component, /panelRef\.value\?\.contains\(target\)/)
   for (const handler of ['closeFromOutsidePointer', 'closeFromOutsideFocus']) {
     const block = sourceBlock(component, `function ${handler}`, 'function focusTrigger')
-    assert.match(block, /if \(!open\.value \|\| \(target && root\.value\?\.contains\(target\)\)\) return/)
+    assert.match(block, /if \(!open\.value \|\| \(target && \(root\.value\?\.contains\(target\) \|\| panelRef\.value\?\.contains\(target\)\)\)\) return/)
     assert.match(block, /closeMenu\(\)/)
   }
 })

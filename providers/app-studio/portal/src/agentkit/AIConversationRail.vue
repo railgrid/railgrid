@@ -58,7 +58,7 @@ const props = withDefaults(defineProps<{
   overlayTarget: 'body',
   panelId: 'k-ai-conversation-rail',
   ariaLabel: 'Conversation threads',
-  deleteLabel: 'Delete conversation',
+  deleteLabel: 'Delete thread',
 })
 
 const emit = defineEmits<{
@@ -98,6 +98,7 @@ const resizing = ref(false)
 const query = ref('')
 const contextMenu = ref<{ threadID: string; left: number; top: number } | null>(null)
 const contextMenuReturnFocus = ref<HTMLElement | null>(null)
+const contextMenuActiveIndex = ref(-1)
 let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined
 let closeTimer: ReturnType<typeof setTimeout> | undefined
 let railResizeObserver: ResizeObserver | undefined
@@ -130,11 +131,11 @@ const labels = computed(() => ({
   archive: 'Archive thread',
   pinned: 'Pinned',
   threads: 'Threads',
-  pinMenu: 'Pin',
-  unpinMenu: 'Unpin',
-  markRead: 'Mark read',
-  markUnread: 'Mark unread',
-  archiveMenu: 'Archive',
+  pinMenu: 'Pin thread',
+  unpinMenu: 'Unpin thread',
+  markRead: 'Mark thread read',
+  markUnread: 'Mark thread unread',
+  archiveMenu: 'Archive thread',
   resize: 'Resize conversation panel',
   empty: 'No threads yet.',
   emptySearch: 'No threads match this search.',
@@ -466,7 +467,9 @@ async function positionAndFocusContextMenu(threadID: string): Promise<void> {
   contextMenu.value = { threadID, ...clampContextMenuPosition(contextMenu.value.left, contextMenu.value.top, rect.width, rect.height) }
   await nextTick()
   if (contextMenu.value?.threadID !== threadID) return
-  menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+  const first = menu.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+  contextMenuActiveIndex.value = first ? Number(first.dataset.menuIndex ?? -1) : -1
+  first?.focus()
 }
 
 function showContextMenu(threadID: string, left: number, top: number, returnFocus: HTMLElement | null = null): void {
@@ -500,6 +503,7 @@ function closeContextMenu(restoreReturnFocus = false): void {
   const returnFocus = contextMenuReturnFocus.value
   contextMenu.value = null
   contextMenuReturnFocus.value = null
+  contextMenuActiveIndex.value = -1
   if (restoreReturnFocus) restoreFocus(returnFocus)
 }
 
@@ -515,7 +519,20 @@ function handleContextMenuFocusOut(event: FocusEvent): void {
   dismissContextMenu()
 }
 
+function closeContextMenuAfterTab(): void {
+  // The teleported panel is removed before native Tab runs. Restoring the
+  // owning thread trigger first keeps both Tab directions relative to that
+  // trigger instead of allowing the panel's body position to affect order.
+  const returnFocus = contextMenuReturnFocus.value
+  closeContextMenu()
+  returnFocus?.focus()
+}
+
 function handleContextMenuKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Tab') {
+    closeContextMenuAfterTab()
+    return
+  }
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
   const menu = actionMenu.value
   if (!menu) return
@@ -529,6 +546,7 @@ function handleContextMenuKeydown(event: KeyboardEvent): void {
   else nextIndex = (currentIndex + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length
   event.preventDefault()
   event.stopPropagation()
+  contextMenuActiveIndex.value = Number(items[nextIndex]?.dataset.menuIndex ?? nextIndex)
   items[nextIndex]?.focus()
 }
 
@@ -743,29 +761,29 @@ defineExpose({
       ref="actionMenu"
       role="menu"
       :aria-label="`Actions for ${displayTitle(contextMenuThread)}`"
-      class="k-ai-conversation-rail__context-menu"
+      class="k-menu k-ai-conversation-rail__context-menu"
       :style="{ left: `${contextMenu.left}px`, top: `${contextMenu.top}px` }"
       @focusout="handleContextMenuFocusOut"
       @keydown="handleContextMenuKeydown"
       @keydown.esc.stop.prevent="closeContextMenu(true)"
     >
-      <button v-if="capabilities.pin" type="button" role="menuitem" class="k-ai-conversation-rail__menu-item" @click="togglePin(contextMenuThread.id)">
+      <button v-if="capabilities.pin" type="button" role="menuitem" data-menu-index="0" class="k-menu-item k-ai-conversation-rail__menu-item" :tabindex="contextMenuActiveIndex === 0 ? 0 : -1" @focus="contextMenuActiveIndex = 0" @click="togglePin(contextMenuThread.id)">
         <PinOff v-if="pinnedThreadIDSet.has(contextMenuThread.id)" :stroke-width="1.75" aria-hidden="true" />
         <Pin v-else :stroke-width="1.75" aria-hidden="true" />
         {{ pinnedThreadIDSet.has(contextMenuThread.id) ? labels.unpinMenu : labels.pinMenu }}
       </button>
-      <button v-if="capabilities.unread" type="button" role="menuitem" class="k-ai-conversation-rail__menu-item" :disabled="contextMenuThread.id === activeThreadID" @click="toggleUnread(contextMenuThread.id)">
+      <button v-if="capabilities.unread" type="button" role="menuitem" data-menu-index="1" class="k-menu-item k-ai-conversation-rail__menu-item" :tabindex="contextMenuActiveIndex === 1 ? 0 : -1" @focus="contextMenuActiveIndex = 1" :disabled="contextMenuThread.id === activeThreadID" @click="toggleUnread(contextMenuThread.id)">
         <MailOpen v-if="contextMenuThread.id === activeThreadID || unreadThreadIDSet.has(contextMenuThread.id)" :stroke-width="1.75" aria-hidden="true" />
         <Mail v-else :stroke-width="1.75" aria-hidden="true" />
         {{ contextMenuThread.id === activeThreadID || unreadThreadIDSet.has(contextMenuThread.id) ? labels.markRead : labels.markUnread }}
       </button>
-      <div v-if="capabilities.archive && (capabilities.pin || capabilities.unread)" class="k-ai-conversation-rail__menu-divider" />
-      <button v-if="capabilities.archive" type="button" role="menuitem" class="k-ai-conversation-rail__menu-item k-ai-conversation-rail__menu-item--danger" :disabled="disabled || busy || Boolean(actioningThreadID)" @click="archiveThread(contextMenuThread.id)">
+      <div v-if="capabilities.archive && (capabilities.pin || capabilities.unread)" class="k-menu-sep k-ai-conversation-rail__menu-divider" role="separator" aria-hidden="true" />
+      <button v-if="capabilities.archive" type="button" role="menuitem" data-menu-index="2" class="k-menu-item k-ai-conversation-rail__menu-item k-ai-conversation-rail__menu-item--danger" :tabindex="contextMenuActiveIndex === 2 ? 0 : -1" @focus="contextMenuActiveIndex = 2" :disabled="disabled || busy || Boolean(actioningThreadID)" @click="archiveThread(contextMenuThread.id)">
         <Archive :stroke-width="1.75" aria-hidden="true" />
         {{ labels.archiveMenu }}
       </button>
-      <div v-if="capabilities.delete && (capabilities.pin || capabilities.unread || capabilities.archive)" class="k-ai-conversation-rail__menu-divider" />
-      <button v-if="capabilities.delete" type="button" role="menuitem" class="k-ai-conversation-rail__menu-item k-ai-conversation-rail__menu-item--danger" :disabled="disabled || busy || Boolean(actioningThreadID)" @click="deleteThread(contextMenuThread.id)">
+      <div v-if="capabilities.delete && (capabilities.pin || capabilities.unread || capabilities.archive)" class="k-menu-sep k-ai-conversation-rail__menu-divider" role="separator" aria-hidden="true" />
+      <button v-if="capabilities.delete" type="button" role="menuitem" data-menu-index="3" class="k-menu-item k-ai-conversation-rail__menu-item k-ai-conversation-rail__menu-item--danger" :tabindex="contextMenuActiveIndex === 3 ? 0 : -1" @focus="contextMenuActiveIndex = 3" :disabled="disabled || busy || Boolean(actioningThreadID)" @click="deleteThread(contextMenuThread.id)">
         <Trash2 :stroke-width="1.75" aria-hidden="true" />
         {{ deleteLabel }}
       </button>

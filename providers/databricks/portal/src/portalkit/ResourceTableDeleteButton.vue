@@ -17,17 +17,18 @@ ensureFarosUIStyles()
 const props = withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Delete connection". */
   label: string
-  /** Accessible in-flight action. Defaults to "Deleting…". */
+  /** Accessible in-flight action. Falls back to the resource-specific label. */
   busyLabel?: string
   busy?: boolean
   disabled?: boolean
 }>(), {
-  busyLabel: 'Deleting…',
   busy: false,
   disabled: false,
 })
 
-const accessibleLabel = computed(() => props.busy ? props.busyLabel : props.label)
+const accessibleLabel = computed(() => props.busy
+  ? props.busyLabel || `${props.label}…`
+  : props.label)
 
 const emit = defineEmits<{
   click: [event: MouseEvent]

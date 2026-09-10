@@ -3,12 +3,13 @@
      `make sync-portalkit`.
 
      Mount ONE instance at the app root; it renders whenever confirmDialog()
-     sets confirmState.open. Enter activates the focused action (or confirms by
-     default), Escape/backdrop cancels. Styles are
+     sets confirmState.open. Native button activation follows the focused action;
+     Escape/backdrop cancels. Styles are
      self-injected + token-based, so the component drops into any Vue provider
      portal (Tailwind or plain-CSS) without an extracted CSS asset. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
+import { Info, TriangleAlert } from 'lucide-vue-next'
 import { confirmState, resolveConfirm } from './confirm'
 import { ensureFarosUIStyles } from '../portalkit/styles'
 
@@ -19,6 +20,9 @@ ensureFarosUIStyles()
 const cancelBtn = ref<HTMLButtonElement | null>(null)
 const confirmBtn = ref<HTMLButtonElement | null>(null)
 const modalRef = ref<HTMLElement | null>(null)
+const instanceID = useId()
+const titleID = `k-confirm-title-${instanceID}`
+const messageID = `k-confirm-message-${instanceID}`
 let previousFocus: HTMLElement | null = null
 
 // Render the message as discrete paragraphs so a multi-line message reads
@@ -35,6 +39,8 @@ function onCancel() {
 }
 function onKeydown(e: KeyboardEvent) {
   if (!confirmState.open) return
+  const target = e.target
+  if (!(target instanceof Node) || !modalRef.value?.contains(target)) return
   if (e.key === 'Tab') {
     const focusable = Array.from(modalRef.value?.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
@@ -54,11 +60,8 @@ function onKeydown(e: KeyboardEvent) {
     }
   } else if (e.key === 'Escape') {
     e.preventDefault()
+    e.stopPropagation()
     onCancel()
-  } else if (e.key === 'Enter') {
-    e.preventDefault()
-    if (document.activeElement === cancelBtn.value) onCancel()
-    else onConfirm()
   }
 }
 
@@ -67,26 +70,42 @@ watch(
   (open) => {
     if (open) {
       previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      window.addEventListener('keydown', onKeydown)
-      nextTick(() => confirmBtn.value?.focus())
+      nextTick(() => {
+        const initial = confirmState.danger ? cancelBtn.value : confirmBtn.value
+        initial?.focus()
+      })
     } else {
-      window.removeEventListener('keydown', onKeydown)
       const target = previousFocus
       previousFocus = null
       nextTick(() => target?.isConnected && target.focus())
     }
   },
 )
-
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
   <div v-if="confirmState.open" class="k-modal-overlay" @click.self="onCancel">
-    <div ref="modalRef" class="k-modal" :class="{ 'k-modal--danger': confirmState.danger }" role="alertdialog" aria-modal="true" aria-labelledby="k-modal-title">
-      <h3 id="k-modal-title" class="k-modal__title">{{ confirmState.title }}</h3>
-      <p v-for="(line, i) in paragraphs" :key="i" class="k-modal__message">{{ line }}</p>
-      <div class="k-modal__actions">
+    <div
+      ref="modalRef"
+      class="k-modal k-modal--confirm"
+      :class="{ 'k-modal--danger': confirmState.danger }"
+      role="alertdialog"
+      aria-modal="true"
+      :aria-labelledby="titleID"
+      :aria-describedby="paragraphs.length ? messageID : undefined"
+      @keydown="onKeydown"
+    >
+      <div class="k-modal__head">
+        <span class="k-modal__icon" aria-hidden="true">
+          <TriangleAlert v-if="confirmState.danger" :stroke-width="1.9" />
+          <Info v-else :stroke-width="1.9" />
+        </span>
+        <h2 :id="titleID" class="k-modal__title">{{ confirmState.title }}</h2>
+      </div>
+      <div v-if="paragraphs.length" :id="messageID" class="k-modal__body">
+        <p v-for="(line, i) in paragraphs" :key="i" class="k-modal__message">{{ line }}</p>
+      </div>
+      <div class="k-modal__foot">
         <button ref="cancelBtn" type="button" class="k-modal-btn k-modal-btn--cancel" @click="onCancel">{{ confirmState.cancelLabel }}</button>
         <button
           ref="confirmBtn"

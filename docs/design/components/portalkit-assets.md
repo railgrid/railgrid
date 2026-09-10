@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.portalkit-assets","title":"Distributed PortalKit asset index","kind":"reference","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The index mirrors the explicit source manifests in hack/sync-portalkit.sh; vendored copies are generated distribution outputs."},"appliesTo":["portalkit","portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/portalkit-assets.md#distributed-portalkit-asset-index","role":"design"},{"path":"hack/sync-portalkit.sh","role":"implementation"},{"path":"provider-sdk/portalkit/README.md","role":"reference"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Final AgentKit and PortalKit sync parity passed; design-doc validation and UI conformance also passed for 420 files with zero violations."}]},"relatedDocuments":[]}
+{"schema":1,"id":"design.components.portalkit-assets","title":"Distributed PortalKit asset index","kind":"reference","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The index mirrors the explicit source manifests in hack/sync-portalkit.sh; vendored copies are generated distribution outputs."},"appliesTo":["portalkit","portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/portalkit-assets.md#distributed-portalkit-asset-index","role":"design"},{"path":"hack/sync-portalkit.sh","role":"implementation"},{"path":"provider-sdk/portalkit/README.md","role":"reference"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Final AgentKit and PortalKit sync parity passed; design-doc validation and UI conformance also passed for 429 files with zero violations across 31 focused tests."}]},"relatedDocuments":[]}
 ---
 
 # Distributed PortalKit asset index
@@ -43,6 +43,7 @@ Vue portals because the SFC kit owns those contracts there.
 | `FormSelect.vue` | [form select](form-select.md) |
 | `LayoutSelector.vue` | [layout selector](layout-selector.md) |
 | `layoutPreference.ts` | [layout selector](layout-selector.md) |
+| `useAnchoredPopover.ts` | [layout selector](layout-selector.md) |
 | `ResourceBackLink.vue` | [resource back link](resource-back-link.md) |
 | `ResourcePage.vue` | [resource page](resource-page.md) |
 | `ResourceSectionCard.vue` | [resource section card](resource-section-card.md) |
@@ -88,10 +89,12 @@ are canonical in `provider-sdk/agentkit`.
 | `AIConversationRail.vue` | [AI presentation](ai-conversation.md) |
 | `AIInterrupt.vue` | [AI presentation](ai-conversation.md) |
 | `AIMessage.vue` | [AI presentation](ai-conversation.md) |
+| `AIWorkbenchLauncher.vue` | [AI presentation](ai-conversation.md) |
 | `AITimestamp.vue` | [AI presentation](ai-conversation.md) |
 | `AIPrimaryAction.vue` | [AI presentation](ai-conversation.md) |
 | `AITranscript.vue` | [AI presentation](ai-conversation.md) |
 | `AIWorkbenchTab.vue` | [AI presentation](ai-conversation.md) |
+| `AIWorkbenchTabs.vue` | [AI presentation](ai-conversation.md) |
 | `AIPaneDivider.vue` | [AI conversation](ai-conversation.md) |
 | `AIWorkspace.vue` | [AI presentation](ai-conversation.md) |
 | `ModelConnectionCard.vue` | [model connections](model-connections.md) |
@@ -108,6 +111,7 @@ are canonical in `provider-sdk/agentkit`.
 | `AIPlanSteps.vue` | [AI presentation](ai-conversation.md) |
 | `conversation.ts` | [AI presentation](ai-conversation.md) |
 | `timestamp.ts` | [AI presentation](ai-conversation.md) |
+| `clock.ts` | [AI presentation](ai-conversation.md) |
 | `activity.css` | [AI presentation](ai-conversation.md) |
 | `activity.ts` | [AI presentation](ai-conversation.md) |
 | `agent-ui.css` | [AI presentation](ai-conversation.md) |

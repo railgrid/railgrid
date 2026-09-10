@@ -18,7 +18,7 @@ export const FAROS_UI_STYLE_ID = 'k-faros-ui'
 export const FAROS_UI_CANONICAL_MARKER = '--faros-ui-canonical'
 export const FAROS_UI_CANONICAL_VALUE = '1'
 export const FAROS_UI_CORE_VERSION_MARKER = '--faros-ui-core-version'
-export const FAROS_UI_CORE_VERSION = 17
+export const FAROS_UI_CORE_VERSION = 19
 
 // Compatibility aliases for current PortalKit consumers. New code should use
 // the explicit core names when it needs to distinguish the two contracts.

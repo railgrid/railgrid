@@ -28,7 +28,7 @@
   --faros-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --faros-ui-core-version: 17;
+  --faros-ui-core-version: 19;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -682,6 +682,7 @@ html.light .k-create-surface {
 
 /* ── Input ────────────────────────────────────────────────────────────────*/
 .k-input {
+  box-sizing: border-box;
   width: 100%;
   border-radius: 4px;
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -729,6 +730,13 @@ html.light .k-create-surface {
 .k-checkbox:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+}
+
+/* Use the associated label as the touch target while keeping the native
+ * checkbox glyph compact. Consumers own the label's layout and copy; this
+ * hook only supplies the shared hit-area contract below. */
+.k-checkbox-hit {
+  cursor: pointer;
 }
 
 /* ── Menu (dropdown / context) ────────────────────────────────────────────
@@ -780,7 +788,7 @@ html.light .k-menu {
 }
 .k-menu-item.is-selected {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
 }
 .k-menu-item--danger { color: var(--color-danger, #ff5d5d); }
 .k-menu-item--danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
@@ -838,7 +846,18 @@ html.light .k-menu {
   display: inline-flex;
   position: relative;
 }
+.k-action-menu__menu {
+  /* Teleported panels cannot use the trigger's containing block. Geometry is
+   * supplied by useAnchoredPopover through the inline top/left values. */
+  max-height: min(28rem, calc(100vh - 16px));
+  max-width: calc(100vw - 16px);
+  min-width: 180px;
+  overflow-y: auto;
+  position: fixed;
+}
 .k-action-menu > .k-action-menu__menu {
+  /* Keep the direct-child shape usable for older consumers that do not
+   * teleport their panel yet. */
   /* Keep the panel readable when a provider applies a broad max-width rule
    * to every descendant (for example, a detail-page flex safety reset). */
   max-height: min(28rem, calc(100vh - 16px));
@@ -849,6 +868,19 @@ html.light .k-menu {
   right: 0;
   top: calc(100% + 5px);
 }
+.k-action-menu__trigger--with-label {
+  aspect-ratio: auto;
+  flex-basis: auto;
+  gap: 7px;
+  padding-inline: 10px;
+  width: auto;
+}
+.k-action-menu__trigger-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 .k-action-menu__item {
   min-width: 168px;
 }
@@ -858,6 +890,7 @@ html.light .k-menu {
 .k-menu-item--accent:hover { color: var(--color-accent-hover, #a18aff); }
 .k-menu-item--warning:hover { color: var(--color-warning, #f0a63a); }
 .k-menu-item--danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+.k-menu-item.is-selected.k-menu-item--danger { color: var(--color-danger, #ff5d5d); }
 .k-action-menu__item[aria-busy="true"] { cursor: wait; }
 .k-action-menu__busy {
   animation: k-action-menu-spin 0.9s linear infinite;
@@ -997,11 +1030,17 @@ faros-form-select {
   box-shadow: none;
 }
 .k-layout-selector__menu {
-  position: absolute;
+  max-height: min(28rem, calc(100vh - 16px));
+  max-width: calc(100vw - 16px);
+  overflow-y: auto;
+  position: fixed;
   z-index: var(--k-layer-menu, 1000);
-  top: calc(100% + 5px);
-  right: 0;
   width: 154px;
+}
+.k-layout-selector > .k-layout-selector__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
 }
 .k-layout-selector__label {
   padding: 5px 8px 4px;
@@ -1032,6 +1071,7 @@ faros-form-select {
   outline: 1px solid var(--color-accent, #8b6bff);
   outline-offset: -1px;
 }
+.k-layout-selector__item.is-selected { color: var(--color-accent-hover, #a18aff); }
 .k-layout-selector__icon {
   width: 15px;
   height: 15px;
@@ -1270,14 +1310,14 @@ html.light [data-k-tip]::after {
 .k-tab[aria-current="page"] {
   border: 0;
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
   font-weight: 600;
   box-shadow: none;
 }
 .k-tab--active:hover:not(:disabled),
 .k-tab[aria-current="page"]:hover:not(:disabled) {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
   box-shadow: none;
 }
 .k-tab:disabled {
@@ -1441,6 +1481,54 @@ html.light [data-k-tip]::after {
   box-shadow: none;
 }
 .k-modal-btn--danger:hover { background: var(--color-danger-hover, #ff7676); }
+
+/* Confirmation helpers share one bounded geometry. Keep these rules scoped to
+ * the explicit confirmation variant: setup, help, token, and other product
+ * modals also use the generic `.k-modal` shell and own their own layout. */
+.k-modal--confirm {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  max-height: min(640px, calc(100vh - 48px));
+  max-width: calc(100vw - 48px);
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  max-height: min(640px, calc(100dvh - 48px));
+}
+.k-modal--confirm .k-modal__head {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.k-modal--confirm .k-modal__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.k-modal--confirm .k-modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.k-modal--confirm .k-modal__message {
+  margin: 0 0 8px;
+}
+.k-modal--confirm .k-modal__message:last-child {
+  margin-bottom: 0;
+}
+.k-modal--confirm .k-modal__foot {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.k-modal--confirm .k-modal-btn {
+  max-width: 100%;
+  min-height: 38px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 @keyframes k-modal-fade { from { opacity: 0; } }
 @keyframes k-modal-rise {
   from { opacity: 0; transform: translateY(10px) scale(0.98); }
@@ -1489,7 +1577,7 @@ html.light [data-k-tip]::after {
   flex: none;
   border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
   border-radius: 4px;
   min-height: 24px;
   padding: 2px 8px;
@@ -1498,7 +1586,10 @@ html.light [data-k-tip]::after {
   font-weight: 600;
   cursor: pointer;
 }
-.k-toast__action:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent); }
+.k-toast__action:hover {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent);
+  color: var(--color-accent-hover, #a18aff);
+}
 .k-toast__dismiss {
   flex: none;
   display: grid;
@@ -1629,8 +1720,15 @@ html.light [data-k-tip]::after {
   min-height: 24px;
   padding: 3px 7px;
 }
-.k-inline-notification__action { border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent); background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
-.k-inline-notification__action:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent); }
+.k-inline-notification__action {
+  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent-hover, #a18aff);
+}
+.k-inline-notification__action:hover {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent);
+  color: var(--color-accent-hover, #a18aff);
+}
 .k-inline-notification__action:disabled { cursor: wait; opacity: 0.65; }
 .k-inline-notification__dismiss { display: grid; place-items: center; min-width: 24px; color: var(--color-text-muted, #8587a1); padding: 2px; }
 .k-inline-notification__dismiss svg { inline-size: 13px; block-size: 13px; }
@@ -1859,7 +1957,7 @@ faros-resource-table-filter { display: contents; }
   white-space: nowrap;
 }
 .k-table__filter.is-active .k-table__filter-label {
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
 }
 .k-table__filter-trigger {
   background: transparent;
@@ -1973,7 +2071,7 @@ faros-resource-table-filter { display: contents; }
 }
 .k-table__filter-option[aria-selected="true"] {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
 }
 .k-table__filter-option[aria-selected="true"].is-active {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 18%, var(--color-surface-raised, #111320));
@@ -2449,6 +2547,7 @@ faros-resource-table-filter { display: contents; }
 }
 .k-resource-page__status {
   display: inline-flex;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
   flex: 0 1 auto;
@@ -2872,6 +2971,33 @@ faros-resource-table-filter { display: contents; }
   .k-toast__dismiss,
   .k-toast-host .k-toast__dismiss,
   .k-inline-notification__dismiss { min-width: 44px; }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  /* Menus and dialogs are still compact on desktop, but every touch or pen
+   * target reaches the shared 44px minimum. The explicit compact selector
+   * keeps this override ahead of `.k-tabs--compact .k-tab`. */
+  .k-input {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .k-checkbox-hit {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .k-tabs .k-tab,
+  .k-tabs--compact .k-tab,
+  .k-menu-item,
+  .k-action-menu__trigger,
+  .k-action-menu__item,
+  .k-layout-selector__trigger,
+  .k-layout-selector__item,
+  .k-modal--confirm .k-modal-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .k-action-menu__trigger--with-label {
+    width: auto;
+  }
 }
 @media (max-width: 560px) {
   .k-tabs { gap: 2px; padding-bottom: 8px; }

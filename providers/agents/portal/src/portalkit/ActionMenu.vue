@@ -8,6 +8,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { Ellipsis, Loader2 } from 'lucide-vue-next'
 import { ensureFarosUIStyles } from '../portalkit/styles'
+import { useAnchoredPopover } from './useAnchoredPopover'
 
 export type ActionMenuTone = 'neutral' | 'accent' | 'warning' | 'danger'
 
@@ -24,8 +25,11 @@ const props = withDefaults(defineProps<{
   label: string
   items: readonly ActionMenuItem[]
   disabled?: boolean
+  /** Optional visible trigger text for actions such as dashboard "Add tile". */
+  showLabel?: boolean
 }>(), {
   disabled: false,
+  showLabel: false,
 })
 
 const emit = defineEmits<{
@@ -40,11 +44,14 @@ const instanceID = useId()
 const triggerID = `k-action-menu-trigger-${instanceID}`
 const menuID = `k-action-menu-${instanceID}`
 const root = ref<HTMLElement | null>(null)
-const trigger = ref<HTMLButtonElement | null>(null)
-const menu = ref<HTMLElement | null>(null)
-const open = ref(false)
+const {
+  open,
+  triggerRef: trigger,
+  panelRef,
+  panelStyle,
+  close: closePopover,
+} = useAnchoredPopover({ width: 180, gap: 5, align: 'end' })
 const activeIndex = ref(-1)
-let deferredCloseTimer: ReturnType<typeof setTimeout> | undefined
 
 const selectableIndexes = computed(() => props.items.reduce<number[]>((indexes, item, index) => {
   if (!item.disabled && !item.busy) indexes.push(index)
@@ -66,7 +73,7 @@ function lastSelectableIndex(): number {
 }
 
 function menuItems(): HTMLButtonElement[] {
-  return menu.value ? [...menu.value.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')] : []
+  return panelRef.value ? [...panelRef.value.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')] : []
 }
 
 function focusItem(index: number): void {
@@ -85,30 +92,20 @@ function openMenu(index = firstSelectableIndex()): void {
   if (index >= 0) void nextTick(() => menuItems()[index]?.focus())
 }
 
-function clearDeferredClose(): void {
-  if (deferredCloseTimer === undefined) return
-  clearTimeout(deferredCloseTimer)
-  deferredCloseTimer = undefined
-}
-
 function closeMenu(restoreFocus = false): void {
-  clearDeferredClose()
   if (!open.value) return
-  open.value = false
+  closePopover()
   activeIndex.value = -1
   if (restoreFocus) void nextTick(() => trigger.value?.focus())
 }
 
 function closeMenuAfterTab(): void {
-  if (deferredCloseTimer !== undefined) return
-  // Keep the focused menu item mounted while the browser performs its native
-  // Tab move. The focusin listener closes the menu when focus leaves it; this
-  // fallback also covers hosts that do not emit focusin for an unavailable
-  // next focus target.
-  deferredCloseTimer = setTimeout(() => {
-    deferredCloseTimer = undefined
-    closeMenu()
-  }, 0)
+  // The panel is teleported after the owning trigger in document order. Close
+  // it and put focus back on that trigger before allowing the browser's native
+  // Tab default to run; this keeps exit relative to the trigger and removes
+  // teleported menu items from the sequential focus order.
+  closeMenu()
+  trigger.value?.focus()
 }
 
 function toggleMenu(): void {
@@ -197,14 +194,20 @@ function handleMenuKeydown(event: KeyboardEvent): void {
 
 function closeFromOutsidePointer(event: PointerEvent): void {
   const target = event.target as Node | null
-  if (!open.value || (target && root.value?.contains(target))) return
+  if (!open.value || (target && (root.value?.contains(target) || panelRef.value?.contains(target)))) return
   closeMenu()
 }
 
 function closeFromOutsideFocus(event: FocusEvent): void {
   const target = event.target as Node | null
-  if (!open.value || (target && root.value?.contains(target))) return
+  if (!open.value || (target && (root.value?.contains(target) || panelRef.value?.contains(target)))) return
   closeMenu()
+}
+
+function startsDangerGroup(index: number): boolean {
+  return index > 0
+    && props.items[index]?.tone === 'danger'
+    && props.items[index - 1]?.tone !== 'danger'
 }
 
 function focusTrigger(): void {
@@ -235,7 +238,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', closeFromOutsidePointer, true)
   document.removeEventListener('focusin', closeFromOutsideFocus)
-  clearDeferredClose()
 })
 </script>
 
@@ -246,6 +248,7 @@ onBeforeUnmount(() => {
       ref="trigger"
       type="button"
       class="k-icon-action k-action-menu__trigger"
+      :class="{ 'k-action-menu__trigger--with-label': showLabel }"
       :data-k-tip="label"
       :aria-label="label"
       :aria-controls="menuID"
@@ -256,35 +259,40 @@ onBeforeUnmount(() => {
       @keydown="handleTriggerKeydown"
     >
       <Ellipsis :size="16" :stroke-width="1.75" aria-hidden="true" />
+      <span v-if="showLabel" class="k-action-menu__trigger-label">{{ label }}</span>
     </button>
 
-    <div
-      v-if="open"
-      :id="menuID"
-      ref="menu"
-      class="k-menu k-action-menu__menu"
-      role="menu"
-      :aria-label="label"
-      :aria-labelledby="triggerID"
-      @keydown="handleMenuKeydown"
-    >
-      <button
-        v-for="(item, index) in items"
-        :key="item.id"
-        type="button"
-        class="k-menu-item k-action-menu__item"
-        :class="item.tone ? `k-menu-item--${item.tone}` : undefined"
-        role="menuitem"
-        :disabled="item.disabled || item.busy"
-        :aria-disabled="item.disabled || item.busy ? 'true' : undefined"
-        :aria-busy="item.busy ? 'true' : undefined"
-        :tabindex="index === activeIndex && isSelectable(index) ? 0 : -1"
-        @focus="activeIndex = index"
-        @click="select(item.id)"
+    <Teleport to="body">
+      <div
+        v-if="open"
+        :id="menuID"
+        ref="panelRef"
+        class="k-menu k-action-menu__menu"
+        :style="panelStyle"
+        role="menu"
+        :aria-label="label"
+        :aria-labelledby="triggerID"
+        @keydown="handleMenuKeydown"
       >
-        <Loader2 v-if="item.busy" class="k-action-menu__busy" :size="14" :stroke-width="1.75" aria-hidden="true" />
-        <span>{{ item.label }}</span>
-      </button>
-    </div>
+        <template v-for="(item, index) in items" :key="item.id">
+          <div v-if="startsDangerGroup(index)" class="k-menu-sep" role="separator" aria-hidden="true" />
+          <button
+            type="button"
+            class="k-menu-item k-action-menu__item"
+            :class="item.tone ? `k-menu-item--${item.tone}` : undefined"
+            role="menuitem"
+            :disabled="item.disabled || item.busy"
+            :aria-disabled="item.disabled || item.busy ? 'true' : undefined"
+            :aria-busy="item.busy ? 'true' : undefined"
+            :tabindex="index === activeIndex && isSelectable(index) ? 0 : -1"
+            @focus="activeIndex = index"
+            @click="select(item.id)"
+          >
+            <Loader2 v-if="item.busy" class="k-action-menu__busy" :size="14" :stroke-width="1.75" aria-hidden="true" />
+            <span>{{ item.label }}</span>
+          </button>
+        </template>
+      </div>
+    </Teleport>
   </div>
 </template>

@@ -37,6 +37,10 @@ the Vue toast files.
 - `CreateGuidance.vue` — Vue prerequisites, live output summary, and next-step
   rail for route-owned forms. Vanilla portals emit the same
   `k-create-guidance*` classes.
+- `useAnchoredPopover.ts` — shared viewport-aware geometry for body-teleported
+  Vue menus. It owns placement, viewport margins, resize/scroll updates, panel
+  measurement, and optional trigger-focus restoration; consumers own keyboard
+  and dismissal rules.
 
 ## Why vendored, not imported
 
@@ -51,7 +55,8 @@ must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
 `ensureFarosUIStyles()`: a computed `:root` marker
 `--faros-ui-canonical: 1` is accepted only when its `--faros-ui-core-version` is at
-least the bundle's required core version (currently 15). Otherwise the
+least the bundle's required core version (currently 18, from
+`FAROS_UI_CORE_VERSION` in `styles.ts`). Otherwise the
 canonical CSS is imported with Vite's `?inline` loader, so the embedded
 fallback uses Vite's minified form of the canonical rules and is appended
 under a versioned fallback ID with

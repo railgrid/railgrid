@@ -178,12 +178,12 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
 
     actionTrigger!.click()
     await flush()
-    const deleteButton = host.querySelector<HTMLButtonElement>('.k-action-menu__item')
+    const deleteButton = document.body.querySelector<HTMLButtonElement>('.k-action-menu__item')
     expect(deleteButton).not.toBeNull()
     deleteButton!.click()
     await flush()
 
-    expect(host.querySelector('.k-action-menu__item')).toBeNull()
+    expect(document.body.querySelector('.k-action-menu__item')).toBeNull()
     expect(text('.k-resource-page__status .k-badge')).toContain('Deleting')
     expect(host.querySelector('[role="status"][aria-live="polite"].instance-message')?.textContent)
       .toContain('Deleting this instance.')
@@ -222,7 +222,7 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
 
     host.querySelector<HTMLButtonElement>('.k-action-menu__trigger')!.click()
     await flush()
-    host.querySelector<HTMLButtonElement>('.k-action-menu__item')!.click()
+    document.body.querySelector<HTMLButtonElement>('.k-action-menu__item')!.click()
     await flush()
 
     expect(toastMock).toHaveBeenCalledTimes(1)

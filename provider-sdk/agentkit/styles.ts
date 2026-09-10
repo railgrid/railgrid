@@ -14,7 +14,7 @@ export const AGENT_UI_STYLE_ID = 'k-agent-ui'
 export const AGENT_UI_CANONICAL_MARKER = '--faros-agent-ui-canonical'
 export const AGENT_UI_CANONICAL_VALUE = '1'
 export const AGENT_UI_VERSION_MARKER = '--faros-agent-ui-version'
-export const AGENT_UI_VERSION = 5
+export const AGENT_UI_VERSION = 6
 
 function hasRequiredVersion(value: string): boolean {
   const version = Number(value.trim())

@@ -442,7 +442,7 @@ onBeforeUnmount(() => {
               @click.stop="handleAction"
             >
               <Loader2 v-if="activeToast.actionBusy" class="k-toast__action-spinner" :stroke-width="2" aria-hidden="true" />
-              {{ activeToast.actionBusy ? 'Working…' : activeToast.actionLabel }}
+              {{ activeToast.actionBusy ? `${activeToast.actionLabel}…` : activeToast.actionLabel }}
             </button>
             <button
               type="button"
