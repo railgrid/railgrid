@@ -45,7 +45,7 @@ const emit = defineEmits<{ connectModel: []; retry: []; finish: []; back: []; sk
     </div>
     <div v-else class="grid gap-4">
       <p class="text-[14px] leading-6 text-text-secondary">{{ gitStep() ? 'Git backs up your source and tracks changes. Development environments work without Git; publishing to production requires it.' : 'Connect a model to plan and build your projects.' }}</p>
-      <p class="text-[12px] leading-5 text-text-secondary" :role="setupError() ? (gitStep() ? 'status' : 'alert') : undefined">{{ setupError() || (gitStep() ? 'Connect Git now, or skip for now and connect it later.' : 'Credentials stay in this workspace and are tested before saving.') }}</p>
+      <p class="text-[12px] leading-5 text-text-secondary" :role="setupError() ? 'alert' : undefined" :aria-live="setupError() ? 'assertive' : undefined">{{ setupError() || (gitStep() ? 'Connect Git now, or skip for now and connect it later.' : 'Credentials stay in this workspace and are tested before saving.') }}</p>
       <div class="flex flex-wrap gap-3">
         <a v-if="gitStep()" :href="git()?.status === 'provider-missing' ? codeCatalogUrl : codeConnectionsUrl" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ gitAction() }}</a>
         <button v-else type="button" class="k-btn k-btn--primary" @click="emit('connectModel')">Connect AI model</button>

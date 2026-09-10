@@ -56,7 +56,7 @@ test('surfaces terminal Git validation failures with a recovery action', async (
   })
   assert.match(html, /The git host rejected the credential\./)
   assert.match(html, /Fix Git connection/)
-  assert.match(html, /role="status"/)
+  assert.match(html, /role="alert"/)
 })
 
 test('completion hands off to normal project creation', async () => {

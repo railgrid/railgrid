@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ExternalLink, GitBranch, RefreshCw } from 'lucide-vue-next'
+import { ExternalLink, GitBranch, Loader2, RefreshCw } from 'lucide-vue-next'
 import type { ProjectCreateReadiness } from './createReadiness'
 
 const props = withDefaults(defineProps<{ readiness: ProjectCreateReadiness | null; checking: boolean; error?: string; connectionUrl?: string; catalogUrl?: string }>(), {
@@ -30,7 +30,8 @@ const validating = computed(() => props.readiness?.gitConnection.status === 'val
           {{ missingProvider ? 'Enable Code provider' : failed ? 'Fix Git connection' : validating ? 'View Git connection' : 'Connect Git' }} <ExternalLink class="h-3.5 w-3.5" aria-hidden="true" />
         </a>
         <button type="button" class="k-btn k-btn--text" :disabled="checking" :aria-busy="checking" :aria-label="checking ? 'Checking Git connection' : 'Check Git connection'" title="Check Git connection" @click="$emit('retry')">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin motion-reduce:animate-none': checking }" aria-hidden="true" />
+          <Loader2 v-if="checking" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          <RefreshCw v-else class="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <slot />
       </div>

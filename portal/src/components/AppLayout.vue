@@ -940,6 +940,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
     <!-- Main content -->
     <main
+      class="faros-shell-main"
       :class="mainClass"
       :style="mainStyle"
     >

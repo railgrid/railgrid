@@ -92,8 +92,8 @@ details[open] > summary .landing-prompt-chevron {
      these tokens instead of introducing one-off numeric z-index values. */
   --app-studio-z-dropdown: 20;
   --app-studio-z-menu: 30;
-  --app-studio-z-modal-backdrop: 40;
-  --app-studio-z-modal: 50;
+  --app-studio-z-modal-backdrop: calc(var(--k-layer-modal, 2147483000) - 1);
+  --app-studio-z-modal: var(--k-layer-modal, 2147483000);
   --app-studio-z-toast: 60;
   --app-studio-z-tooltip: 70;
   --k-ai-tooltip-layer: var(--app-studio-z-tooltip);

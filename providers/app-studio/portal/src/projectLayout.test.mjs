@@ -25,8 +25,8 @@ test('keeps the existing gallery as the grid branch after route resolution and u
   assert.match(grid, /v-if="projectThumbnailURLs\[project\.name\]"/)
   assert.match(grid, /@click="enterProject\(project\)"/)
   assert.match(grid, /@click\.stop="requestDeleteProject\(project\)"/)
-  assert.match(grid, /No projects available\./)
-  assert.match(grid, /Preparing new project\.\.\./)
+  assert.match(grid, /No projects yet\./)
+  assert.match(grid, /Start with a project description and review the plan before anything is created\./)
   assert.match(grid, /No projects match this search\./)
 
   const list = app.slice(listStart, app.indexOf('</ResourceTable>', listStart))

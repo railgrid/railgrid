@@ -8663,7 +8663,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div class="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            class="flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+            class="app-studio-touch-target flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             :disabled="busy"
             @click="openNewProjectComposer"
           >
@@ -8716,13 +8716,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
-            <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+            <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
               connect to a Git account
             </a>
             before you can continue.
           </template>
           <template v-else>{{ error }}</template>
-          <button type="button" class="font-medium underline underline-offset-2" :disabled="loading" @click="load">Retry</button>
+          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" :disabled="loading" @click="load">Retry</button>
         </div>
 
         <template v-if="projectLayout === 'grid'">
@@ -8734,7 +8734,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :aria-busy="isProjectDeleting(project) || undefined"
             >
               <button
-                class="block w-full text-left disabled:cursor-not-allowed"
+                class="app-studio-touch-target block w-full text-left disabled:cursor-not-allowed"
                 :disabled="isProjectDeleting(project)"
                 @click="enterProject(project)"
               >
@@ -8806,8 +8806,24 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </article>
           </div>
 
+          <div v-else-if="!projectsLoaded || loading" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
+            Loading projects…
+          </div>
+          <div v-else-if="error" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status">
+            Projects are unavailable. Use Retry above to load them again.
+          </div>
+          <div v-else-if="projects.length === 0" class="flex min-h-[260px] max-w-[520px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center">
+            <div>
+              <p class="text-[13px] font-medium text-text-primary">No projects yet.</p>
+              <p class="mt-1 text-[12px] leading-5 text-text-muted">Start with a project description and review the plan before anything is created.</p>
+            </div>
+            <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-hover" :disabled="busy" @click="openNewProjectComposer">
+              <Plus class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+              New project
+            </button>
+          </div>
           <div v-else class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted">
-            {{ error ? 'No projects available.' : projects.length === 0 ? 'Preparing new project...' : 'No projects match this search.' }}
+            No projects match this search.
           </div>
         </template>
 
@@ -8823,7 +8839,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :row-aria-label="(row) => row.deleting
             ? `Deleting project ${String(row.displayName || row.name)}`
             : `Open project ${String(row.displayName || row.name)}`"
-          :empty-text="error ? 'No projects available.' : projects.length === 0 ? 'Preparing new project...' : 'No projects match this search.'"
+          :empty-text="!projectsLoaded || loading ? 'Loading projects…' : error ? 'Projects are unavailable.' : projects.length === 0 ? 'No projects yet.' : 'No projects match this search.'"
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
@@ -8881,16 +8897,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
             <template v-else-if="wizardOpen">
               <div class="mb-4 grid gap-2 rounded-md border border-border-subtle bg-surface p-3 text-[12px]">
-                <label class="flex items-center gap-2 text-text-primary">
-                  <input v-model="createWithGit" type="checkbox" :disabled="projectCreationPending || !reviewedGitConnection" />
+                <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
+                  <input v-model="createWithGit" type="checkbox" class="app-studio-touch-target" :disabled="projectCreationPending || !reviewedGitConnection" />
                   Create a private Git repository (recommended)
                 </label>
                 <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
-                <a v-if="!reviewedGitConnection" :href="CODE_CONNECTIONS_URL" target="_blank" rel="noopener noreferrer" class="text-accent underline underline-offset-2">Connect GitHub</a>
+                <a v-if="!reviewedGitConnection" :href="CODE_CONNECTIONS_URL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target text-accent underline underline-offset-2">Connect GitHub</a>
                 <p v-if="createGitError" role="alert" class="text-danger">{{ createGitError }}</p>
                 <div v-if="createGitError || !reviewedGitConnection" class="flex gap-2">
-                  <button type="button" class="k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
-                  <button type="button" class="k-btn k-btn--ghost" :disabled="projectCreationPending" @click="createWithGit = false; createGitError = ''">Continue without Git</button>
+                  <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
+                  <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="createWithGit = false; createGitError = ''">Continue without Git</button>
                 </div>
               </div>
               <NewProjectWizard
@@ -8935,7 +8951,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-for="starter in landingStarterPrompts"
                   :key="starter.id"
                   type="button"
-                  class="group flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md border px-3 py-2 text-left transition hover:border-accent/30 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="app-studio-touch-target group flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md border px-3 py-2 text-left transition hover:border-accent/30 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                   :class="prompt.trim() === starter.prompt ? 'border-accent/40 bg-accent/10' : 'border-border-subtle bg-surface'"
                   :aria-label="`Use ${starter.label} starting point`"
                   :aria-pressed="prompt.trim() === starter.prompt"
@@ -9009,11 +9025,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </div>
                       <div v-else-if="importRepositoriesError && importRepositories.length === 0" class="grid gap-2 text-[12px] text-danger" role="alert">
                         <span>{{ importRepositoriesError }}</span>
-                        <button type="button" class="w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                        <button type="button" class="app-studio-touch-target w-fit font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
                       </div>
                       <div v-else-if="importRepositories.length === 0" class="grid gap-2 text-[12px] text-text-secondary" role="status">
                         <span>No unclaimed repositories available.</span>
-                        <button type="button" class="w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
+                        <button type="button" class="app-studio-touch-target w-fit font-medium text-accent underline underline-offset-2" @click="loadImportRepositories">Refresh</button>
                       </div>
                       <div v-else class="grid gap-2">
                         <div v-if="importRepositoriesLoading" class="flex items-center gap-2 text-[11px] text-text-secondary" role="status" aria-busy="true">
@@ -9022,13 +9038,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         </div>
                         <div v-if="importRepositoriesError" class="flex flex-wrap items-center gap-2 text-[12px] text-danger" role="alert">
                           <span>{{ importRepositoriesError }}</span>
-                          <button type="button" class="font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
+                          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadImportRepositories">Retry</button>
                         </div>
                         <label for="landing-import-repository" class="text-[11px] font-medium text-text-secondary">Choose a repository</label>
                         <select
                           id="landing-import-repository"
                           v-model="importSelectedRepository"
-                          class="k-input h-9 min-w-0 text-[16px] md:text-[12px]"
+                          class="app-studio-touch-target k-input h-9 min-w-0 text-[16px] md:text-[12px]"
                           :disabled="importRepositoriesLoading || importBusy"
                         >
                           <option value="" disabled>Select a repository…</option>
@@ -9038,7 +9054,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         </select>
                         <button
                           type="button"
-                          class="inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
+                          class="app-studio-touch-target inline-flex h-8 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] disabled:cursor-not-allowed disabled:opacity-60"
                           :disabled="!importSelectedRepository || importBusy || importRepositoriesLoading"
                           @click="importRepositoryProject"
                         >
@@ -9110,7 +9126,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <a
                       v-else-if="item.action === 'connect-git'"
                       :href="CODE_CONNECTIONS_URL"
-                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
                     >
                       <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
                       {{ item.actionLabel }}
@@ -9118,7 +9134,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <button
                       v-else-if="item.action === 'setup-llm'"
                       type="button"
-                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
                       @click="openSettings"
                     >
                       <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -9148,7 +9164,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
-          <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+          <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
             connect to a Git account
           </a>
           before you can continue.
@@ -9349,7 +9365,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <div class="w-full max-w-[720px] rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
               <div class="font-medium">Project unavailable</div>
               <div class="mt-1">{{ error }}</div>
-              <button type="button" class="mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
+          <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
             </div>
           </div>
           <div v-else-if="conversationRefreshing" class="sticky top-0 z-10 mb-3 flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay/90 px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
@@ -9994,7 +10010,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div class="rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
             <div class="font-medium">Project workspace unavailable</div>
             <div class="mt-1">{{ error }}</div>
-            <button type="button" class="mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
+            <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
           </div>
         </div>
       </template>
@@ -10476,7 +10492,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <span class="text-[12px] font-medium text-text-secondary">Name</span>
               <input
                 v-model="projectSettingsName"
-                class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
                 placeholder="Project name"
                 :disabled="projectSettingsSaving"
               />
@@ -10485,7 +10501,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <span class="text-[12px] font-medium text-text-secondary">Description</span>
               <textarea
                 v-model="projectSettingsDescription"
-                class="min-h-[88px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                class="app-studio-touch-target min-h-[88px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
                 placeholder="Describe this project"
                 :disabled="projectSettingsSaving"
               />
@@ -10504,7 +10520,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
             <div class="flex justify-end">
               <button
-                class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                class="app-studio-touch-target inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="projectSettingsSaving || !projectSettingsName.trim()"
                 title="Save project details"
               >
@@ -10544,7 +10560,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <LayoutTemplate v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
                   <select
                     :value="selected?.template || ''"
-                    class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                    class="app-studio-touch-target h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
                     aria-label="Development template"
                     :disabled="developmentTemplatesLoading || developmentTemplateBusy || messageStreaming || developmentTemplates.length === 0"
                     @change="changeDevelopmentTemplate"
@@ -10566,7 +10582,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <p v-if="messageStreaming" class="text-[11px] leading-4 text-text-muted">Wait for or stop the active assistant run before changing templates.</p>
               <div v-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
                 <span>{{ developmentTemplatesError }}</span>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
+                <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
               </div>
               <div
                 v-if="developmentTemplateError || developmentTemplateStatus"
@@ -10597,7 +10613,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <Lock v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
                   <select
                     :value="developmentPreviewDesiredAccess"
-                    class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                    class="app-studio-touch-target h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
                     aria-label="Development preview access"
                     :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
                     @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
@@ -10638,7 +10654,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <template v-else>
                 <div v-if="!promotion && promotionError" class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
                   <div>{{ promotionError }}</div>
-                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
                 <template v-else-if="promotion">
                   <ReleasePipeline
@@ -10688,7 +10704,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <button
                           ref="productionDeployButtonRef"
                           type="button"
-                          class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+                          class="app-studio-touch-target inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
                           :disabled="!canPromoteLatestRelease"
                           @click="openProductionDeployReview(latestDeployableRelease)"
                         >
@@ -10754,7 +10770,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <div v-if="productionAccess.label === 'Live'" class="grid gap-3 border-t border-border-subtle pt-4">
                     <div class="flex min-w-0 items-center gap-2">
                       <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-                      <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
+                      <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex min-w-0 items-center truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
                     </div>
                     <div class="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -10765,7 +10781,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="openShareDialog">
                           <Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access
                         </button>
-                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
+                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
                       </div>
                     </div>
                   </div>
@@ -10790,7 +10806,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </template>
                 <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
                   <div>Production status is unavailable. Refresh to retry.</div>
-                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
               </template>
             </section>
@@ -10798,7 +10814,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <section v-if="!promotionLoading || promotion" class="rounded-lg border border-border-subtle bg-surface" aria-label="Deployment configuration">
               <button
                 type="button"
-                class="flex w-full items-start justify-between gap-4 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                class="app-studio-touch-target flex w-full items-start justify-between gap-4 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 :aria-expanded="productionSettingsOpen"
                 aria-controls="production-settings-body"
                 @click="productionSettingsOpen = !productionSettingsOpen"
@@ -10831,7 +10847,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <button
                     v-if="productionBinding"
                     type="button"
-                    class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
                     :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
                     @click="redeployCurrentProduction"
                   >
@@ -10842,12 +10858,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[11px] leading-4 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
                 <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
                   <div>Production configuration is unavailable. Refresh to retry.</div>
-                  <button type="button" class="font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
               </div>
             </section>
             <section class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-3" aria-label="Technical details">
-              <button type="button" class="flex w-full items-center justify-between gap-2 text-left" :aria-expanded="productionTechnicalOpen" @click="productionTechnicalOpen = !productionTechnicalOpen">
+              <button type="button" class="app-studio-touch-target flex w-full items-center justify-between gap-2 text-left" :aria-expanded="productionTechnicalOpen" @click="productionTechnicalOpen = !productionTechnicalOpen">
                 <span class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted"><Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />Technical details</span>
                 <span class="text-[11px] text-text-muted">{{ productionTechnicalOpen ? 'Hide' : 'Show' }}</span>
               </button>

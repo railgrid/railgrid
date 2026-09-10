@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   AlertTriangle,
   Check,
@@ -19,6 +19,8 @@ import StatusBadge from './portalkit/StatusBadge.vue'
 import {
   buildProjectIntegrationCreatePayload,
   buildProjectIntegrationRevokePayload,
+  projectIntegrationsAuthorityKey,
+  projectIntegrationsRequestIsCurrent,
   readyProviderActions,
 } from './projectIntegrations'
 import type {
@@ -48,6 +50,7 @@ const props = withDefaults(defineProps<{
 const automaticProviderAccessOnly = true
 
 const integrations = ref<ProjectIntegration[]>([])
+const integrationsLoaded = ref(false)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref<string | null>(null)
@@ -58,6 +61,7 @@ const actionID = ref('')
 const alias = ref('')
 const resourceName = ref('')
 const consentAccepted = ref(false)
+let integrationsRequestSerial = 0
 
 const selectableActions = computed(() => readyProviderActions(props.providers))
 const selectableProviders = computed(() => {
@@ -89,14 +93,30 @@ const canCreate = computed(() => {
   return !!props.projectName && !!payload && (!selectedActionRequiresConsent.value || consentAccepted.value) && !busy.value
 })
 
+const integrationsAuthority = computed(() => projectIntegrationsAuthorityKey(props.ctx, props.projectName))
+
+function isCurrentIntegrationsRequest(requestSerial: number, requestAuthority: string): boolean {
+  return projectIntegrationsRequestIsCurrent(
+    requestSerial,
+    requestAuthority,
+    integrationsRequestSerial,
+    integrationsAuthority.value,
+  )
+}
+
 watch(
-  () => props.projectName,
-  (projectName) => {
+  integrationsAuthority,
+  (authority) => {
+    // Invalidate every pending read before clearing the old scope. A response
+    // from a previous project or tenant must never repopulate this snapshot.
+    integrationsRequestSerial += 1
     integrations.value = []
+    integrationsLoaded.value = false
+    loading.value = false
     error.value = null
     notice.value = null
     resetForm()
-    if (projectName) void loadIntegrations()
+    if (props.projectName) void loadIntegrations(authority)
   },
   { immediate: true },
 )
@@ -130,17 +150,28 @@ const selectedProviderActions = computed(() => selectedProvider.value?.actions?.
   !action.deprecation?.deprecated && /^sha256:[a-f0-9]{64}$/.test(action.schemaDigest),
 ) ?? [])
 
-async function loadIntegrations() {
-  if (!props.projectName) return
+async function loadIntegrations(requestAuthority = integrationsAuthority.value) {
+  const projectName = props.projectName
+  const context = props.ctx
+  if (!projectName) return
+  const requestSerial = ++integrationsRequestSerial
   loading.value = true
   error.value = null
   try {
-    integrations.value = await api.listProjectIntegrations(props.ctx, props.projectName)
+    const next = await api.listProjectIntegrations(context, projectName)
+    if (!isCurrentIntegrationsRequest(requestSerial, requestAuthority)) return
+    integrations.value = next
+    integrationsLoaded.value = true
   } catch (err) {
+    if (!isCurrentIntegrationsRequest(requestSerial, requestAuthority)) return
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    if (isCurrentIntegrationsRequest(requestSerial, requestAuthority)) loading.value = false
   }
+}
+
+function refreshIntegrations(): void {
+  void loadIntegrations()
 }
 
 function resetForm() {
@@ -247,6 +278,12 @@ function formatTimestamp(value?: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
+
+onBeforeUnmount(() => {
+  // Prevent a deferred read from committing after this resource view leaves
+  // the document. The same serial guard handles project and authority swaps.
+  integrationsRequestSerial += 1
+})
 </script>
 
 <template>
@@ -265,10 +302,10 @@ function formatTimestamp(value?: string): string {
       </div>
       <button
         type="button"
-        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="loading || busy || !projectName"
         title="Refresh integrations"
-        @click="loadIntegrations"
+        @click="refreshIntegrations"
       >
         <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
         <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -278,7 +315,7 @@ function formatTimestamp(value?: string): string {
 
     <div v-if="error" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle px-3 py-2.5 text-[12px] leading-5 text-danger" role="alert" aria-live="assertive">
       <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
-      <span>{{ error }}</span>
+      <span>{{ integrations.length ? 'Could not refresh integrations. Existing integrations remain visible. ' : '' }}{{ error }}</span>
     </div>
     <div v-if="formError" class="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger-subtle px-3 py-2.5 text-[12px] leading-5 text-danger" role="alert" aria-live="assertive">
       <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
@@ -408,7 +445,7 @@ function formatTimestamp(value?: string): string {
               </dd>
             </div>
           </dl>
-          <label v-if="selectedActionRequiresConsent" class="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[12px] leading-5 text-text-secondary">
+          <label v-if="selectedActionRequiresConsent" class="k-checkbox-hit flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[12px] leading-5 text-text-secondary">
             <input v-model="consentAccepted" type="checkbox" class="mt-1 h-3.5 w-3.5 accent-accent" :disabled="busy" />
             <span>
               <span class="font-medium text-text-primary">{{ selectedAction.consent?.prompt || 'I approve this provider action for the selected resource.' }}</span>
@@ -444,7 +481,7 @@ function formatTimestamp(value?: string): string {
       <div v-if="loading && integrations.length === 0" class="grid gap-2" role="status" aria-live="polite">
         <div v-for="i in 3" :key="i" class="shimmer h-16 rounded-xl border border-border-subtle bg-surface" />
       </div>
-      <div v-else-if="!loading && integrations.length === 0" class="flex min-h-28 items-center justify-center rounded-xl border border-dashed border-border-subtle bg-surface p-4 text-center text-[12px] text-text-muted">
+      <div v-else-if="!loading && integrationsLoaded && !error && integrations.length === 0" class="flex min-h-28 items-center justify-center rounded-xl border border-dashed border-border-subtle bg-surface p-4 text-center text-[12px] text-text-muted">
         No provider integrations have been granted for this project.
       </div>
       <div v-else class="grid gap-2">
@@ -464,7 +501,7 @@ function formatTimestamp(value?: string): string {
             <button
               v-if="!automaticProviderAccessOnly"
               type="button"
-              class="k-btn k-btn--danger h-8"
+              class="k-btn k-btn--danger app-studio-touch-target h-8"
               :disabled="busy"
               @click="removeIntegration(integration)"
             >
@@ -490,7 +527,7 @@ function formatTimestamp(value?: string): string {
               <button
                 v-if="!automaticProviderAccessOnly && !grant.revoked"
                 type="button"
-                class="k-btn k-btn--ghost h-8 text-warning"
+                class="k-btn k-btn--ghost app-studio-touch-target h-8 text-warning"
                 :disabled="busy"
                 @click="revokeAction(integration, grant.name, grant.version)"
               >

@@ -325,14 +325,14 @@ onMounted(async () => {
       <div class="k-create-actions flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
         <button
           type="button"
-          class="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[13px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40 sm:w-auto"
+          class="app-studio-touch-target inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[13px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40 sm:w-auto"
           @click="emit('cancel')"
         >
           Cancel
         </button>
         <button
           type="button"
-          class="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          class="app-studio-touch-target inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover hover:shadow-[0_0_22px_var(--color-accent-glow)] focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           :disabled="!canPlan"
           @click="runPlan"
         >
@@ -389,7 +389,7 @@ onMounted(async () => {
           </div>
           <button
             type="button"
-            class="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="app-studio-touch-target mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
             @click="back"
           >
             <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -421,7 +421,7 @@ onMounted(async () => {
             </div>
             <button
               type="button"
-              class="inline-flex h-9 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+              class="app-studio-touch-target inline-flex h-9 w-fit items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
               :disabled="!canPlan"
               @click="runPlan"
             >
@@ -435,7 +435,7 @@ onMounted(async () => {
               <input
                 v-model="displayName"
                 type="text"
-                class="h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition placeholder:text-text-secondary focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
+                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition placeholder:text-text-secondary focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
                 autocomplete="off"
                 aria-describedby="project-name-review"
               />
@@ -449,7 +449,7 @@ onMounted(async () => {
               <span class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Template</span>
               <select
                 v-model="chosenTemplate"
-                class="h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
+                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
                 aria-describedby="template-impact template-selection-review"
               >
                 <option value="">No template (start empty)</option>
@@ -511,7 +511,7 @@ onMounted(async () => {
                   :href="codeConnectionsUrl"
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex h-7 items-center rounded-md border border-accent/30 bg-accent/10 px-2.5 font-medium text-accent outline-none transition hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="app-studio-touch-target inline-flex h-7 items-center rounded-md border border-accent/30 bg-accent/10 px-2.5 font-medium text-accent outline-none transition hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40"
                   :aria-label="`${item.actionLabel || 'Connect Git'} in a new tab`"
                 >
                   {{ item.actionLabel || 'Connect Git' }}
@@ -520,7 +520,7 @@ onMounted(async () => {
                 <button
                   v-else-if="item.action === 'setup-llm'"
                   type="button"
-                  class="inline-flex h-7 items-center rounded-md border border-accent/30 bg-accent/10 px-2.5 font-medium text-accent outline-none transition hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="app-studio-touch-target inline-flex h-7 items-center rounded-md border border-accent/30 bg-accent/10 px-2.5 font-medium text-accent outline-none transition hover:bg-accent/20 focus-visible:ring-2 focus-visible:ring-accent/40"
                   @click="emit('setup-action', 'setup-llm')"
                 >
                   {{ item.actionLabel || 'Set up LLM' }}
@@ -528,11 +528,12 @@ onMounted(async () => {
               </div>
               <button
                 type="button"
-                class="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border-default bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
+                class="app-studio-touch-target inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border-default bg-surface px-2.5 text-[12px] font-medium text-text-secondary outline-none transition hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-60"
                 :disabled="setupLoading"
                 @click="emit('retry-setup')"
               >
-                <RefreshCw class="h-3.5 w-3.5" :class="setupLoading ? 'animate-spin motion-reduce:animate-none' : ''" :stroke-width="1.75" aria-hidden="true" />
+                <Loader2 v-if="setupLoading" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                 {{ setupLoading ? 'Checking setup…' : 'Check again' }}
               </button>
             </div>
@@ -542,7 +543,7 @@ onMounted(async () => {
         </div>
         <button
           type="button"
-          class="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none sm:w-auto"
+          class="app-studio-touch-target inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none sm:w-auto"
           :disabled="disabled"
           @click="confirmCreate"
         >

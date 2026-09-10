@@ -294,3 +294,10 @@ html.light .island {
   background: color-mix(in srgb, var(--color-accent) 22%, transparent);
   color: var(--color-text-primary);
 }
+
+/* Provider-owned modals retain their scoped styles inside main. Raise that
+   stacking context above shell navigation while a modal is mounted, but keep
+   global confirmations and toasts above it. */
+.faros-shell-main:has([role="dialog"][aria-modal="true"]:not([hidden])) {
+  z-index: calc(var(--k-layer-modal, 2147483000) - 2);
+}

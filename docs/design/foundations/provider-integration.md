@@ -64,3 +64,13 @@ and the Agents shell reasserts `fullBleed: true` as the route or host context
 changes. The request is cleared when leaving the agent instance, when context
 is lost, and when the provider unmounts; it does not change provider routing or
 tenant authority.
+
+Provider-owned dialogs may keep their Teleport target inside the provider to
+retain scoped styles. While a visible dialog is mounted with `role="dialog"`
+and `aria-modal="true"`, the host raises `.faros-shell-main` above navigation
+using `--k-layer-modal - 2`; hidden dialogs must be unmounted or use `hidden`.
+App Studio places its modal backdrop at `--k-layer-modal - 1`, above AgentKit
+thread rails and menus. Global confirmations and toasts retain the higher
+shared layers. Closing the dialog restores the ordinary host stacking order.
+Live Share checks at 932px and 390px in both themes verified dialog hit testing,
+focus containment, and restoration of the host layer after Escape.

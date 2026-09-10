@@ -63,11 +63,12 @@ const emit = defineEmits<{
           <button
             v-if="pipeline.artifactLag || ['artifact_attention', 'unavailable'].includes(pipeline.state)"
             type="button"
-            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
             :disabled="refreshing"
             @click="emit('refresh')"
           >
-            <RefreshCw class="h-3.5 w-3.5" :class="refreshing ? 'animate-spin motion-reduce:animate-none' : ''" :stroke-width="1.75" aria-hidden="true" />
+            <Loader2 v-if="refreshing" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+            <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
             {{ refreshing ? 'Checking…' : 'Check again' }}
           </button>
           <a
@@ -75,7 +76,7 @@ const emit = defineEmits<{
             :href="pipeline.buildURL"
             target="_blank"
             rel="noopener noreferrer"
-            class="text-[11px] font-medium text-accent hover:underline"
+            class="app-studio-touch-target inline-flex min-h-8 items-center text-[11px] font-medium text-accent hover:underline"
           >View build</a>
         </div>
       </div>

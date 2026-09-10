@@ -14,6 +14,8 @@ const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toStrin
 const {
   buildProjectIntegrationCreatePayload,
   buildProjectIntegrationRevokePayload,
+  projectIntegrationsAuthorityKey,
+  projectIntegrationsRequestIsCurrent,
   readyProviderActions,
 } = await import(moduleURL)
 
@@ -81,4 +83,32 @@ test('revoke payload preserves each grant digest and targets only the selected a
     consentAccepted: true,
   })
   assert.equal(buildProjectIntegrationRevokePayload(integration, 'missing', 'v1'), null)
+})
+
+test('drops late integration reads after project, workspace, or user authority changes', async () => {
+  const originalContext = { tenant: 'tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', user: { sub: 'alice' }, token: 'old-token' }
+  const nextContext = { tenant: 'tenant-b', orgUUID: 'org-b', workspaceUUID: 'workspace-b', user: { userId: 'bob' }, token: 'new-token' }
+  const originalAuthority = projectIntegrationsAuthorityKey(originalContext, 'first-project')
+  const nextAuthority = projectIntegrationsAuthorityKey(nextContext, 'second-project')
+  let resolveOriginal
+  const originalResponse = new Promise((resolve) => { resolveOriginal = resolve })
+  let currentSerial = 1
+  let currentAuthority = originalAuthority
+  const committed = originalResponse.then((value) => projectIntegrationsRequestIsCurrent(
+    1,
+    originalAuthority,
+    currentSerial,
+    currentAuthority,
+  ) ? value : null)
+
+  currentSerial = 2
+  currentAuthority = nextAuthority
+  resolveOriginal([{ alias: 'stale-first-project' }])
+  assert.equal(await committed, null)
+  assert.equal(projectIntegrationsRequestIsCurrent(2, nextAuthority, currentSerial, currentAuthority), true)
+
+  // A rotated bearer token keeps the same resource authority and therefore
+  // does not blank an otherwise valid same-scope snapshot.
+  assert.equal(projectIntegrationsAuthorityKey({ ...originalContext, token: 'rotated-token' }, 'first-project'), originalAuthority)
+  assert.notEqual(projectIntegrationsAuthorityKey({ ...originalContext, user: { sub: 'bob' } }, 'first-project'), originalAuthority)
 })

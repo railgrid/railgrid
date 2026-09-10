@@ -86,7 +86,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       </div>
       <button
         type="button"
-        class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="refreshing || restoreBusy"
         :aria-label="refreshing ? 'Refreshing Git history' : 'Refresh Git history'"
         @click="emit('refresh')"
@@ -128,7 +128,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
               :id="optionID(commit)"
               type="button"
               role="radio"
-              class="group grid w-full gap-1 rounded-md border px-2 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              class="app-studio-touch-target group grid w-full gap-1 rounded-md border px-2 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               :class="repositoryCommitSelectable(commit)
                 ? selectedCommit === commit.commitSHA
                   ? 'border-accent/50 bg-accent-subtle/20 text-text-primary'
@@ -158,7 +158,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
                 <span v-if="commit.fileCount">· {{ commit.fileCount }} files</span>
               </span>
             </button>
-            <a v-if="commit.commitURL" :href="commit.commitURL" target="_blank" rel="noopener noreferrer" class="mt-0.5 inline-flex min-h-7 items-center gap-1 px-2 text-[11px] font-medium text-text-secondary hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"><ExternalLink class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />View commit</a>
+            <a v-if="commit.commitURL" :href="commit.commitURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target mt-0.5 inline-flex min-h-7 items-center gap-1 px-2 text-[11px] font-medium text-text-secondary hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"><ExternalLink class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />View commit</a>
           </div>
         </div>
       </div>
@@ -175,7 +175,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
         </div>
         <button
           type="button"
-          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-warning/40 bg-warning-subtle px-3 text-[12px] font-semibold text-warning transition hover:border-warning/60 disabled:cursor-not-allowed disabled:opacity-60"
+          class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-warning/40 bg-warning-subtle px-3 text-[12px] font-semibold text-warning transition hover:border-warning/60 disabled:cursor-not-allowed disabled:opacity-60"
           :disabled="actionDisabled"
           @click="emit('restore')"
         >
