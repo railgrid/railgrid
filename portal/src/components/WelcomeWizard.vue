@@ -19,7 +19,7 @@
 // one up says nothing about the next) and lives in localStorage — this is a
 // presentation preference, not state worth a round-trip to the hub.
 
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   AlertCircle,
   ArrowLeft,
@@ -37,6 +37,7 @@ import {
   Sparkles,
 } from 'lucide-vue-next'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
+import { toast } from '@/portalkit/toast'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -90,6 +91,10 @@ const enabledCount = computed(() => catalog.value.filter((p) => providers.isEnab
 const busy = ref<Record<string, boolean>>({})
 const actionError = ref<string | null>(null)
 const dialogProvider = ref<ProviderDTO | null>(null)
+const dialogRevision = ref(0)
+const dialogScope = computed(
+  () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
+)
 
 function categoryIcon(name: string | undefined): unknown {
   if (!name) return fallbackCategoryIcon
@@ -105,24 +110,52 @@ function dependencyNotice(p: ProviderDTO): string {
 }
 
 function openEnableDialog(p: ProviderDTO) {
+  if (busy.value[p.name]) return
   actionError.value = null
   if (providers.hasMissingDependencies(p)) {
     actionError.value = dependencyNotice(p)
     return
   }
+  dialogRevision.value += 1
   dialogProvider.value = p
 }
 
+function closeEnableDialog() {
+  dialogRevision.value += 1
+  dialogProvider.value = null
+  actionError.value = null
+}
+
+watch(dialogScope, () => {
+  // A workspace switch invalidates the visible consent decision. The store
+  // independently fences the in-flight write; this only prevents its result
+  // or error from changing the new workspace's dialog.
+  if (dialogProvider.value) closeEnableDialog()
+})
+
 async function onDialogConfirm(accept: PermissionClaim[]) {
   const p = dialogProvider.value
-  if (!p) return
+  const revision = dialogRevision.value
+  const scope = dialogScope.value
+  if (!p || busy.value[p.name]) return
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
     await providers.enable(p, accept)
-    dialogProvider.value = null
+    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
+      closeEnableDialog()
+    }
   } catch (e) {
-    actionError.value = e instanceof Error ? e.message : String(e)
+    const message = e instanceof Error ? e.message : String(e)
+    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
+      actionError.value = message
+    } else if (dialogScope.value === scope) {
+      toast('error', `Could not enable ${p.displayName}: ${message}`, {
+        scope,
+        source: 'provider-enable',
+        dedupeKey: `provider-enable:${p.name}`,
+      })
+    }
   } finally {
     const next = { ...busy.value }
     delete next[p.name]
@@ -339,14 +372,14 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
                   <button
                     v-else
                     type="button"
-                    class="k-btn k-btn--primary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
+                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent disabled:cursor-not-allowed disabled:opacity-50"
                     :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
                     :title="dependencyNotice(p)"
                     @click="openEnableDialog(p)"
                   >
                     <Loader2 v-if="busy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
                     <Plus v-else class="h-3 w-3" :stroke-width="2" />
-                    Enable
+                    {{ busy[p.name] ? 'Enabling provider…' : 'Enable provider' }}
                   </button>
                 </div>
               </div>
@@ -433,7 +466,9 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
 
     <ProviderEnableDialog
       :provider="dialogProvider"
-      @cancel="dialogProvider = null"
+      :busy="dialogProvider ? !!busy[dialogProvider.name] : false"
+      :error="dialogProvider ? actionError : null"
+      @cancel="closeEnableDialog"
       @confirm="onDialogConfirm"
     />
   </div>

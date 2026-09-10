@@ -5,6 +5,11 @@ import type { ProviderDTO, PermissionClaim } from '@/stores/providers'
 
 const props = defineProps<{
   provider: ProviderDTO | null
+  // Enable is a caller-owned write. Keeping pending/error state in the page
+  // that owns the request means a failed write can remain retryable without
+  // leaving this modal permanently busy or hiding the error behind it.
+  busy?: boolean
+  error?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -16,10 +21,16 @@ const emit = defineEmits<{
 // to accepted; non-tenantScoped default to rejected so the user has to
 // explicitly opt-in to anything that escapes their workspace.
 const accepted = ref<Record<string, boolean>>({})
-const busy = ref(false)
 const dialogRef = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 let previousFocus: HTMLElement | null = null
+
+const dismissLabel = computed(() => props.busy
+  ? 'Dismiss provider access dialog; request continues'
+  : 'Close provider access dialog')
+const dismissTitle = computed(() => props.busy
+  ? 'Dismiss dialog; request continues'
+  : 'Close dialog')
 
 const claimKey = (c: PermissionClaim) => `${c.group ?? ''}/${c.resource}`
 
@@ -32,7 +43,6 @@ watch(
       next[claimKey(c)] = !!c.tenantScoped
     }
     accepted.value = next
-    busy.value = false
   },
   { immediate: true },
 )
@@ -43,13 +53,13 @@ const hasUntrustedAccepted = computed(() =>
 )
 
 function toggle(c: PermissionClaim) {
+  if (props.busy) return
   const k = claimKey(c)
   accepted.value = { ...accepted.value, [k]: !accepted.value[k] }
 }
 
 function onConfirm() {
-  if (!props.provider) return
-  busy.value = true
+  if (!props.provider || props.busy) return
   const accept = claims.value.filter((c) => accepted.value[claimKey(c)])
   emit('confirm', accept)
 }
@@ -65,13 +75,18 @@ function onKeydown(event: KeyboardEvent) {
   const focusable = Array.from(dialogRef.value?.querySelectorAll<HTMLElement>(
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
   ) ?? [])
-  if (!focusable.length) return
+  if (!focusable.length) {
+    event.preventDefault()
+    dialogRef.value?.focus()
+    return
+  }
   const first = focusable[0]
   const last = focusable[focusable.length - 1]
-  if (event.shiftKey && document.activeElement === first) {
+  const activeIndex = focusable.indexOf(document.activeElement as HTMLElement)
+  if (event.shiftKey && activeIndex <= 0) {
     event.preventDefault()
     last.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
+  } else if (!event.shiftKey && (activeIndex < 0 || activeIndex >= focusable.length - 1)) {
     event.preventDefault()
     first.focus()
   }
@@ -91,6 +106,7 @@ watch(
       nextTick(() => target?.isConnected && target.focus())
     }
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
@@ -100,9 +116,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   <div
     v-if="provider"
     class="k-modal-overlay"
-    @click.self="$emit('cancel')"
+    @click.self="!busy && $emit('cancel')"
   >
-    <div ref="dialogRef" class="k-modal w-full max-w-lg p-0" role="dialog" aria-modal="true" aria-labelledby="provider-enable-title" aria-describedby="provider-enable-description">
+    <div
+      ref="dialogRef"
+      class="k-modal w-full max-w-lg p-0"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      aria-labelledby="provider-enable-title"
+      :aria-describedby="error ? 'provider-enable-description provider-enable-error' : 'provider-enable-description'"
+      :aria-busy="busy"
+    >
       <div class="flex items-center justify-between border-b border-border-subtle px-4 py-3">
         <div>
           <h2 id="provider-enable-title" class="text-sm font-semibold text-text-primary">Enable {{ provider.displayName }}</h2>
@@ -110,15 +135,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             Review what this provider will be able to access in your workspace.
           </p>
         </div>
-        <button ref="closeButton" type="button" class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-primary" aria-label="Close provider access dialog" @click="$emit('cancel')">
+        <button ref="closeButton" type="button" class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-primary" :aria-label="dismissLabel" :title="dismissTitle" @click="$emit('cancel')">
           <X class="h-4 w-4" :stroke-width="1.75" />
         </button>
       </div>
 
       <div class="max-h-[60vh] overflow-y-auto px-4 py-3">
+        <div
+          v-if="error"
+          id="provider-enable-error"
+          class="mb-3 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[11px] text-danger"
+          role="alert"
+          aria-live="assertive"
+        >
+          <ShieldAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+          <span>{{ error }}</span>
+        </div>
+
         <div v-if="claims.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay/50 px-3 py-4 text-center text-xs text-text-muted">
           This provider does not request access to any tenant resources.
-          Clicking Confirm will bind its APIs into your workspace.
+          Clicking Enable provider will bind its APIs into your workspace.
         </div>
 
         <ul v-else class="space-y-2">
@@ -128,11 +164,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             class="rounded-lg border bg-surface-overlay/30 px-3 py-2"
             :class="c.tenantScoped ? 'border-border-subtle' : 'border-warning/30'"
           >
-            <label class="flex cursor-pointer items-start gap-3">
+            <label class="k-checkbox-hit flex cursor-pointer items-start gap-3">
               <input
                 type="checkbox"
                 class="k-checkbox mt-1"
                 :checked="!!accepted[claimKey(c)]"
+                :disabled="busy"
                 @change="toggle(c)"
               />
               <div class="min-w-0 flex-1">
@@ -181,6 +218,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <button
           type="button"
           class="k-btn k-btn--ghost px-3 py-1 text-[11px] text-text-muted transition-colors hover:text-text-primary"
+          :disabled="busy"
           @click="$emit('cancel')"
         >
           Cancel
@@ -192,7 +230,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           @click="onConfirm"
         >
           <Loader2 v-if="busy" class="h-3 w-3 animate-spin" :stroke-width="2" />
-          Confirm &amp; Enable
+          {{ busy ? 'Enabling provider…' : 'Enable provider' }}
         </button>
       </div>
     </div>

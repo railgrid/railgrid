@@ -103,8 +103,8 @@ function handleLogout() {
     </aside>
 
     <!-- Main content -->
-    <main class="min-w-0 flex-1 overflow-y-auto">
-      <div class="w-full px-8 py-5">
+    <main class="min-w-0 flex-1 overflow-y-auto" :aria-busy="admin.loading">
+      <div class="w-full px-4 py-5 sm:px-8">
         <header class="mb-6 flex items-center justify-between">
           <h1 class="flex items-center gap-2 text-[17px] font-bold">
             <ShieldAlert class="h-5 w-5 text-accent" :stroke-width="1.75" />
@@ -124,6 +124,8 @@ function handleLogout() {
         <div
           v-if="admin.forbidden"
           class="k-card flex items-start gap-2 border-danger/30 bg-danger-subtle px-4 py-3 text-[13px] text-danger"
+          role="alert"
+          aria-live="assertive"
         >
           <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
           <span>Access denied. Your identity is not in the hub's <code>--admin-users</code> allowlist.</span>
@@ -132,7 +134,23 @@ function handleLogout() {
         <template v-else>
           <!-- Flat admin lists surface retry/stale state inside ResourceTable.
                Organizations remain grouped cards, so their read error stays at shell level. -->
-          <p v-if="admin.error && $route.name === 'bonkers-organizations'" class="mb-3 text-[13px] text-danger">{{ admin.error }}</p>
+          <div
+            v-if="admin.error && $route.name === 'bonkers-organizations'"
+            class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger"
+            role="alert"
+            aria-live="assertive"
+          >
+            <span>{{ admin.loaded ? 'Could not refresh organizations. Showing the last loaded results.' : 'Could not load organizations.' }}</span>
+            <span class="text-[11px] text-danger">{{ admin.error }}</span>
+            <button
+              type="button"
+              class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-danger"
+              :disabled="admin.loading"
+              @click="admin.refresh()"
+            >
+              Retry
+            </button>
+          </div>
           <router-view />
         </template>
       </div>

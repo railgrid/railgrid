@@ -129,7 +129,7 @@ const collapseAll = () => {
 
 <template>
   <div class="relative">
-    <div class="absolute right-2 top-2 z-10 flex gap-1">
+    <div class="mb-2 flex justify-end gap-1" role="toolbar" aria-label="YAML display controls">
       <button
         type="button"
         class="k-btn k-btn--ghost px-2 py-0.5 text-[10px] font-medium text-text-muted backdrop-blur transition-colors hover:text-text-primary"
@@ -156,7 +156,9 @@ const collapseAll = () => {
           type="button"
           class="k-btn k-btn--ghost mr-0.5 inline-flex h-[1.45em] w-4 shrink-0 items-center justify-center border-0 p-0 text-text-muted/50 transition-colors hover:text-accent"
           @click="toggle(item.idx)"
-          :title="collapsed.has(item.idx) ? 'Expand' : 'Collapse'"
+          :aria-expanded="!collapsed.has(item.idx)"
+          :aria-label="`${collapsed.has(item.idx) ? 'Expand' : 'Collapse'} ${item.line.key ?? 'section'}`"
+          :title="`${collapsed.has(item.idx) ? 'Expand' : 'Collapse'} ${item.line.key ?? 'section'}`"
         >
           <ChevronRight v-if="collapsed.has(item.idx)" class="h-3 w-3" :stroke-width="2.25" />
           <ChevronDown v-else class="h-3 w-3" :stroke-width="2.25" />

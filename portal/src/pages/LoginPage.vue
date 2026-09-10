@@ -61,6 +61,7 @@ function resumeAfterLogin() {
 }
 
 async function handleTokenLogin() {
+  if (!tokenInput.value || auth.loading) return
   loginError.value = null
   try {
     await auth.loginStatic(tokenInput.value)
@@ -147,7 +148,13 @@ function startOIDCLogin() {
             </div>
 
             <!-- Error -->
-            <div v-if="loginError" class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger">
+            <div
+              v-if="loginError"
+              id="login-error"
+              class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger"
+              role="alert"
+              aria-live="assertive"
+            >
               <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
               {{ loginError }}
             </div>
@@ -184,7 +191,7 @@ function startOIDCLogin() {
             <!-- Token -->
             <form v-if="tokenFormVisible" @submit.prevent="handleTokenLogin" class="space-y-3">
               <div>
-                <label for="token" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Bearer Token</label>
+                <label for="token" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Bearer token</label>
                 <div
                   class="k-input flex items-center gap-2 px-3 py-2.5 transition-all duration-200"
                   :class="inputFocused ? 'border-accent ring-[3px] ring-accent/15' : 'border-border-default'"
@@ -196,6 +203,8 @@ function startOIDCLogin() {
                     type="password"
                     placeholder="Paste token here"
                     class="w-full bg-transparent font-mono text-[12px] text-text-primary placeholder-text-muted outline-none"
+                    :aria-describedby="loginError ? 'login-error' : undefined"
+                    :aria-invalid="loginError ? 'true' : undefined"
                     @focus="inputFocused = true"
                     @blur="inputFocused = false"
                   />
@@ -204,7 +213,8 @@ function startOIDCLogin() {
               <button
                 type="submit"
                 :disabled="!tokenInput || auth.loading"
-                class="k-btn k-btn--ghost group w-full px-4 py-2.5 text-[12px] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-30"
+                class="k-btn group w-full px-4 py-2.5 text-[12px] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-30"
+                :class="oidcAvailable ? 'k-btn--ghost' : 'k-btn--primary'"
               >
                 <Loader2
                   v-if="auth.loading"
@@ -216,7 +226,7 @@ function startOIDCLogin() {
                   class="h-3.5 w-3.5 text-text-muted group-hover:text-accent"
                   :stroke-width="1.75"
                 />
-                {{ auth.loading ? 'Signing in...' : 'Sign in with Token' }}
+                {{ auth.loading ? 'Signing in…' : 'Sign in with token' }}
               </button>
             </form>
           </div>

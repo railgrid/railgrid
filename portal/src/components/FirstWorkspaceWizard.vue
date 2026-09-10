@@ -24,7 +24,7 @@ const trimmed = computed(() => name.value.trim())
 const canSubmit = computed(() => trimmed.value.length > 0 && !busy.value && !!tenant.orgUUID)
 
 async function handleCreate() {
-  if (!canSubmit.value || !tenant.orgUUID) return
+  if (!canSubmit.value || !tenant.orgUUID || busy.value) return
   busy.value = true
   error.value = null
   try {
@@ -68,48 +68,53 @@ async function handleCreate() {
       <div class="space-y-5 rounded-xl border border-border-subtle bg-surface-raised/80 p-6 backdrop-blur">
         <div
           v-if="error"
+          id="first-workspace-error"
           class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger"
+          role="alert"
+          aria-live="assertive"
         >
           <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
           {{ error }}
         </div>
 
-        <div>
-          <label class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-            Workspace name
-          </label>
-          <input
-            v-model="name"
-            type="text"
-            placeholder="e.g. production"
-            class="k-input w-full py-2.5 font-mono text-[12px]"
-            autofocus
-            @keyup.enter="canSubmit && handleCreate()"
-          />
-          <p class="mt-1 text-[10px] text-text-muted">
-            A friendly name. The hub will allocate the underlying kcp cluster automatically.
-          </p>
-        </div>
+        <form class="space-y-5" @submit.prevent="handleCreate">
+          <div>
+            <label for="first-workspace-name" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">
+              Workspace name
+            </label>
+            <input
+              id="first-workspace-name"
+              v-model="name"
+              type="text"
+              placeholder="e.g. production"
+              class="k-input w-full py-2.5 font-mono text-[12px]"
+              :aria-describedby="error ? 'first-workspace-error first-workspace-name-hint' : 'first-workspace-name-hint'"
+              autofocus
+            />
+            <p id="first-workspace-name-hint" class="mt-1 text-[10px] text-text-muted">
+              A friendly name. The hub will allocate the underlying kcp cluster automatically.
+            </p>
+          </div>
 
-        <div class="flex items-center justify-between gap-3 pt-2">
-          <router-link
-            to="/settings/workspaces"
-            class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
-          >
-            <Settings class="h-3 w-3" :stroke-width="2" />
-            Manage workspaces in settings
-          </router-link>
-          <button
-            type="button"
-            class="k-btn k-btn--primary group px-4 py-2.5 text-[12px] disabled:pointer-events-none disabled:opacity-40"
-            :disabled="!canSubmit"
-            @click="handleCreate"
-          >
-            <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-            <span>{{ busy ? 'Creating…' : 'Create workspace' }}</span>
-            <ArrowRight v-if="!busy" class="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" :stroke-width="2" />
-          </button>
-        </div>
+          <div class="flex items-center justify-between gap-3 pt-2">
+            <router-link
+              to="/settings/workspaces"
+              class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+            >
+              <Settings class="h-3 w-3" :stroke-width="2" />
+              Manage workspaces in settings
+            </router-link>
+            <button
+              type="submit"
+              class="k-btn k-btn--primary group px-4 py-2.5 text-[12px] disabled:pointer-events-none disabled:opacity-40"
+              :disabled="!canSubmit"
+            >
+              <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+              <span>{{ busy ? 'Creating…' : 'Create workspace' }}</span>
+              <ArrowRight v-if="!busy" class="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" :stroke-width="2" />
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

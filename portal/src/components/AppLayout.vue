@@ -572,7 +572,7 @@ const contextStatus = computed<ContextStatus>(() => {
           @click="toggleNavGroup('cat:' + group.name)"
         >
           <component :is="categoryIcon(group.icon)" class="h-3 w-3 flex-shrink-0 text-text-secondary/80" :stroke-width="2" />
-          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-secondary/80">{{ group.name }}</span>
+          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-secondary">{{ group.name }}</span>
           <div class="h-px flex-1 bg-border-default/40" />
           <ChevronDown
             class="h-3 w-3 flex-shrink-0 text-text-secondary/80 transition-transform duration-200"
@@ -665,7 +665,7 @@ const contextStatus = computed<ContextStatus>(() => {
           @click="toggleNavGroup('uncat')"
         >
           <Puzzle class="h-3 w-3 flex-shrink-0 text-text-secondary/80" :stroke-width="2" />
-          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-secondary/80">Other</span>
+          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-secondary">Other</span>
           <div class="h-px flex-1 bg-border-default/40" />
           <ChevronDown
             class="h-3 w-3 flex-shrink-0 text-text-secondary/80 transition-transform duration-200"
@@ -750,7 +750,8 @@ const contextStatus = computed<ContextStatus>(() => {
       >
         <div class="flex items-center gap-1.5">
           <CircleAlert v-if="providerBindingRetryable" class="h-3 w-3 shrink-0 text-danger" :stroke-width="1.75" aria-hidden="true" />
-          <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+          <Loader2 v-else-if="providerBindingState === 'loading'" class="h-3 w-3 shrink-0 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+          <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
           <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ providerBindingStatusLabel }}</span>
           <span v-else class="sr-only">{{ providerBindingStatusLabel }}</span>
           <button
@@ -761,7 +762,8 @@ const contextStatus = computed<ContextStatus>(() => {
             :title="providerBindingState === 'loading' ? 'Refreshing provider access' : 'Retry provider access'"
             @click="retryProviderBindings"
           >
-            <RefreshCw class="h-3 w-3" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+            <Loader2 v-if="providerBindingState === 'loading'" class="h-3 w-3 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+            <RefreshCw v-else class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
             <span v-if="sidebarExpanded" class="sr-only">{{ providerBindingState === 'loading' ? 'Refreshing' : 'Retry' }}</span>
           </button>
         </div>
@@ -898,7 +900,8 @@ const contextStatus = computed<ContextStatus>(() => {
         :title="providerBindingError || providerBindingStatusLabel"
       >
         <CircleAlert v-if="providerBindingRetryable" class="h-3 w-3 shrink-0 text-danger" :stroke-width="1.75" aria-hidden="true" />
-        <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+        <Loader2 v-else-if="providerBindingState === 'loading'" class="h-3 w-3 shrink-0 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+        <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
         <span class="hidden xl:inline">{{ providerBindingStatusLabel }}</span>
         <button
           type="button"
@@ -908,7 +911,8 @@ const contextStatus = computed<ContextStatus>(() => {
           :title="providerBindingState === 'loading' ? 'Refreshing provider access' : 'Retry provider access'"
           @click="retryProviderBindings"
         >
-          <RefreshCw class="h-3 w-3" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+          <Loader2 v-if="providerBindingState === 'loading'" class="h-3 w-3 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+          <RefreshCw v-else class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
         </button>
       </div>
       <button
@@ -1092,7 +1096,8 @@ const contextStatus = computed<ContextStatus>(() => {
           :title="providerBindingError || providerBindingStatusLabel"
         >
           <CircleAlert v-if="providerBindingRetryable" class="h-3 w-3 shrink-0 text-danger" :stroke-width="1.75" aria-hidden="true" />
-          <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+          <Loader2 v-else-if="providerBindingState === 'loading'" class="h-3 w-3 shrink-0 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+          <RefreshCw v-else class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
           <span class="hidden 2xl:inline">{{ providerBindingStatusLabel }}</span>
           <button
             type="button"
@@ -1102,7 +1107,8 @@ const contextStatus = computed<ContextStatus>(() => {
             :title="providerBindingState === 'loading' ? 'Refreshing provider access' : 'Retry provider access'"
             @click="retryProviderBindings"
           >
-            <RefreshCw class="h-3 w-3" :class="providerBindingState === 'loading' ? 'animate-spin' : ''" :stroke-width="1.75" aria-hidden="true" />
+            <Loader2 v-if="providerBindingState === 'loading'" class="h-3 w-3 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+            <RefreshCw v-else class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
           </button>
         </div>
         <button

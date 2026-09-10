@@ -67,12 +67,14 @@ function onWorkspaceChange(e: Event) {
 
 <template>
   <div class="tenant-switcher flex flex-col gap-1 px-2 py-2 border-b border-border-default/40">
-    <label class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">
+    <label for="tenant-switcher-organization" class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">
       Organization
     </label>
     <select
+      id="tenant-switcher-organization"
       class="k-input w-full px-2 py-1 text-[11px]"
       :value="tenant.orgUUID ?? ''"
+      :aria-describedby="tenant.error ? 'tenant-switcher-error' : undefined"
       :disabled="tenant.loading || tenant.orgs.length === 0"
       @change="onOrgChange"
     >
@@ -82,12 +84,14 @@ function onWorkspaceChange(e: Event) {
       </option>
     </select>
 
-    <label class="mt-2 text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">
+    <label for="tenant-switcher-workspace" class="mt-2 text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">
       Workspace
     </label>
     <select
+      id="tenant-switcher-workspace"
       class="k-input w-full px-2 py-1 text-[11px]"
       :value="tenant.workspaceUUID ?? ''"
+      :aria-describedby="tenant.error ? 'tenant-switcher-error' : undefined"
       :disabled="
         tenant.loading ||
         !tenant.orgUUID ||
@@ -112,7 +116,10 @@ function onWorkspaceChange(e: Event) {
 
     <p
       v-if="tenant.error"
+      id="tenant-switcher-error"
       class="mt-1 text-[10px] text-error"
+      role="alert"
+      aria-live="polite"
     >
       {{ tenant.error }}
     </p>

@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { confirmDialog } from '@/portalkit/confirm'
+import { toast } from '@/portalkit/toast'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
+import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { providerBindingAction } from '@/lib/providerBindingAction'
 import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
+const tenant = useTenantStore()
 
 // Two views of the same catalog: what you can turn on ("Catalog"), and what you
 // can run yourself ("Self-Hosting"). They are separate tabs rather than one list
@@ -28,10 +31,12 @@ const tabs: { key: Tab; label: string }[] = [
 const activeRegistration = ref<OrgProviderRegistration | null>(null)
 const selfHostBusy = ref<Record<string, boolean>>({})
 const selfHostError = ref<string | null>(null)
+let selfHostRequestGeneration = 0
 
 // Which cluster a new self-hosted provider goes into. Keyed "workspace/name"
 // so it survives a reload of the target list by value rather than identity.
 const selectedEdgeKey = ref<string>('')
+const selfHostPending = computed(() => Object.values(selfHostBusy.value).some(Boolean))
 
 const eligibleEdges = computed(() => orgProviders.eligibleInstallTargets)
 
@@ -46,6 +51,10 @@ const selectedEdge = computed(() => {
 
 function edgeLabel(t: { workspace: string; workspaceDisplayName?: string; name: string }): string {
   return `${t.name} · ${t.workspaceDisplayName || t.workspace}`
+}
+
+function edgeKey(t: { workspace: string; name: string }): string {
+  return `${t.workspace}/${t.name}`
 }
 
 // canSelfHost is the single gate. A provider cannot be installed into a cluster
@@ -82,20 +91,42 @@ function bindingAction(p: ProviderDTO) {
 }
 
 async function selfHost(p: ProviderDTO) {
+  if (!canSelfHost.value) {
+    selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
+    return
+  }
   const edge = selectedEdge.value
   if (!edge) {
     selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
     return
   }
+  if (selfHostBusy.value[p.name]) return
+  const requestGeneration = ++selfHostRequestGeneration
+  const targetScope = dialogScope.value
+  const targetEdgeKey = edgeKey(edge)
   selfHostError.value = null
+  activeRegistration.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [p.name]: true }
   try {
     // Same name as the platform provider: the chart registers its CatalogEntry
     // under its own name, and the org's copy shadows the platform one for this
     // org only.
-    activeRegistration.value = await orgProviders.register(p.name, p.name, edge)
+    const registration = await orgProviders.register(p.name, p.name, edge)
+    // The registration response belongs to the org and edge captured above.
+    // Ignore it when either changed while the hub was processing the request;
+    // otherwise an old credential/instructions panel can appear in the new
+    // context or after the user chose a different install target.
+    if (
+      requestGeneration === selfHostRequestGeneration &&
+      dialogScope.value === targetScope &&
+      selectedEdge.value && edgeKey(selectedEdge.value) === targetEdgeKey
+    ) {
+      activeRegistration.value = registration
+    }
   } catch (e) {
-    selfHostError.value = e instanceof Error ? e.message : String(e)
+    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+      selfHostError.value = e instanceof Error ? e.message : String(e)
+    }
     // The hub is authoritative on eligibility and its answer may have changed
     // under us (an agent dropping between page load and click). Re-check so the
     // buttons reflect reality instead of failing the same way again.
@@ -106,31 +137,51 @@ async function selfHost(p: ProviderDTO) {
 }
 
 async function showInstructions(name: string) {
+  if (selfHostBusy.value[name]) return
+  const requestGeneration = ++selfHostRequestGeneration
+  const targetScope = dialogScope.value
   selfHostError.value = null
+  activeRegistration.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
   try {
-    activeRegistration.value = await orgProviders.instructions(name)
+    const registration = await orgProviders.instructions(name)
+    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+      activeRegistration.value = registration
+    }
   } catch (e) {
-    selfHostError.value = e instanceof Error ? e.message : String(e)
+    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+      selfHostError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
     selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
   }
 }
 
 async function removeSelfHosted(name: string) {
+  const targetOrgUUID = tenant.orgUUID
+  const targetScope = dialogScope.value
   if (!(await confirmDialog({
     title: `Remove self-hosted "${name}"?`,
     message: 'This deletes its workspace and everything in it, including its API. Workspaces that enabled it will stop working until you disable it there.',
     confirmLabel: 'Remove',
     danger: true,
   }))) return
+  // Confirmation is asynchronous. Do not apply a destructive action to a
+  // same-named provider after the user has switched organizations or scope.
+  if (tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+  const requestGeneration = ++selfHostRequestGeneration
   selfHostError.value = null
+  if (activeRegistration.value?.provider.name === name) activeRegistration.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
   try {
     await orgProviders.remove(name)
-    if (activeRegistration.value?.provider.name === name) activeRegistration.value = null
+    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope && activeRegistration.value?.provider.name === name) {
+      activeRegistration.value = null
+    }
   } catch (e) {
-    selfHostError.value = e instanceof Error ? e.message : String(e)
+    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+      selfHostError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
     selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
   }
@@ -267,6 +318,10 @@ const actionError = ref<string | null>(null)
 // when closed. The user reviews permission claims here before the APIBinding
 // is actually POSTed.
 const dialogProvider = ref<ProviderDTO | null>(null)
+const dialogRevision = ref(0)
+const dialogScope = computed(
+  () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
+)
 
 // Always refetch on mount. The store's initial load happens at app boot
 // (App.vue), but new CatalogEntry installs are common while the portal is
@@ -282,25 +337,64 @@ onMounted(() => {
 })
 
 function openEnableDialog(p: ProviderDTO) {
+  if (busy.value[p.name]) return
   actionError.value = null
   const missing = providers.missingDependencies(p)
   if (missing.length > 0) {
     actionError.value = `${p.displayName} requires ${providers.dependencyLabels(missing).join(', ')} to be enabled first.`
     return
   }
+  dialogRevision.value += 1
   dialogProvider.value = p
 }
 
+function closeEnableDialog() {
+  dialogRevision.value += 1
+  dialogProvider.value = null
+  actionError.value = null
+}
+
+watch(dialogScope, () => {
+  // Provider enables are fenced by the store, but a context switch can happen
+  // while the request is waiting on the hub. Close the old consent surface so
+  // its eventual result cannot be applied to the new workspace.
+  if (dialogProvider.value) closeEnableDialog()
+  selfHostRequestGeneration += 1
+  activeRegistration.value = null
+  selfHostError.value = null
+})
+
+watch(selectedEdgeKey, () => {
+  // Install instructions are target-specific. Hide an old response as soon
+  // as the target changes and fence any request still in flight.
+  selfHostRequestGeneration += 1
+  activeRegistration.value = null
+  selfHostError.value = null
+})
+
 async function onDialogConfirm(accept: PermissionClaim[]) {
   const p = dialogProvider.value
-  if (!p) return
+  const revision = dialogRevision.value
+  const scope = dialogScope.value
+  if (!p || busy.value[p.name]) return
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
     await providers.enable(p, accept)
-    dialogProvider.value = null
+    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
+      closeEnableDialog()
+    }
   } catch (e) {
-    actionError.value = e instanceof Error ? e.message : String(e)
+    const message = e instanceof Error ? e.message : String(e)
+    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
+      actionError.value = message
+    } else if (dialogScope.value === scope) {
+      toast('error', `Could not enable ${p.displayName}: ${message}`, {
+        scope,
+        source: 'provider-enable',
+        dedupeKey: `provider-enable:${p.name}`,
+      })
+    }
   } finally {
     const next = { ...busy.value }
     delete next[p.name]
@@ -309,6 +403,7 @@ async function onDialogConfirm(accept: PermissionClaim[]) {
 }
 
 async function onDisable(p: ProviderDTO) {
+  if (busy.value[p.name]) return
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
@@ -402,6 +497,8 @@ function dependencyNotice(p: ProviderDTO): string {
         <div
           v-if="selfHostError"
           class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2"
+          role="alert"
+          aria-live="assertive"
         >
           <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
           <span>{{ selfHostError }}</span>
@@ -424,7 +521,8 @@ function dependencyNotice(p: ProviderDTO): string {
               :disabled="orgProviders.installTargetsLoading"
               @click="orgProviders.loadInstallTargets"
             >
-              <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': orgProviders.installTargetsLoading }" :stroke-width="2" />
+              <Loader2 v-if="orgProviders.installTargetsLoading" class="h-3 w-3 animate-spin" :stroke-width="2" />
+              <RefreshCw v-else class="h-3 w-3" :stroke-width="2" />
               Retry check
             </button>
             <router-link
@@ -464,6 +562,7 @@ function dependencyNotice(p: ProviderDTO): string {
             id="self-host-edge"
             v-model="selectedEdgeKey"
             class="k-input w-auto px-2 py-1 text-[11px]"
+            :disabled="selfHostPending"
           >
             <option v-for="t in eligibleEdges" :key="`${t.workspace}/${t.name}`" :value="`${t.workspace}/${t.name}`">
               {{ edgeLabel(t) }}
@@ -667,17 +766,21 @@ function dependencyNotice(p: ProviderDTO): string {
         <div class="mb-4 flex flex-wrap items-center gap-3">
           <div class="relative w-full sm:w-80 sm:max-w-full">
             <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+            <label for="provider-catalog-search" class="sr-only">Search providers</label>
             <input
+              id="provider-catalog-search"
               v-model="search"
               type="search"
+              aria-label="Search providers"
               placeholder="Search providers…"
               class="k-input w-full bg-surface-raised/60 py-1.5 pl-8 pr-3 text-sm"
             />
           </div>
-          <div class="flex flex-wrap items-center gap-1.5">
+          <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter providers by category">
             <button
               type="button"
               class="k-btn k-btn--ghost rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors"
+              :aria-pressed="selectedCategory === null"
               :class="
                 selectedCategory === null
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -692,6 +795,7 @@ function dependencyNotice(p: ProviderDTO): string {
               :key="chip.name"
               type="button"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors"
+              :aria-pressed="selectedCategory === chip.name"
               :class="
                 selectedCategory === chip.name
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -921,7 +1025,9 @@ function dependencyNotice(p: ProviderDTO): string {
 
     <ProviderEnableDialog
       :provider="dialogProvider"
-      @cancel="dialogProvider = null"
+      :busy="dialogProvider ? !!busy[dialogProvider.name] : false"
+      :error="dialogProvider ? actionError : null"
+      @cancel="closeEnableDialog"
       @confirm="onDialogConfirm"
     />
   </AppLayout>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { Copy, Check, Download, AlertTriangle, ExternalLink, ChevronRight, ArrowUpCircle } from 'lucide-vue-next'
 import type { OrgProviderRegistration } from '@/stores/orgProviders'
@@ -15,6 +15,20 @@ const props = defineProps<{ registration: OrgProviderRegistration }>()
 
 const revealed = ref(false)
 const copied = ref<string | null>(null)
+const copyError = ref<string | null>(null)
+const valuesDocOpen = ref(false)
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null
+
+function resetTransientState() {
+  revealed.value = false
+  copied.value = null
+  copyError.value = null
+  valuesDocOpen.value = false
+  if (copyResetTimer) {
+    clearTimeout(copyResetTimer)
+    copyResetTimer = null
+  }
+}
 
 // The values the hub could not resolve — the only ones worth listing, since
 // everything else is already correct in the command above.
@@ -41,24 +55,41 @@ md.renderer.rules.link_open = (tokens, i, options, env, self) => {
   return defaultLinkOpen ? defaultLinkOpen(tokens, i, options, env, self) : self.renderToken(tokens, i, options)
 }
 
-const valuesDocOpen = ref(false)
 const valuesDocHTML = computed(() => {
   const doc = props.registration.instructions?.valuesDoc
   return doc ? md.render(doc) : ''
 })
 
+// Registration responses contain a one-time credential. Clear all transient
+// disclosure and copy state when the active registration is replaced so a
+// previous provider's credential cannot remain revealed or appear copied.
+watch(() => props.registration, resetTransientState)
+
 async function copy(key: string, value: string) {
+  const registration = props.registration
+  copyError.value = null
   try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
     await navigator.clipboard.writeText(value)
+    if (props.registration !== registration) return
     copied.value = key
-    setTimeout(() => {
+    if (copyResetTimer) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => {
       if (copied.value === key) copied.value = null
     }, 1500)
   } catch {
-    // Clipboard can be blocked (insecure context, permissions). The text is
-    // on screen and selectable, so failing silently is better than an alert.
+    if (props.registration !== registration) return
+    // Clipboard can be blocked (insecure context, permissions). Keep the
+    // recovery action explicit without echoing the credential in the message.
+    copyError.value = key === 'kubeconfig'
+      ? 'Copy failed. Use Download, or choose Show and copy the credential manually.'
+      : 'Copy failed. Select the command and copy it manually.'
   }
 }
+
+onBeforeUnmount(() => {
+  if (copyResetTimer) clearTimeout(copyResetTimer)
+})
 
 function downloadKubeconfig() {
   const name = props.registration.instructions?.kubeconfigFilename
@@ -75,6 +106,16 @@ function downloadKubeconfig() {
 
 <template>
   <div class="space-y-4">
+    <p
+      v-if="copyError"
+      class="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning"
+      role="status"
+      aria-live="polite"
+    >
+      <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+      <span>{{ copyError }}</span>
+    </p>
+
     <!-- Upgrade, shown first and only when one is due. A running install needs
          none of the steps below — the namespace, credential Secret, and values
          all survive from the original install — so the one command is the whole
@@ -235,6 +276,8 @@ function downloadKubeconfig() {
         <button
           type="button"
           class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-none border-0 p-4 text-left"
+          aria-controls="self-host-values-doc"
+          :aria-expanded="valuesDocOpen"
           @click="valuesDocOpen = !valuesDocOpen"
         >
           <ChevronRight
@@ -251,7 +294,12 @@ function downloadKubeconfig() {
         </button>
         <!-- eslint-disable-next-line vue/no-v-html -- markdown-it runs with
              html:false, so the output contains no author-supplied markup. -->
-        <div v-if="valuesDocOpen" class="chart-doc px-4 pb-4" v-html="valuesDocHTML" />
+        <div
+          v-if="valuesDocOpen"
+          id="self-host-values-doc"
+          class="chart-doc px-4 pb-4"
+          v-html="valuesDocHTML"
+        />
       </section>
 
       <a

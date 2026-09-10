@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { consumeAppAccessNext } from '@/auth/appAccessNext'
 import { parseClusterName } from '@/auth/token'
 import type { LoginResponse, StoredAuth } from '@/auth/types'
-import { AlertCircle, ArrowLeft, Hexagon } from 'lucide-vue-next'
+import { AlertCircle, ArrowLeft, Loader2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -63,12 +63,24 @@ onMounted(() => {
       <div class="absolute -top-40 left-1/2 h-96 w-[500px] -translate-x-1/2 rounded-full bg-accent/5 blur-[160px]" />
     </div>
 
-    <div v-if="error" class="relative rounded-xl border border-border-default shadow-sm">
-      <div class="rounded-xl border border-border-subtle bg-surface-raised/80 p-8 text-center backdrop-blur">
+    <div
+      v-if="error"
+      class="relative mx-4 w-full max-w-md rounded-xl border border-border-default shadow-sm"
+      role="alert"
+      aria-live="assertive"
+      aria-labelledby="auth-callback-error-title"
+      aria-describedby="auth-callback-error-detail"
+    >
+      <div class="rounded-xl border border-border-subtle bg-surface-raised/80 p-6 text-center backdrop-blur sm:p-8">
         <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-full border border-danger/20 bg-danger-subtle">
           <AlertCircle class="h-5 w-5 text-danger" :stroke-width="1.75" />
         </div>
-        <p class="mt-3 text-[13px] text-text-secondary">{{ error }}</p>
+        <h1 id="auth-callback-error-title" class="mt-4 text-[15px] font-semibold text-text-primary">
+          Sign-in could not be completed
+        </h1>
+        <p id="auth-callback-error-detail" class="mt-3 max-h-48 overflow-y-auto break-words text-left text-[13px] text-text-secondary">
+          {{ error }}
+        </p>
         <router-link
           to="/login"
           class="mt-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-accent transition-colors hover:text-accent-hover"
@@ -79,14 +91,12 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-else class="relative flex flex-col items-center gap-5">
-      <div class="relative flex h-16 w-16 items-center justify-center">
-        <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
-        <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
-          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="1.5" />
-        </div>
+    <div v-else class="relative flex flex-col items-center gap-4" role="status" aria-live="polite" aria-busy="true">
+      <Loader2 class="h-7 w-7 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+      <div class="text-center">
+        <h1 class="text-[15px] font-semibold text-text-primary">Completing sign in</h1>
+        <p class="mt-1 max-w-xs text-[12px] text-text-muted">Verifying your session and preparing your workspace.</p>
       </div>
-      <span class="text-[12px] text-text-muted">Completing sign in...</span>
     </div>
   </div>
 </template>

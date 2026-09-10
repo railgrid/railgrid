@@ -55,7 +55,7 @@ async function refresh() {
 
 async function create() {
   const name = newName.value.trim()
-  if (!name) return
+  if (!name || busy.value) return
   busy.value = true
   actionError.value = null
   try {
@@ -124,36 +124,36 @@ async function remove(name: string) {
       Secret. Deleting it triggers full teardown.
     </p>
 
-    <div class="mb-4 flex flex-wrap items-end gap-2">
+    <form class="mb-4 flex flex-wrap items-end gap-2" @submit.prevent="create">
       <div>
-        <label class="block text-[11px] text-text-muted">Name</label>
+        <label for="admin-provider-name" class="block text-[11px] text-text-muted">Name</label>
         <input
+          id="admin-provider-name"
           v-model="newName"
           placeholder="e.g. code"
           class="k-input mt-1 w-48 font-mono text-sm"
-          @keyup.enter="create"
+          required
         />
       </div>
       <div>
-        <label class="block text-[11px] text-text-muted">Display name (optional)</label>
+        <label for="admin-provider-display-name" class="block text-[11px] text-text-muted">Display name (optional)</label>
         <input
+          id="admin-provider-display-name"
           v-model="newDisplayName"
           placeholder="e.g. Code"
           class="k-input mt-1 w-56 text-sm"
-          @keyup.enter="create"
         />
       </div>
       <button
-        type="button"
+        type="submit"
         class="k-btn k-btn--primary px-3 py-1.5 text-sm disabled:opacity-50"
         :disabled="busy || !newName.trim()"
-        @click="create"
       >
         <Plus class="h-4 w-4" :stroke-width="1.75" />
-        Create Provider
+        {{ busy ? 'Creating provider…' : 'Create provider' }}
       </button>
-    </div>
-    <p v-if="actionError" class="mb-2 text-sm text-danger">{{ actionError }}</p>
+    </form>
+    <p v-if="actionError" class="mb-2 text-sm text-danger" role="alert" aria-live="assertive">{{ actionError }}</p>
 
     <ResourceTable
       :columns="columns"

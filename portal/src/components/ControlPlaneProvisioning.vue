@@ -24,18 +24,17 @@ bootstrapState to 'ready'; until then App.vue mounts this full-screen
 overlay so the user sees "creating your control plane" instead of an
 empty, cluster-less shell that errors on every query.
 
-Purely presentational — the polling and state live in the tenant store.
-The step list is cosmetic, advancing off the poll-attempt count so the
-screen feels alive while the controller chain runs.
+Purely presentational — the polling and readiness state live in the tenant
+store. This surface does not infer progress from elapsed polls: until the
+store reports readiness, every setup item remains indeterminate.
 -->
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Hexagon, Check, Loader2, Building2, Boxes, KeyRound, Sparkles } from 'lucide-vue-next'
+import { Loader2, Building2, Boxes, KeyRound, Sparkles } from 'lucide-vue-next'
 
-// attempts = the tenant store's poll counter (~one every 2s). Used only
-// to walk the cosmetic step list and to surface a "taking longer than
-// usual" note once we pass the typical cold-start budget.
+// attempts = the tenant store's poll counter (~one every 2s). It may only
+// change the delay guidance; it is not evidence that any setup step completed.
 const props = withDefaults(defineProps<{ attempts?: number }>(), { attempts: 0 })
 
 interface Step {
@@ -49,11 +48,6 @@ const steps: Step[] = [
   { label: 'Finalizing control plane', icon: Sparkles },
 ]
 
-// Walk one step roughly every ~4s (2 polls). Clamp to the last step so
-// the final item keeps spinning until the store flips us to 'ready' and
-// App.vue unmounts the overlay.
-const activeStep = computed(() => Math.min(Math.floor(props.attempts / 2), steps.length - 1))
-
 // The hub's bootstrap chain is ~10-25s; past ~30s of polling we nudge
 // the user that it's taking longer than usual rather than leave them
 // staring at an indeterminate spinner.
@@ -61,7 +55,7 @@ const overBudget = computed(() => props.attempts >= 15)
 </script>
 
 <template>
-  <div class="contour-grid fixed inset-0 z-[200] flex items-center justify-center bg-surface">
+  <div class="contour-grid fixed inset-0 z-[200] flex items-center justify-center bg-surface" aria-busy="true">
     <!-- Ambient glow, matching the login / auth-callback takeovers -->
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute -top-40 left-1/2 h-96 w-[500px] -translate-x-1/2 rounded-full bg-accent/5 blur-[160px]" />
@@ -69,52 +63,39 @@ const overBudget = computed(() => props.attempts >= 15)
     </div>
 
     <div class="relative flex w-full max-w-md flex-col items-center px-6">
-      <!-- Pulsing hex mark -->
+      <!-- Setup activity mark -->
       <div class="relative flex h-16 w-16 items-center justify-center">
         <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
         <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
-          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="1.5" />
+          <Loader2 class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="1.5" aria-hidden="true" />
         </div>
       </div>
 
       <h1 class="mt-6 text-center text-[18px] font-bold tracking-tight text-text-primary">
         Creating your control plane
       </h1>
-      <p class="mt-1.5 text-center text-[12px] text-text-muted">
+      <p class="mt-1.5 text-center text-[12px] text-text-muted" role="status" aria-live="polite">
         Setting up your organization and first workspace. This is a one-time setup
         and usually takes a few seconds.
       </p>
 
-      <!-- Step list -->
+      <!-- Step list. These are the controller's work areas, not a progress
+           indicator. Completion is shown only when the tenant store unmounts
+           this overlay after an authoritative readiness result. -->
       <div class="mt-7 w-full rounded-xl border border-border-default shadow-sm">
         <ul class="space-y-1 rounded-xl border border-border-subtle bg-surface-raised/80 p-3 backdrop-blur">
           <li
-            v-for="(step, i) in steps"
+            v-for="step in steps"
             :key="step.label"
             class="flex items-center gap-3 rounded-xl px-3 py-2 transition-colors"
-            :class="i === activeStep ? 'bg-surface-overlay/60' : ''"
           >
-            <!-- State glyph: done / active / pending -->
+            <!-- No item is marked complete from timing alone. -->
             <span
-              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border"
-              :class="i < activeStep
-                ? 'border-success/30 bg-success-subtle text-success'
-                : i === activeStep
-                  ? 'border-accent/30 bg-accent/10 text-accent'
-                  : 'border-border-default/40 bg-surface-overlay/40 text-text-muted/40'"
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-border-default/40 bg-surface-overlay/40 text-text-secondary"
             >
-              <Check v-if="i < activeStep" class="h-3.5 w-3.5" :stroke-width="2.5" />
-              <Loader2 v-else-if="i === activeStep" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-              <component :is="step.icon" v-else class="h-3.5 w-3.5" :stroke-width="2" />
+              <component :is="step.icon" class="h-3.5 w-3.5" :stroke-width="2" />
             </span>
-            <span
-              class="text-[12px] font-medium"
-              :class="i < activeStep
-                ? 'text-text-secondary'
-                : i === activeStep
-                  ? 'text-text-primary'
-                  : 'text-text-muted/50'"
-            >
+            <span class="text-[12px] font-medium text-text-secondary">
               {{ step.label }}
             </span>
           </li>

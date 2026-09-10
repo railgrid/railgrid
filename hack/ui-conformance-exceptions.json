@@ -400,7 +400,7 @@
     {
       "rule": "pill-radius",
       "path": "portal/src/components/ControlPlaneProvisioning.vue",
-      "line": 67,
+      "line": 61,
       "column": 77,
       "match": "rounded-full",
       "reference": "design.quality.exceptions",

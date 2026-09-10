@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.foundations.typography","title":"Violet Circuit typography","kind":"token","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Fonts are self-hosted in the host, while standalone fixed-dark Dex pages embed only their actual Instrument Sans and IBM Plex Mono faces."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/typography.md#typography","role":"design"},{"path":"portal/src/main.ts","role":"implementation"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/dex/web/static/fonts","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[]}
+{"schema":1,"id":"design.foundations.typography","title":"Violet Circuit typography","kind":"token","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Fonts are self-hosted in the host, while standalone fixed-dark Dex pages embed only their actual Instrument Sans and IBM Plex Mono faces; status documents use a self-contained system-font fallback."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/typography.md#typography","role":"design"},{"path":"portal/src/main.ts","role":"implementation"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/dex/web/static/fonts","role":"implementation"},{"path":"provider-sdk/statuspage/statuspage.go","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[]}
 ---
 
 # Typography
@@ -18,6 +18,13 @@ Instrument Sans Variable (weight range 400–700) for sans copy and IBM Plex Mon
 (400, 600, and 700) for technical labels and values. Dex does not embed or
 declare Archivo, so the portal's `font-display` role does not apply there. No
 other faces and no CDN fonts are allowed.
+
+Standalone status documents rendered by `provider-sdk/statuspage` are a separate
+fixed-dark exception. They use the CSS system-font stack (`ui-sans-serif`,
+`system-ui`, and monospace fallbacks), with no embedded or external font assets;
+this keeps the self-contained auth/callback document usable under its caller's
+existing CSP. This exception does not change Dex's self-hosted Instrument Sans
+and IBM Plex Mono contract.
 
 The dense scale is explicit: `text-[9px]`–`text-[10px]` for eyebrows, section
 labels, and badges (uppercase, tracked, weight 600); `text-[11px]` for nav

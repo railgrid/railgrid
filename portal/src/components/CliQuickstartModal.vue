@@ -11,6 +11,9 @@ useEscapeKey(() => emit('close'))
 const dialogRef = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 let previousFocus: HTMLElement | null = null
+const copiedField = ref<string | null>(null)
+const copyError = ref<string | null>(null)
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return
@@ -37,6 +40,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  if (copyResetTimer) clearTimeout(copyResetTimer)
   const target = previousFocus
   previousFocus = null
   nextTick(() => target?.isConnected && target.focus())
@@ -92,13 +96,19 @@ const verifySnippet = computed(
   () => `${cliBinary.value} edge list`,
 )
 
-const copiedField = ref<string | null>(null)
 async function copy(text: string, field: string) {
+  copyError.value = null
   try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
     await navigator.clipboard.writeText(text)
     copiedField.value = field
-    setTimeout(() => (copiedField.value = null), 2000)
-  } catch {}
+    if (copyResetTimer) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => {
+      if (copiedField.value === field) copiedField.value = null
+    }, 2000)
+  } catch {
+    copyError.value = 'Copy failed. Select the command and copy it manually.'
+  }
 }
 
 const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
@@ -143,6 +153,14 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
               The <span class="font-mono text-text-secondary">faros</span> CLI talks to this hub at
               <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
               Once installed, log in once and your kubeconfig will be updated automatically.
+            </p>
+            <p
+              v-if="copyError"
+              class="mt-3 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning"
+              role="status"
+              aria-live="polite"
+            >
+              {{ copyError }}
             </p>
           </div>
 

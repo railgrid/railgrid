@@ -22,6 +22,7 @@ import {
   Check,
   ChevronDown,
   FolderTree,
+  Loader2,
   RefreshCw,
   Search,
   Settings2,
@@ -560,7 +561,7 @@ onMounted(() => { void ensureContextLoaded() })
             </button>
           </div>
           <div v-if="orgRefreshing && hasCachedOrgRows" class="flex items-start gap-2 border-b border-border-subtle px-3 py-2 text-[10px] text-text-secondary" role="status" aria-live="polite">
-            <RefreshCw class="mt-px h-3 w-3 shrink-0 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+            <Loader2 class="mt-px h-3 w-3 shrink-0 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
             <span>Refreshing organizations; workspace switching is paused until verification succeeds.</span>
           </div>
           <div v-if="orgRefreshFailed" class="flex flex-col items-center gap-2 border-b border-border-subtle px-3 py-3 text-center text-[10px] text-warning" role="alert" aria-live="assertive">
