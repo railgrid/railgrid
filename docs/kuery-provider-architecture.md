@@ -101,8 +101,11 @@ Host = apiurl.EdgeProxyURL(hubBase, cluster, edgeName, "k8s")
 ```
 
 — the exact pattern `pkg/virtual/builder/mcp_provider.go` already uses for the kubernetes
-MCP tools — wraps it in a controller-runtime `cluster.Cluster`, and `Engage`s it into
-kuery's sync controller under the name `{tenantCluster}/{edgeName}`. Kuery's discovery +
+MCP tools — authenticating as the workspace-local `faros-kuery` ServiceAccount the
+engagement controller provisions in that tenant (see "Edges-proxy authorization" below
+for why it is not the provider SA), wraps it in a controller-runtime `cluster.Cluster`,
+and `Engage`s it into kuery's sync controller under the name `{tenantCluster}/{edgeName}`.
+Kuery's discovery +
 dynamic informers then stream the edge's objects through the existing reverse tunnel into
 the local store. On Edge disconnect/delete the controller `Disengage`s; kuery's GC handles
 stale-cluster and stale-object cleanup (TTL-based).
@@ -216,6 +219,28 @@ cluster). Extend authorize() the same way:
 - Disable deletes both. Out-of-band APIBindings (kubectl) don't get the grant in v1; a
   reconciling binding-watcher can come later if needed.
 - v1 grants all edges in the workspace; `resourceNames` gives per-edge narrowing later.
+
+**What actually ships (Sept 2026 correction).** The foreign-SA half above does not work
+through the production hub: the edges provider posts the TokenReview to the *reviewed*
+token's home cluster with its *own* credential, and the hub's kcp proxy
+(`pkg/server/proxy/proxy.go` `serveServiceAccount`) pins every SA caller to the caller's
+own workspace by prepending `/clusters/{callerHome}`. The review lands on
+`/clusters/{edges}/clusters/{kuery}/.../tokenreviews`, kcp answers 404, the edges proxy
+answers 403, and every engage fails with `discovery failed ... Forbidden`. The e2e that
+covers the branch probes with the edges provider's own SA, whose home equals the
+caller's, so the rewrite is a no-op there. Kuery therefore dials the edgeproxy as the
+per-workspace `faros-kuery` ServiceAccount it already provisions for edge discovery
+(`engagement/controller.go` `edgeProxyConfig`). That token is issued in the consumer
+workspace, so the edges proxy takes its native path — TokenReview and SAR through the
+APIExport VW, the same as edge-agent and delegated `faros-du-*` tokens — and a separate
+`faros-kuery-edgeproxy` ClusterRole + binding grants that SA verb `proxy` on
+`kubernetesclusters` (the same per-edge grant shape the edges provider writes for its
+agents). It is a separate, created object rather than a verb on the identity's own role
+because kuery claims only get/list/watch/create on clusterroles and a claim on an existing
+APIBinding is never widened, so the identity role cannot be updated in workspaces enabled
+before the grant existed; a new object lands everywhere on the next reconcile
+(`tenantaccess.EnsureGrant`). The Enable-time grant for the provider SA stays as the
+consent artifact and for any provider-SA path that does not cross workspaces.
 
 Runtime properties: the SAR runs once per proxied request, and kuery's watches are
 long-lived streams — one TokenReview+SAR per watch (re)establishment, negligible.

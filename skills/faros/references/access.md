@@ -17,7 +17,7 @@ else `~/.kube/config`). Everything else is per command.
 | `kubeconfig edge <name>` | `-o/--output`, `--insecure-skip-tls-verify` | Emits a one-context kubeconfig `<name>-edge` whose server is the edge's hub proxy URL and whose user is your current `faros` authInfo. |
 | `edge create <name>` | `--type kubernetes\|server`, `--labels k=v,…` | Creates a `KubernetesCluster` or `LinuxServer`, waits up to 30 s for `status.joinToken`, prints the join guide (helm install, `faros agent join`, `faros agent run`). |
 | `edge list` (also `faros list`, `faros ls`) | | `NAME TYPE PHASE CONNECTED AGENT VERSION AGE` |
-| `edge get <name>` | | Name, type, phase, connected, hostname, workspace URL, labels |
+| `edge get <name>` | | Name, phase, connected, created, labels. Type, hostname and workspace URL print as `-` on current builds; `edge list` shows the type |
 | `edge join-command <name>` | `--insecure-skip-tls-verify` | Reprint the join guide |
 | `edge upgrade <name>` | | Prints helm upgrade or binary replace instructions when the agent is behind the CLI |
 | `edge delete <name>` | | Irreversible |

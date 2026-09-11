@@ -120,9 +120,12 @@ from the project name),
 
 **`phase` is not the readiness gate for committing.** A newly created project
 returns `phase: Ready` while its `Repository` is still being reconciled. That
-window reports `repository.status: Provisioning` with
-`Creating repository "<name>".` (while the reconciler finalizer
-`ai.faros.sh/instances` is absent, or for 10 minutes after creation).
+window reports `repository.status: Provisioning` (sometimes with the message
+`Creating repository "<name>".`, sometimes with no message at all) while the
+reconciler finalizer `ai.faros.sh/instances` is absent, or for 10 minutes
+after creation. If it lasts more than ~2 min and the `Repository` CR has no
+`status` at all, the code provider is not reconciling
+([troubleshooting.md](troubleshooting.md)).
 `RepositoryMissing` means the CR existed and is gone. A
 `code__commit_files` issued in that window fails with
 `repository "<name>" not found`, which reads like a wrong `repositoryRef` and
@@ -198,7 +201,10 @@ schedules a dev sync, like an assistant edit.
 Other paths that change files: assistant tools (`create_file`,
 `replace_file`, `edit_file`, `delete_file`, `move_file`, `import_attachment`,
 `download_file`), hydrate, restore, scaffold. Hydrate writes files but does
-**not** mark them for re-commit; scaffold and restore do. Restore does
+**not** mark them for re-commit and does **not** delete workspace files the
+ref no longer has (a commit that removed `index.html` leaves it in the
+workspace and the sandbox; `DELETE files/content` it yourself); scaffold and
+restore do mark files. Restore does
 not fail when the checkout skipped paths; it returns them in `skipped` and
 is meant to keep their workspace copies. Ambiguous: the code
 passes the checkout's skip entries verbatim, and those carry reason suffixes
@@ -226,6 +232,9 @@ you use the infrastructure data plane's `exec` on `<project>-dev` directly
 MCP `infrastructure__dev_exec`).
 `sync-development` returns `{result: {<component>: {phase, changed, restarted, sourceRevision, sourceDigest, skipped?: [{path, reason}]}}}` — `reason` is `binary-unsupported` (the agent lacks base64 sync), `too-large` (over the per-file limit) or `sync-limit` (over the sync's total size or file count); `skipped` is present only when something was skipped. Runtime
 mutations such as `npm install` inside the sandbox are not synced back.
+Against a still-empty workspace (a `worker` project before its first commit)
+`sync-development` can answer a Cloudflare 502 `origin_bad_gateway`: the
+sandbox has nothing to run yet; commit or hydrate first.
 
 Mixing syncs: the dev agent stamps a revision on plain syncs too (`faros sandbox sync` uses Unix-seconds revisions), which can
 put the agent's applied revision ahead of App Studio's FileStore revision. On
@@ -252,7 +261,7 @@ GET        /api/projects/{p}/assistant/threads/{t}/items          ?limit&beforeS
 GET        /api/projects/{p}/assistant/threads/{t}/events         SSE; replays from sequence 1 unless Last-Event-ID; ends after turn.completed; closing does not cancel
 POST       /api/projects/{p}/assistant/threads/{t}/turns          {content,clientUserMessageID,modelID?,collaborationMode default|plan (case-insensitive),skills?[],contextResources?[],contentParts?[]} → {thread,turn,continuationOfTurnID?}
 POST       /api/projects/{p}/assistant/threads/{t}/reviews        {target,clientUserMessageID,modelID?,skills?}  read-only Review turn
-GET        /api/projects/{p}/assistant/threads/{t}/turns/active   204 when idle
+GET        /api/projects/{p}/assistant/threads/{t}/turns/active   204 when idle (404 until the thread exists); check it before `PUT files/content`, which is 409 during a turn
 GET        /api/projects/{p}/assistant/threads/{t}/turns/{turn}   {turn,effectiveSettings?}
 POST       …/turns/{turn}/steer                                    {content,clientUserMessageID}
 POST       …/turns/{turn}/interrupt                                {clientRequestID} → {turnID,status}
@@ -282,6 +291,19 @@ Thread event `project.committed`: appended to the turn of the
 project's latest assistant run when the reconciler settles a commit;
 payload `{commitSHA, commitURL?, branch?, repositoryRef, files[]}` (files
 include deletions). Projects without an assistant thread get none.
+
+Event stream shape: each `data:` line is
+`{threadID, turnID?, sequence, type, itemID?, payload:{thread|turn|item}, createdAt}`
+with `type` ∈ `thread.created`, `turn.started`, `item.started`, `item.delta`,
+`item.completed`, `plan`, `turn.completed`. An `item.completed` carries
+`.payload.item.type` ∈ `userMessage`, `agentMessage` (`.content`), `plan`,
+`dynamicToolCall` (`.data = {kind inspect|edit|…, title, target, status
+succeeded|failed, severity}`); `turn.completed` carries
+`.payload.turn.status`. To list what the assistant did:
+
+```bash
+sed -n 's/^data: //p' events.log | jq -r 'select(.type=="item.completed") | .payload.item | select(.type=="dynamicToolCall") | .data | [.status,.kind,.title,(.target|tostring)] | @tsv'
+```
 
 Turn statuses: `in_progress`, `completed`, `failed`, `interrupted`. A provider
 restart interrupts the active turn; resume from items plus the event stream.

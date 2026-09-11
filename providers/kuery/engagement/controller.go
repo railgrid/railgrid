@@ -29,9 +29,16 @@
 // Per edge, the data path is the edges provider's consumer proxy: a
 // rest.Config pointing at
 // /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}/k8s
-// with the provider SA's token. The Enable-time edge-proxy grant (verb
-// "proxy" on the edge kinds, bound to the SA's cluster-qualified identity)
-// authorizes it; see docs/kuery-provider-architecture.md in the faros repo.
+// authenticating as that same per-workspace "faros-kuery" ServiceAccount,
+// which a separate grant (edgeProxyGrantName) authorizes for verb "proxy" on
+// kubernetesclusters. The credential is deliberately NOT the provider SA: the edges proxy
+// TokenReviews a foreign (provider-workspace) SA in the SA's home cluster
+// with its own credential, and the hub's kcp proxy pins every SA caller to
+// the caller's own workspace, so that review lands on a doubled
+// /clusters/{edges}/clusters/{kuery} path, 404s, and the proxy answers 403.
+// A token issued in the consumer workspace authenticates natively through
+// the edges APIExport virtual workspace instead — the same path edge-agent
+// and delegated-user tokens take. See docs/kuery-provider-architecture.md.
 //
 // Horizontally scalable: engagement is sharded across replicas with one
 // Lease per edge in the provider workspace (see claims.go) — each connected
@@ -108,8 +115,9 @@ type Config struct {
 	// host is scoped to the provider workspace (/clusters/...) and must
 	// reach the kcp API — the APIExport VW discovery, the apiexport
 	// multicluster provider's APIExportEndpointSlice cache, and the per-edge
-	// claim Leases are all built from it. Its bearer token (the provider SA
-	// token) also authorizes the per-edge edgeproxy data path.
+	// claim Leases are all built from it. Its TLS settings are reused for
+	// the per-edge edgeproxy data path; its bearer token is not (see the
+	// package comment).
 	ProviderConfig *rest.Config
 	// HubBaseURL is the faros hub root that serves the edges provider's
 	// consumer proxy (/services/providers/edges/edgeproxy/...). When the hub
@@ -327,7 +335,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	for i := range list.Items {
 		edge := &list.Items[i]
 		seen[edge.GetName()] = true
-		if d := c.reconcileEdge(ctx, tenantCluster, tenantPath, edge); d > 0 && d < requeueAfter {
+		if d := c.reconcileEdge(ctx, tenantCluster, tenantPath, token, edge); d > 0 && d < requeueAfter {
 			requeueAfter = d
 		}
 	}
@@ -401,8 +409,9 @@ func isTenantWorkspacePath(path string) bool {
 
 // reconcileEdge maps one edge's state to Engage/Disengage, returning a
 // shorter requeue when this edge needs a faster re-check than the standard
-// renewal poll (0 means no preference).
-func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPath string, edge *unstructured.Unstructured) time.Duration {
+// renewal poll (0 means no preference). token is the workspace's engagement
+// identity, which the edgeproxy data path authenticates as.
+func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPath, token string, edge *unstructured.Unstructured) time.Duration {
 	edgeName := edge.GetName()
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edgeName)
 	key := tenantCluster + "/" + edgeName
@@ -435,7 +444,7 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPat
 		return 0
 	}
 
-	if err := c.engage(ctx, key, tenantCluster, edgeName, tenantPath); err != nil {
+	if err := c.engage(ctx, key, tenantCluster, edgeName, tenantPath, token); err != nil {
 		logger.Error(err, "engaging edge")
 		return 30 * time.Second
 	}
@@ -456,9 +465,22 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPat
 // garbage-collects it.
 const engagementIdentityName = "faros-kuery"
 
+// edgeProxyGrantName is the ClusterRole + ClusterRoleBinding that authorize
+// the engagement SA for verb "proxy" on kubernetesclusters — the edges
+// consumer proxy's delegated SubjectAccessReview for the per-edge data path,
+// checked in this workspace against the SA's plain identity (the same
+// per-edge "proxy" grant shape the edges provider writes for its agents).
+//
+// A separate object rather than a verb on the identity's own ClusterRole:
+// kuery claims only get/list/watch/create on clusterroles, and a claim on an
+// existing APIBinding is never widened, so the identity role cannot be
+// updated in workspaces enabled before this grant existed. A new, created
+// object reaches every enabled workspace on the next reconcile.
+const edgeProxyGrantName = "faros-kuery-edgeproxy"
+
 // ensureIdentity provisions the workspace's engagement ServiceAccount, RBAC,
-// and token Secret through the claimed built-in types. An empty token with a
-// nil error means "not ready yet, requeue".
+// and token Secret through the claimed built-in types, plus the edge-proxy
+// grant. An empty token with a nil error means "not ready yet, requeue".
 func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, binding *apiskcpv1alpha2.APIBinding) (string, error) {
 	owner := metav1.OwnerReference{
 		APIVersion: apiskcpv1alpha2.SchemeGroupVersion.String(),
@@ -467,13 +489,26 @@ func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, bindi
 		UID:        binding.UID,
 	}
 	rules := []rbacv1.PolicyRule{{
-		// Read-only: discovery only. The per-edge data path is the edges
-		// consumer proxy, authorized separately by the Enable-time proxy
-		// grant.
+		// Read-only: discovery only. The data path is authorized by the
+		// edge-proxy grant below.
 		APIGroups: []string{"edges.faros.sh"},
 		Resources: []string{"kubernetesclusters"},
 		Verbs:     []string{"get", "list", "watch"},
 	}}
+	// Grant first: it does not depend on the token, and a workspace whose
+	// token controller is slow still ends up authorized by the time the
+	// token arrives.
+	proxyRules := []rbacv1.PolicyRule{{
+		// Read-only on the Kubernetes side: the proxied API is whatever the
+		// edge agent's credential allows, and kuery only lists and watches
+		// through it.
+		APIGroups: []string{"edges.faros.sh"},
+		Resources: []string{"kubernetesclusters"},
+		Verbs:     []string{"proxy"},
+	}}
+	if err := tenantaccess.EnsureGrant(ctx, cl, edgeProxyGrantName, engagementIdentityName, []metav1.OwnerReference{owner}, proxyRules); err != nil {
+		return "", fmt.Errorf("edge-proxy grant: %w", err)
+	}
 	return tenantaccess.EnsureIdentity(ctx, cl, engagementIdentityName, []metav1.OwnerReference{owner}, rules)
 }
 
@@ -510,7 +545,8 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 }
 
 // engage builds the edgeproxy cluster client and hands it to kuery. Idempotent
-// for an already-engaged edge. tenant is the workspace path.
+// for an already-engaged edge. tenant is the workspace path; token is the
+// workspace's engagement ServiceAccount token the proxy authenticates.
 //
 // Two distinct identifiers are at play:
 //   - key ("{logicalCluster}/{edge}") is the internal engaged-map key. It's
@@ -520,7 +556,7 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 //     cluster under. queryapi.ScopeToTenant rebuilds exactly this form from
 //     the caller's tenant + edge for impact queries, so the store name MUST
 //     be path-based or those lookups miss.
-func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, tenant string) error {
+func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, tenant, token string) error {
 	c.mu.Lock()
 	if _, ok := c.engaged[key]; ok {
 		c.mu.Unlock()
@@ -532,10 +568,7 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, t
 	logger := klog.FromContext(ctx).WithValues("edge", storeName)
 	logger.Info("engaging edge into kuery")
 
-	cfg := rest.CopyConfig(c.cfg.ProviderConfig)
-	cfg.Host = edgeProxyURL(c.hubBase, tenantCluster, edgeName)
-	cfg.QPS = 50
-	cfg.Burst = 100
+	cfg := edgeProxyConfig(c.hubBase, tenantCluster, edgeName, token, c.cfg.ProviderConfig.Insecure)
 
 	cl, err := cluster.New(cfg)
 	if err != nil {
@@ -620,6 +653,25 @@ func (c *Controller) dropLocal(ctx context.Context, key string, releaseClaim boo
 		c.claims.release(ctx, storeName)
 	}
 	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
+}
+
+// edgeProxyConfig is the rest.Config for one edge's Kubernetes API through
+// the edges consumer proxy, authenticating as the workspace's engagement
+// ServiceAccount. Built from scratch rather than copied from ProviderConfig
+// so the provider SA's bearer (and any exec/auth-provider plumbing on the
+// minted kubeconfig) cannot leak onto the data path; only the TLS
+// verification knob carries over, as the hub cert is the same either way.
+func edgeProxyConfig(hubBase, cluster, edgeName, token string, insecure bool) *rest.Config {
+	cfg := &rest.Config{
+		Host:        edgeProxyURL(hubBase, cluster, edgeName),
+		BearerToken: token,
+		QPS:         50,
+		Burst:       100,
+	}
+	if insecure {
+		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	}
+	return cfg
 }
 
 // edgeProxyURL is the edges provider's consumer-proxy endpoint for a

@@ -82,7 +82,7 @@ App Studio REST ([app-studio.md](app-studio.md)) as you.
 | `app status <name>` | `-o json` | `GET` project, `promotion`, `publishing`; prints project/phase/template, repository ref + ready + URL (+ message when not ready), last 3 commits, dev URL, `promotable`/build status/commit/missing, production phase+URL, publishing mode/URL/grants. `-o json` = `{project, promotion, promotionError?, publishing, publishingError?}`. |
 | `app sync <name>` | `-o json` | `POST hydrate-workspace {}` then `POST sync-development`; prints the ref and short SHA loaded (written/skipped counts), one line per component (`Synced, N changed, M deleted, restarted, revision R`), and each skipped file with its reason; a `binary-unsupported` skip adds a hint. Use it instead of `faros sandbox sync` for App Studio dev instances. |
 | `app promote <name>` | `--hostname-prefix`, `--commit <sha>`, `-o json` | `POST promote` with `values.expose.hostnamePrefix` and/or `commitSHA`; prints instance, commit, rollout, per-component image. The prefix is locked after the first production deploy: pass it on the first promote, later the same value or nothing. Every promote rolls pods. |
-| `app publish <name>` | `--mode public\|restricted\|private` (required), `-o json` | `public`/`restricted` → `POST publishing {mode}`; `private` → `DELETE publishing` (unpublish, drop grants). |
+| `app publish <name>` | `--mode public\|restricted\|private` (required), `-o json` | `public`/`restricted` → `POST publishing {mode}`; `private` → `DELETE publishing` (unpublish, drop grants). Accepted before prod is Ready; the `(not ready: Pending)` suffix is the POST response only — re-check with `app status`. |
 
 Naming: the server uses an explicit name verbatim for the Project and the
 Repository and answers 409 on a collision (see [app-studio.md](app-studio.md)),
@@ -141,9 +141,9 @@ answer 409. Component paths are relative to the component's
 | Command | Flags | Behavior |
 |---|---|---|
 | `sync <instance> <component> [dir]` | `--restart auto\|always` (auto), `-o json` | Files: in a git work tree `git ls-files -co --exclude-standard`, else a walk skipping `node_modules/`, `dist/`, `.git/`; paths with a `.git`, `node_modules` or `.assistant-snapshots` segment are dropped. **Authoritative**: sends `sourceRevision` = Unix seconds (or applied+1 if higher) and the digest, so it replaces the component's managed file set. Binaries go base64 only if the component's `process` status lists `base64` in `syncEncodings` (≤ 25 MiB each, 48 MiB total); otherwise skipped with `faros sandbox: skipping N binary file(s); <i>/<c>'s dev agent does not advertise base64 sync (update the instance to sync them): …`. Prints `Synced: N changed, M deleted, restarted=…, revision R`; reload errors on stderr. |
-| `exec <instance> <component> -- <argv…>` | `--timeout` (120s, max 120s), `--workdir` | Reads `process`; no applied revision → `<i>/<c> has no source revision; run 'faros sandbox sync <i> <c> <dir>' first (exec needs an authoritative sync)`. Then `start` with a random `Idempotency-Key` and the applied revision/digest, polls every 1 s. Prints stdout/stderr and **exits with the command's exit code**; 124 if still running at timeout+10 s; 1 if it ended without an exit code. No shell. |
+| `exec <instance> <component> -- <argv…>` | `--timeout` (120s, max 120s), `--workdir` | Only for components whose template declares the `exec` verb (`application`, `simple-webapp`; a `worker` answers `HTTP 404: exec is not declared for component worker`). Reads `process`; no applied revision → `<i>/<c> has no source revision; run 'faros sandbox sync <i> <c> <dir>' first (exec needs an authoritative sync)`. Then `start` with a random `Idempotency-Key` and the applied revision/digest, polls every 1 s. Prints stdout/stderr and **exits with the command's exit code**; 124 if still running at timeout+10 s; 1 if it ended without an exit code. No shell. |
 | `logs <instance> <component>` | `-f/--follow` | Prints the `log` verb. `-f` re-reads it every 2 s and prints the new tail; a shrunk log prints `--- log restarted ---`. Ctrl-C stops. |
-| `restart <instance> <component>` | | `POST restart`; prints `restarted <i>/<c>` |
+| `restart <instance> <component>` | | `POST restart`; prints `restarted <i>/<c>`. Restarts the process, not the pod: needed after syncing sources to a non-Vite dev server, and after the data-plane `env` verb; it does not pick up `values.env` changes made with kubectl. There is no `sandbox env` subcommand. |
 | `status <instance> [component]` | `-o json` | Instance: `GET …/status` (phase, URL, conditions). Component: `process` (running, port/reachable, source revision + short digest or `- (not synced authoritatively yet)`, and always a `Sync:` line — either the encodings, or `utf-8 only (binary files are not synced to this component)`). |
 
 Notes:
@@ -170,11 +170,11 @@ eval "$(faros env)"
 faros app create shop --template application --display-name Shop --wait
 faros app status shop                          # repository ref, commits, dev URL
 gh repo clone <owner>/<repository ref> shop && cd shop
-faros sandbox sync shop-dev api ./api
-faros sandbox exec shop-dev api -- node -e 'console.log(1)'
-faros sandbox logs shop-dev api -f
 git add -A && git commit -m "Add cart"         # commit locally, never push
 faros commit <repository ref>
+faros app sync shop                            # never `faros sandbox sync` an App Studio <project>-dev
+faros sandbox exec shop-dev api -- node -e 'console.log(1)'
+faros sandbox logs shop-dev api -f
 faros app promote shop --hostname-prefix shop  # locked after the first promote
 faros app publish shop --mode public
 ```

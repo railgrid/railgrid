@@ -120,12 +120,12 @@ ready-made `claude mcp add` / Codex / Claude Desktop snippets with a real token.
 | Create, inspect, promote, publish an App Studio project | `faros app …` or REST `$AS/api/projects/…` (App Studio has no MCP server) |
 | Record local edits as a promotable commit | `faros commit <repositoryRef>` (wraps `code__commit_files`) |
 | Put a file (incl. binary) into a project without git | Code tab, or `PUT $AS/api/projects/{p}/files/content?path=` |
-| Run a command / sync files in any dev-mode instance | `faros sandbox …` (data plane; works even without `infrastructure__*` MCP tools) |
+| Run a command / sync files in a dev-mode instance | `faros sandbox …` (data plane; works even without `infrastructure__*` MCP tools). `exec` exists only where the template declares it (`application`, `simple-webapp`); a `worker` component has sync, logs and restart but answers `HTTP 404: exec is not declared for component worker` |
 | Workspace resources (instances, templates, repos, agents CRs, secrets) | `kubectl` on the `faros` context |
 | Provision a container/database without App Studio | `Instance` CR (section 5) or `infrastructure__provision` |
 | Hosted agents and runs | REST `$HUB/services/providers/agents/api/…` or `agents__*` |
 | Edge clusters/servers | `faros kubeconfig edge`, `faros connect`, `faros ssh`, `edges__*` |
-| Fleet-wide reads | `kuery__kuery_query` |
+| Fleet-wide reads across edge clusters | kuery REST `POST $HUB/services/providers/kuery/api/query` after enabling `kuery` in the workspace (the `kuery__kuery_query` MCP tool rejects every spec today; [references/mcp-and-edges.md](references/mcp-and-edges.md)) |
 
 **MCP tools exist only for providers federated into your aggregate.** Human
 bearers get platform providers plus their org's own (an org copy shadows the
@@ -165,7 +165,17 @@ delete_repo, read:org, admin:public_key, read:packages`, or use the portal's
 |---|---|---|---|
 | `application` | `web/` (Vite) + `api/` + Postgres on one host, `/api/*` → api | yes | Node.js only |
 | `simple-webapp` | one container, one port | yes | Node.js only |
-| `worker` | Deployment, no Service | no | Node.js |
+| `worker` | Deployment, no Service; **dev sandbox only** | no | Node.js |
+
+- A `worker` project has no scaffold and no build components: `faros app status`
+  shows `build=unsupported`, it can never be promoted, and its dev instance
+  gets no `connections` (App Studio exposes no route to set dev values). For
+  `DATABASE_URL`/`REDIS_URL` or production, deploy a `worker` `Instance`
+  directly (section 5).
+- The `simple-webapp` scaffold's `AGENTS.md` is written for a Vite-only app
+  ("there is no backend here"), while the template accepts any single HTTP
+  process on `0.0.0.0:$PORT`. Edit `AGENTS.md` when you replace the scaffold
+  with a server, or the assistant will refuse to write one.
 
 App with a database → `application` (it provisions Postgres and injects
 `DATABASE_URL`). Read the contract before writing code:
@@ -174,7 +184,11 @@ scaffold's root `AGENTS.md` repeats it: bind `0.0.0.0:$PORT`, same-origin
 `/api/*`, keep `/api/health` answering (CI smoke-tests it), keep both `dev`
 (sandbox) and `start` (Railpack production image) scripts working, no
 Dockerfile, retry the first DB connect **and run migrations inside that
-retry loop**, `sslmode=disable`.
+retry loop**, `sslmode=disable`. The shipped scaffold's own `api/server.mjs`
+breaks that last rule (it retries only `select 1` and runs `create table`
+after the loop, which fails with `Connection terminated unexpectedly` when
+Postgres is still starting): move the schema setup inside the loop when you
+rewrite the file.
 
 ### 4.3 Create
 
@@ -196,20 +210,32 @@ faros app create shop --template application --display-name Shop --wait
   the project name.
 - `--prompt` records what to build; it does not start an assistant turn.
 - Typical timings: repository ready ~10 s, scaffold commit 15–40 s, dev
-  instance Ready ~2.5 min.
+  instance Ready 1–2.5 min. If `repository.ready` is still false after 2 min
+  and `kubectl get repositories.code.faros.sh <name> -o jsonpath='{.status}'`
+  prints nothing, the code provider is not reconciling at all (section 8);
+  `--wait` timing out after 5 min (`repository not ready with a succeeded
+  commit after 5m0s`) is the same symptom, not a reason to recreate.
 
 ### 4.4 Develop — pick one path per session
 
 **A. Local editor + `faros commit` (recommended for coding agents).**
 
 ```bash
-gh repo clone <owner>/<repo> && cd <repo>
-# edit; run the project's checks locally (npm install && npm run build; for
-# the api, a local postgres:16 + `PORT=<free port> DATABASE_URL=… npm start`)
+gh repo clone <owner>/<repo> && cd <repo>   # owner/repo = tail of .project.repository.htmlURL in `faros app status -o json`
+# edit; run the project's checks locally: npm install && npm run build, then
+# what CI smoke-tests — application: a local postgres:16 + `PORT=<free port>
+# DATABASE_URL=… npm start` and curl /api/health; simple-webapp: `PORT=<free> npm start` and curl /
 git add -A && git commit -m "Add cart"
 faros commit <repositoryRef>        # ~7 s; resets your clone onto the faros SHA
 faros app sync shop                 # workspace ← git, then sandbox ← workspace; lists skipped files
 ```
+
+App Studio hydrates and syncs a faros-recorded commit by itself within
+seconds, so `faros app sync` right after `faros commit` usually reports
+`0 changed` — that is not a failure. Hydrate only writes files: paths a commit
+**deleted** stay in the workspace and the sandbox until you
+`DELETE $AS/api/projects/<p>/files/content?path=<path>` (check `GET …/files`
+after a commit that removes files that could affect the build).
 
 `faros commit` refuses a dirty tree and a HEAD that doesn't contain
 `origin/<branch>`, keeps the message ≤ 512 characters, sends binaries only
@@ -232,7 +258,8 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
 - **The reconciler commits the assistant's edits by itself** 5–15 s after the
   turn, as `Update N files in <dirs>`. Don't ask the model to commit. The
   `project.committed` event lands *after* the stream closed, so to see the
-  commit poll `.repository.commits[0]` (or `faros app status`).
+  commit poll `(.repository.commits // [])[0]` (or `faros app status`);
+  `commits` is `null`, not `[]`, on a fresh project.
 - **Only workspace files reach git.** What the assistant does inside the
   sandbox (`npm install`, generated files) is not synced back, and it may
   hand-edit `package-lock.json` to compensate — with made-up integrity hashes
@@ -276,7 +303,12 @@ faros sandbox logs shop-dev api
 
 Hit something only your change has, so you know the new code is live;
 a sync answers `Synced` even when nothing visible changed, so it proves
-nothing. Exec is argv-only (use `sh -c` for a shell), ≤ 120 s, each
+nothing. A sync restarts the process only for the reload rules the template
+declares (`package.json`, lockfiles). Vite reloads its own sources, but a
+plain Node server (`dev: node server.mjs`) keeps serving the old code after
+`Synced … restarted=false` — run `faros sandbox restart <inst> <comp>` and
+probe again. The dev port is the `Port:` line of `faros sandbox status`
+(the template's `development.components.<c>.port` is a symbolic name). Exec is argv-only (use `sh -c` for a shell), ≤ 120 s, each
 argument ≤ 4096 bytes, and does not get the app's environment — name the port
 (8080 unless the template says otherwise) instead of reading `$PORT`.
 
@@ -288,11 +320,15 @@ replaces App Studio's managed file set); run `faros app sync <p>` and retry
 ### 4.6 Build, promote, publish
 
 ```bash
-faros app status shop            # waits are yours: promotable after ~3.5–4.5 min
+faros app status shop            # waits are yours: promotable ~3–5.5 min after the commit
 faros app promote shop --hostname-prefix shop
 faros app publish shop --mode public            # or restricted; private = back to default
 ```
 
+- **Every faros-recorded commit runs the full CI build**, including a
+  binary-only one, so upload assets before the last code commit rather than
+  after it; several builds can be in flight and only the newest commit's
+  images make the project promotable.
 - `build.status: none` with your SHA = CI or the package crawl hasn't caught up
   (not an error); none with an earlier commit's SHA (or none) = the commit wasn't recorded
   through faros. `incomplete` with one component missing right after green CI
@@ -303,7 +339,12 @@ faros app publish shop --mode public            # or restricted; private = back 
   choosing one. Each promote rolls pods, even for the same commit.
 - Prod Ready ~35 s–1.5 min after the first promote. A new hostname can fail
   TLS (curl exit 35) for a few minutes while its certificate is issued
-  (observed 0–6 min); don't debug before 10.
+  (observed 0–9 min); don't debug before 10. `faros app publish` may be run
+  before prod is Ready; its `(not ready: Pending)` suffix reflects only the
+  POST response — `faros app status` a moment later shows the real state.
+  Wait for the certificate with
+  `until curl -s -o /dev/null --max-time 15 https://$HOST/; do sleep 15; done`
+  (curl exits 35 until it is issued, then the app's own status code).
 - A re-promote rolls pods while the instance stays `Ready`, so probe something
   only the new version has to know it rolled out.
 - After the first promote, `GET …/publishing` already reads
@@ -324,7 +365,10 @@ faros app publish shop --mode public            # or restricted; private = back 
 `DELETE $AS/api/projects/{p}?uid=<uid>` deletes the project and its dev
 instance but leaves the Repository and GitHub repo (they block reuse of the
 name). `&deleteRepository=true` also deletes a non-adopted repository **and its
-GitHub repo** — ask first (rule 8).
+GitHub repo** — ask first (rule 8). Without `uid` the call is 400 `project UID is required;
+refresh the project list and try again`. Success is 204; measured teardown:
+the project 404s at once, the GitHub repo and `Repository` CR are gone within
+~10 s, the dev instance within ~1 min.
 
 ## 5. Playbook: deploy without App Studio
 
@@ -364,7 +408,19 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
   ~1 min for Ready, then `faros sandbox sync <inst> app ./dir`,
   `faros sandbox exec`, `faros sandbox logs`. `simple-webapp`'s dev start runs
   `npm run dev -- --host 0.0.0.0 --port $PORT --config …`; a non-Vite `dev`
-  script receives those flags, so ignore them and read `process.env.PORT`.
+  script receives those flags, so ignore them and read `process.env.PORT`, and
+  `faros sandbox restart` after each source sync (only Vite hot-reloads).
+  `access: public` is honored in development mode too.
+- **Changing `env` on a live dev-mode instance:** `kubectl apply` with new
+  `values.env` updates the object but the running pod keeps its old env, and
+  `faros sandbox restart` restarts the process, not the pod. For the live
+  change also `POST $HUB/services/providers/infrastructure/dataplane/clusters/$CLUSTER/instances/<i>/components/<c>/env`
+  with `{"env":{"KEY":"value"}}` (→ `{"phase":"EnvUpdated","applied":[…]}`),
+  then `faros sandbox restart <i> <c>`. There is no `faros sandbox env`.
+- **`cron-job` has no `command`/`args` input**: the image entrypoint must do
+  the work. With a public image, drive it through `env` (e.g. `node:20-alpine`
+  with `NODE_OPTIONS=--import=data:text/javascript;base64,…`). Its
+  `connections` inject into every run.
 - Values that violate a declared field are admitted and reported as
   `Valid=False/InvalidValues`, but **keys the template doesn't declare are
   accepted silently** with `Valid=True` — check the schema (section 3 table)
@@ -406,8 +462,10 @@ faros ssh my-vps -- uptime                        # server edges; no port forwar
 ```
 
 On MCP: `edges__cluster_list`, the kubernetes toolset (`edges__pods_list`, …,
-`cluster` parameter) and one bundle per discovered Service. Fleet reads:
-`kuery__kuery_query`. More: [references/mcp-and-edges.md](references/mcp-and-edges.md).
+`cluster` parameter) and one bundle per discovered Service. Fleet reads across
+clusters: kuery, which must be enabled in the workspace first (it is in the
+catalog and on `tools/list` even when it is not); use its REST query, the MCP
+tool is broken today. More: [references/mcp-and-edges.md](references/mcp-and-edges.md).
 
 ## 8. Reading failures
 
@@ -416,9 +474,10 @@ Identify which one you're looking at before waiting or rebuilding:
 
 | Symptom | Usually | Confirm |
 |---|---|---|
-| New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–6 min) | An existing app on the same domain serves; `openssl s_client -servername <host>` has no matching CN yet |
+| New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–9 min) | An existing app on the same domain serves; `openssl s_client -connect <host>:443 -servername <host> </dev/null \| openssl x509 -noout -subject` prints `Could not find certificate from <stdin>` — that output *is* the "no cert yet" signal |
 | `build.status: none`, SHA is yours | CI or the package crawl hasn't caught up | `code__build_status`; the crawl runs every 30 s for 10 min after a commit, else every 2 min |
-| New project's repository `Provisioning` ("Creating repository …") | Repository still being created | Poll `.repository.ready` |
+| New project's repository `Provisioning` for under 2 min | Repository still being created | Poll `.repository.ready` |
+| Repository `Provisioning` > 2 min, `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` empty, no finalizer | **Not latency**: the code provider's controllers are down (its `/healthz` stays ok). Other fresh Repositories are statusless too and `kubectl get packages.code.faros.sh -o jsonpath='{.items[*].status.lastSyncTime}'` is stale | Stop polling; the operator restarts the provider. Don't recreate the project (409 on the name) |
 | A commit stays `Running`, condition reason `RateLimited` | The GitHub quota behind the code `Connection` is spent; it retries at the reset (up to 15 min) | The condition message names the retry time |
 | Private URL → 302 `/auth/apps/authorize` | The access gate wants a browser | Use an app token (4.6) or `faros sandbox exec` |
 | Instance Ready, no `status.url` | **Not latency**: `exposure: internal` | `kubectl get template <t> -o jsonpath='{.spec.exposure}'` |
@@ -442,7 +501,9 @@ Identify which one you're looking at before waiting or rebuilding:
 `Accept: application/json, text/event-stream` (anything else → 400). Replies
 may be SSE (`data: {…}`, take the last). A failing tool is HTTP 200 with
 `result.isError: true` and the reason in `result.content[0].text`; on success
-that text is the tool's JSON output as a string. In zsh never `echo "$json"`
+`isError` is **absent** (test `(.result.isError // false)`) and that text is
+the tool's output — JSON as a string for most tools, plain text for the
+`edges__*` kube tools. In zsh never `echo "$json"`
 (it expands `\n` and breaks jq) — pipe or `printf '%s'`.
 
 Everything else — every error string with its fix, and measured timings — is in

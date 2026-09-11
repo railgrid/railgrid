@@ -212,7 +212,27 @@ server edges are reached with `faros ssh`.
 | `kuery_impact` | `kind`, `name`, `edge?`, `group?`, `namespace?`, `maxDepth?` (5, max 20) | `{impactedBy, impacts, associated, summary}`; declared coupling only |
 
 REST: `POST $HUB/services/providers/kuery/api/query`, `GET …/api/query-schema`,
-`GET …/api/edges`. Relations: upstream `owners`, `references`, `selects`,
+`GET …/api/edges`. `GET …/api/status` reports `engagedEdges`.
+
+- **Enable it first.** `kuery` appears in `GET /api/providers` and its tools
+  are on `tools/list` whether or not the workspace enabled it, but nothing is
+  engaged until `POST …/providers/kuery/enable` (accept the four claims the
+  catalog lists: serviceaccounts, secrets, clusterroles, clusterrolebindings).
+  Until then every query answers `{}` and `GET …/api/edges` is `{"edges":[]}`.
+- **Engagement is provider-side.** After enabling, the provider polls the
+  workspace's `KubernetesCluster` edges and syncs each through the edges
+  proxy. `engagedEdges: 0` minutes later with connected edges means that sync
+  is failing in the provider (seen 2026-09-11: `discovery failed … Forbidden`),
+  which only the operator can fix.
+- **`kuery__kuery_query` is unusable on current builds.** Its schema declares
+  `spec` as an array of integers (a `json.RawMessage` reflected as bytes), so
+  an object spec fails validation and a byte array fails to unmarshal. Use the
+  REST route with the same QuerySpec body; `kuery__kuery_impact` is fine.
+- Example body (REST): `{"filter":{"objects":[{"groupKind":{"group":"","kind":"Pod"},"namespace":"kube-system"}]},"limit":10,"objects":{"object":{"metadata":{"name":true,"namespace":true}}}}`;
+  the response is a `QueryStatus` (`objects[]`, `cursor`), and a bare `{}`
+  means no engaged edge, not an empty fleet. Field list: `GET …/api/query-schema`.
+
+Relations: upstream `owners`, `references`, `selects`,
 `namespace`; downstream `descendants`, `selected-by`, `namespaced`, `members`;
 lateral `linked`, `grouped`; append `+` for transitive.
 

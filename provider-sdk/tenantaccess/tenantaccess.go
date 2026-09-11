@@ -62,6 +62,14 @@ func TokenSecretName(name string) string { return name + "-token" }
 // it returns the token once the token controller has filled it in. An empty
 // token with a nil error means "not ready yet, requeue".
 //
+// Every object is create-if-absent: the rules of an existing ClusterRole are
+// NOT reconciled. Providers typically claim only get/list/watch/create on the
+// RBAC types (kuery's manifest does), and a claim on an existing APIBinding
+// is never widened by the hub, so an Update here would be refused in every
+// workspace enabled before the provider started claiming "update". To give
+// an existing identity a new permission, add a separately named grant with
+// EnsureGrant instead of editing this role.
+//
 // c must be a client on the workspace where the identity lives — the claimed
 // VW client works, because every object here is a built-in type.
 func EnsureIdentity(ctx context.Context, c client.Client, name string, refs []metav1.OwnerReference, rules []rbacv1.PolicyRule) (string, error) {
@@ -173,6 +181,33 @@ func NewDynamicClient(hubBase, clusterID, token string, insecure bool) (dynamic.
 		return nil, err
 	}
 	return dynamic.NewForConfig(cfg)
+}
+
+// EnsureGrant provisions (idempotently) an additional ClusterRole named grant
+// with the given rules and a ClusterRoleBinding of the same name that binds it
+// to the identity ServiceAccount named identity, both owned by refs. It exists
+// so a provider can widen what an already-provisioned identity may do without
+// updating that identity's ClusterRole — see EnsureIdentity for why an update
+// is not an option. Create-if-absent like everything else here; pick a new
+// grant name when the rules change.
+func EnsureGrant(ctx context.Context, c client.Client, grant, identity string, refs []metav1.OwnerReference, rules []rbacv1.PolicyRule) error {
+	role := &rbacv1.ClusterRole{}
+	role.Name = grant
+	role.OwnerReferences = refs
+	role.Rules = rules
+	if err := createIfAbsent(ctx, c, role); err != nil {
+		return fmt.Errorf("ClusterRole %s: %w", grant, err)
+	}
+
+	binding := &rbacv1.ClusterRoleBinding{}
+	binding.Name = grant
+	binding.OwnerReferences = refs
+	binding.RoleRef = rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: grant}
+	binding.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: identity, Namespace: Namespace}}
+	if err := createIfAbsent(ctx, c, binding); err != nil {
+		return fmt.Errorf("ClusterRoleBinding %s: %w", grant, err)
+	}
+	return nil
 }
 
 func createIfAbsent(ctx context.Context, c client.Client, obj client.Object) error {
