@@ -39,10 +39,9 @@ export interface ProviderFetchOptions {
 //                                   backend proxy (tenant headers -> X-Faros-*)
 //     /ui/providers/<name>/         its own static assets (icons, lazy chunks)
 //
-//   cluster-in-path model (code, edges, infrastructure, databricks GraphQL):
-//     /graphql/                     the embedded GraphQL gateway, /graphql/<cluster>;
-//                                   the gateway authorizes the bearer per cluster
-//     /clusters/                    kcp REST by cluster, /clusters/<cluster>/apis/...
+//   cluster-in-path model (code, edges, infrastructure, databricks):
+//     /clusters/                    kcp REST by cluster, /clusters/<cluster>/apis/...;
+//                                   the hub proxy authorizes the bearer per cluster
 //
 //   shared, as the user:
 //     /api/orgs/<orgUUID>/          org-scoped hub REST (bindings, workspaces)
@@ -55,7 +54,6 @@ export interface ProviderFetchOptions {
 export const PROVIDER_FETCH_ALLOWED_PATHS = [
   '/services/providers/<name>/',
   '/ui/providers/<name>/',
-  '/graphql/',
   '/clusters/',
   '/api/orgs/<orgUUID>/',
   '/api/providers (GET, HEAD)',
@@ -80,7 +78,6 @@ export function providerFetchAllowedPrefixes(providerName: string, orgUUID: stri
   const prefixes = [
     `/services/providers/${name}/`,
     `/ui/providers/${name}/`,
-    '/graphql/',
     '/clusters/',
   ]
   if (orgUUID) prefixes.push(`/api/orgs/${encodeURIComponent(orgUUID)}/`)

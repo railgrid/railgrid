@@ -35,7 +35,7 @@ This starts two local resources:
 1. **`portal`** — Vite dev server on `http://localhost:3000/ui/`  
    Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
 
-2. **`hub`** — `faros-hub` binary with embedded KCP, static auth, embedded GraphQL, and portal dev proxy  
+2. **`hub`** — `faros-hub` binary with embedded KCP, static auth, and portal dev proxy  
    Serves HTTPS on `https://localhost:9443`. The hub depends on the portal resource and rebuilds on Go file changes.
 
 ### Smoke test

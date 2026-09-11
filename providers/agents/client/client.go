@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package client provides typed, workspace-scoped access to the agents
-// provider's CRDs and to tenant Secrets, over the hub's GraphQL gateway. The
+// provider's CRDs and to tenant Secrets, over the hub's kcp proxy. The
 // provider builds a Client per request from the caller's bearer token (see the
 // tenant package), so it always acts as the calling user.
 package client
@@ -59,13 +59,13 @@ var (
 )
 
 // Client provides typed access to the agents provider's tenant-workspace
-// resources over the GraphQL gateway.
+// resources through the hub's kcp proxy (see the tenant package).
 type Client struct {
 	scope *tenant.Scope
 }
 
-// NewFromGraphQL builds a Client from a resolved tenant Scope.
-func NewFromGraphQL(scope *tenant.Scope) *Client {
+// NewFromScope builds a Client from a resolved tenant Scope.
+func NewFromScope(scope *tenant.Scope) *Client {
 	return &Client{scope: scope}
 }
 

@@ -41,7 +41,7 @@ local_resource(
 )
 
 # ---------------------------------------------------------------------------
-# hub — faros-hub binary (embedded KCP, static auth, embedded GraphQL, portal proxy)
+# hub — faros-hub binary (embedded KCP, static auth, portal proxy)
 # ---------------------------------------------------------------------------
 local_resource(
     'hub',
@@ -60,11 +60,6 @@ go build -o bin/faros-hub ./cmd/faros-hub
   --embedded-kcp \
   --kcp-root-dir=.kcp \
   --kcp-secure-port=6443 \
-  --embedded-graphql \
-  --graphql-apiexport-slice-name=core.faros.sh \
-  --graphql-apiexport-logical-cluster=root:faros:system:controllers \
-  --graphql-grpc-addr=localhost:50051 \
-  --graphql-playground \
   --portal-dev-url=http://localhost:3000 \
   --portal-frame-source=%s \
   --published-apps-domain=%s \

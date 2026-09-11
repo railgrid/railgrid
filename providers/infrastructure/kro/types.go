@@ -101,7 +101,7 @@ type Template struct {
 	// renders this template's instances (extra list columns + grouped
 	// detail fields). Read from the faros.sh/view annotation on the
 	// RGD (the Template CRD carries the equivalent under spec.view, which
-	// the portal reads directly over GraphQL). nil falls back to the
+	// the portal reads directly over the kcp proxy). nil falls back to the
 	// default raw-values rendering.
 	View *TemplateView `json:"view,omitempty"`
 }

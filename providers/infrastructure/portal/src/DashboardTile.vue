@@ -65,7 +65,7 @@ const recent = computed(() =>
     .slice(0, 4),
 )
 
-// Refresh delegates to the shared GraphQL client in api.ts. The canonical
+// Refresh delegates to the shared kube REST client in api.ts. The canonical
 // tile poller serializes timer, context, and manual reads; this generation
 // fence additionally prevents an old tenant's response from committing after
 // the console changes workspace while that read is in flight.

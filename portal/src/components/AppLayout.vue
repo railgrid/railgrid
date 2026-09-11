@@ -947,12 +947,12 @@ const contextStatus = computed<ContextStatus>(() => {
       <!--
         Keying the slot on auth.clusterName forces the active page to
         unmount + remount when the user switches workspace or org. The
-        v0.0.63 fix retargets /graphql/{cluster} so new queries hit the
-        right shard, but pages keep displaying the previous workspace's
+        v0.0.63 fix retargets /clusters/{cluster} so new requests hit the
+        right workspace, but pages keep displaying the previous workspace's
         payload until the next poll fires (10s+ for MCP/edges), and
-        provider micro-frontends carry their own Pinia/URQL caches the
+        provider micro-frontends carry their own Pinia caches the
         URL change never invalidates. Unmounting here resets every host
-        page's useGraphQLQuery state; ProviderFrame's own watch on
+        page's fetch state; ProviderFrame's own watch on
         auth.clusterName re-creates its custom element post-flush so
         the new mountRef div doesn't render empty after the slot
         wrapper rebuilds. The chrome above (sidebar and context switchers)

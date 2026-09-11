@@ -75,8 +75,6 @@ hub:
   internalURL: ""
   listenAddr: ":9443"
   devMode: false
-  # Enable embedded GraphQL gateway (required for portal)
-  embeddedGraphQL: false
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   # Disable the interactive static-token login (endpoint + portal form) so

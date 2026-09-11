@@ -1,10 +1,11 @@
 import type { ErrorResponse } from './types.js'
+import type { KubeError } from './portalkit/kube.js'
 
 type ErrorCategory = 'not-found' | 'forbidden' | 'authentication' | 'service' | 'protocol' | 'tenant' | 'domain' | 'unknown'
 type RegistrationMessageState = 'created' | 'existing' | 'conflict' | 'failed'
 
 const SAFE_REASON_PREFIX = /^(?:[A-Za-z]+Error|RequestFailed|ServiceUnavailable|Unauthorized|Forbidden|NotFound|ProtocolError)\s*:\s*/i
-const ERROR_LABEL = /\b(?:HTTPError|GraphQLError)\b/i
+const ERROR_LABEL = /\b(?:HTTPError|KubeError)\b/i
 const HTML_BODY = /<\/?(?:!doctype|html|head|body|script|style|title|div|pre)\b|<[a-z][^>]*>/i
 const JSON_BODY = /(?:^|[\s:(])(?:\{\s*["']?[-\w]+["']?\s*:|\[\s*(?:\{|["']))/i
 const SENSITIVE_PAYLOAD = /\b(?:authorization|bearer|token|password|passwd|secret|api[-_ ]?key|access[-_ ]?key|client[-_ ]?secret|credential|cookie|set-cookie)\b\s*(?::|=)\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;)}]+)/i
@@ -176,19 +177,26 @@ export function providerRequestError(status: number, body: unknown, fallback = '
   return { reason, message, retryable: status >= 500, status }
 }
 
-/** Map GraphQL's structured errors to the same internal error contract. */
-export function graphqlResponseError(message: string): ErrorResponse {
-  const safeMessage = stringField(message) || 'Databricks GraphQL request failed.'
-  const details: ErrorDetails = { message: safeMessage, runtime: false }
-  const category = categoryFor(details)
-  const reason = category === 'not-found'
-    ? 'NotFound'
-    : category === 'forbidden'
-      ? 'Forbidden'
-      : category === 'authentication'
-        ? 'Unauthorized'
-        : category === 'service'
-          ? 'ServiceUnavailable'
-          : 'DomainError'
-  return { reason, message: safeMessage, retryable: category === 'service' }
+/**
+ * Map a Kubernetes REST failure (a portalkit KubeError carrying the HTTP
+ * status and the decoded Status body) to the same internal error contract.
+ *
+ * A KubeError with a success status is a client-side protocol failure (the
+ * body was not JSON, or a List envelope was inconsistent) and becomes a
+ * retryable ProtocolError. Transport statuses (401/403/404/5xx) keep only the
+ * caller's fallback copy, except NotFound, whose sanitized Status message is
+ * retained so formatDatabricksError can name the missing resource. Domain
+ * statuses (400/409/422/...) keep kcp's reason and sanitized message.
+ */
+export function kubeResponseError(error: KubeError, options: { fallback?: string; protocol?: string } = {}): ErrorResponse {
+  const status = error.status
+  if (status < 400) {
+    return { reason: 'ProtocolError', message: stringField(options.protocol) || 'Databricks response is malformed; retry the request.', retryable: true }
+  }
+  const fallback = stringField(options.fallback) || GENERIC_MESSAGE
+  const transportReason = statusReason(status)
+  const bodyMessage = stringField(error.body?.message)
+  const reason = transportReason || reasonField(error.body?.reason) || reasonField(error.reason) || 'RequestFailed'
+  const message = transportReason && status !== 404 ? fallback : bodyMessage || fallback
+  return { reason, message, retryable: status >= 500 || status === 429, status }
 }

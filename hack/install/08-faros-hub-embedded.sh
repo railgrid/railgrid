@@ -27,7 +27,6 @@ helm upgrade --install faros-hub "${HUB_CHART}" \
   --kube-context "${KUBE_CONTEXT}" \
   --set "hub.hubExternalURL=${HUB_EXTERNAL_URL}" \
   --set "hub.devMode=true" \
-  --set "hub.embeddedGraphQL=true" \
   --set "hub.staticAuthTokens={${FAROS_STATIC_TOKEN}}" \
   --set "hub.tls.selfSigned.dnsNames={${HUB_DOMAIN}}" \
   "${helm_image_args[@]}" \

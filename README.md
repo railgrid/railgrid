@@ -186,7 +186,7 @@ skips them with a warning. `exec` needs a prior sync.
 
 | Path | Contents |
 |---|---|
-| `cmd/` | `faros` CLI (which also runs the agent through `faros agent`), `faros-hub`, the GraphQL gateway, and the release helper |
+| `cmd/` | `faros` CLI (which also runs the agent through `faros agent`), `faros-hub`, and the release helper |
 | `pkg/hub` | Hub: control-plane bootstrap, tenancy, provider registry, proxies, MCP aggregation |
 | `pkg/agent` | Edge agent and tunnel |
 | `providers/` | The providers listed above, each its own Go module |

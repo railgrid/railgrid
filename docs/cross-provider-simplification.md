@@ -81,7 +81,7 @@ Compressed here; the full per-channel tables with anchors are in the Appendix.
 
 | # | Mechanism | Used by | Identity | Who authorizes |
 |---|---|---|---|---|
-| M1 | Bound CRs via APIBinding (GraphQL gateway or `/clusters/…`) | everyone | caller bearer | kcp RBAC |
+| M1 | Bound CRs via APIBinding over `/clusters/…` (hub kcp proxy, kube REST) | everyone | caller bearer | kcp RBAC |
 | M2 | Provider SA + APIExportEndpointSlice VW + permission claims | every provider's controllers | provider SA | claims accepted at Enable |
 | M3 | Blanket `secrets` claims used as a credential side-door | app-studio, code, databricks, edges, agents, infrastructure | provider SA | claims only — no owning-provider consent |
 | M4 | Hub backend-proxy data-plane paths (`dataplane/`, `edgeproxy/`, `agent/`, `s2s/`, kuery REST) | app-studio, agents, kuery, portal | caller bearer | provider-side caller-scoped GET + SSAR |
@@ -141,7 +141,7 @@ absorbs. M5 is kept but demoted to a projection.
 | MCP aggregate | bearer required but **never verified**; cluster ID is caller-asserted from the URL and injected as `X-Faros-Tenant`/`X-Faros-Cluster` | [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go), [federation.go:242](../pkg/hub/mcpaggregate/federation.go) |
 | UI proxy | does **not** strip inbound `X-Faros-*` identity headers (the backend proxy does) | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | Backend proxy identity | fail-open: resolver failure forwards the request without identity headers | [proxy.go:120](../pkg/hub/providers/proxy.go) |
-| GraphQL gateway | accepts the token from the `?token=` query parameter (log/referrer leak path) | [graphql.go:174](../pkg/hub/graphql.go) |
+| ~~GraphQL gateway~~ | ~~accepted the token from the `?token=` query parameter (log/referrer leak path)~~ — **resolved by removal**: the embedded GraphQL gateway no longer exists | — |
 | `/metrics` (new in PR #499) | unauthenticated on the public listener, serving the entire `legacyregistry` | [server.go:206](../pkg/hub/server.go) |
 
 ### 2.3 Two grant systems for one question
@@ -187,7 +187,7 @@ largest source of conceptual confusion the audit found.
 
 ### P1 — Control plane
 
-Unchanged in mechanics (APIBinding, GraphQL gateway as the caller, provider
+Unchanged in mechanics (APIBinding, the hub kcp proxy as the caller, provider
 SA + endpointslice for reconciliation). Two changes in policy:
 
 1. **Blanket `secrets` claims stop being a cross-provider API.** A provider
@@ -349,12 +349,12 @@ noted.
 Authenticate heartbeat (providers already hold `FAROS_HUB_TOKEN`); move
 `GET /api/providers` under the authenticated subrouter; verify bearer↔cluster
 in the MCP aggregate; strip `X-Faros-*` in the UI proxy; move `/metrics` off
-the public listener; drop GraphQL `?token=` support.
+the public listener. (The GraphQL `?token=` item is closed: the gateway was
+removed.)
 Anchors: [server.go:206,355,358](../pkg/hub/server.go),
 [heartbeat.go](../pkg/hub/providers/heartbeat.go),
 [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go),
-[proxy.go:53](../pkg/hub/providers/proxy.go),
-[graphql.go:174](../pkg/hub/graphql.go).
+[proxy.go:53](../pkg/hub/providers/proxy.go).
 
 **Phase 1 — Provider Actions onto the P2 grammar (reshapes PR #499). DONE on
 this branch.**
@@ -426,7 +426,7 @@ credential, **X** = external credential owned by the tenant connection.
 | Ch | Source → target | Mechanism | Id | Anchor |
 |---|---|---|---|---|
 | A1 | app-studio → infra dataplane (log/sync/restart/env/process/exec/proxy) | M4 | C | [dataplane_client.go:36](../providers/app-studio/api/dataplane_client.go) |
-| A2 | app-studio → infra Templates (read) | M1 (GraphQL) | C | [project_template.go:608](../providers/app-studio/api/project_template.go) |
+| A2 | app-studio → infra Templates (read) | M1 (kube REST) | C | [project_template.go:608](../providers/app-studio/api/project_template.go) |
 | A3 | app-studio → infra Instances (CRUD; generic to any bound GVR) | M1 | C | [provider_resources.go:148](../providers/app-studio/api/provider_resources.go) |
 | A4 | app-studio → code CRs (Connections/Repos/Commits/Packages, incl. writes) | M1 | C | [code_repository.go:38](../providers/app-studio/api/code_repository.go) |
 | A5 | app-studio → code tools (checkout/commit/build) via hub aggregate | M5 | C | [llm.go:1572](../providers/app-studio/api/llm.go) |
@@ -452,7 +452,7 @@ credential, **X** = external credential owned by the tenant connection.
 | B4 | `POST /api/provider-actions/workload/exchange` → infra attestation | fail-closed; unauthenticated route by design (attestation is authn) | [workloadidentity.go:132](../pkg/hub/workloadidentity/workloadidentity.go) |
 | B5 | MCP aggregate `/services/mcpserver/{cluster}/…/mcp` | **fail-open**: token unverified, cluster caller-asserted | [handler.go:65](../pkg/hub/mcpaggregate/handler.go) |
 | B6 | MCPServer controller tool discovery (background) | hub-minted per-MCPServer SA token | [controller.go:163](../pkg/hub/controllers/mcpserver/controller.go) |
-| B7 | GraphQL gateway `/graphql/{cluster}` | caller-scoped at kcp; `?token=` accepted | [graphql.go:168](../pkg/hub/graphql.go) |
+| B7 | ~~GraphQL gateway `/graphql/{cluster}`~~ | removed (with its `?token=` acceptance); tenant traffic goes through B8 | — |
 | B8 | kcp front door `/clusters/…` (static/SA/OIDC dispatch) | fail-closed; Org-path and root-path refusals; membership check | [proxy.go:260](../pkg/server/proxy/proxy.go) |
 | B9 | UI proxy `/ui/providers/{name}/*` | **does not strip `X-Faros-*`** | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | B10 | `GET /api/providers` | **unauthenticated** | [api.go:164](../pkg/hub/providers/api.go) |

@@ -39,19 +39,20 @@ data.
   handles a user's request to tenant resources.
 - **Flag** impersonation, token swapping, or "if no token, use the system
   client" fallbacks on user-facing paths.
-- Discovery/schema-building at **startup** may legitimately use admin
-  credentials (e.g. the graphql gateway's
-  `--workspace-schema-kubeconfig-override`). Per-request serving may not. Hold
-  this line.
+- Bootstrap at **startup** may legitimately use admin credentials (e.g. the
+  hub's own kcp bootstrap in `pkg/hub/kcp/bootstrap.go` — workspaces,
+  APIExports, the core `APIBinding`). Per-request serving may not. Hold this
+  line.
 
 ## 3. No new clients — reuse the scoped constructors
 
 - **Flag** new direct uses of `kubernetes.NewForConfig`, `dynamic.NewForConfig`,
-  `rest.RESTClientFor`, `client.New` (controller-runtime), raw GraphQL HTTP
-  clients, etc., introduced in backend/provider request paths instead of the
-  existing `tenant/`-package constructors.
-- A backend should not stand up its own GraphQL or kube client to reach data it
-  should obtain through the caller-scoped client. If a PR adds one, ask why the
+  `rest.RESTClientFor`, `client.New` (controller-runtime), raw HTTP clients
+  against `/clusters/…`, etc., introduced in backend/provider request paths
+  instead of the existing `tenant/`-package constructors
+  (`provider-sdk/tenantaccess`).
+- A backend should not stand up its own kube client (typed, dynamic, or raw
+  HTTP) to reach data it should obtain through the caller-scoped client. If a PR adds one, ask why the
   existing per-tenant client path doesn't suffice.
 
 ## 4. Provider boundary / hub-mediation

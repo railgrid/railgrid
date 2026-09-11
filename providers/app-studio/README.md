@@ -135,7 +135,7 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `FAROS_HUB_URL` | Hub base URL for tenant GraphQL, caller-scoped catalog lookup, and Provider Actions forwarding |
+| `FAROS_HUB_URL` | Hub base URL for caller-scoped tenant workspace access (kcp proxy), catalog lookup, and Provider Actions forwarding |
 | `FAROS_HUB_PUBLIC_URL` | Browser-reachable HTTPS hub origin for private preview authorization redirects and one-use browser-session handoffs; may differ from the internal `FAROS_HUB_URL`, and private browser inspection fails closed when unset or invalid |
 | `FAROS_HUB_TOKEN` | Bearer token for the heartbeat |
 | `FAROS_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |

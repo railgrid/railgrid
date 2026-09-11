@@ -1,7 +1,7 @@
 // go.work.template — committed seed for the per-developer go.work.
 //
 // go.work itself is gitignored (it's local + may reference checkouts outside
-// this repo, e.g. a sibling kubernetes-graphql-gateway). Copy this to go.work
+// this repo, e.g. a sibling kcp checkout). Copy this to go.work
 // to get a working multi-module workspace:
 //
 //	cp go.work.template go.work

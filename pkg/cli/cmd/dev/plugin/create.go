@@ -792,10 +792,6 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		"hubExternalURL": hubExternalURL,
 		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
 		"devMode":        true,
-		// The portal makes GraphQL calls under /graphql/{clusterName}; run the
-		// gateway in-process so a default `faros dev init` setup serves the UI
-		// out of the box.
-		"embeddedGraphQL": true,
 	}
 	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
 	// authenticates via Dex; mixing both would be confusing and unnecessary.

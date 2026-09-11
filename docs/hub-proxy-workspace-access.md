@@ -1,6 +1,6 @@
 # Hub kcp-proxy — per-workspace access (membership-gated)
 
-**Status:** Design agreed — ready for implementation (A-1…A-6)
+**Status:** Option A implemented in `pkg/server/proxy` (A-1/A-3 membership gate in `authorizer.go`; A-2 as a per-caller, lazily populated topology cache rather than a reconciler-maintained index). The interim GraphQL path (Option B) has been removed; the proxy is the only tenant data path.
 **Owner:** TBD
 **Last updated:** 2026-06-27
 **Reads as a delta on:** [organizations.md](./organizations.md) (decision O-10), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
@@ -173,7 +173,7 @@ the A-2 topology index for the `(org, ws) → clusterID` direction:
   ID, then writes a kubeconfig server URL of `<front-proxy>/clusters/{id}`).
 - **List many:** `GET /api/orgs/{org}/workspaces` (and the switcher's
   `UserMembershipIndex`-backed listing) carry `clusterID` per row, so the portal
-  retargets its kcp/GraphQL client on a workspace switch without an extra call.
+  retargets its kcp client on a workspace switch without an extra call.
 
 Because these endpoints are already gated by `tenant.Middleware` (the caller
 must hold a Membership in `(org, ws)`), a client can only resolve IDs for
@@ -233,13 +233,13 @@ workspaces.
 
 ---
 
-## Relationship to App Studio (Option B)
+## History: the interim GraphQL path (Option B)
 
-App Studio needed per-workspace access *now* and could not wait on a change to
-the shared proxy, so it took **Option B**: route tenant traffic through the
-hub's embedded **GraphQL gateway** (`/graphql/{clusterID}`), which serves any
-workspace the caller has RBAC in and is **not** `DefaultCluster`-gated. That
-work added two pieces this proposal builds on:
+App Studio needed per-workspace access before the shared proxy changed, so it
+first took **Option B**: route tenant traffic through a hub-embedded GraphQL
+gateway (`/graphql/{clusterID}`), which served any workspace the caller had
+RBAC in and was **not** `DefaultCluster`-gated. That work added two pieces
+Option A built on:
 
 - The backend proxy injects **`X-Faros-Cluster`** — the resolved tenant's
   logical-cluster ID
@@ -250,13 +250,14 @@ work added two pieces this proposal builds on:
   **non-default** workspace works end-to-end once the addressing is right — i.e.
   kcp authorizes it. That is the empirical basis for A-1.
 
-Option A does **not** replace Option B. GraphQL remains the right surface for
-provider data planes (typed schema, subscriptions, the `*Yaml`/`applyYaml`
-conveniences). Option A is about the **raw kcp proxy** — `kubectl`, the portal's
-direct kcp calls, and any future provider that wants user-identity kcp access
-without standing up a GraphQL client. Once A-1 lands, a provider could choose
-either surface; today the proxy forces non-default workspaces onto GraphQL or
-the hub REST handlers.
+Option A has since landed and replaced Option B outright. The GraphQL gateway
+is gone from the hub; App Studio's `tenant/` package now builds a dynamic client
+over `{hub}/clusters/{X-Faros-Cluster}` as the caller
+(`provider-sdk/tenantaccess.NewDynamicClient`), and the provider portals
+(code, edges, infrastructure, databricks, App Studio's resource picker) read and
+write tenant resources as plain kube REST through `/clusters/{cluster}` via the
+shared `portalkit` kube client. `kubectl`, the portals, and provider backends
+acting as the caller all share the one membership-gated proxy path.
 
 ---
 

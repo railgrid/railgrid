@@ -337,7 +337,7 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 
 	// Grant the new member RBAC in the workspace's kcp cluster. The UMI
 	// row alone is portal metadata — without a matching kcp CRB the
-	// GraphQL gateway 403s the moment the member tries to switch to
+	// kcp proxy 403s the moment the member tries to switch to
 	// this workspace. SAs currently map both admin+member to
 	// cluster-admin (see serviceaccounts.buildCRB); we follow the same
 	// posture until the faros:workspace:admin/member ClusterRoles are

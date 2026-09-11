@@ -154,7 +154,7 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 	if !ok {
 		return nil, identity{}, false
 	}
-	if s.gql == nil {
+	if s.tenant == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
 		return nil, identity{}, false
 	}
@@ -166,7 +166,7 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster")
 		return nil, identity{}, false
 	}
-	scope, err := s.gql.For(id.clusterID, id.token)
+	scope, err := s.tenant.For(id.clusterID, id.token)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating tenant client: "+err.Error())
 		return nil, identity{}, false
@@ -177,5 +177,5 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 	_ = s.store.SaveTenantRef(r.Context(), id.clusterID, store.TenantRef{
 		OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, UpdatedAt: time.Now().UTC(),
 	})
-	return agentsclient.NewFromGraphQL(scope), id, true
+	return agentsclient.NewFromScope(scope), id, true
 }

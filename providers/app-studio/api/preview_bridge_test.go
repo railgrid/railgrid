@@ -29,7 +29,9 @@ import (
 	"github.com/gorilla/mux"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
 )
 
 func TestPreviewBridgeCapabilityRoundTripAndTamperResistance(t *testing.T) {
@@ -232,36 +234,12 @@ spec:
   template:
     name: application
 `
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
-			}})
-		case strings.Contains(request.Query, "TemplateYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{"TemplateYaml": string(templateJSON)}},
-			}})
-		case strings.Contains(request.Query, "InstanceYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{
-					"InstanceYaml": `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`,
-				}},
-			}})
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-	}))
-	t.Cleanup(graphQL.Close)
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
+	proxy.Add(templatesGVR, tenanttest.ObjectFromYAML(t, string(templateJSON)))
+	proxy.Add(tenant.InfrastructureInstancesResource.GVR, tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`))
 
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), nil, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), nil, nil, "", false)
 	signer, err := newEphemeralPreviewBridgeCapabilitySigner()
 	if err != nil {
 		t.Fatal(err)

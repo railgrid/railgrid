@@ -39,10 +39,11 @@ the how):
 
 **Deferred (do NOT block phase 1):**
 
-- GraphQL discovery of provider CRs after `APIBinding` lands — **must work
-  by end of phase 3**; gateway already does APIExport-based discovery for
-  first-party CRs, so expected to "just work", but needs validation. If it
-  doesn't, file follow-up; do not gate phase 1–2.
+- Bound provider CRs reachable through the hub's kcp proxy
+  (`/clusters/{cluster}/apis/{group}/…`) after `APIBinding` lands — **must
+  work by end of phase 3**; the proxy forwards to kcp as the caller, so this
+  is kcp's own binding semantics and expected to "just work", but needs
+  validation. If it doesn't, file follow-up; do not gate phase 1–2.
 - Cross-provider dependencies — **explicitly out of scope** for v1. A
   provider's controller can error out if its prerequisite APIExport isn't
   bound.
@@ -58,7 +59,7 @@ detailed under §"Portal changes" + §"Phase 2 implementation plan".
 - Layout + side nav: [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) — hardcoded `navItems` at lines 48-53 becomes computed
 - Bootstrap point: [portal/src/App.vue](../portal/src/App.vue) — auth detect + load providers store before render
 - Static routes: [portal/src/router/index.ts](../portal/src/router/index.ts)
-- GraphQL queries: [portal/src/graphql/queries/](../portal/src/graphql/queries/) (new `providers.ts`)
+- Catalog + bindings data: hub REST (`GET /api/providers`, `/api/orgs/{org}/…`) consumed by [portal/src/stores/providers.ts](../portal/src/stores/providers.ts)
 - Dev proxy: [portal/vite.config.ts](../portal/vite.config.ts)
 - CSP injection point: [pkg/hub/portal.go](../pkg/hub/portal.go) — middleware around the embedded SPA handler
 
@@ -74,7 +75,7 @@ that brings:
 2. A **UI** (micro-frontend, any stack) shown inside the faros portal —
    optional.
 3. Optional **controllers** reconciling the provider's resources.
-4. Optional **custom HTTP backend** (REST/GraphQL/WebSocket) for the UI
+4. Optional **custom HTTP backend** (REST/WebSocket) for the UI
    to talk to, proxied through the hub.
 5. Optional **virtual workspace** (advanced) for non-CRD verbs.
 
@@ -160,7 +161,7 @@ Single origin from the browser's perspective: every request goes to
 **Key clarification on traffic flow:** provider CRs are served by kcp via
 the normal `/clusters/...` path on the hub — the same flow as faros's own
 CRDs today. The `/services/providers/{name}` proxy is *only* for the
-provider's own custom HTTP backend (REST/GraphQL/WS), not for CR traffic.
+provider's own custom HTTP backend (REST/WS), not for CR traffic.
 
 ---
 
@@ -644,7 +645,6 @@ Both become provider-aware.
 |---|---|
 | `portal/src/stores/providers.ts` | Pinia store: catalog list, current user's bindings, derived nav items, route registration |
 | `portal/src/router/providers.ts` | `registerProviderRoutes(bindings)` — idempotent `router.addRoute()` calls |
-| `portal/src/graphql/queries/providers.ts` | `LIST_PROVIDER_CATALOG_ENTRIES`, `LIST_PROVIDER_BINDINGS`, plus result types |
 | `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
 | `portal/src/pages/ProviderFrame.vue` | Per-provider custom-element host; loads the SRI-pinned bundle, mounts `<faros-provider-{name}>`, pushes `farosContext` (host fetch, tenant, theme, subPath), bubbles `faros-navigate` |
 | `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs an `APIBinding` directly to kcp in the user's workspace with the claims marked `Accepted` |
@@ -658,7 +658,6 @@ Both become provider-aware.
 | [portal/src/App.vue](../portal/src/App.vue) | After `auth.detectAuthMode()`, if authenticated, `await providersStore.load()` before rendering `<router-view />`. Show loading spinner during. This guarantees dynamic routes exist *before* Vue tries to match a deep link like `/providers/cost/foo`. |
 | [portal/src/router/index.ts](../portal/src/router/index.ts) | Add static catalog route `{ path: '/providers', name: 'providers', component: () => import('@/pages/ProvidersPage.vue') }` **before** the `:pathMatch(.*)*` not-found route at line 62. Provider sub-routes added dynamically by the store. |
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
-| [portal/src/graphql/mutations.ts](../portal/src/graphql/mutations.ts) | Add `CREATE_PROVIDER_BINDING`, `DELETE_PROVIDER_BINDING` |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
 | [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | Sets the portal `Content-Security-Policy`: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:`. `script-src 'self'` (no `'unsafe-inline'`) admits provider bundles because they are hub-proxied and therefore same-origin; the portal ships no inline script (the theme pre-paint bootstrap is `portal/public/theme-bootstrap.js`). `frame-src` is for the portal's own iframes (App Studio preview hosts), not for providers. |
 
@@ -764,8 +763,7 @@ outside the provider's allow list
 |---|---|
 | `/services/providers/{name}/` | the provider's own backend, via the hub proxy (hub-proxy auth model) |
 | `/ui/providers/{name}/` | its own static assets |
-| `/graphql/` | `/graphql/{cluster}` — the embedded GraphQL gateway (cluster-in-path model) |
-| `/clusters/` | `/clusters/{cluster}/apis/…` — kcp REST by cluster (cluster-in-path model) |
+| `/clusters/` | `/clusters/{cluster}/apis/…` — kcp REST by cluster through the hub's kcp proxy (cluster-in-path model; the `portalkit` kube client) |
 | `/api/orgs/{orgUUID}/` | org-scoped hub REST, as the user |
 | `/api/providers` (GET/HEAD) | the catalog |
 
@@ -1144,24 +1142,22 @@ workspace by hand.
 |---|---|---|
 | 1 | `CatalogEntry` CRD + catalog controller (workspace + SA + Secret + schema apply) + registry + heartbeat endpoint + backend proxy | An example provider's chart installs, hub provisions everything, provider pod heartbeats, `/services/providers/example/*` reaches the backend |
 | 2 | UI proxy + `ProviderFrame.vue` + dynamic routes + providers store + AppLayout nav integration + CSP + dev proxy | A static "hello" provider UI loads inside the portal at `/providers/hello`, side nav shows it, theme + tenant context arrive on `farosContext` |
-| 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + direct `APIBinding` create against kcp + nav filter to user's APIBindings + GraphQL validation of bound CRs. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND queryable via embedded GraphQL gateway. |
+| 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + direct `APIBinding` create against kcp + nav filter to user's APIBindings + validation that bound CRs are reachable through the kcp proxy. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND readable via `/clusters/{cluster}` kube REST. |
 | 4 | Provider SDK + example chart in `examples/provider-hello/` | Third party can copy the example and ship a working provider end-to-end |
 | 5 | Hardening: RBAC fuzz, cache-bust verification, e2e tests, optional `virtualWorkspace` opt-in, claim re-acceptance flow on chart upgrade | Ready to declare stable |
 
 ## Deferred items
 
-1. **GraphQL discovery of provider CRs** — REQUIRED by end of phase 3, not
-   optional. Once a tenant workspace has an `APIBinding` to a provider's
-   `APIExport`, the embedded GraphQL gateway MUST expose the bound CRs in
-   that workspace's schema. The gateway already discovers schemas via
-   APIExport for first-party faros resources (see
-   [pkg/hub/graphql.go](../pkg/hub/graphql.go) and
-   [cmd/graphql/main.go](../cmd/graphql/main.go) — points at
-   `root:faros:providers`). Expected to work transparently, but validate in
-   phase 3 with the example provider's `Greeting` CR appearing in GraphQL.
-   If discovery is not automatic, the binding controller will need to
-   trigger a gateway refresh — file as a follow-up task, do NOT block phase
-   1 or 2.
+1. **Bound CRs reachable through the kcp proxy** — REQUIRED by end of phase
+   3, not optional. Once a tenant workspace has an `APIBinding` to a
+   provider's `APIExport`, the bound CRs MUST be reachable via
+   `/clusters/{cluster}/apis/{group}/{version}/{resource}` kube REST through
+   the hub's kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)),
+   which forwards to kcp as the caller. This is kcp's own binding semantics,
+   so it is expected to work transparently — validate in phase 3 with the
+   example provider's `Greeting` CR listing through the proxy
+   (`kubectl --server=$HUB/clusters/$CLUSTER get greetings`). If it does
+   not, file as a follow-up task, do NOT block phase 1 or 2.
 2. **Cross-provider dependencies** — out of scope for v1.
 3. **Heartbeat over kcp leases** — possible v2 simplification.
 4. **Per-permission-claim UI toggles** — v2.
@@ -1268,7 +1264,7 @@ place. The list below is descriptive, not prescriptive.
 - No tenant Enable/Disable flow yet — every authenticated user sees every
   installed provider. Phase 3 adds the per-tenant `APIBinding` create from
   the portal and filters the nav.
-- No GraphQL validation.
+- No validation of bound CRs through the kcp proxy.
 - No Helm example chart yet (phase 4).
 - No `virtualWorkspace` opt-in path (phase 5).
 
@@ -1289,7 +1285,7 @@ operations:
 2. **UI proxy** — `pkg/hub/providers/proxy.go` (already created in phase
    1) gets the `NewUIProxy` handler wired into the router. Existing
    backend proxy stays.
-3. **GraphQL queries** + **Pinia store** + **route registration helper** —
+3. **Catalog/bindings REST calls** + **Pinia store** + **route registration helper** —
    landed together; nothing depends on order between them.
 4. **App.vue** — await `providersStore.load()` before mounting
    `<router-view />`. Critical for deep-link bootstrapping.

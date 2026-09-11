@@ -235,9 +235,10 @@ declared rather than discovered. The created object carries the edge label so it
 lists alongside discovered ones but **not** the discovered label, so the
 discovery reconciler leaves it alone.
 
-GraphQL wire identifiers follow the gateway convention for kind `Service`:
-list `Services`, input `EdgesFarosShV1alpha1Service_Input`, mutation
-`updateService`.
+On the wire this is plain kube REST on `services.edges.faros.sh/v1alpha1`
+through the hub's kcp proxy (`/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/…`):
+the portal lists with `GET`, creates with `POST`, and updates with `PUT` or
+server-side apply via the shared `portalkit` kube client.
 
 ## 8. Using it
 

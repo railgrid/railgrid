@@ -803,11 +803,10 @@ done
 )
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
-# We use ONLY the front-proxy kubeconfig, for both the primary connection AND
-# the GraphQL listener. The listener locates the APIExportEndpointSlice by
-# workspace PATH (root:faros:providers); only the front-proxy resolves paths to
-# cluster-IDs — shards serve cluster-IDs directly and 404 on a path. So we do
-# NOT set --kcp-shard-kubeconfig (the hub then uses front-proxy for both).
+# We use ONLY the front-proxy kubeconfig. The hub's controllers locate the
+# APIExportEndpointSlice by workspace PATH (root:faros:providers); only the
+# front-proxy resolves paths to cluster-IDs — shards serve cluster-IDs directly
+# and 404 on a path. So we do NOT set --kcp-shard-kubeconfig.
 local_resource(
     'hub-kcp-secrets',
     cmd='''
@@ -896,7 +895,6 @@ k8s_yaml(helm(
         'hub.tls.existingSecret=%s' % hub_tls_secret_name,
         'hub.tls.selfSigned.enabled=false',
         'hub.devMode=true',
-        'hub.embeddedGraphQL=true',
         # Match the plain Tiltfile's App Studio in-memory message store wiring.
         'hub.appStudio.inMemoryMessageStore=true',
         'hub.staticAuthTokens={dev-token,dev-token2}',
@@ -942,7 +940,7 @@ local_resource(
 # ---------------------------------------------------------------------------
 # Static-token auth for kcp (operator-native, via spec.auth.tokenAuthFile).
 #
-# The hub/GraphQL gateway forwards the user's bearer token (dev-token) to kcp.
+# The hub's kcp proxy forwards the user's bearer token (dev-token) to kcp.
 # For kcp to trust it, the front-proxy and shards need --token-auth-file pointed
 # at a token CSV. Our kcp-operator image carries PR #240 (auth.tokenAuthFile),
 # so the operator mounts the CSV and adds the flag itself: the included

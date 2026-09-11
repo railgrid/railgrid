@@ -254,9 +254,8 @@ type ProviderProxy struct {
 	// clusterResolver, when set, maps the resolved tenant workspace path to
 	// its kcp logical-cluster ID, injected as X-Faros-Cluster. Providers need
 	// the ID (not the path) to address per-workspace surfaces that key on it —
-	// notably the hub's GraphQL gateway at /graphql/clusters/{id}, whose
-	// per-cluster schema lookup only matches a cluster ID. See
-	// SetClusterResolver.
+	// notably the hub's kcp proxy at /clusters/{id}, which authorizes by
+	// cluster ID and rejects workspace paths. See SetClusterResolver.
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
 
 	// delegatedIssuer mints the token that replaces the caller's bearer on

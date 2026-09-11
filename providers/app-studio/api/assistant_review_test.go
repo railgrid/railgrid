@@ -29,8 +29,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
 )
 
 func TestAssistantReviewStartBuildsSeparateBoundedReadOnlyTurn(t *testing.T) {
@@ -83,33 +84,13 @@ func TestAssistantReviewModeIsReadOnlyAndFindingOriented(t *testing.T) {
 func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, store.Scope, *initialProjectBootstrapCaptureEngine) {
 	t.Helper()
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
 	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
-		case strings.Contains(request.Query, "SecretYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
-		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{}})
-		}
-	}))
-	t.Cleanup(graphQL.Close)
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
+	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), messages, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), messages, nil, "", false)
 	engine := &initialProjectBootstrapCaptureEngine{requests: make(chan projectAssistantRunRequest, 1)}
 	server.assistantEngine = engine
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}

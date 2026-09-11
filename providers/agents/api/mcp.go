@@ -78,10 +78,10 @@ func (s *Server) MCPHandler() http.Handler {
 // mcpClient resolves the caller's tenant client from the identity the hub (or
 // its federation client) put on the MCP request. Unlike requireClient it does
 // not demand a parseable tenant path: federation forwards the cluster ID as
-// both X-Faros-Tenant and X-Faros-Cluster, and the GraphQL client only needs
+// both X-Faros-Tenant and X-Faros-Cluster, and the tenant client only needs
 // the cluster ID plus the caller's token.
 func (s *Server) mcpClient(r *http.Request) (*agentsclient.Client, error) {
-	if s.gql == nil {
+	if s.tenant == nil {
 		return nil, errors.New("tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
 	}
 	clusterID := strings.TrimSpace(r.Header.Get("X-Faros-Cluster"))
@@ -91,11 +91,11 @@ func (s *Server) mcpClient(r *http.Request) (*agentsclient.Client, error) {
 	if bearerToken(r) == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")
 	}
-	scope, err := s.gql.For(clusterID, bearerToken(r))
+	scope, err := s.tenant.For(clusterID, bearerToken(r))
 	if err != nil {
 		return nil, err
 	}
-	return agentsclient.NewFromGraphQL(scope), nil
+	return agentsclient.NewFromScope(scope), nil
 }
 
 // agentSummary is one row of list_agents.

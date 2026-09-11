@@ -26,12 +26,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	appskills "github.com/faroshq/provider-app-studio/skills"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -265,7 +265,7 @@ func TestProjectIntegrationGrantRequiresConsentAndOwnsAudit(t *testing.T) {
 			Consent:       providerCatalogActionConsent{Required: true, Prompt: "Allow table queries?", Scope: "orders"},
 		}},
 	}}
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return catalog, nil
@@ -308,7 +308,7 @@ func TestProjectIntegrationGrantRejectsDigestDriftWithoutMutation(t *testing.T) 
 		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
 	})
 	currentDigest := testProjectActionSchemaDigest
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{
@@ -355,7 +355,7 @@ func TestProjectIntegrationRevokePreservesAuditWithoutProvider(t *testing.T) {
 	}}
 	catalogCalls := 0
 	catalogUnavailable := false
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		catalogCalls++
@@ -428,7 +428,7 @@ func TestProjectIntegrationRevokePreservesAuditWithoutProvider(t *testing.T) {
 
 func TestProjectIntegrationReactivationRequiresFreshCatalogConsent(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(true))
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{

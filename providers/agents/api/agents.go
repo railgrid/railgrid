@@ -51,20 +51,7 @@ func writeResourceError(w http.ResponseWriter, err error) {
 	case apierrors.IsUnauthorized(err):
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", err.Error())
 	default:
-		// The GraphQL gateway flattens admission errors into plain messages, so
-		// sniff the well-known validation phrases before blaming the upstream.
-		msg := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(msg, "is invalid") || strings.Contains(msg, "validation") ||
-			strings.Contains(msg, "must be") || strings.Contains(msg, "required"):
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		case strings.Contains(msg, "forbidden") || strings.Contains(msg, "not allowed"):
-			writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
-		case strings.Contains(msg, "not found"):
-			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
-		default:
-			writeStatus(w, http.StatusBadGateway, "UpstreamError", err.Error())
-		}
+		writeStatus(w, http.StatusBadGateway, "UpstreamError", err.Error())
 	}
 }
 

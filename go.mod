@@ -21,10 +21,8 @@ require (
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/platform-mesh/kubernetes-graphql-gateway v1.16.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.56.0
 	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0
@@ -54,9 +52,7 @@ require (
 replace cloud.google.com/go => cloud.google.com/go v0.116.0
 
 // kcp 0.32 (pkg/cache/server) imports apimachinery/v2/pkg/util/crypto, which
-// only exists from v2.32.0. v2.32.0 also still carries the reflector cache APIs
-// (HasSyncedChecker, two-arg PopBatch) that kubernetes-graphql-gateway needs,
-// so a single pin satisfies both. Keep this in lock-step with the kcp release.
+// only exists from v2.32.0. Keep this in lock-step with the kcp release.
 replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.32.0
 
 // KCP kubernetes forks - required for cluster-aware API machinery
@@ -148,7 +144,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/go-errors/errors v1.4.2 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
@@ -165,7 +160,6 @@ require (
 	github.com/go-openapi/swag/stringutils v0.26.0 // indirect
 	github.com/go-openapi/swag/typeutils v0.26.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.0 // indirect
-	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
@@ -176,13 +170,12 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/gosuri/uitable v0.0.4 // indirect
-	github.com/graphql-go/graphql v0.8.1 // indirect
-	github.com/graphql-go/handler v0.2.4 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect
@@ -228,7 +221,6 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/pkg/errors v0.9.2-0.20201214064552-5dd12d0cfe7f // indirect
-	github.com/platform-mesh/golang-commons v0.17.8 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/pquerna/cachecontrol v0.1.0 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
@@ -238,8 +230,6 @@ require (
 	github.com/redis/go-redis/v9 v9.17.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
-	github.com/rs/cors v1.11.1 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/rubenv/sql-migrate v1.8.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -248,6 +238,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/soheilhy/cmux v0.1.5 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20220101234140-673ab2c3ae75 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xiang90/probing v0.0.0-20221125231312-a49e3df8f510 // indirect
@@ -325,8 +316,6 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
-
-replace github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626182922-d10b61a76a93
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 

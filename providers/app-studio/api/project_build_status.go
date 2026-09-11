@@ -348,8 +348,8 @@ func newerRepositoryCommit(candidate, selected *unstructured.Unstructured) bool 
 }
 
 // findPackageForComponentInRepository narrows the package match to the
-// project repository before looking at the host package name. The GraphQL
-// gateway normally applies the label selector server-side, but a transport
+// project repository before looking at the host package name. The API
+// server normally applies the label selector server-side, but a transport
 // can return extra objects (and stale Package objects can have inconsistent
 // metadata), so both the label and spec.repositoryRef are required here.
 func findPackageForComponentInRepository(items []unstructured.Unstructured, component, repositoryRef string) *unstructured.Unstructured {

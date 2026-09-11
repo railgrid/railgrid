@@ -53,9 +53,8 @@ var (
 	fakeAttestor   *fixture.FakeInfrastructureAttestor
 	liveOnly       bool
 
-	appStudioPort   = "18085"
-	databricksPort  = "18086"
-	graphqlGRPCPort = "25063"
+	appStudioPort  = "18085"
+	databricksPort = "18086"
 )
 
 const (
@@ -89,7 +88,7 @@ func TestMain(m *testing.M) {
 
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
-	for _, port := range []string{hubPort, kcpPort, appStudioPort, databricksPort, graphqlGRPCPort, "2380"} {
+	for _, port := range []string{hubPort, kcpPort, appStudioPort, databricksPort, "2380"} {
 		if portInUse(port) {
 			fmt.Fprintf(os.Stderr, "port :%s already in use; stop the provider-actions E2E processes and retry\n", port)
 			os.Exit(2)
@@ -127,10 +126,6 @@ func TestMain(m *testing.M) {
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-secure-port", kcpPort,
-		"--embedded-graphql",
-		"--graphql-apiexport-slice-name", "core.faros.sh",
-		"--graphql-apiexport-logical-cluster", "root:faros:system:controllers",
-		"--graphql-grpc-addr", "127.0.0.1:"+graphqlGRPCPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
 		"--static-auth-token", staticToken,

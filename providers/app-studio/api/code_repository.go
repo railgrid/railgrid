@@ -547,8 +547,7 @@ func codeProviderResourceMissing(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "server could not find the requested resource") ||
-		strings.Contains(msg, "the server doesn't have a resource type") ||
-		(strings.Contains(msg, `"code_faros_sh"`) && (strings.Contains(msg, "cannot query field") || strings.Contains(msg, "unknown field")))
+		strings.Contains(msg, "the server doesn't have a resource type")
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, condType string) bool {

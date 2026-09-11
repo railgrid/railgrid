@@ -6,8 +6,8 @@ path** (contract 2), and the **provider-to-provider path** (contract 3). It
 explains the hub plumbing that enforces them, how the portal authenticates,
 which providers conform today, and where the deliberate exceptions are.
 
-Contracts 1 and 2 are about a provider reaching the **platform** (kcp / the
-GraphQL gateway). Contract 3 is about a provider reaching **another
+Contracts 1 and 2 are about a provider reaching the **platform** (kcp, through
+the hub's kcp proxy). Contract 3 is about a provider reaching **another
 provider** — and the rule there is that it does so *only* through that
 provider's published API, never into its backend. See
 [`providers.md` §"Provider isolation"](./providers.md#provider-isolation-the-cross-provider-boundary)
@@ -22,7 +22,8 @@ scoping), and [`security.md`](./security.md) (auth setup).
 ## Restore-from-reboot summary
 
 - There are **three** legitimate data paths. UI data flows through the
-  hub's **GraphQL gateway** (contract 1); backend/controller code reaches kcp
+  hub's **kcp proxy** at `/clusters/{cluster}` as plain Kubernetes REST
+  (contract 1); backend/controller code reaches kcp
   either as a **non-privileged provider ServiceAccount via an
   APIExportEndpointSlice** *or* as the **caller using their forwarded bearer
   token**, scoped to the tenant workspace (contract 2); and one provider
@@ -33,25 +34,27 @@ scoping), and [`security.md`](./security.md) (auth setup).
   token handling**: the UI proxy forwards **no token**, the backend proxy
   forwards the caller's `Authorization` header **as-is**.
 - "Token not known to the provider" means the **provider's backend server**.
-  The provider's **in-browser micro-frontend** does receive the raw token (it
-  runs in the user's browser and uses it to call the GraphQL gateway directly).
+  The provider's **in-browser micro-frontend** runs in the user's browser and
+  calls the hub's kcp proxy directly through the host-owned `farosContext.fetch`,
+  which attaches the caller's bearer for it.
 - **Standalone providers** (`code`, `infrastructure`, `kuery`, `app-studio`)
   satisfy contract 2 — they hold no admin client. **Built-in providers**
   (`mcp`, `kubernetesedges`, `serveredges`) run inside the hub process and use
   the hub's **admin** kcp config, so they violate contract 2 by construction.
 - `kuery` and `app-studio` drive their UI through their own **REST** backends
-  rather than GraphQL, so the bearer token reaches their backend — a contract-1
-  divergence (defensible: kuery is SQL-backed, app-studio streams chat).
+  rather than the kcp proxy, so the bearer token reaches their backend — a
+  contract-1 divergence (defensible: kuery is SQL-backed, app-studio streams chat).
 
 ---
 
 ## The two contracts
 
 **Contract 1 — UI data path.** The provider's UI micro-frontend reads and
-writes data through the hub's central **GraphQL gateway** (`/graphql/{cluster}`),
-which executes scoped to the caller's workspace. The provider's **backend
-server** is not on the UI data path and does not receive the user's bearer
-token for UI purposes.
+writes data through the hub's **kcp proxy** (`/clusters/{cluster}/apis/…`,
+plain Kubernetes REST via the shared `portalkit` kube client), which authorizes
+the caller by workspace membership and forwards to kcp as that user. The
+provider's **backend server** is not on the UI data path and does not receive
+the user's bearer token for UI purposes.
 
 **Contract 2 — API access path.** The provider's backend reaches the kube/kcp
 API **without any admin/root client**. It uses one of two scoped mechanisms:
@@ -111,17 +114,20 @@ The identity injected by the backend proxy is resolved by the
 best-effort: anonymous `/healthz` probes still pass through with no identity
 headers, they do not 401.
 
-The **GraphQL gateway** ([`pkg/hub/graphql.go`](../pkg/hub/graphql.go),
-`:185`) is the hub-side surface that contract 1 targets. It extracts the bearer
-token from the request, puts it in the request context, rewrites
-`/graphql/{rest}` → `/clusters/{rest}`, and the gateway builds a per-request
-kcp client **authenticated as the caller** — so resolvers run with the user's
-own RBAC. The provider's backend server is never in this loop.
+The **kcp proxy** ([`pkg/server/proxy/proxy.go`](../pkg/server/proxy/proxy.go))
+is the hub-side surface that contract 1 targets. It verifies the bearer,
+authorizes the requested `/clusters/{clusterID}` against the caller's
+`UserMembershipIndex` (the "Option A" design in
+[`hub-proxy-workspace-access.md`](./hub-proxy-workspace-access.md),
+`pkg/server/proxy/authorizer.go`), and forwards to kcp **authenticated as the
+caller** — so every read and write runs with the user's own RBAC, in any
+workspace they are a member of, not only their `DefaultCluster`. The provider's
+backend server is never in this loop.
 
 > The key consequence: the only way the user's token reaches a provider's
 > **backend** is via the backend proxy (`/services/providers/{name}/*`). A
-> provider that does all UI data through GraphQL keeps its backend off the
-> token path entirely.
+> provider that does all UI data through the kcp proxy keeps its backend off
+> the token path entirely.
 
 ---
 
@@ -147,11 +153,20 @@ Anchors: portal `portal/src/pages/LoginPage.vue`,
 authorize/callback + `seedUser`), `pkg/server/proxy/proxy.go` (`token-login`,
 bearer dispatch at `:248`).
 
-**Attaching the token to data requests.** The portal's GraphQL client
-(`portal/src/graphql/client.ts`, `portal/src/composables/useGraphQL.ts`)
-injects `Authorization: Bearer <token>` on every operation and routes to
-`/graphql/{clusterName}` (the cluster name is parsed from the user's kubeconfig
-at login). A 401/403 dispatches a `SESSION_EXPIRED` event → logout.
+**Attaching the token to data requests.** Provider bundles never attach the
+token themselves: they call through the host-owned `farosContext.fetch`
+(`portal/src/providers/providerFetch.ts`), which injects
+`Authorization: Bearer <token>` plus `X-Faros-Org` / `X-Faros-Workspace` from
+the host's own state and allows only the provider's own
+`/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
+`/api/orgs/{org}/`, and GET/HEAD `/api/providers`. The shared kube client
+(`provider-sdk/portalkit/kube.ts`, `createKubeClient`) builds
+`/clusters/{cluster}/apis/{group}/{version}/{resource}` (core group:
+`/clusters/{cluster}/api/v1/…`) on top of that fetch: creates are `POST`, full
+updates `PUT`, partial updates merge-patch, create-or-update is server-side
+apply (`application/apply-patch+yaml`, `force=true`), and deletes carry
+`DeleteOptions` preconditions. The host portal's own pages (including the MCP
+page) use hub REST under `/api/orgs/…`.
 
 **Hub-side verification** (`pkg/server/proxy/proxy.go:248`) dispatches by token
 shape:
@@ -170,7 +185,7 @@ older docs is stale):
 ```js
 el.farosContext = {
   subPath, basePath,            // routing
-  token: auth.token,            // <-- the RAW bearer token
+  fetch,                        // host-owned fetch: attaches bearer + tenant headers
   user: auth.user,              // { email, userId }
   tenant: auth.clusterName,     // kcp logical cluster
   orgUUID, workspaceUUID,       // sidebar selection
@@ -179,37 +194,42 @@ el.farosContext = {
 ```
 
 It re-pushes on theme change, token refresh, and workspace switch. The provider
-bundle hydrates a local auth store from it (e.g.
-`providers/mcp/portal/src/auth-adapter.ts`) and builds its **own** GraphQL
-client against `/graphql/{clusterName}` with the same `Bearer` pattern.
+bundle wraps `farosContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`)
+and builds its kube client from it (`portalkit/kube.ts`
+`createKubeClient({ fetch, cluster: ctx.tenant })`); the bearer is attached by
+the host, not by the bundle.
 
-> So the raw token **does** live in the provider's micro-frontend JS — but that
-> code runs in the user's browser, same origin, and uses the token only to call
-> the hub gateway. Contract 1's "token not known to the provider" is about the
-> provider's **server**, which only sees the token if the UI calls
-> `/services/providers/{name}/*`.
+> The bundle still executes as trusted code in the portal document, but it
+> reaches the hub only through the host fetch and its allowlist. Contract 1's
+> "token not known to the provider" is about the provider's **server**, which
+> only sees the token if the UI calls `/services/providers/{name}/*`.
 
 ---
 
-## Contract 1 conformance — UI via GraphQL
+## Contract 1 conformance — UI via the kcp proxy
 
 | Provider | UI data path | Verdict |
 |----------|--------------|---------|
-| `code` | GraphQL gateway for all CRUD; one backend probe (`/services/providers/code/oauth/github/config`) | ✅ Conforms |
-| `infrastructure` | GraphQL gateway only; backend serves no template/instance REST | ✅ Conforms |
-| `mcp` / `kubernetesedges` / `serveredges` | `useGraphQLQuery` / `graphqlMutate` against the gateway | ✅ Conforms |
+| `code` | kube REST through `/clusters/{cluster}` (`portalkit` kube client) for all CRUD; one backend probe (`/services/providers/code/oauth/github/config`) | ✅ Conforms |
+| `infrastructure` | kube REST through `/clusters/{cluster}` only; backend serves no template/instance REST | ✅ Conforms |
+| `edges` | kube REST through `/clusters/{cluster}` for its CRs; the edge data plane (kubectl proxy, SSH, per-edge MCP) is its own backend, called as the caller | ✅ Conforms |
+| `databricks` | kube REST through `/clusters/{cluster}` for its CRs | ✅ Conforms |
 | `kuery` | **REST** to `/services/providers/kuery/api/{edges,query}` — token reaches backend | ❌ Diverges |
-| `app-studio` | **REST** to `/services/providers/app-studio/api/projects/*` — token reaches backend | ❌ Diverges |
+| `app-studio` | **REST** to `/services/providers/app-studio/api/projects/*` — token reaches backend; only its resource picker reads bound CRs through the kcp proxy | ❌ Diverges |
+
+The former in-process built-ins (`mcp`, `kubernetesedges`, `serveredges`) no
+longer ship a provider UI; the hub portal's own MCP page is hub REST under
+`/api/orgs/…`.
 
 `kuery` is backed by its own SQL store (it syncs edge data into SQLite and
 answers queries from there) and `app-studio` streams chat/messages — neither
-maps cleanly onto GraphQL CRUD, so their REST backends are defensible. But they
+maps cleanly onto kube CRUD, so their REST backends are defensible. But they
 *do* hand the user's bearer token to a provider process, which is the contract-1
 departure to keep in mind.
 
 MCP endpoints (`/services/.../mcp`) are an **AI-agent** surface, not the human
-UI; `code` and `infrastructure` keep a GraphQL-clean UI even though their MCP
-servers receive the token by design.
+UI; `code` and `infrastructure` keep their UI on the kcp proxy even though their
+MCP servers receive the token by design.
 
 ---
 
@@ -276,7 +296,7 @@ internal Service.
    cross-tenant read behind the caller's identity (a SAR or a caller-scoped
    dynamic client built from the request token, not `deps.KCPConfig`).
 
-2. **`kuery` / `app-studio` UI is REST, not GraphQL.** Contract-2-clean, but
+2. **`kuery` / `app-studio` UI is REST, not the kcp proxy.** Contract-2-clean, but
    the token reaches their backend. Acceptable given their data models; flagged
    so it's a conscious choice, not drift.
 
@@ -284,10 +304,11 @@ internal Service.
 
 ## Checklist for a new provider
 
-- [ ] UI reads/writes go through `/graphql/{cluster}` (contract 1). Only add a
-      `/services/providers/{name}/*` backend for things GraphQL genuinely can't
-      do (streaming, a non-kcp store, an OAuth callback) — and know the token
-      reaches it when you do.
+- [ ] UI reads/writes go through `/clusters/{cluster}` kube REST via the
+      `portalkit` kube client (contract 1). Only add a
+      `/services/providers/{name}/*` backend for things the kcp API genuinely
+      can't do (streaming, a non-kcp store, an OAuth callback) — and know the
+      token reaches it when you do.
 - [ ] No kcp-admin / root client anywhere in the provider (contract 2).
 - [ ] Controllers run as the **minted provider SA** off the
       **APIExportEndpointSlice** (2a); declare `tenantScoped` permission claims
@@ -311,10 +332,11 @@ internal Service.
 | UI proxy (no token) | `pkg/hub/providers/proxy.go:52` |
 | Backend proxy (forwards token + injects identity) | `pkg/hub/providers/proxy.go:90` |
 | Tenant resolution (token → workspace path) | `pkg/hub/provider_tenant_resolver.go:104` |
-| GraphQL gateway (caller-scoped) | `pkg/hub/graphql.go:185` |
+| kcp proxy (membership-gated, caller-scoped) | `pkg/server/proxy/proxy.go`, `pkg/server/proxy/authorizer.go` |
 | Provider provisioning (workspace, SA, kubeconfig) | `pkg/hub/providers/provision.go` |
 | Portal login / token storage | `portal/src/pages/LoginPage.vue`, `portal/src/auth/token.ts` |
-| Portal GraphQL client | `portal/src/graphql/client.ts`, `portal/src/composables/useGraphQL.ts` |
+| Host-owned provider fetch (allowlist + bearer) | `portal/src/providers/providerFetch.ts` |
+| Provider kube client (`/clusters/{cluster}` REST) | `provider-sdk/portalkit/kube.ts` |
 | `farosContext` push to micro-frontend | `portal/src/pages/ProviderFrame.vue:151` |
 | Hub bearer dispatch / verification | `pkg/server/proxy/proxy.go:248` |
 | (2a) endpointslice multicluster mgr | `providers/code/controller_manager.go` |

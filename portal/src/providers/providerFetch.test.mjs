@@ -33,9 +33,10 @@ test('allows exactly the same-origin paths both provider auth models need', () =
   // hub-proxy model: own backend and own assets.
   assert.ok(allowed('/services/providers/agents/api/agents'))
   assert.ok(allowed('/ui/providers/agents/icon.svg'))
-  // cluster-in-path model: the GraphQL gateway and kcp REST by cluster.
-  assert.ok(allowed('/graphql/2abc1', { name: 'code', method: 'POST' }))
+  // cluster-in-path model: kcp REST by cluster, reads and writes.
   assert.ok(allowed('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', { name: 'code' }))
+  assert.ok(allowed('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', { name: 'code', method: 'POST' }))
+  assert.ok(!allowed('/graphql/2abc1', { name: 'code', method: 'POST' }), 'the removed GraphQL gateway path is no longer allow-listed')
   // shared, as the user: org-scoped hub REST and the read-only catalog.
   assert.ok(allowed(`/api/orgs/${ORG}/workspaces/ws1/providers/enabled`))
   assert.ok(allowed('/api/providers'))
@@ -43,7 +44,6 @@ test('allows exactly the same-origin paths both provider auth models need', () =
   assert.deepEqual(providerFetchAllowedPrefixes('agents', ORG), [
     '/services/providers/agents/',
     '/ui/providers/agents/',
-    '/graphql/',
     '/clusters/',
     `/api/orgs/${ORG}/`,
   ])
@@ -112,7 +112,7 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
   // the next request without a context re-push.
   scope.token = 'id-token-2'
   scope.workspaceUUID = null
-  await providerFetch(new URL('/graphql/2abc1', ORIGIN), { method: 'POST' })
+  await providerFetch(new URL('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', ORIGIN), { method: 'POST' })
   assert.equal(calls[1].init.headers.get('Authorization'), 'Bearer id-token-2')
   assert.equal(calls[1].init.headers.has('X-Faros-Workspace'), false)
 })

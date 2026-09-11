@@ -48,8 +48,8 @@ import (
 // Provider Action invocation retains certificate validation; workspaces stores
 // project files owned by App Studio; and assistantEngine runs project turns.
 type Server struct {
-	gql   *tenant.GraphQLClient
-	store store.Store
+	tenant *tenant.Client
+	store  store.Store
 	// attachments is a separate capability so message-only test stores remain
 	// valid. Production wires the same Postgres/encrypted store for both.
 	attachments              store.AttachmentStore
@@ -83,8 +83,8 @@ type Server struct {
 	// title request. Production leaves it nil and uses the connected project LLM.
 	assistantThreadTitleGenerator func(context.Context, *asclient.Client, string) (string, error)
 	// projectClientFor is an optional test seam for handlers that need a
-	// workspace-scoped Project client without opening a GraphQL listener.
-	// Production leaves it nil and uses clientFor's caller-scoped GraphQL path.
+	// workspace-scoped Project client without a hub proxy endpoint.
+	// Production leaves it nil and uses clientFor's caller-scoped proxy path.
 	projectClientFor func(identity) (*asclient.Client, error)
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
@@ -182,24 +182,24 @@ type Server struct {
 }
 
 // New constructs a Server.
-func New(gql *tenant.GraphQLClient, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return NewWithWorkspace(gql, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
+func New(tenantClient *tenant.Client, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	return NewWithWorkspace(tenantClient, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
 }
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
-func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return NewWithWorkspaceContext(context.Background(), gql, msgStore, workspaces, hubBase, mcpInsecureSkipTLSVerify)
+func NewWithWorkspace(tenantClient *tenant.Client, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	return NewWithWorkspaceContext(context.Background(), tenantClient, msgStore, workspaces, hubBase, mcpInsecureSkipTLSVerify)
 }
 
 // NewWithWorkspaceContext binds assistant workers to the provider lifecycle.
-func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
 	if parent == nil {
 		parent = context.Background()
 	}
 	actionsCABundle, actionsCABundleErr := loadActionsCABundleFromEnv()
 	thumbnailContext, thumbnailCancel := context.WithCancel(parent)
 	s := &Server{
-		gql:                      gql,
+		tenant:                   tenantClient,
 		store:                    msgStore,
 		attachmentDraftRetention: store.DefaultAttachmentDraftRetention,
 		workspaces:               workspaces,
@@ -434,16 +434,16 @@ func (s *Server) attachmentRetention() time.Duration {
 }
 
 // clientFor builds a workspace-scoped client acting as the caller, talking to
-// the hub's GraphQL gateway for the caller's current workspace cluster.
+// the hub's kcp proxy for the caller's current workspace cluster.
 func (s *Server) clientFor(id identity) (*asclient.Client, error) {
 	if s.projectClientFor != nil {
 		return s.projectClientFor(id)
 	}
-	scope, err := s.gql.For(id.clusterID, id.token)
+	scope, err := s.tenant.For(id.clusterID, id.token)
 	if err != nil {
 		return nil, err
 	}
-	return asclient.NewFromGraphQL(scope), nil
+	return asclient.NewFromScope(scope), nil
 }
 
 // requireProjectClient resolves the caller identity and a workspace-scoped
@@ -457,8 +457,8 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — select an organization and workspace first")
 		return nil, identity{}, false
 	}
-	if s.gql == nil && s.projectClientFor == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant GraphQL client not configured — provider has no hub URL")
+	if s.tenant == nil && s.projectClientFor == nil {
+		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant client not configured — provider has no hub URL")
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {

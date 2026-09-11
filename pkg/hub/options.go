@@ -18,7 +18,6 @@ package hub
 
 import (
 	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
 // Options holds configuration for the hub server.
@@ -148,21 +147,6 @@ type Options struct {
 	// binding: RoleRef is immutable, so the hub deletes and recreates it.
 	ProviderWorkspaceClusterAdmin bool
 
-	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
-	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
-	GraphQLAddr string
-
-	// EmbeddedGraphQL runs the GraphQL listener+gateway in-process alongside the hub.
-	// When true, GraphQLAddr is ignored.
-	EmbeddedGraphQL bool
-
-	// GraphQL listener options (used when EmbeddedGraphQL is true).
-	GraphQLAPIExportSliceName      string // APIExportEndpointSlice name (default: "core.faros.sh")
-	GraphQLAPIExportLogicalCluster string // logical cluster of that endpointslice (default: "root:faros:providers")
-	GraphQLGRPCAddr                string // in-process gRPC address (default: "localhost:50051")
-	GraphQLPlayground              bool   // enable playground UI
-	GraphQLPort                    int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
-
 	// PortalDevURL, when set, reverse-proxies /ui/* to this URL (typically
 	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
 	// embedded portal dist (if built with -tags portal_embed).
@@ -203,7 +187,6 @@ func NewOptions() *Options {
 		DataDir:             "/tmp/faros-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
-		GraphQLAddr:         "",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
@@ -214,10 +197,5 @@ func NewOptions() *Options {
 		ProviderWorkspaceClusterAdmin:  true,
 		ProviderDelegatedTokens:        string(providers.DelegationOff),
 		ProviderDelegatedTokensExclude: append([]string(nil), providers.DefaultDelegationExclude...),
-
-		GraphQLAPIExportSliceName:      "core.faros.sh",
-		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,
-		GraphQLGRPCAddr:                "localhost:50051",
-		GraphQLPlayground:              true,
 	}
 }

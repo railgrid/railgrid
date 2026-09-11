@@ -771,7 +771,7 @@ export const useProvidersStore = defineStore('providers', () => {
     // Disable = server-side endpoint (mirror of enable). It deletes the
     // APIBinding AND tears down the edge-proxy RBAC grant — the latter
     // needs kcp-admin credentials the tenant doesn't hold, so a direct
-    // GraphQL deleteAPIBinding would leave the grant dangling.
+    // direct APIBinding delete would leave the grant dangling.
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/disable`
     try {
       if (!isCurrentDisable()) return

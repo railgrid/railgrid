@@ -704,7 +704,7 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	}
 	// Regression guard for the v0.0.63 workspace-switch 403: createWorkspace
 	// must seed the caller's cluster-admin CRB; without it the freshly-
-	// minted workspace 403s from the GraphQL gateway the moment the user
+	// minted workspace 403s from the kcp proxy the moment the user
 	// switches into it.
 	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["faros:alice@example.com"] {
 		t.Errorf("EnsureChildWorkspaceAdmin not called for caller; admins=%v",
@@ -980,7 +980,7 @@ func TestAddOrgMembership_UnknownUser404(t *testing.T) {
 // TestWorkspaceMembership_AddGrantsAccess covers granting a user access
 // to an existing workspace: the add path resolves the email, writes a
 // workspace-scope UMI row (keyed by the User CR name), and grants the
-// matching kcp RBAC so the GraphQL gateway lets them in.
+// matching kcp RBAC so the kcp proxy lets them in.
 //
 // The list projection (listWorkspaceMemberships across all UMIs) can't
 // be exercised here: dynamicfake's typed List can't convert objects

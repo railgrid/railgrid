@@ -102,8 +102,8 @@ function provisioned(name: string) {
 <template>
   <div ref="rootRef" class="app">
     <!--
-      Every routed page calls into api.ts on mount, which queries the
-      /graphql/<tenant> gateway. Without a tenant the call
+      Every routed page calls into api.ts on mount, which reads through
+      the /clusters/<tenant> kube REST proxy. Without a tenant the call
       throws "no workspace selected" — accurate, but ugly. Gate page
       render on a non-empty tenantPath so the page only mounts when
       api.ts is ready. The host pushes ctx.tenant immediately after

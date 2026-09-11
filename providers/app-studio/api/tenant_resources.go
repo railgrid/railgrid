@@ -17,9 +17,8 @@ import (
 )
 
 // tenant.Resource descriptors for the workspace resources App Studio accesses
-// through asclient.Client.Resource. Kind/Plural drive the GraphQL field names
-// (<Kind>Yaml / <Plural>Yaml / delete<Kind>); they must match the CRD's kind
-// and its pluralization.
+// through asclient.Client.Resource. GVR drives the REST path; Kind/Plural
+// must match the CRD's kind and its pluralization.
 var (
 	secretResource               = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 	codeConnectionResource       = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}

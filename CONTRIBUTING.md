@@ -39,9 +39,6 @@ make build-faros
 
 # Build just the hub
 make build-hub
-
-# Build the GraphQL gateway
-make build-graphql
 ```
 
 Binaries produced:
@@ -50,7 +47,6 @@ Binaries produced:
 |--------|-------------|
 | `bin/faros` | User CLI (also runs as the agent via `faros agent run`) |
 | `bin/faros-hub` | Hub server |
-| `bin/faros-graphql` | GraphQL gateway (listener + gateway subcommands) |
 
 ---
 

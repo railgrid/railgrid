@@ -39,6 +39,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -123,12 +124,14 @@ func EnsureIdentity(ctx context.Context, c client.Client, name string, refs []me
 	}
 }
 
-// NewClient builds a controller-runtime client on one workspace cluster,
-// authenticating as the given bearer token via the hub front proxy —
-// {hubBase}/clusters/{clusterID}, the same base every provider already uses
-// for MCP and GraphQL calls. insecure relaxes TLS for in-cluster hub certs
-// (the FAROS_HUB_INSECURE knob).
-func NewClient(hubBase, clusterID, token string, insecure bool) (client.Client, error) {
+// RESTConfig builds the rest.Config every workspace-scoped client shares: the
+// hub's kcp proxy at {hubBase}/clusters/{clusterID}, authenticating as the
+// given bearer token. The proxy authorizes the caller against their workspace
+// membership and forwards to kcp as that identity, so a provider reaches any
+// workspace the caller belongs to — the same path kubectl and the portals
+// use. insecure relaxes TLS for in-cluster hub certs (the FAROS_HUB_INSECURE
+// knob).
+func RESTConfig(hubBase, clusterID, token string, insecure bool) (*rest.Config, error) {
 	if hubBase == "" {
 		return nil, fmt.Errorf("hub base URL is empty (FAROS_HUB_URL)")
 	}
@@ -145,9 +148,31 @@ func NewClient(hubBase, clusterID, token string, insecure bool) (client.Client, 
 	if insecure {
 		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	}
+	return cfg, nil
+}
+
+// NewClient builds a controller-runtime client on one workspace cluster via
+// RESTConfig.
+func NewClient(hubBase, clusterID, token string, insecure bool) (client.Client, error) {
+	cfg, err := RESTConfig(hubBase, clusterID, token, insecure)
+	if err != nil {
+		return nil, err
+	}
 	// The reconcilers exchange only unstructured objects and built-in types
 	// over this client; the default scheme covers both.
 	return client.New(cfg, client.Options{})
+}
+
+// NewDynamicClient builds a dynamic client on one workspace cluster via
+// RESTConfig. Provider API handlers that act on the caller's behalf (bearer
+// from the incoming request, cluster from X-Faros-Cluster) use this to read
+// and write the tenant's resources without a typed scheme.
+func NewDynamicClient(hubBase, clusterID, token string, insecure bool) (dynamic.Interface, error) {
+	cfg, err := RESTConfig(hubBase, clusterID, token, insecure)
+	if err != nil {
+		return nil, err
+	}
+	return dynamic.NewForConfig(cfg)
 }
 
 func createIfAbsent(ctx context.Context, c client.Client, obj client.Object) error {

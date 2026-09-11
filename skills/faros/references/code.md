@@ -11,7 +11,8 @@ GitHub's own URLs. Clone and push with GitHub credentials.
 
 HTTP surface of the provider itself: `/healthz`, `/readyz`, `/mcp`,
 `/mcp/sse`, `/oauth/github/{config,start,callback}`, and the embedded
-portal. CRUD is kubectl or GraphQL against the workspace, or the MCP tools.
+portal. CRUD is kubectl or kube REST through `/clusters/<cluster>`, or the MCP
+tools.
 
 ## 2. CRDs (`code.faros.sh/v1alpha1`, all cluster-scoped)
 
@@ -202,5 +203,6 @@ GitHub App installations are declared in the enum but not implemented.
 Routes: `connections`, `connections/<name>`, `repositories`,
 `repositories/<name>` (deploy keys, collaborators, packages panels),
 `packages`, `create/connection/token`, `create/connection/github`,
-`create/repository`. Everything goes through the hub GraphQL gateway as
-`code_faros_sh { v1alpha1 { … } }` plus `applyYaml`.
+`create/repository`. Everything goes through the hub's kcp proxy as plain kube
+REST on `code.faros.sh/v1alpha1` (`/clusters/<cluster>/apis/code.faros.sh/v1alpha1/…`)
+via the shared `portalkit` kube client; create-or-update is server-side apply.

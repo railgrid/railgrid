@@ -307,7 +307,6 @@ helm upgrade --install faros-hub deploy/charts/faros-hub \
   --set kcp.external.existingSecret=kcp-frontproxy-admin \
   --set hub.hubExternalURL=https://localhost:9443 \
   --set hub.devMode=true \
-  --set hub.embeddedGraphQL=true \
   --set "hub.staticAuthTokens={$(cat .faros-install/hub-token)}" \
   --set 'hub.tls.selfSigned.dnsNames={faros.kcp.localhost}' \
   --set hostAliases[0].ip=10.96.2.2 \

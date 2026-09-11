@@ -13,7 +13,7 @@ It is a user-facing skill. For developing faros itself, read
 ```
 skills/faros/
   SKILL.md                     orientation, rules, playbooks (start here)
-  references/access.md         CLI, auth, org/workspace IDs, hub REST, URL grammar, GraphQL
+  references/access.md         CLI, auth, org/workspace IDs, hub REST, URL grammar, kube REST by cluster
   references/app-studio.md     App Studio CRDs and every REST route
   references/code.md           GitHub connections, repositories, commits, CI status
   references/infrastructure.md templates, instances, URLs, access gate, dev sandboxes

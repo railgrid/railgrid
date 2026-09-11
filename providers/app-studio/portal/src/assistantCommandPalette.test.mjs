@@ -160,33 +160,53 @@ test('accepts bounded semantic or rectangle-only targets without visible text', 
   ])
 })
 
-test('builds metadata-only GraphQL from validated Provider Action identifiers', async () => {
-  const { buildAssistantResourceQuery } = await vite.ssrLoadModule('/src/assistantResources.ts')
-  const built = buildAssistantResourceQuery({
-    apiVersion: 'databricks.faros.sh/v1alpha1',
-    kind: 'Table',
-    resource: 'tables',
-  })
-  assert.equal(built.groupField, 'databricks_faros_sh')
-  assert.equal(built.versionField, 'v1alpha1')
-  assert.equal(built.listField, 'Tables')
-  assert.match(built.query, /items \{ metadata \{ name uid resourceVersion \} \}/)
-  assert.doesNotMatch(built.query, /\bspec\b|\bstatus\b|labels/)
+test('builds a kube REST list request from validated Provider Action identifiers', async () => {
+  const { buildAssistantResourceRequest, discoverAssistantResources } = await vite.ssrLoadModule('/src/assistantResources.ts')
+  const built = buildAssistantResourceRequest({
+    apiVersion: 'infrastructure.faros.sh/v1alpha1',
+    kind: 'Instance',
+    resource: 'instances',
+  }, 'root:org:ws')
+  assert.deepEqual(built.ref, { group: 'infrastructure.faros.sh', version: 'v1alpha1', resource: 'instances' })
+  assert.equal(built.path, '/clusters/root%3Aorg%3Aws/apis/infrastructure.faros.sh/v1alpha1/instances')
+
+  const requests = []
+  const fetcher = async (url, init) => {
+    requests.push({ url, method: init.method, body: init.body })
+    return Response.json({
+      apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'InstanceList', metadata: { resourceVersion: '10' },
+      items: [
+        { apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', metadata: { name: 'db', uid: 'u1', resourceVersion: '1' } },
+        { apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', metadata: { name: 'api', uid: 'u2', resourceVersion: '2' } },
+      ],
+    })
+  }
+  const type = { provider: 'infrastructure', providerDisplayName: 'Infrastructure', apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', resource: 'instances' }
+  const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, [type], fetcher)
+  assert.deepEqual(requests, [{ url: built.path, method: 'GET', body: undefined }])
+  assert.deepEqual(result.warnings, [])
+  assert.deepEqual(result.groups[0].items, [
+    { provider: 'infrastructure', providerDisplayName: 'Infrastructure', uid: 'u2', resourceVersion: '2', resourceRef: { apiVersion: type.apiVersion, kind: 'Instance', resource: 'instances', name: 'api' } },
+    { provider: 'infrastructure', providerDisplayName: 'Infrastructure', uid: 'u1', resourceVersion: '1', resourceRef: { apiVersion: type.apiVersion, kind: 'Instance', resource: 'instances', name: 'db' } },
+  ])
 })
 
-test('rejects malformed catalog identifiers and GraphQL injection attempts', async () => {
-  const { buildAssistantResourceQuery, parseAssistantBoundResource } = await vite.ssrLoadModule('/src/assistantResources.ts')
+test('rejects malformed catalog identifiers and path injection attempts', async () => {
+  const { buildAssistantResourceRequest, parseAssistantBoundResource } = await vite.ssrLoadModule('/src/assistantResources.ts')
   const invalid = [
     { apiVersion: 'group/v1 { injected', kind: 'Table', resource: 'tables' },
     { apiVersion: 'group/v1', kind: 'Table } mutation', resource: 'tables' },
     { apiVersion: 'group/v1', kind: 'Table', resource: 'tables { items' },
     { apiVersion: 'group//v1', kind: 'Table', resource: 'tables' },
     { apiVersion: 'bad..group/v1', kind: 'Table', resource: 'tables' },
+    { apiVersion: 'group/v1', kind: 'Table', resource: '../../api/v1/secrets' },
+    { apiVersion: 'group/v1', kind: 'Table', resource: 'tables?labelSelector=x' },
+    { apiVersion: 'group/../v1', kind: 'Table', resource: 'tables' },
     { apiVersion: 42, kind: {}, resource: ['tables'] },
   ]
   for (const bound of invalid) {
     assert.equal(parseAssistantBoundResource(bound), null)
-    assert.throws(() => buildAssistantResourceQuery(bound), /invalid bound resource/)
+    assert.throws(() => buildAssistantResourceRequest(bound, 'root:org:ws'), /invalid bound resource/)
   }
 })
 
@@ -230,17 +250,21 @@ test('retains successful resource groups when another type fails and sanitizes w
     provider: 'demo', providerDisplayName: 'Demo', apiVersion: 'demo.example.io/v1', kind: 'Gadget', resource: 'gadgets',
   }]
   const requests = []
-  const fetcher = async (_url, init) => {
-    requests.push(JSON.parse(init.body).query)
-    if (init.body.includes('Gadgets')) return new Response('sensitive provider body', { status: 503 })
-    return Response.json({ data: { demo_example_io: { v1: { Widgets: { items: [
+  const fetcher = async (url, init) => {
+    requests.push(url)
+    assert.equal(init.method, 'GET')
+    if (url.endsWith('/gadgets')) return new Response('sensitive provider body', { status: 503 })
+    return Response.json({ apiVersion: 'demo.example.io/v1', kind: 'WidgetList', metadata: {}, items: [
       { metadata: { name: 'zulu', uid: 'u2', resourceVersion: '2' } },
       { metadata: { name: 'alpha', uid: 'u1', resourceVersion: '1' } },
       { metadata: { name: 'alpha', uid: 'duplicate', resourceVersion: '3' } },
-    ] } } } } })
+    ] })
   }
   const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, types, fetcher)
-  assert.equal(requests.length, 2)
+  assert.deepEqual(requests.sort(), [
+    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/gadgets',
+    '/clusters/root%3Aorg%3Aws/apis/demo.example.io/v1/widgets',
+  ])
   assert.deepEqual(result.groups.map(({ type }) => type.kind), ['Widget'])
   assert.deepEqual(result.groups[0].items.map(({ resourceRef }) => resourceRef.name), ['alpha', 'zulu'])
   assert.deepEqual(result.warnings, ['Gadget resources are temporarily unavailable.'])
@@ -251,10 +275,10 @@ test('keeps only metadata identity from successful resource rows', async () => {
   const { discoverAssistantResources } = await vite.ssrLoadModule('/src/assistantResources.ts')
   const type = { provider: 'demo', providerDisplayName: 'Demo', apiVersion: 'demo.example.io/v1', kind: 'Widget', resource: 'widgets' }
   const result = await discoverAssistantResources({ tenant: 'root:org:ws', token: 'secret' }, [type], async () => Response.json({
-    data: { demo_example_io: { v1: { Widgets: { items: [
+    apiVersion: 'demo.example.io/v1', kind: 'WidgetList', metadata: {}, items: [
       { metadata: { name: 'one', uid: 'uid-1', resourceVersion: '7', labels: { secret: 'must-not-be-used' } }, spec: { password: 'must-not-be-used' } },
       { metadata: { name: '', uid: 'ignored', resourceVersion: 'ignored' } },
-    ] } } } },
+    ],
   }))
   assert.deepEqual(result.groups[0].items, [{
     provider: 'demo', providerDisplayName: 'Demo', uid: 'uid-1', resourceVersion: '7',

@@ -1,6 +1,6 @@
 .PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal
 .PHONY: build-access-proxy docker-build-access-proxy
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -54,7 +54,7 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-faros build-hub build-graphql
+build: build-faros build-hub
 
 build-faros:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros ./cmd/faros/
@@ -77,8 +77,6 @@ build-portal: ## Build the portal Vue.js SPA
 dev-portal: ## Run the portal dev server
 	cd portal && npm run dev
 
-build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
-	go build $(GOFLAGS) -o $(BINDIR)/faros-graphql ./cmd/graphql/
 
 build-access-proxy: ## Build the published-app access-proxy binary (infrastructure module)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/faros-access-proxy ./cmd/access-proxy/
@@ -274,9 +272,9 @@ test-hub-chart: ## Lint and render the faros-hub chart's provider hardening valu
 			--set-string hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/admin-false-string.yaml"; \
 		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/admin-false-string.yaml"; \
 		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
-			--set 'hub.extraArgs={--providers=edges\,infrastructure,--graphql-playground}' >"$$tmp_dir/extra.yaml"; \
+			--set 'hub.extraArgs={--providers=edges\,infrastructure,--disable-token-login}' >"$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--providers=edges,infrastructure"$$' "$$tmp_dir/extra.yaml"; \
-		grep -q -- '- "--graphql-playground"$$' "$$tmp_dir/extra.yaml"; \
+		grep -q -- '- "--disable-token-login"$$' "$$tmp_dir/extra.yaml"; \
 		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
 			echo "invalid providerHeartbeatAuth unexpectedly rendered"; exit 1; \
 		fi; \
@@ -473,7 +471,7 @@ sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 
 verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
 	@hack/sync-portalkit.sh --verify
-	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs
+	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs
 	@$(MAKE) verify-agentkit
 
 verify-agentkit: ## Verify optional AgentKit style loading and conversation contracts
@@ -758,20 +756,6 @@ dev-undeploy-homeassistant: ## Remove Home Assistant (keeps the PVC's data unles
 
 .PHONY: dev-deploy-homeassistant dev-homeassistant-forward dev-undeploy-homeassistant
 
-GRAPHQL_GRPC_ADDR ?= localhost:50051
-GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
-GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:faros:providers
-
-dev-run-graphql: build-graphql ## Run GraphQL (listener + gateway, kcp mode, gRPC transport, playground at :8080)
-	$(BINDIR)/faros-graphql run \
-		--kubeconfig=$(KCP_DATA_DIR)/admin.kubeconfig \
-		--grpc-addr=$(GRAPHQL_GRPC_ADDR) \
-		--apiexport-endpoint-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
-		--apiexport-endpoint-slice-logicalcluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
-		--workspace-schema-kubeconfig-override=$(KCP_DATA_DIR)/admin.kubeconfig \
-		--enable-playground \
-		--gateway-port=9090
-
 # --- Hub configuration options ---
 # These can be combined to create different run configurations.
 
@@ -808,7 +792,7 @@ HUB_FLAGS_KCP_EXTERNAL := \
 # KCP: Embedded (runs kcp in-process)
 # --kcp-shard-external-url / --kcp-shard-virtual-workspace-url ARE NOT set
 # by default — kcp defaults them to localhost which works for in-process
-# consumers (hub's GraphQL listener, controllers, kcp proxy). Overriding
+# consumers (hub controllers, kcp proxy). Overriding
 # them globally to host.docker.internal breaks anything running on the
 # host (DNS doesn't resolve unless you're on Docker Desktop with the
 # magic enabled). If you need EndpointSlice URLs that are reachable from
@@ -821,18 +805,6 @@ HUB_FLAGS_KCP_EMBEDDED := \
 	--kcp-root-dir=.kcp \
 	--kcp-secure-port=6443 \
 	$(if $(KCP_SHARD_EXTERNAL_URL),--kcp-shard-external-url=$(KCP_SHARD_EXTERNAL_URL) --kcp-shard-virtual-workspace-url=$(KCP_SHARD_EXTERNAL_URL),)
-
-# GraphQL: Embedded (runs listener+gateway in-process alongside hub)
-GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
-GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:faros:providers
-GRAPHQL_GRPC_ADDR ?= localhost:50051
-
-HUB_FLAGS_GRAPHQL_EMBEDDED := \
-	--embedded-graphql \
-	--graphql-apiexport-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
-	--graphql-apiexport-logical-cluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
-	--graphql-grpc-addr=$(GRAPHQL_GRPC_ADDR) \
-	--graphql-playground
 
 # Portal dev proxy: reverse-proxy /console/* to the Vite dev server at :3000
 # so UI changes hot-reload without rebuilding the hub. Start the Vite server
@@ -863,21 +835,15 @@ run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
-## Embedded KCP + static token auth + embedded GraphQL + portal dev proxy (standalone - no external deps)
+## Embedded KCP + static token auth + portal dev proxy (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
 
-## Embedded KCP + static token + embedded GraphQL (fully standalone)
+## Embedded KCP + static token (fully standalone)
 run-hub-standalone: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
-
-## Embedded KCP + OIDC + embedded GraphQL
-run-hub-embedded-graphql: build-hub certs
-	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
-	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
 
 # Local kcp checkout to iterate against. Defaults to the standard per-user Go
 # workspace path. Override on the CLI or via env:
@@ -2469,14 +2435,13 @@ help-dev: ## Show development environment options
 	@echo "                                    Run one or the other, not both."
 	@echo ""
 	@echo "STANDALONE (no external dependencies):"
-	@echo "  make run-hub-standalone         - Embedded kcp + static token + embedded GraphQL"
+	@echo "  make run-hub-standalone         - Embedded kcp + static token"
 	@echo "                                    Just run this and use: make dev-login-static"
-	@echo "  make run-hub-embedded-static    - Embedded kcp + static token (no GraphQL)"
+	@echo "  make run-hub-embedded-static    - Embedded kcp + static token + portal dev proxy"
 	@echo ""
 	@echo "WITH DEX (OIDC authentication):"
 	@echo "  Terminal 1: make run-dex"
-	@echo "  Terminal 2: make run-hub-embedded-graphql - Embedded kcp + OIDC + embedded GraphQL"
-	@echo "              make run-hub-embedded          - Embedded kcp + OIDC (no GraphQL)"
+	@echo "  Terminal 2: make run-hub-embedded          - Embedded kcp + OIDC"
 	@echo "              make dev-login                 - Login via browser"
 	@echo ""
 	@echo "WITH EXTERNAL KCP:"

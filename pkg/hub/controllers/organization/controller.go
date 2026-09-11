@@ -608,7 +608,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	// user.Status.DefaultWorkspace; workspaces created via the REST
 	// surface (POST /api/orgs/{org}/workspaces) historically skipped the
 	// RBAC grant, so a portal switch into one of them 403s from the
-	// GraphQL gateway. Walking the UMI is the canonical source of "what
+	// kcp proxy. Walking the UMI is the canonical source of "what
 	// workspaces should this user have access to" — the REST handler now
 	// grants RBAC inline, but this reconciler step self-heals legacy
 	// state and survives any future drift. Best-effort: per-workspace
@@ -838,8 +838,8 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 // reconciled as Step H). Pre-PR fix the REST createWorkspace path
 // skipped EnsureChildWorkspaceAdmin entirely, leaving every
 // portal-created workspace without a faros-cluster-admin
-// ClusterRoleBinding — switching to one of them surfaced as a GraphQL
-// 403 once the workspace switcher actually retargeted /graphql/{cluster}
+// ClusterRoleBinding — switching to one of them surfaced as a kcp
+// 403 once the workspace switcher actually retargeted the new cluster
 // in v0.0.63. This reconciler step self-heals that legacy state.
 //
 // Errors on individual workspaces are logged and skipped; one bad

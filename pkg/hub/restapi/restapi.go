@@ -83,7 +83,7 @@ type WorkspaceOps interface {
 	// create time and when adding a member, since the kcp-side CRB is
 	// otherwise only seeded by the org bootstrap controller for the
 	// user's default workspace — every other workspace would 403 from
-	// the GraphQL gateway without this call.
+	// the kcp proxy without this call.
 	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
 	// ListChildTeamWorkspaces lists the Org's team workspaces, excluding
 	// infrastructure children such as the `providers` container for org-owned
@@ -738,7 +738,7 @@ func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
 //
 // ClusterName is the kcp logical-cluster short hash backing this
 // workspace (Workspace.spec.cluster). The portal uses it to address
-// the GraphQL endpoint `/graphql/{clusterName}` for the active
+// the kcp proxy at `/clusters/{clusterName}` for the active
 // workspace; without it, a workspace switch in the UI cannot retarget
 // per-workspace queries (MCP, edges, …) to the new cluster. May be
 // empty when the workspace has not yet reached Ready and kcp has not

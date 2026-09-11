@@ -26,7 +26,7 @@ import (
 )
 
 // Path prefix constants for faros virtual-workspace services and auth endpoints.
-// Hub-specific endpoints live under /services, /auth, /graphql — distinct from
+// Hub-specific endpoints live under /services and /auth — distinct from
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
 const (

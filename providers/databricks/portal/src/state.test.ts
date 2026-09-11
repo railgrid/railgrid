@@ -5,6 +5,32 @@ function assert(condition: unknown, label: string): asserts condition {
   if (!condition) throw new Error(label)
 }
 
+// Kube REST fakes: route on method + path and answer with kube wire shapes.
+// A collection GET (/.../<resource>) gets a List envelope, a named GET
+// (/.../<resource>/<name>) gets the object or a 404 Status, and a PATCH
+// (server-side apply) gets the applied object.
+type Route = 'list' | 'get' | 'apply' | 'delete'
+function routeOf(input: RequestInfo | URL, init?: RequestInit): Route {
+  const method = init?.method ?? 'GET'
+  if (method === 'PATCH') return 'apply'
+  if (method === 'DELETE') return 'delete'
+  const segments = new URL(String(input), 'http://portal.test').pathname.split('/').filter(Boolean)
+  const resourceIndex = segments.findIndex(segment => ['connections', 'warehouses', 'tables', 'secrets'].includes(segment))
+  return resourceIndex >= 0 && segments.length > resourceIndex + 1 ? 'get' : 'list'
+}
+const jsonResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+const listResponse = (items: unknown[], metadata: Record<string, unknown> = {}): Response =>
+  jsonResponse({ apiVersion: 'databricks.faros.sh/v1alpha1', kind: 'List', metadata, items })
+const notFoundResponse = (message: string): Response =>
+  jsonResponse({ kind: 'Status', apiVersion: 'v1', metadata: {}, status: 'Failure', message, reason: 'NotFound', code: 404 }, 404)
+const kubeFake = (handlers: Partial<Record<Route, () => Response>>): typeof globalThis.fetch => async (input, init) => {
+  const route = routeOf(input, init)
+  const handler = handlers[route]
+  assert(handler, `unexpected ${route} request: ${init?.method ?? 'GET'} ${String(input)}`)
+  return handler()
+}
+
 const originalFetch = globalThis.fetch
 
 try {
@@ -54,70 +80,48 @@ try {
 
   setTenant('generation-workspace')
   setToken('generation-token')
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    data: {
-      databricks_faros_sh: {
-        v1alpha1: {
-          Warehouses: {
-            items: [{
-              metadata: { name: 'orders', generation: 2 },
-              spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
-              status: {
-                observedGeneration: 1,
-                conditions: [{ type: 'Ready', status: 'True', message: 'old generation reported ready' }],
-              },
-            }],
-          },
-        },
+  globalThis.fetch = kubeFake({
+    list: () => listResponse([{
+      metadata: { name: 'orders', generation: 2 },
+      spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
+      status: {
+        observedGeneration: 1,
+        conditions: [{ type: 'Ready', status: 'True', message: 'old generation reported ready' }],
       },
-    },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }]),
+  })
   const pending = await api.listWarehouses()
   assert(pending[0]?.status === 'Pending', 'lagging current generation was presented as Ready')
 
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    data: {
-      databricks_faros_sh: {
-        v1alpha1: {
-          Warehouses: {
-            items: [{
-              metadata: { name: 'orders', generation: 2 },
-              spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
-              status: {
-                observedGeneration: 2,
-                conditions: [{ type: 'Ready', status: 'False', reason: 'ConnectionUnavailable', message: 'retry scheduled' }],
-              },
-            }],
-          },
-        },
+  globalThis.fetch = kubeFake({
+    list: () => listResponse([{
+      metadata: { name: 'orders', generation: 2 },
+      spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
+      status: {
+        observedGeneration: 2,
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ConnectionUnavailable', message: 'retry scheduled' }],
       },
-    },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }]),
+  })
   const retrying = await api.listWarehouses()
   assert(retrying[0]?.status === 'Retrying', 'retryable controller failure was presented as terminal')
 
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    data: {
-      databricks_faros_sh: {
-        v1alpha1: {
-          Warehouses: {
-            items: [{
-              metadata: { name: 'orders', generation: 2 },
-              spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
-              status: {
-                observedGeneration: 2,
-                conditions: [{ type: 'Ready', status: 'False', reason: 'ValidationFailed', message: 'fix the configuration' }],
-              },
-            }],
-          },
-        },
+  globalThis.fetch = kubeFake({
+    list: () => listResponse([{
+      metadata: { name: 'orders', generation: 2 },
+      spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
+      status: {
+        observedGeneration: 2,
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ValidationFailed', message: 'fix the configuration' }],
       },
-    },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }]),
+  })
   const attention = await api.listWarehouses()
   assert(attention[0]?.status === 'Needs attention', 'non-retryable controller failure was presented as retrying')
 
-  globalThis.fetch = async () => new Response(JSON.stringify({ data: {} }), { status: 200 })
+  // A 200 list body without an items array is a broken envelope, never an
+  // empty collection.
+  globalThis.fetch = kubeFake({ list: () => jsonResponse({ apiVersion: 'v1', kind: 'List', metadata: {} }) })
   let malformedRejected = false
   try {
     await api.listWarehouses()
@@ -125,32 +129,30 @@ try {
     malformedRejected = (error as { reason?: string; retryable?: boolean }).reason === 'ProtocolError'
       && (error as { retryable?: boolean }).retryable === true
   }
-  assert(malformedRejected, 'missing GraphQL list data was silently treated as an empty list')
+  assert(malformedRejected, 'missing list items was silently treated as an empty list')
 
   let switched = false
-  globalThis.fetch = async () => {
-    if (!switched) {
-      switched = true
-      setTenant('other-generation-workspace')
-      setToken('other-generation-token')
-    }
-    return new Response(JSON.stringify({
-      data: {
-        applyYaml: JSON.stringify({
-          metadata: { name: 'orders', generation: 2 },
-          spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
-          status: { observedGeneration: 2, conditions: [{ type: 'Ready', status: 'True' }] },
-        }),
-      },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  }
+  globalThis.fetch = kubeFake({
+    apply: () => {
+      if (!switched) {
+        switched = true
+        setTenant('other-generation-workspace')
+        setToken('other-generation-token')
+      }
+      return jsonResponse({
+        metadata: { name: 'orders', generation: 2 },
+        spec: { connectionRef: 'connection', warehouseID: 'warehouse-id' },
+        status: { observedGeneration: 2, conditions: [{ type: 'Ready', status: 'True' }] },
+      })
+    },
+  })
   let staleRejected = false
   try {
     await api.saveWarehouse({ name: 'orders', connectionRef: 'connection', warehouseID: 'warehouse-id' })
   } catch (error) {
     staleRejected = (error as { reason?: string }).reason === 'ContextChanged'
   }
-  assert(staleRejected, 'stale GraphQL mutation result was accepted')
+  assert(staleRejected, 'stale apply result was accepted')
 
   setTenant('shape-workspace')
   setToken('shape-token')
@@ -180,9 +182,6 @@ try {
       pending: { metadata: { name: 'orders', generation: 1 }, spec: { connectionRef: 'orders', warehouseRef: 'orders-sql', catalog: 'main', schema: 'sales', table: 'orders' } },
     },
   ] as const
-  const graphQLResponse = (field: string, value: unknown): Response => new Response(JSON.stringify({
-    data: { databricks_faros_sh: { v1alpha1: { [field]: value } } },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   const expectProtocolFailure = async (read: () => Promise<unknown>, label: string): Promise<void> => {
     let rejected = false
     try {
@@ -194,51 +193,51 @@ try {
     assert(rejected, label)
   }
   for (const shapeCase of shapeCases) {
-    globalThis.fetch = async () => graphQLResponse(shapeCase.listName, { items: [shapeCase.malformed] })
+    globalThis.fetch = kubeFake({ list: () => listResponse([shapeCase.malformed]) })
     await expectProtocolFailure(shapeCase.list, `malformed ${shapeCase.listName} list item was accepted`)
 
-    globalThis.fetch = async () => graphQLResponse(shapeCase.getName, shapeCase.malformed)
+    globalThis.fetch = kubeFake({ get: () => jsonResponse(shapeCase.malformed) })
     await expectProtocolFailure(shapeCase.get, `malformed ${shapeCase.getName} get item was accepted`)
 
-    globalThis.fetch = async () => graphQLResponse(shapeCase.listName, { items: [shapeCase.pending] })
+    globalThis.fetch = kubeFake({ list: () => listResponse([shapeCase.pending]) })
     const pendingList = await shapeCase.list() as Array<{ status?: string }>
     assert(pendingList.length === 1 && pendingList[0]?.status === 'Pending', `valid pending ${shapeCase.listName} resource was rejected`)
 
-    globalThis.fetch = async () => graphQLResponse(shapeCase.getName, shapeCase.pending)
+    globalThis.fetch = kubeFake({ get: () => jsonResponse(shapeCase.pending) })
     const pendingGet = await shapeCase.get() as { status?: string }
     assert(pendingGet.status === 'Pending', `valid pending ${shapeCase.getName} resource was rejected`)
   }
 
-  globalThis.fetch = async () => new Response(JSON.stringify({ data: {} }), { status: 200 })
+  // A 200 named GET whose body is not the resource is a protocol failure, not
+  // a missing resource.
+  globalThis.fetch = kubeFake({ get: () => jsonResponse({}) })
   await expectProtocolFailure(
     () => api.getWarehouse('orders-sql'),
-    'missing GraphQL get envelope was presented as NotFound instead of a retryable protocol error',
+    'empty get body was presented as NotFound instead of a retryable protocol error',
   )
 
-  globalThis.fetch = async () => graphQLResponse('Warehouse', null)
+  // Only an explicit 404 Status from the API is a missing resource.
+  globalThis.fetch = kubeFake({ get: () => notFoundResponse('warehouses.databricks.faros.sh "orders-sql" not found') })
   let explicitNotFound = false
   try {
     await api.getWarehouse('orders-sql')
   } catch (error) {
     explicitNotFound = (error as { reason?: string }).reason === 'NotFound'
   }
-  assert(explicitNotFound, 'explicit null GraphQL resource was not presented as NotFound')
+  assert(explicitNotFound, 'explicit 404 Status was not presented as NotFound')
 
   const malformedApply = { metadata: { name: 'orders' }, spec: {} }
-  const applyResponse = (): Response => new Response(JSON.stringify({
-    data: { applyYaml: JSON.stringify(malformedApply) },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  globalThis.fetch = async () => applyResponse()
+  globalThis.fetch = kubeFake({ apply: () => jsonResponse(malformedApply) })
   await expectProtocolFailure(
     () => api.saveConnection({ name: 'orders', host: 'https://dbc-example.cloud.databricks.com' }),
     'malformed Connection apply result was not reported as a retryable protocol error',
   )
-  globalThis.fetch = async () => applyResponse()
+  globalThis.fetch = kubeFake({ apply: () => jsonResponse(malformedApply) })
   await expectProtocolFailure(
     () => api.saveWarehouse({ name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123' }),
     'malformed Warehouse apply result was not reported as a retryable protocol error',
   )
-  globalThis.fetch = async () => applyResponse()
+  globalThis.fetch = kubeFake({ apply: () => jsonResponse(malformedApply) })
   await expectProtocolFailure(
     () => api.saveTable({ name: 'orders', connectionRef: 'orders', warehouseRef: 'orders-sql', catalog: 'main', schema: 'sales', table: 'orders' }),
     'malformed Table apply result was not reported as a retryable protocol error',

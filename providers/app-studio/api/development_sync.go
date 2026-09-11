@@ -1061,8 +1061,8 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) error {
-	if s.gql == nil {
-		err := errors.New("tenant GraphQL client is not configured")
+	if s.tenant == nil {
+		err := errors.New("tenant client is not configured")
 		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not start: %v", projectToolBaseName(name), err))
 		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
 		return err

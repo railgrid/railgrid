@@ -308,7 +308,7 @@ Shipped (`api/invoke_test.go`, `store/postgres_test.go`):
   `run_agent`, `get_run`, `list_runs`.
 
 Not yet covered: a handler-level test of `invokeAgentRun` itself (it needs a
-tenant GraphQL client, which the suite has no fake for — the pieces it composes
+tenant-scoped dynamic client, which the suite has no fake for — the pieces it composes
 are each tested), and everything in phases 3–4.
 
 ### Phase 3–4 notes

@@ -275,12 +275,9 @@ func isProjectAPIInitializingError(err error) bool {
 	if apierrors.IsNotFound(err) && strings.Contains(low, "server could not find the requested resource") {
 		return true
 	}
-	// GraphQL path: either the gateway has no schema for the workspace cluster
-	// yet, or the schema lacks the Project type (APIBinding not established) —
-	// both surface while the workspace is still being provisioned.
-	return strings.Contains(low, "workspace initializing") ||
-		strings.Contains(low, "cannot query field") ||
-		strings.Contains(low, "unknown field")
+	// The hub proxy reports a workspace whose cluster is not resolvable yet
+	// as still initializing.
+	return strings.Contains(low, "workspace initializing")
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {

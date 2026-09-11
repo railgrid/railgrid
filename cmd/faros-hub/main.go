@@ -90,13 +90,6 @@ func main() {
 		"Bind each provider's ServiceAccount to cluster-admin inside its own provider workspace. "+
 			"False binds the narrower generated faros:provider ClusterRole instead. Default true for this release so "+
 			"operators can stage the change; the next release defaults to false. Changing it replaces the existing binding.")
-	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
-	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")
-	cmd.Flags().StringVar(&opts.GraphQLAPIExportSliceName, "graphql-apiexport-slice-name", opts.GraphQLAPIExportSliceName, "APIExportEndpointSlice name to watch for GraphQL schema generation")
-	cmd.Flags().StringVar(&opts.GraphQLAPIExportLogicalCluster, "graphql-apiexport-logical-cluster", opts.GraphQLAPIExportLogicalCluster, "Logical cluster path where the APIExportEndpointSlice lives")
-	cmd.Flags().StringVar(&opts.GraphQLGRPCAddr, "graphql-grpc-addr", opts.GraphQLGRPCAddr, "In-process gRPC address for embedded GraphQL listener/gateway communication")
-	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
-
 	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
 	cmd.Flags().StringSliceVar(&opts.PortalFrameSources, "portal-frame-source", nil, "Additional CSP frame-src source expressions allowed by the portal, e.g. https://*.preview.example.com")
 

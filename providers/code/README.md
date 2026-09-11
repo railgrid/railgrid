@@ -65,11 +65,12 @@ this provider pod
 
 CRUD does **not** go through this pod's HTTP surface: the portal drives every CR —
 Connections, Repositories, DeployKeys, Collaborators, and the crawled Packages —
-through the hub's GraphQL gateway at `/graphql/<workspace>`. Reads are
-`code_faros_sh { v1alpha1 { … } }` queries; writes are create/update/delete
-mutations (plus `applyYaml` for create-or-update, which also writes the credential
-Secret). The pod's HTTP surface is only for the MCP tools and the GitHub OAuth
-callback.
+through the hub's kube REST proxy at
+`/clusters/<cluster>/apis/code.faros.sh/v1alpha1/<resource>`. Reads are plain
+Kubernetes list/get calls; writes are server-side apply for create-or-update
+(which also writes the credential Secret under `/api/v1/namespaces/default/secrets`),
+merge-patch for targeted updates, and DELETE. The pod's HTTP surface is only for
+the MCP tools and the GitHub OAuth callback.
 
 ## Run locally
 
@@ -282,8 +283,8 @@ API and rate-limits the per-ecosystem listing hard), the **packages controller**
 crawls each Repository on a timer (`CODE_PACKAGE_CRAWL_INTERVAL`, default 2m) and
 reconciles one **Package CR** per artifact, owned by the Repository (so they're
 garbage-collected with it) and labelled `code.faros.sh/repository=<repo>`.
-The portal then reads those CRs through the hub's GraphQL gateway
-(`/graphql/<workspace>`, `code_faros_sh { v1alpha1 { Packages(labelselector: …) } }`)
+The portal then reads those CRs through the hub's kube REST proxy
+(`GET /clusters/<cluster>/apis/code.faros.sh/v1alpha1/packages?labelSelector=…`)
 like any other CRD — no provider round-trip, no throttling. Crawling still needs
 the connection token's `read:packages` scope.
 

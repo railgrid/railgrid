@@ -40,6 +40,16 @@ without running the agent again, and a full executor queue answers `503` with
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:
 agents is meant to run on its own.
 
+The hub is also how the provider reaches a tenant's workspace. Every portal,
+CLI, and MCP request carries the caller's bearer token and the workspace's
+cluster ID (`X-Faros-Cluster`); the provider turns those into a plain kube
+REST client on the hub's kcp proxy at `<FAROS_HUB_URL>/clusters/<cluster-id>`
+and acts as the caller. The proxy authorizes by workspace membership, so the
+provider can read and write Agents, Connections, Toolsets, and Secrets in any
+workspace the caller belongs to, with kcp's own admission and RBAC errors
+surfacing unchanged. `FAROS_HUB_INSECURE` relaxes TLS for in-cluster hub
+certificates.
+
 Compute- and storage-backed features — the claude-code runner and the file
 workspace — light up only when the `infrastructure` provider is present.
 Infrastructure is therefore an *optional* dependency, and is intentionally not

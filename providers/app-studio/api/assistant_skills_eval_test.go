@@ -19,17 +19,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
 	"github.com/gorilla/mux"
+
+	asclient "github.com/faroshq/provider-app-studio/client"
+	appskills "github.com/faroshq/provider-app-studio/skills"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestEvaluationSkillDisclosureAndAuthorityBoundaries(t *testing.T) {
@@ -243,32 +244,10 @@ func evaluationProjectSkillSnapshot(t *testing.T, count, disabledIndex int) apps
 
 func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) {
 	t.Helper()
-	graphQLHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var query struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&query); err != nil {
-			t.Errorf("decode GraphQL query: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(query.Query, "ProjectYaml") {
-			_, _ = w.Write([]byte(`{"data":{"ai_faros_sh":{"v1alpha1":{"ProjectYaml":"apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"}}}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"data":{}}`))
-	})
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("loopback listener unavailable: %v", err)
-	}
-	graphQL := httptest.NewUnstartedServer(graphQLHandler)
-	graphQL.Listener = listener
-	graphQL.Start()
-	t.Cleanup(graphQL.Close)
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
 	files := workspace.NewFileStore(t.TempDir())
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), nil, files, "", false)
+	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 	router := mux.NewRouter()
 	server.Register(router)
 	return router, files

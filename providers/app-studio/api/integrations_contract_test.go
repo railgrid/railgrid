@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -31,11 +30,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
-	"sigs.k8s.io/yaml"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
 )
 
 var testDatabricksTableGVR = schema.GroupVersionResource{
@@ -294,20 +292,20 @@ func TestIntegrationActionNormalizationAndRevocation(t *testing.T) {
 	}
 }
 
-// integrationHTTPFixture backs the provider's GraphQL client and generic hub
-// action endpoint without involving a real hub. It intentionally keeps
-// the project and Table as serialized tenant resources: this exercises the
-// same GraphQL-backed client path used by the HTTP handlers.
+// integrationHTTPFixture backs the provider's tenant client and generic hub
+// action endpoint without involving a real hub. It keeps the project, Table
+// and Application as objects in a fake kcp proxy: this exercises the same
+// REST-backed client path used by the HTTP handlers.
 type integrationHTTPFixture struct {
 	mu sync.Mutex
 
-	projectYAML     string
-	tableYAML       string
-	applicationYAML string
-
-	graphql    *httptest.Server
+	proxy      *tenanttest.Server
 	hub        *httptest.Server
 	actionReqs []integrationActionRequest
+}
+
+var testInfrastructureApplicationGVR = schema.GroupVersionResource{
+	Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications",
 }
 
 type integrationActionRequest struct {
@@ -318,14 +316,6 @@ type integrationActionRequest struct {
 
 func newIntegrationHTTPFixture(t *testing.T, project *aiv1alpha1.Project) *integrationHTTPFixture {
 	t.Helper()
-	projectObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(project)
-	if err != nil {
-		t.Fatalf("convert project: %v", err)
-	}
-	projectYAML, err := yaml.Marshal(projectObject)
-	if err != nil {
-		t.Fatalf("marshal project: %v", err)
-	}
 	table := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": databricksTableAPIVersion,
 		"kind":       databricksTableKind,
@@ -341,83 +331,13 @@ func newIntegrationHTTPFixture(t *testing.T, project *aiv1alpha1.Project) *integ
 			"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
 		},
 	}}
-	tableYAML, err := yaml.Marshal(table.Object)
-	if err != nil {
-		t.Fatalf("marshal table: %v", err)
-	}
-	f := &integrationHTTPFixture{projectYAML: string(projectYAML), tableYAML: string(tableYAML)}
-	f.graphql = httptest.NewServer(http.HandlerFunc(f.serveGraphQL))
+	f := &integrationHTTPFixture{proxy: tenanttest.NewServer(t)}
+	f.proxy.Add(testDatabricksTableGVR, table)
+	f.proxy.Register(testInfrastructureApplicationGVR)
+	f.setProject(t, project)
 	f.hub = httptest.NewServer(http.HandlerFunc(f.serveProviderAction))
-	t.Cleanup(func() {
-		f.graphql.Close()
-		f.hub.Close()
-	})
+	t.Cleanup(f.hub.Close)
 	return f
-}
-
-func (f *integrationHTTPFixture) serveGraphQL(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Query     string                     `json:"query"`
-		Variables map[string]json.RawMessage `json:"variables"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid graphql request", http.StatusBadRequest)
-		return
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	switch {
-	case strings.Contains(request.Query, "ProjectYaml"):
-		writeIntegrationGraphQLData(w, map[string]any{
-			"ai_faros_sh": map[string]any{
-				"v1alpha1": map[string]any{"ProjectYaml": f.projectYAML},
-			},
-		})
-	case strings.Contains(request.Query, "TableYaml"):
-		writeIntegrationGraphQLData(w, map[string]any{
-			"databricks_faros_sh": map[string]any{
-				"v1alpha1": map[string]any{"TableYaml": f.tableYAML},
-			},
-		})
-	case strings.Contains(request.Query, "ApplicationYaml"):
-		writeIntegrationGraphQLData(w, map[string]any{
-			"infrastructure_faros_sh": map[string]any{
-				"v1alpha1": map[string]any{"ApplicationYaml": f.applicationYAML},
-			},
-		})
-	case strings.Contains(request.Query, "applyStatusYaml"):
-		writeIntegrationGraphQLData(w, map[string]any{"applyStatusYaml": f.projectYAML})
-	case strings.Contains(request.Query, "applyYaml"):
-		raw, ok := request.Variables["yaml"]
-		if !ok {
-			http.Error(w, "applyYaml missing yaml variable", http.StatusBadRequest)
-			return
-		}
-		var applied string
-		if err := json.Unmarshal(raw, &applied); err != nil {
-			http.Error(w, "applyYaml yaml variable is not a string", http.StatusBadRequest)
-			return
-		}
-		var object map[string]any
-		if err := yaml.Unmarshal([]byte(applied), &object); err != nil {
-			http.Error(w, "applyYaml payload is not YAML", http.StatusBadRequest)
-			return
-		}
-		switch object["kind"] {
-		case "Project":
-			f.projectYAML = applied
-		case "Application":
-			f.applicationYAML = applied
-		}
-		writeIntegrationGraphQLData(w, map[string]any{"applyYaml": applied})
-	default:
-		http.Error(w, fmt.Sprintf("unexpected GraphQL query: %s", request.Query), http.StatusInternalServerError)
-	}
-}
-
-func writeIntegrationGraphQLData(w http.ResponseWriter, data map[string]any) {
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 }
 
 // serveProviderAction emulates a provider's action endpoint behind the hub
@@ -459,65 +379,46 @@ func (f *integrationHTTPFixture) setProject(t *testing.T, project *aiv1alpha1.Pr
 	if err != nil {
 		t.Fatalf("convert project: %v", err)
 	}
-	raw, err := yaml.Marshal(object)
-	if err != nil {
-		t.Fatalf("marshal project: %v", err)
-	}
+	f.proxy.Set(asclient.ProjectGVR, &unstructured.Unstructured{Object: object})
 	f.mu.Lock()
-	f.projectYAML = string(raw)
 	f.actionReqs = nil
 	f.mu.Unlock()
 }
 
 func (f *integrationHTTPFixture) project(t *testing.T) *aiv1alpha1.Project {
 	t.Helper()
-	f.mu.Lock()
-	raw := []byte(f.projectYAML)
-	f.mu.Unlock()
-	var object map[string]any
-	if err := yaml.Unmarshal(raw, &object); err != nil {
-		t.Fatalf("decode project YAML: %v", err)
+	object := f.proxy.Get(asclient.ProjectGVR, "", "demo")
+	if object == nil {
+		t.Fatal("project demo is not stored in the tenant proxy")
 	}
 	project := &aiv1alpha1.Project{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object, project); err != nil {
-		t.Fatalf("convert project YAML: %v", err)
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, project); err != nil {
+		t.Fatalf("convert project: %v", err)
 	}
 	return project
 }
 
 func (f *integrationHTTPFixture) setApplication(t *testing.T, application *unstructured.Unstructured) {
 	t.Helper()
-	raw, err := yaml.Marshal(application.Object)
-	if err != nil {
-		t.Fatalf("marshal Application: %v", err)
-	}
-	f.mu.Lock()
-	f.applicationYAML = string(raw)
-	f.mu.Unlock()
+	f.proxy.Set(testInfrastructureApplicationGVR, application)
 }
 
 func (f *integrationHTTPFixture) application(t *testing.T) *unstructured.Unstructured {
 	t.Helper()
-	f.mu.Lock()
-	raw := []byte(f.applicationYAML)
-	f.mu.Unlock()
-	var object map[string]any
-	if err := yaml.Unmarshal(raw, &object); err != nil {
-		t.Fatalf("decode Application YAML: %v", err)
+	object := f.proxy.Get(testInfrastructureApplicationGVR, "", "demo-dev")
+	if object == nil {
+		t.Fatal("Application demo-dev is not stored in the tenant proxy")
 	}
-	return &unstructured.Unstructured{Object: object}
+	return object
 }
 
 func (f *integrationHTTPFixture) table(t *testing.T) *unstructured.Unstructured {
 	t.Helper()
-	f.mu.Lock()
-	raw := []byte(f.tableYAML)
-	f.mu.Unlock()
-	var object map[string]any
-	if err := yaml.Unmarshal(raw, &object); err != nil {
-		t.Fatalf("decode Table YAML: %v", err)
+	object := f.proxy.Get(testDatabricksTableGVR, "", "orders")
+	if object == nil {
+		t.Fatal("Table orders is not stored in the tenant proxy")
 	}
-	return &unstructured.Unstructured{Object: object}
+	return object
 }
 
 func (f *integrationHTTPFixture) actionRequests() []integrationActionRequest {
@@ -637,7 +538,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
 		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
 	})
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -732,7 +633,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithDevelopmentRuntimeBinding())
 	fixture.setApplication(t, developmentApplicationObject())
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -806,7 +707,7 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	fixture := newIntegrationHTTPFixture(t, initial)
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
 	server.Register(router)
@@ -866,7 +767,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	fixture := newIntegrationHTTPFixture(t, initial)
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = actionsURL
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -896,7 +797,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 
 func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(false))
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -944,7 +845,7 @@ func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 
 func TestProjectIntegrationInvokeForwardsGenericProviderAndInput(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, integrationProjectWithProvider("other"))
-	server := NewWithWorkspace(tenant.NewGraphQLClient(fixture.graphql.URL, false), nil, nil, fixture.hub.URL, false)
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()

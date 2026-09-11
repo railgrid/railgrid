@@ -1,26 +1,38 @@
-// GraphQL client for the infrastructure provider's portal.
+// Kubernetes REST client for the infrastructure provider's portal.
 //
-// Every read and write goes through the hub's embedded GraphQL gateway at
-// /graphql/<cluster> — the same workspace-scoped, caller-authenticated path the
-// rest of the platform uses. The shell pushes farosContext.tenant (kcp cluster
-// name, used as the /graphql path segment) and farosContext.token (bearer).
+// Every read and write goes through the hub's kcp proxy at
+// /clusters/<cluster>/apis/infrastructure.faros.sh/v1alpha1/... — the same
+// workspace-scoped, caller-authenticated path kubectl would use. The shell
+// pushes farosContext.tenant (kcp cluster name, used as the /clusters path
+// segment) and farosContext.fetch (the host-owned transport that injects
+// Authorization).
 //
 // The tenant-facing API surface is flat: Templates (the catalog) plus ONE
 // Instance kind. Which product an Instance is rides in spec.template; its
-// template-shaped input lives in spec.values (preserve-unknown, so the gateway
-// serves it as a JSONString — full reads go through the raw `InstanceYaml`
-// escape hatch parsed with js-yaml). Writes use `applyYaml` / `deleteInstance`.
-// No kind discovery or introspection is needed anymore.
+// template-shaped input lives in spec.values. Objects come back whole, so
+// reads are plain GET/LIST and writes are server-side apply / DELETE.
 
-import { load as yamlLoad } from 'js-yaml'
 import type { ErrorResponse, Instance, InstanceChild, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
+import {
+  createKubeClient,
+  isKubeError,
+  isKubeForbidden,
+  isKubeNotFound,
+  isKubeResourceUnavailable,
+  type KubeClient,
+  type KubeList,
+  type KubeObject,
+  type KubeResourceRef,
+} from './portalkit/kube'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { columnsNeedInstanceData } from './view'
 
 const GROUP = 'infrastructure.faros.sh'
 const VERSION = 'v1alpha1'
-// GraphQL field for the group (dots → underscores, per the gateway's sanitizer).
-const GROUP_FIELD = 'infrastructure_faros_sh'
+const INSTANCES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'instances' }
+const TEMPLATES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'templates' }
+// Field manager recorded on every server-side apply this portal performs.
+const FIELD_MANAGER = 'provider-infrastructure'
 
 let bearerToken: string | null = null
 let clusterName: string | null = null
@@ -54,7 +66,7 @@ function assertCurrentContext(expected: RequestContext): void {
   }
 }
 
-// setBasePath is a no-op: the gateway path is built from the cluster name, not
+// setBasePath is a no-op: the REST path is built from the cluster name, not
 // the provider basePath. Kept so App.vue's watcher type-checks.
 export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
@@ -77,9 +89,6 @@ export function setToken(token?: string | null) {
     // when they share a tenant path. Never reuse one caller's cache after an
     // authentication-context change.
     cachedTemplates = null
-    sampleValuesSupported = null
-    viewSupported = null
-    exposureSupported = null
   }
   bearerToken = next
 }
@@ -90,77 +99,64 @@ export function setTenant(name?: string | null) {
     console.debug('[infrastructure] tenant clusterName →', next)
     contextGeneration += 1
     cachedTemplates = null
-    sampleValuesSupported = null
-    viewSupported = null
-    exposureSupported = null
   }
   clusterName = next
 }
 
-// ── GraphQL transport ───────────────────────────────────────────────────────
-// graphqlQuery POSTs a query/mutation to /graphql/<cluster> and returns data,
-// mapping gateway errors onto the {reason,message} contract the views branch on.
-async function graphqlQuery<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+// ── REST transport ──────────────────────────────────────────────────────────
+// kube builds a client bound to the current tenant cluster. The request
+// context is captured here, and the client's onResponse hook re-checks it
+// after every body read, so a response that lands after the shell switched
+// workspace (or re-authenticated) is rejected instead of committed.
+function kube(): KubeClient {
   const expectedContext = requestContext()
   if (!clusterName) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  const res = await hubFetch()('/graphql/' + clusterName, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers,
-    body: JSON.stringify({ query, variables }),
+  return createKubeClient({
+    fetch: hubFetch(),
+    cluster: clusterName,
+    fieldManager: FIELD_MANAGER,
+    onResponse: () => assertCurrentContext(expectedContext),
   })
-  const text = await res.text()
-  assertCurrentContext(expectedContext)
-  if (!res.ok) {
-    throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
-  }
-  const body = (text ? JSON.parse(text) : {}) as { data?: T; errors?: { message: string }[] }
-  if (body.errors && body.errors.length) {
-    const message = body.errors.map(e => e.message).join('; ')
-    let reason = 'GraphQLError'
-    if (/not\s*found|notfound/i.test(message)) reason = 'NotFound'
-    else if (/apibinding|no matches for kind|forbidden/i.test(message)) reason = 'APIBindingMissing'
-    throw <ErrorResponse>{ reason, message }
-  }
-  assertCurrentContext(expectedContext)
-  return (body.data ?? {}) as T
 }
 
-// applyCR applies a manifest (create-or-update) via the gateway's applyYaml and
-// returns the resulting object (applyYaml serialises it as a JSON string).
-async function applyCR(manifest: Record<string, unknown>): Promise<RawObject> {
-  const data = await graphqlQuery<{ applyYaml?: unknown }>(
-    'mutation($y: String!) { applyYaml(yaml: $y) }',
-    { y: JSON.stringify(manifest) },
-  )
-  const raw = data.applyYaml
-  return (typeof raw === 'string' ? JSON.parse(raw || '{}') : raw ?? {}) as RawObject
+// mapKubeError translates a KubeError onto the {reason,message} contract the
+// views branch on. A 404 for a named object is NotFound; a 404 for the
+// resource type (no APIBinding in the workspace yet) or a 403 is
+// APIBindingMissing; a client-side wire failure (a 2xx the client could not
+// make sense of) is ProtocolError; everything else is HTTPError. Non-kube
+// errors — including the context fence — pass through untouched.
+function mapKubeError(error: unknown): unknown {
+  if (!isKubeError(error) || isContextChangedError(error)) return error
+  if (error.status >= 200 && error.status < 300) {
+    return protocolError(`${error.message}; retry the read.`)
+  }
+  let reason = 'HTTPError'
+  if (isKubeResourceUnavailable(error) || isKubeForbidden(error)) reason = 'APIBindingMissing'
+  else if (isKubeNotFound(error)) reason = 'NotFound'
+  return <ErrorResponse>{ reason, message: error.message }
 }
 
-// Infra<V> shapes a gateway response nested under the infra group/version. The
-// literal keys match GROUP_FIELD / VERSION, which are literal-typed consts, so
-// `data[GROUP_FIELD]?.[VERSION]` indexes cleanly.
-type Infra<V> = { infrastructure_faros_sh?: { v1alpha1?: V } }
-
-interface RawObject {
-  apiVersion?: string
-  kind?: string
-  metadata?: {
-    uid?: string
-    name?: string
-    namespace?: string
-    creationTimestamp?: string
-    deletionTimestamp?: string
-    generation?: number
-    labels?: Record<string, string>
+// withKube runs one client call and maps its failure onto ErrorResponse.
+async function withKube<T>(run: (client: KubeClient) => Promise<T>): Promise<T> {
+  const client = kube()
+  try {
+    return await run(client)
+  } catch (e) {
+    throw mapKubeError(e)
   }
+}
+
+// applyCR applies a manifest (create-or-update) with server-side apply and
+// returns the resulting object.
+function applyCR(manifest: RawObject): Promise<RawObject> {
+  return withKube(client => client.apply<RawObject>(INSTANCES, manifest))
+}
+
+interface RawObject extends KubeObject {
   spec?: {
     template?: string
-    // The gateway serves preserve-unknown fields as JSON strings; the Yaml
-    // escape hatch yields the real object.
     values?: Record<string, unknown> | string
   }
   // status carries the well-known phase/message/conditions plus any
@@ -215,10 +211,15 @@ const INSTANCE_LIST_PAGE_SIZE = 100
 const MAX_INSTANCE_LIST_PAGES = 100
 
 // ── Mappers ─────────────────────────────────────────────────────────────────
-function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Record<string, string> = {}): Template {
+// templateFromObject collapses a Template CR into the catalog shape. The
+// preserve-unknown fields (schema, sampleValues, view) arrive as objects from
+// the API server; the string form is still accepted so a serialised copy
+// (e.g. from a cache) maps identically.
+function templateFromObject(obj: KubeObject): Template {
+  const name = obj.metadata.name
+  const labels = obj.metadata.labels ?? {}
+  const spec = isRecord(obj.spec) ? obj.spec : {}
   const instanceCRD = (spec.instanceCRD ?? {}) as { kind?: string }
-  // spec.schema is a preserve-unknown-fields field → the gateway returns it as a
-  // JSON string (JSONString scalar); parse it back into the JSONSchema object.
   let inputsSchema: JSONSchema = { type: 'object', properties: {} }
   if (typeof spec.schema === 'string' && spec.schema) {
     try {
@@ -229,8 +230,6 @@ function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Re
   } else if (spec.schema && typeof spec.schema === 'object') {
     inputsSchema = spec.schema as JSONSchema
   }
-  // sampleValues is a preserve-unknown-fields field too → same JSONString
-  // treatment as schema: parse the string form, accept an object as-is.
   let sampleValues: Record<string, unknown> | undefined
   if (typeof spec.sampleValues === 'string' && spec.sampleValues) {
     try {
@@ -241,8 +240,6 @@ function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Re
   } else if (spec.sampleValues && typeof spec.sampleValues === 'object') {
     sampleValues = spec.sampleValues as Record<string, unknown>
   }
-  // view is a preserve-unknown-fields field → JSONString from the gateway;
-  // same parse-the-string / accept-an-object treatment as schema/sampleValues.
   let view: TemplateView | undefined
   if (typeof spec.view === 'string' && spec.view) {
     try {
@@ -272,8 +269,8 @@ function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Re
 
 // instanceFromObj collapses an Instance CR into the shape the views read. The
 // originating Template comes from spec.template, falling back to the
-// faros.sh/template label. spec.values may arrive as a JSON string (typed
-// GraphQL read) or an object (Yaml escape hatch).
+// faros.sh/template label. spec.values is an object on the wire; the string
+// form is tolerated for serialised copies.
 function instanceFromObj(c: RawObject): Instance {
   const labels = c.metadata?.labels ?? {}
   const tmpl = c.spec?.template || labels['faros.sh/template'] || ''
@@ -346,62 +343,9 @@ interface TemplateCache {
 let cachedTemplates: TemplateCache | null = null
 const CACHE_TTL_MS = 10_000
 
-// sampleValues is a recent Template field. A gateway whose schema was built from
-// an older CRD that predates it has no such field, and selecting an absent field
-// is a hard GraphQL error that would break the whole catalog/provision query. So
-// select it optimistically and, on that specific error, remember it's missing and
-// retry without it (degrading to no form pre-fill). null = not yet probed.
-let sampleValuesSupported: boolean | null = null
-// view, like sampleValues, is a recent Template field. A gateway built from an
-// older CRD has no such field and rejects the whole query if we select it, so we
-// probe optimistically and drop it on that specific error. null = not yet probed.
-let viewSupported: boolean | null = null
-// exposure gets the same optimistic-probe treatment; without it the catalog
-// pill degrades to the 'internal' default rather than the query failing.
-let exposureSupported: boolean | null = null
-
-// templateSpec is the shared Template spec selection set. sampleValues/view/
-// exposure are omitted once we've learned the gateway doesn't expose them.
-function templateSpec(): string {
-  const sv = sampleValuesSupported === false ? '' : ' sampleValues'
-  const vw = viewSupported === false ? '' : ' view'
-  const ex = exposureSupported === false ? '' : ' exposure'
-  return `displayName description category version iconURL instanceCRD { group version resource kind } schema${sv}${vw}${ex}`
-}
-
-// templateQuery runs a Template query built from templateSpec(), retrying when
-// the gateway rejects an optional field (older CRD) by remembering it's missing
-// and rebuilding the selection without it. Loops so a gateway missing both
-// sampleValues and view degrades in two passes rather than failing.
-async function templateQuery<T>(make: (spec: string) => string, variables: Record<string, unknown> = {}): Promise<T> {
-  for (;;) {
-    try {
-      return await graphqlQuery<T>(make(templateSpec()), variables)
-    } catch (e) {
-      const msg = (e as { message?: string }).message ?? ''
-      if (sampleValuesSupported !== false && msg.includes('sampleValues')) {
-        sampleValuesSupported = false
-        continue
-      }
-      if (viewSupported !== false && msg.includes('view')) {
-        viewSupported = false
-        continue
-      }
-      if (exposureSupported !== false && msg.includes('exposure')) {
-        exposureSupported = false
-        continue
-      }
-      throw e
-    }
-  }
-}
-
 async function fetchTemplates(): Promise<Template[]> {
-  const data = await templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string; labels?: Record<string, string> }; spec: Record<string, unknown> }> } }>>(
-    spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name labels } spec { ${spec} } } } } } }`,
-  )
-  const items = data[GROUP_FIELD]?.[VERSION]?.Templates?.items ?? []
-  const templates = items.map(t => templateFromGQL(t.metadata.name, t.spec ?? {}, t.metadata.labels ?? {}))
+  const items = await withKube(client => client.listAll(TEMPLATES))
+  const templates = items.map(templateFromObject)
   cachedTemplates = { fetchedAt: Date.now(), templates }
   return templates
 }
@@ -415,7 +359,7 @@ async function getTemplates(force = false): Promise<Template[]> {
 
 // Build the wire manifest for an Instance CR: the template name under
 // spec.template, the form input under spec.values.
-function buildInstanceManifest(name: string, templateName: string, values: Record<string, unknown>) {
+function buildInstanceManifest(name: string, templateName: string, values: Record<string, unknown>): RawObject {
   return {
     apiVersion: GROUP + '/' + VERSION,
     kind: 'Instance',
@@ -424,16 +368,12 @@ function buildInstanceManifest(name: string, templateName: string, values: Recor
   }
 }
 
-// fetchInstanceYaml reads the full Instance object (incl. the arbitrary
-// values/status) via the gateway's raw InstanceYaml escape hatch.
-async function fetchInstanceYaml(name: string): Promise<RawObject | null> {
+// fetchInstanceObject reads the full Instance object (incl. the arbitrary
+// values/status). A miss for the named object is null; a missing resource
+// type or any other failure propagates as its mapped ErrorResponse.
+async function fetchInstanceObject(name: string): Promise<RawObject | null> {
   try {
-    const data = await graphqlQuery<Infra<{ InstanceYaml?: string }>>(
-      `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { InstanceYaml(name: $n) } } }`,
-      { n: name },
-    )
-    const text = data[GROUP_FIELD]?.[VERSION]?.InstanceYaml
-    return text ? (yamlLoad(text) as RawObject) : null
+    return await withKube(client => client.get<RawObject>(INSTANCES, name))
   } catch (e) {
     if ((e as ErrorResponse).reason === 'NotFound') return null
     throw e
@@ -454,80 +394,60 @@ function validateInstanceListOptions(options: InstanceListOptions): InstanceList
   }
   const { limit, continue: continueToken } = options
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
-    throw protocolError('GraphQL Instance list limit must be a positive safe integer; retry the read.')
+    throw protocolError('Instance list limit must be a positive safe integer; retry the read.')
   }
   if (continueToken !== undefined && typeof continueToken !== 'string') {
-    throw protocolError('GraphQL Instance list continue must be a string; retry the read.')
+    throw protocolError('Instance list continue must be a string; retry the read.')
   }
   return options
-}
-
-function optionalInstanceListString(
-  collection: Record<string, unknown>,
-  key: 'continue' | 'resourceVersion',
-): string | undefined {
-  if (!(key in collection) || collection[key] === undefined || collection[key] === null) return undefined
-  if (typeof collection[key] !== 'string') {
-    throw protocolError(`GraphQL returned an invalid Instance list ${key}; retry the read.`)
-  }
-  return collection[key] as string
-}
-
-function optionalRemainingItemCount(collection: Record<string, unknown>): number | undefined {
-  if (!('remainingItemCount' in collection) || collection.remainingItemCount === undefined || collection.remainingItemCount === null) return undefined
-  const value = collection.remainingItemCount
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw protocolError('GraphQL returned an invalid Instance list remainingItemCount; retry the read.')
-  }
-  return value
 }
 
 function optionalInstanceString(record: Record<string, unknown>, key: string, label: string): void {
   const value = record[key]
   if (value !== undefined && value !== null && typeof value !== 'string') {
-    throw protocolError(`GraphQL returned malformed ${label}; retry the read.`)
+    throw protocolError(`the API returned malformed ${label}; retry the read.`)
   }
 }
 
 function validateInstanceListItem(value: unknown, index: number): RawObject {
   if (!isRecord(value) || !isRecord(value.metadata)) {
-    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata; retry the read.`)
+    throw protocolError(`the API returned malformed Instances item ${index} metadata; retry the read.`)
   }
   const metadata = value.metadata
   if (typeof metadata.name !== 'string' || metadata.name.trim() === '') {
-    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.name; retry the read.`)
+    throw protocolError(`the API returned malformed Instances item ${index} metadata.name; retry the read.`)
   }
   for (const key of ['uid', 'namespace', 'creationTimestamp', 'deletionTimestamp']) {
     optionalInstanceString(metadata, key, `Instances item ${index} metadata.${key}`)
   }
   if (metadata.generation !== undefined && metadata.generation !== null &&
     (typeof metadata.generation !== 'number' || !Number.isSafeInteger(metadata.generation) || metadata.generation < 0)) {
-    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.generation; retry the read.`)
+    throw protocolError(`the API returned malformed Instances item ${index} metadata.generation; retry the read.`)
   }
   if (metadata.labels !== undefined && metadata.labels !== null) {
     if (!isRecord(metadata.labels) || Object.values(metadata.labels).some(value => typeof value !== 'string')) {
-      throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.labels; retry the read.`)
+      throw protocolError(`the API returned malformed Instances item ${index} metadata.labels; retry the read.`)
     }
   }
   if (value.spec !== undefined && value.spec !== null && !isRecord(value.spec)) {
-    throw protocolError(`GraphQL returned malformed Instances item ${index} spec; retry the read.`)
+    throw protocolError(`the API returned malformed Instances item ${index} spec; retry the read.`)
   }
   if (value.status !== undefined && value.status !== null) {
     if (!isRecord(value.status)) {
-      throw protocolError(`GraphQL returned malformed Instances item ${index} status; retry the read.`)
+      throw protocolError(`the API returned malformed Instances item ${index} status; retry the read.`)
     }
     const status = value.status
     if (status.observedGeneration !== undefined && status.observedGeneration !== null &&
       (typeof status.observedGeneration !== 'number' || !Number.isSafeInteger(status.observedGeneration) || status.observedGeneration < 0)) {
-      throw protocolError(`GraphQL returned malformed Instances item ${index} status.observedGeneration; retry the read.`)
+      throw protocolError(`the API returned malformed Instances item ${index} status.observedGeneration; retry the read.`)
     }
     if (status.conditions !== undefined && status.conditions !== null) {
       if (!Array.isArray(status.conditions)) {
-        throw protocolError(`GraphQL returned malformed Instances item ${index} status.conditions; retry the read.`)
+        throw protocolError(`the API returned malformed Instances item ${index} status.conditions; retry the read.`)
       }
       status.conditions.forEach((condition, conditionIndex) => {
         if (!isRecord(condition) || typeof condition.type !== 'string' || condition.type.trim() === '' || typeof condition.status !== 'string') {
-          throw protocolError(`GraphQL returned malformed Instances item ${index} status.conditions[${conditionIndex}]; retry the read.`)
+          throw protocolError(`the API returned malformed Instances item ${index} status.conditions[${conditionIndex}]; retry the read.`)
         }
         for (const key of ['reason', 'message', 'lastTransitionTime']) {
           optionalInstanceString(condition, key, `Instances item ${index} status.conditions[${conditionIndex}].${key}`)
@@ -538,55 +458,58 @@ function validateInstanceListItem(value: unknown, index: number): RawObject {
   return value as RawObject
 }
 
-const INSTANCE_LIST_SELECTION = 'items { metadata { uid name namespace creationTimestamp deletionTimestamp generation labels } spec { template } status { observedGeneration phase message conditions { type status reason message lastTransitionTime } } }'
-const INSTANCE_IDENTITY_SELECTION = 'items { metadata { uid name } }'
-
-async function fetchInstancePage(options: InstanceListOptions = {}): Promise<RawInstanceListPage> {
+// listInstanceObjects fetches one cursor page of Instances. The kube client
+// normalises the List envelope (continue is undefined on a terminal page,
+// remainingItemCount without continue is a wire failure); the invariant is
+// re-checked here so the typed page contract holds regardless of transport.
+//
+// A tenant that has not accepted the API binding sees the same stable
+// empty read as the legacy list: a 404 on the collection can only mean the
+// resource type is unavailable in this workspace, and the list pages keep
+// that contract as empty rather than surfacing it as an error.
+async function listInstanceObjects(options: InstanceListOptions): Promise<{ items: unknown[]; continue?: string; remainingItemCount?: number; resourceVersion?: string }> {
   const request = validateInstanceListOptions(options)
-  const variables: Record<string, unknown> = {}
-  if (request.limit !== undefined) variables.limit = request.limit
-  if (request.continue !== undefined) variables.continue = request.continue
-  let data: unknown
+  const client = kube()
+  let page: KubeList
   try {
-    data = await graphqlQuery<unknown>(
-      `query($limit: Int, $continue: String) { ${GROUP_FIELD} { ${VERSION} { Instances(limit: $limit, continue: $continue) { ${INSTANCE_LIST_SELECTION} continue remainingItemCount resourceVersion } } } }`,
-      variables,
-    )
+    page = await client.list(INSTANCES, {
+      ...(request.limit === undefined ? {} : { limit: request.limit }),
+      ...(request.continue === undefined ? {} : { continue: request.continue }),
+    })
   } catch (e) {
-    // A tenant that has not accepted the API binding sees the same stable
-    // NotFound shape as the legacy list. Keep that read contract as empty.
-    if ((e as ErrorResponse).reason === 'NotFound') return { items: [] }
-    throw e
+    if (isKubeNotFound(e)) return { items: [] }
+    throw mapKubeError(e)
   }
-  const group = isRecord(data) ? data[GROUP_FIELD] : undefined
-  const version = isRecord(group) ? group[VERSION] : undefined
-  const collection = isRecord(version) ? version.Instances : undefined
-  if (!isRecord(collection) || !Array.isArray(collection.items)) {
-    throw protocolError('GraphQL did not return a valid Instances list; retry the read.')
-  }
-  const items = collection.items.map(validateInstanceListItem)
-  const nextToken = optionalInstanceListString(collection, 'continue')
-  const remainingItemCount = optionalRemainingItemCount(collection)
-  if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
-    throw protocolError('GraphQL returned Instance remainingItemCount without a continuation token; retry the read.')
+  if (page.remainingItemCount !== undefined && page.remainingItemCount > 0 && !page.continue) {
+    throw protocolError('the API returned Instance remainingItemCount without a continuation token; retry the read.')
   }
   return {
-    items,
+    items: page.items,
     // Kubernetes uses an empty continuation token for a terminal page; keep
     // the typed page contract unambiguous by exposing terminal as undefined.
-    continue: nextToken || undefined,
-    remainingItemCount,
-    resourceVersion: optionalInstanceListString(collection, 'resourceVersion'),
+    continue: page.continue || undefined,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
+  }
+}
+
+async function fetchInstancePage(options: InstanceListOptions = {}): Promise<RawInstanceListPage> {
+  const page = await listInstanceObjects(options)
+  return {
+    items: page.items.map(validateInstanceListItem),
+    continue: page.continue,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
   }
 }
 
 function validateInstanceIdentityItem(value: unknown, index: number): { name: string; uid?: string } {
   if (!isRecord(value) || !isRecord(value.metadata)) {
-    throw protocolError(`GraphQL returned malformed Instance identity ${index}; retry the read.`)
+    throw protocolError(`the API returned malformed Instance identity ${index}; retry the read.`)
   }
   const metadata = value.metadata
   if (typeof metadata.name !== 'string' || metadata.name.trim() === '') {
-    throw protocolError(`GraphQL returned malformed Instance identity ${index} name; retry the read.`)
+    throw protocolError(`the API returned malformed Instance identity ${index} name; retry the read.`)
   }
   optionalInstanceString(metadata, 'uid', `Instance identity ${index} uid`)
   return {
@@ -596,37 +519,12 @@ function validateInstanceIdentityItem(value: unknown, index: number): { name: st
 }
 
 async function fetchInstanceIdentityPage(options: InstanceListOptions = {}): Promise<RawInstanceIdentityPage> {
-  const request = validateInstanceListOptions(options)
-  const variables: Record<string, unknown> = {}
-  if (request.limit !== undefined) variables.limit = request.limit
-  if (request.continue !== undefined) variables.continue = request.continue
-  let data: unknown
-  try {
-    data = await graphqlQuery<unknown>(
-      `query($limit: Int, $continue: String) { ${GROUP_FIELD} { ${VERSION} { Instances(limit: $limit, continue: $continue) { ${INSTANCE_IDENTITY_SELECTION} continue remainingItemCount resourceVersion } } } }`,
-      variables,
-    )
-  } catch (e) {
-    if ((e as ErrorResponse).reason === 'NotFound') return { identities: [] }
-    throw e
-  }
-  const group = isRecord(data) ? data[GROUP_FIELD] : undefined
-  const version = isRecord(group) ? group[VERSION] : undefined
-  const collection = isRecord(version) ? version.Instances : undefined
-  if (!isRecord(collection) || !Array.isArray(collection.items)) {
-    throw protocolError('GraphQL did not return a valid Instance identity list; retry the read.')
-  }
-  const identities = collection.items.map(validateInstanceIdentityItem)
-  const nextToken = optionalInstanceListString(collection, 'continue')
-  const remainingItemCount = optionalRemainingItemCount(collection)
-  if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
-    throw protocolError('GraphQL returned Instance identity remainingItemCount without a continuation token; retry the read.')
-  }
+  const page = await listInstanceObjects(options)
   return {
-    identities,
-    continue: nextToken || undefined,
-    remainingItemCount,
-    resourceVersion: optionalInstanceListString(collection, 'resourceVersion'),
+    identities: page.items.map(validateInstanceIdentityItem),
+    continue: page.continue,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
   }
 }
 
@@ -636,10 +534,10 @@ async function enrichInstances(items: Instance[], templates: Template[]): Promis
       const tmpl = templates.find(t => t.name === i.template)
       if (!tmpl || !columnsNeedInstanceData(tmpl.view)) return
       try {
-        const full = await fetchInstanceYaml(i.name)
+        const full = await fetchInstanceObject(i.name)
         if (!full) return
         const parsed = instanceFromObj(full)
-        // InstanceYaml is a second read and can race a delete/recreate. Do
+        // The detail GET is a second read and can race a delete/recreate. Do
         // not merge values from a same-name replacement into the listed UID.
         if (i.uid && parsed.uid && i.uid !== parsed.uid) return
         i.values = parsed.values
@@ -657,8 +555,12 @@ async function listInstancesPage(options: InstanceListOptions = {}): Promise<Ins
   const items = raw.items.map(instanceFromObj)
   // Enrichment is deliberately page-local. This keeps a cursor page bounded
   // and prevents a page's template view from triggering reads for other pages.
-  const templates = await getTemplates()
-  await enrichInstances(items, templates)
+  // An empty page needs no catalog: this also keeps the unbound-workspace
+  // read (an empty list) from tripping over a missing Templates binding.
+  if (items.length > 0) {
+    const templates = await getTemplates()
+    await enrichInstances(items, templates)
+  }
   assertCurrentContext(expectedContext)
   return {
     items,
@@ -685,13 +587,13 @@ async function listInstanceIdentities(): Promise<Array<{ name: string; uid?: str
     const nextToken = page.continue
     if (!nextToken) return identities
     if (seenTokens.has(nextToken)) {
-      throw protocolError('GraphQL returned a repeated Instance identity continuation token; retry the read.')
+      throw protocolError('the API returned a repeated Instance identity continuation token; retry the read.')
     }
     seenTokens.add(nextToken)
     continueToken = nextToken
   }
 
-  throw protocolError(`GraphQL Instance identity list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
+  throw protocolError(`Instance identity list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
 }
 
 export const api = {
@@ -707,14 +609,17 @@ export const api = {
 
   async getTemplate(name: string): Promise<{ template: Template }> {
     const expectedContext = requestContext()
-    const data = await templateQuery<Infra<{ Template?: { metadata: { name: string }; spec: Record<string, unknown> } }>>(
-      spec => `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { Template(name: $n) { metadata { name } spec { ${spec} } } } } }`,
-      { n: name },
-    )
-    const t = data[GROUP_FIELD]?.[VERSION]?.Template
-    if (!t) throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + name + ' not found' }
+    let t: KubeObject
+    try {
+      t = await withKube(client => client.get(TEMPLATES, name))
+    } catch (e) {
+      if ((e as ErrorResponse).reason === 'NotFound') {
+        throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + name + ' not found' }
+      }
+      throw e
+    }
     assertCurrentContext(expectedContext)
-    return { template: templateFromGQL(t.metadata.name, t.spec ?? {}) }
+    return { template: templateFromObject(t) }
   },
 
   async createInstance(body: {
@@ -741,7 +646,7 @@ export const api = {
   /**
    * Walk only Instance metadata. This is intentionally separate from
    * listInstances(): callers proving deletion absence must not trigger
-   * template lookups or InstanceYaml enrichment for off-page rows.
+   * template lookups or per-object detail reads for off-page rows.
    */
   async listInstanceIdentities(): Promise<Array<{ name: string; uid?: string }>> {
     return listInstanceIdentities()
@@ -766,18 +671,18 @@ export const api = {
       const nextToken = page.continue
       if (!nextToken) return { items, identities }
       if (seenTokens.has(nextToken)) {
-        throw protocolError('GraphQL returned a repeated Instance continuation token; retry the read.')
+        throw protocolError('the API returned a repeated Instance continuation token; retry the read.')
       }
       seenTokens.add(nextToken)
       continueToken = nextToken
     }
 
-    throw protocolError(`GraphQL Instance list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
+    throw protocolError(`Instance list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
   },
 
   async getInstance(name: string): Promise<Instance> {
     const expectedContext = requestContext()
-    const found = await fetchInstanceYaml(name)
+    const found = await fetchInstanceObject(name)
     if (!found) throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
     assertCurrentContext(expectedContext)
     return instanceFromObj(found)
@@ -785,10 +690,7 @@ export const api = {
 
   async deleteInstance(name: string): Promise<void> {
     const expectedContext = requestContext()
-    await graphqlQuery(
-      `mutation($n: String!) { ${GROUP_FIELD} { ${VERSION} { deleteInstance(name: $n) } } }`,
-      { n: name },
-    )
+    await withKube(client => client.delete(INSTANCES, name))
     assertCurrentContext(expectedContext)
   },
 }

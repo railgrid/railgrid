@@ -161,15 +161,15 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Tenant access goes through the hub's GraphQL gateway (the hub injects
-	// X-Faros-Cluster per request). Without a hub URL the project API returns
+	// Tenant access goes through the hub's caller-scoped kcp proxy (the hub
+	// injects X-Faros-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
 	hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
-	var gqlClient *tenant.GraphQLClient
+	var tenantClient *tenant.Client
 	if hubURL := os.Getenv("FAROS_HUB_URL"); hubURL == "" {
 		log.Printf("WARNING project API disabled (no FAROS_HUB_URL)")
 	} else {
-		gqlClient = tenant.NewGraphQLClient(hubURL, hubInsecure)
+		tenantClient = tenant.NewClient(hubURL, hubInsecure)
 	}
 
 	msgStore, closeStore, err := openMessageStore(ctx)
@@ -183,12 +183,12 @@ func runServe() {
 	workspaces := openWorkspaceStore()
 
 	apiServer := api.NewWithWorkspaceContext(ctx,
-		gqlClient,
+		tenantClient,
 		msgStore,
 		workspaces,
 		os.Getenv("FAROS_HUB_URL"),
 		// The MCP virtual-workspace and authenticated catalog endpoints live on the
-		// same hub host as the GraphQL client above, so they must honor the standard
+		// same hub host as the tenant client above, so they must honor the standard
 		// FAROS_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
 		// hub serves its external cert, not one valid for the .svc.cluster.local
 		// name). Keep the MCP-specific override too, for callers that want to

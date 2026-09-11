@@ -4,8 +4,8 @@
 // workspace" affordance instead of a broken edges/dashboard/provider view
 // pointing at a non-existent cluster. Picking an org via the
 // Organization switching clears workspaceUUID; without this guard the app
-// keeps the previous org's clusterName pinned and every GraphQL query
-// runs against the wrong shard.
+// keeps the previous org's clusterName pinned and every workspace request
+// runs against the wrong cluster.
 //
 // Switching to an org that does have workspaces will re-select one
 // automatically (tenant.selectOrg → first workspace), so this view is

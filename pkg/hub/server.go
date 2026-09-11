@@ -29,8 +29,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
@@ -543,36 +541,6 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(
 		http.StripPrefix(apiurl.PathPrefixMCPServer, mcpAggregate))
 
-	// GraphQL: either embedded (in-process) or external reverse proxy.
-	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
-	// the HTTP server exits so the listener/gateway goroutines are cleanly joined.
-	var graphqlGroup *errgroup.Group
-	if s.opts.EmbeddedGraphQL && kcpConfig != nil {
-		g, gctx := errgroup.WithContext(ctx)
-		graphqlGroup = g
-		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpConfig, router); err != nil {
-			return fmt.Errorf("starting embedded GraphQL: %w", err)
-		}
-		logger.Info("Embedded GraphQL enabled")
-	} else if s.opts.GraphQLAddr != "" {
-		graphqlTarget := &url.URL{Scheme: "http", Host: s.opts.GraphQLAddr}
-		graphqlProxy := &httputil.ReverseProxy{
-			Director: func(req *http.Request) {
-				auth := req.Header.Get("Authorization")
-				logger.Info("GraphQL proxy forwarding", "path", req.URL.Path, "hasAuth", auth != "")
-				req.URL.Scheme = graphqlTarget.Scheme
-				req.URL.Host = graphqlTarget.Host
-				req.Host = graphqlTarget.Host
-				if auth != "" {
-					req.Header.Set("Authorization", auth)
-				}
-			},
-		}
-		graphqlHandler := http.StripPrefix("/apis/graphql", graphqlProxy)
-		router.PathPrefix("/apis/graphql").Handler(graphqlHandler)
-		logger.Info("GraphQL proxy enabled", "target", graphqlTarget.String())
-	}
-
 	// Health check — includes OIDC config when enabled so the portal can
 	// perform token refresh directly against the OIDC provider.
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -767,7 +735,7 @@ func (s *Server) Run(ctx context.Context) error {
 			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys))
 			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
-			// the ID — notably the GraphQL gateway at /graphql/clusters/{id}.
+			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
 			// Org-owned providers never see the caller's hub bearer: the
 			// proxy swaps it for a short-lived ServiceAccount token minted in
@@ -1145,8 +1113,8 @@ func (s *Server) Run(ctx context.Context) error {
 	// 8. Swap the HTTP server handler from the early bootstrap mux to the full
 	// router now that initialisation is complete.
 	// Routing order:
-	//   1. Explicit mux routes (auth, services, graphql, healthz, assets, favicon)
-	//   2. kcpProxy for API paths (/clusters/, /clusters/, /apis/, /api/)
+	//   1. Explicit mux routes (auth, services, healthz, assets, favicon)
+	//   2. kcpProxy for API paths (/clusters/, /apis/, /api/)
 	//   3. Portal SPA catch-all (if embedded)
 	//   4. 404
 	fullHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1196,13 +1164,6 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		// Wait for HTTP server to finish shutting down.
 		<-httpErrCh
-	}
-
-	// If embedded GraphQL was started, wait for its goroutines to finish.
-	if graphqlGroup != nil {
-		if err := graphqlGroup.Wait(); err != nil && err != context.Canceled {
-			logger.Error(err, "Embedded GraphQL exited with error")
-		}
 	}
 
 	return nil

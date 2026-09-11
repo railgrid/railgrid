@@ -5,6 +5,7 @@ import type {
   ProviderItem,
 } from './types'
 import { providerFetch } from './portalkit/tenant'
+import { createKubeClient, kubeResourcePath, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 
 const DNS_LABEL = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/
 const VERSION = /^[a-z][a-z0-9]*$/
@@ -35,11 +36,12 @@ export interface AssistantResourceDiscoveryResult {
   warnings: string[]
 }
 
-interface GraphQLResourceQuery {
-  query: string
-  groupField: string
-  versionField: string
-  listField: string
+// AssistantResourceRequest is the kube REST list request for one bound
+// resource type: the typed ref the kube client consumes plus the exact
+// /clusters/<tenant>/apis/<group>/<version>/<resource> path it resolves to.
+export interface AssistantResourceRequest {
+  ref: KubeResourceRef
+  path: string
 }
 
 function resourceTypeKey(type: Pick<AssistantResourceType, 'provider' | 'apiVersion' | 'kind' | 'resource'>): string {
@@ -86,50 +88,30 @@ export function assistantResourceProviders(providers: ProviderItem[]): Array<Pro
     .sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name) || a.name.localeCompare(b.name))
 }
 
-export function buildAssistantResourceQuery(type: Pick<AssistantResourceType, 'apiVersion' | 'kind' | 'resource'>): GraphQLResourceQuery {
+export function buildAssistantResourceRequest(type: Pick<AssistantResourceType, 'apiVersion' | 'kind' | 'resource'>, tenant: string): AssistantResourceRequest {
+  // parseAssistantBoundResource is the injection guard: only DNS-shaped
+  // group/version/resource identifiers reach the URL builder, and the kube
+  // client percent-encodes every segment on top of that.
   const parsed = parseAssistantBoundResource(type)
   if (!parsed) throw new Error('Provider Action publishes an invalid bound resource')
+  const cluster = tenant.trim()
+  if (!cluster) throw new Error('tenant context unavailable')
   const [group, version] = parsed.apiVersion.split('/')
-  const groupField = group.replace(/[^A-Za-z0-9_]/g, '_')
-  const versionField = version
-  const listField = parsed.resource.charAt(0).toUpperCase() + parsed.resource.slice(1)
-  if (!/^[_A-Za-z][_0-9A-Za-z]*$/.test(groupField) || !/^[_A-Za-z][_0-9A-Za-z]*$/.test(versionField) || !/^[_A-Za-z][_0-9A-Za-z]*$/.test(listField)) {
-    throw new Error('Provider Action cannot be represented safely in GraphQL')
-  }
-  return {
-    groupField,
-    versionField,
-    listField,
-    query: `query AppStudioContextResources { ${groupField} { ${versionField} { ${listField} { items { metadata { name uid resourceVersion } } } } } }`,
-  }
-}
-
-function graphqlEndpoint(tenant: string): string {
-  return `/graphql/${encodeURIComponent(tenant)}`
+  const ref: KubeResourceRef = { group, version, resource: parsed.resource }
+  return { ref, path: kubeResourcePath(cluster, ref) }
 }
 
 async function queryResourceType(ctx: FarosContext, type: AssistantResourceType, fetcher: typeof fetch | undefined): Promise<AssistantResourceGroup> {
   const tenant = ctx.tenant?.trim() ?? ''
   if (!tenant || !(typeof ctx.fetch === 'function' || ctx.token?.trim())) throw new Error('tenant context unavailable')
-  const built = buildAssistantResourceQuery(type)
+  const { ref } = buildAssistantResourceRequest(type, tenant)
   // An injected fetcher (tests) is used as-is; otherwise the host-owned
   // transport injects Authorization so this module never handles the token.
-  const transport = fetcher ?? providerFetch(ctx)
-  const response = await transport(graphqlEndpoint(tenant), {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: built.query }),
-  })
-  if (!response.ok) throw new Error(`request failed (${response.status})`)
-  const payload = await response.json() as { data?: Record<string, unknown>; errors?: unknown[] }
-  if (payload.errors?.length) throw new Error('provider query failed')
-  const group = payload.data?.[built.groupField] as Record<string, unknown> | undefined
-  const version = group?.[built.versionField] as Record<string, unknown> | undefined
-  const list = version?.[built.listField] as { items?: unknown[] } | undefined
+  const client = createKubeClient({ fetch: fetcher ?? providerFetch(ctx), cluster: tenant })
+  const list = await client.list<KubeObject>(ref)
   const items: AssistantResourceInstance[] = []
   const seen = new Set<string>()
-  for (const candidate of list?.items ?? []) {
+  for (const candidate of list.items) {
     if (!candidate || typeof candidate !== 'object') continue
     const metadata = (candidate as { metadata?: Record<string, unknown> }).metadata
     const name = typeof metadata?.name === 'string' ? metadata.name.trim() : ''

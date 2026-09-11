@@ -14,7 +14,7 @@ You may obtain a copy of the License at
 // and rate-limits hard, so instead of the portal hitting the host on every page
 // view, this controller lists the host on a timer (RequeueAfter) and reconciles
 // the Package CR set to match. The portal then reads Package CRs straight from
-// kcp (via the GraphQL gateway), never touching the host.
+// kcp (via the hub's /clusters/<cluster> kube REST proxy), never touching the host.
 //
 // Keyed on Repository (For) and owning Packages (Owns): on repository delete the
 // owned Packages are garbage-collected via their OwnerReference, so the deletion

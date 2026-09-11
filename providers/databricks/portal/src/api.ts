@@ -7,14 +7,20 @@ import type {
   TableColumn,
   Warehouse,
 } from './types.js'
-import { formatDatabricksRegistrationMessage, graphqlResponseError, providerRequestError } from './errors.js'
+import { formatDatabricksRegistrationMessage, kubeResponseError, providerRequestError } from './errors.js'
 import { resourceNameError } from './resourceName.js'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant.js'
+import { createKubeClient, isKubeError, type KubeClient, type KubeObject, type KubeObjectMeta, type KubeResourceRef } from './portalkit/kube.js'
 import type { RegistrationItem, RegistrationResult, RemoteCatalog, RemotePage, RemoteSchema, RemoteTable, RemoteWarehouse } from './registrationTypes.js'
 
 const GROUP = 'databricks.faros.sh'
 const VERSION = 'v1alpha1'
-const GRAPHQL_GROUP = 'databricks_faros_sh'
+// Server-side apply field manager for every manifest the portal writes.
+const FIELD_MANAGER = 'faros-databricks-portal'
+const CONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'connections' }
+const WAREHOUSES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'warehouses' }
+const TABLES: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'tables' }
+const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
 const DEFAULT_SECRET_NAMESPACE = 'default'
 const DEFAULT_SECRET_KEY = 'token'
 const RETRYABLE_CONDITION_REASONS = new Set([
@@ -65,6 +71,9 @@ interface RawCR {
 
 type ResourceKind = 'Connection' | 'Warehouse' | 'Table'
 type ResourceListKind = 'Connections' | 'Warehouses' | 'Tables'
+
+const RESOURCE_REFS: Record<ResourceKind, KubeResourceRef> = { Connection: CONNECTIONS, Warehouse: WAREHOUSES, Table: TABLES }
+const LIST_KINDS: Record<ResourceKind, ResourceListKind> = { Connection: 'Connections', Warehouse: 'Warehouses', Table: 'Tables' }
 
 /** Optional cursor controls accepted by a Kubernetes list query. */
 export interface KubernetesListOptions {
@@ -189,7 +198,7 @@ function optionalBoolean(record: Record<string, unknown>, key: string, label: st
 }
 
 function resourceProtocolError(kind: ResourceKind, field: string, action: 'read' | 'apply'): never {
-  const source = action === 'apply' ? `Databricks ${kind} apply response` : `GraphQL ${kind} resource`
+  const source = action === 'apply' ? `Databricks ${kind} apply response` : `Databricks ${kind} resource`
   const verb = action === 'apply' ? 'request' : 'read'
   throw protocolError(`${source} has an invalid ${field}; retry the ${verb}.`)
 }
@@ -268,8 +277,8 @@ function validateResourceConditions(value: unknown, kind: ResourceKind, action: 
 }
 
 function validateResourceStatus(value: unknown, kind: ResourceKind, action: 'read' | 'apply'): void {
-  // A newly-created resource can legitimately have no status yet. GraphQL may
-  // represent that as either an omitted or null status object.
+  // A newly-created resource can legitimately have no status yet; the API may
+  // omit the status object or send it as null.
   if (value === undefined || value === null) return
   const status = requireResourceRecord(value, kind, 'status', action)
   optionalResourceInteger(status, 'observedGeneration', kind, 'status.observedGeneration', action)
@@ -358,43 +367,36 @@ function queryString(values: Record<string, string | undefined>): string {
   return `?${query.toString()}`
 }
 
-async function graphqlQuery<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+// kubeClient builds a REST client bound to the current workspace cluster at
+// /clusters/<cluster>/... through the host-owned transport. `generation` is
+// the context generation captured when the operation started: the client's
+// onResponse hook rejects a response from an old context before it is parsed
+// or mapped, so a workspace or token switch mid-flight can never surface stale
+// data or continue a multi-step write under the new context.
+function kubeClient(generation: number): KubeClient {
   if (!clusterName) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
-  const generation = contextGeneration
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  const res = await hubFetch()('/graphql/' + clusterName, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers,
-    body: JSON.stringify({ query, variables }),
+  return createKubeClient({
+    fetch: hubFetch(),
+    cluster: clusterName,
+    fieldManager: FIELD_MANAGER,
+    onResponse: () => assertContextUnchanged(generation),
   })
-  const text = await res.text()
-  // Reject a response from an old context before parsing or mapping it.
-  assertContextUnchanged(generation)
-  if (!res.ok) {
-    throw providerRequestError(res.status, undefined, res.statusText || 'Databricks resources could not be loaded.')
+}
+
+// kubeRequest runs one REST call and maps its KubeError to the portal error
+// contract. `label` names the operation in protocol copy (e.g. "Connections
+// list"); `fallback` is the user-facing copy for transport failures whose
+// bodies must not be shown.
+async function kubeRequest<T>(label: string, fallback: string, run: (client: KubeClient) => Promise<T>): Promise<T> {
+  const client = kubeClient(contextGeneration)
+  try {
+    return await run(client)
+  } catch (error) {
+    if (!isKubeError(error)) throw error
+    throw kubeResponseError(error, { fallback, protocol: `Databricks ${label} response is malformed; retry the request.` })
   }
-  let parsed: unknown = {}
-  if (text) {
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw protocolError('GraphQL returned malformed JSON; retry the read.')
-    }
-  }
-  if (!isRecord(parsed)) throw protocolError('GraphQL returned a malformed response envelope; retry the read.')
-  const body = parsed as { data?: unknown; errors?: unknown }
-  if (body.errors !== undefined) {
-    if (!Array.isArray(body.errors) || !body.errors.every(error => isRecord(error) && typeof error.message === 'string')) {
-      throw protocolError('GraphQL returned malformed errors; retry the read.')
-    }
-    if (body.errors.length) {
-      throw graphqlResponseError(body.errors.map(error => String((error as { message: string }).message)).join('; '))
-    }
-  }
-  return (body.data ?? {}) as T
 }
 
 function conditions(cr: RawCR): ConditionInfo[] {
@@ -515,44 +517,35 @@ function tableFromCR(cr: RawCR): Table {
   }
 }
 
-async function applyCR(manifest: Record<string, unknown>, expectedKind?: ResourceKind): Promise<RawCR> {
-  const data = await graphqlQuery<{ applyYaml?: unknown }>(
-    'mutation($y: String!) { applyYaml(yaml: $y) }',
-    { y: JSON.stringify(manifest) },
-  )
-  const raw = data.applyYaml
-  let parsed: unknown = raw ?? {}
-  if (typeof raw === 'string') {
-    try {
-      parsed = JSON.parse(raw || '{}')
-    } catch {
-      if (expectedKind) resourceProtocolError(expectedKind, 'resource JSON', 'apply')
-      throw protocolError('Databricks apply response contained malformed JSON; retry the request.')
-    }
-  }
-  return expectedKind ? validateResource(parsed, expectedKind, 'apply') : parsed as RawCR
+// applyCR server-side-applies a manifest (create-or-update) and returns the
+// object kcp persisted. With expectedKind the response is validated against
+// the provider's resource shape before it is mapped.
+async function applyCR(ref: KubeResourceRef, manifest: KubeObject, expectedKind?: ResourceKind): Promise<RawCR> {
+  const kind = expectedKind ?? manifest.kind ?? 'resource'
+  const applied = await kubeRequest<unknown>(`${kind} apply`, `Databricks ${kind} could not be saved.`, client => client.apply(ref, manifest))
+  return expectedKind ? validateResource(applied, expectedKind, 'apply') : applied as RawCR
 }
 
-async function deleteCR(kind: string, name: string): Promise<void> {
-  await graphqlQuery(
-    `mutation($n: String!) { ${GRAPHQL_GROUP} { ${VERSION} { delete${kind}(name: $n) } } }`,
-    { n: name },
-  )
+async function deleteCR(kind: ResourceKind, name: string): Promise<void> {
+  await kubeRequest(`${kind} delete`, `Databricks ${kind} could not be deleted.`, client => client.delete(RESOURCE_REFS[kind], name))
 }
 
+// getSecret reads the credential Secret's metadata (name, uid, owners); a
+// missing Secret is null rather than an error so the owner check can run.
 async function getSecret(name: string, namespace: string): Promise<RawCR | null> {
-  const data = await graphqlQuery<{ v1?: { Secret?: RawCR | null } }>(
-    'query($n: String!, $ns: String!) { v1 { Secret(name: $n, namespace: $ns) { metadata { name uid ownerReferences { apiVersion kind name uid } } } } }',
-    { n: name, ns: namespace },
-  )
-  return data.v1?.Secret ?? null
+  try {
+    const secret = await kubeRequest('Secret read', 'Databricks credential Secret could not be loaded.', client => client.get(SECRETS, name, { namespace }))
+    const metadata = secret?.metadata
+    if (!isRecord(metadata) || typeof metadata.name !== 'string') throw protocolError('Databricks credential Secret response is malformed; retry the request.')
+    return { metadata: metadata as unknown as KCPMetadata }
+  } catch (e) {
+    if (isNotFoundError(e)) return null
+    throw e
+  }
 }
 
 async function deleteSecret(name: string, namespace: string): Promise<void> {
-  await graphqlQuery(
-    'mutation($n: String!, $ns: String!) { v1 { deleteSecret(name: $n, namespace: $ns) } }',
-    { n: name, ns: namespace },
-  )
+  await kubeRequest('Secret delete', 'Databricks credential Secret could not be deleted.', client => client.delete(SECRETS, name, { namespace }))
 }
 
 function isNotFoundError(e: unknown): boolean {
@@ -570,12 +563,6 @@ function secretOwnedByConnection(secret: RawCR | null, conn: Connection): boolea
   )
 }
 
-const GQL_META = 'metadata { name uid resourceVersion generation creationTimestamp }'
-const GQL_COND = 'conditions { type status reason message lastTransitionTime }'
-const F_CONNECTION = `${GQL_META} spec { host authType secretRef { name namespace key } } status { workspaceID observedGeneration ${GQL_COND} }`
-const F_WAREHOUSE = `${GQL_META} spec { connectionRef warehouseID } status { state observedGeneration ${GQL_COND} }`
-const F_TABLE = `${GQL_META} spec { connectionRef warehouseRef catalog schema table } status { refreshedAt columns { name type nullable comment } observedGeneration ${GQL_COND} }`
-
 interface RawKubernetesListPage {
   items: RawCR[]
   continue?: string
@@ -585,70 +572,54 @@ interface RawKubernetesListPage {
 
 function validateListOptions(options: KubernetesListOptions): KubernetesListOptions {
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit <= 0)) {
-    throw protocolError('GraphQL list limit must be a positive safe integer; retry the read.')
+    throw protocolError('Databricks list limit must be a positive safe integer; retry the read.')
   }
   if (options.continue !== undefined && typeof options.continue !== 'string') {
-    throw protocolError('GraphQL list continue must be a string; retry the read.')
+    throw protocolError('Databricks list continue must be a string; retry the read.')
   }
   return options
 }
 
-function optionalListString(collection: Record<string, unknown>, key: 'continue' | 'resourceVersion', kind: ResourceListKind): string | undefined {
-  if (!(key in collection) || collection[key] === undefined || collection[key] === null) return undefined
-  if (typeof collection[key] !== 'string') {
-    throw protocolError(`GraphQL returned an invalid ${kind} ${key}; retry the read.`)
-  }
-  const value = collection[key] as string
-  return key === 'continue' && value === '' ? undefined : value
-}
-
-function optionalRemainingItemCount(collection: Record<string, unknown>, kind: ResourceListKind): number | undefined {
-  if (!('remainingItemCount' in collection) || collection.remainingItemCount === undefined || collection.remainingItemCount === null) return undefined
-  const value = collection.remainingItemCount
+function optionalRemainingItemCount(value: unknown, kind: ResourceListKind): number | undefined {
+  if (value === undefined || value === null) return undefined
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw protocolError(`GraphQL returned an invalid ${kind} remainingItemCount; retry the read.`)
+    throw protocolError(`Databricks returned an invalid ${kind} remainingItemCount; retry the read.`)
   }
   return value
 }
 
-async function gqlListPage(kind: ResourceListKind, fields: string, options: KubernetesListOptions = {}): Promise<RawKubernetesListPage> {
+// listPage fetches one List page. The kube client already rejects a body
+// without an items array and a remainingItemCount with no continue token;
+// the checks here keep the remaining envelope invariants (item shapes, a
+// non-negative count, no cursor on a terminal page) fail-closed.
+async function listPage(resourceKind: ResourceKind, options: KubernetesListOptions = {}): Promise<RawKubernetesListPage> {
   const request = validateListOptions(options)
-  const variables: Record<string, unknown> = {}
-  if (request.limit !== undefined) variables.limit = request.limit
-  if (request.continue !== undefined) variables.continue = request.continue
-  const query = `query($limit: Int, $continue: String) { ${GRAPHQL_GROUP} { ${VERSION} { ${kind}(limit: $limit, continue: $continue) { items { ${fields} } continue remainingItemCount resourceVersion } } } }`
-  const data = await graphqlQuery<unknown>(
-    query,
-    variables,
-  )
-  const group = isRecord(data) ? data[GRAPHQL_GROUP] : undefined
-  const version = isRecord(group) ? group[VERSION] : undefined
-  const collection = isRecord(version) ? version[kind] : undefined
-  if (!isRecord(collection)) throw protocolError(`GraphQL did not return a valid ${kind} list; retry the read.`)
-  const items = collection.items
-  if (!Array.isArray(items)) throw protocolError(`GraphQL did not return a valid ${kind} list; retry the read.`)
-  const resourceKind: ResourceKind = kind === 'Connections' ? 'Connection' : kind === 'Warehouses' ? 'Warehouse' : 'Table'
-  const parsedItems = items.map((item, index) => {
+  const kind = LIST_KINDS[resourceKind]
+  const page = await kubeRequest(`${kind} list`, 'Databricks resources could not be loaded.', client => client.list(RESOURCE_REFS[resourceKind], {
+    ...(request.limit === undefined ? {} : { limit: request.limit }),
+    ...(request.continue === undefined ? {} : { continue: request.continue }),
+  }))
+  const parsedItems = page.items.map((item, index) => {
     try {
       return validateResource(item, resourceKind, 'read')
     } catch (error) {
       if ((error as Partial<ErrorResponse>).reason === 'ProtocolError') throw error
-      throw protocolError(`GraphQL returned malformed ${kind} item ${index}; retry the read.`)
+      throw protocolError(`Databricks returned malformed ${kind} item ${index}; retry the read.`)
     }
   })
-  const nextToken = optionalListString(collection, 'continue', kind)
-  const remainingItemCount = optionalRemainingItemCount(collection, kind)
+  const nextToken = page.continue
+  const remainingItemCount = optionalRemainingItemCount(page.remainingItemCount, kind)
   if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
-    throw protocolError(`GraphQL returned ${kind} remainingItemCount without a continuation token; retry the read.`)
+    throw protocolError(`Databricks returned ${kind} remainingItemCount without a continuation token; retry the read.`)
   }
   if (remainingItemCount === 0 && nextToken) {
-    throw protocolError(`GraphQL returned ${kind} a continuation token with no remaining items; retry the read.`)
+    throw protocolError(`Databricks returned ${kind} a continuation token with no remaining items; retry the read.`)
   }
   return {
     items: parsedItems,
     continue: nextToken,
     remainingItemCount,
-    resourceVersion: optionalListString(collection, 'resourceVersion', kind),
+    resourceVersion: page.resourceVersion,
   }
 }
 
@@ -661,7 +632,8 @@ function mapListPage<T>(page: RawKubernetesListPage, map: (item: RawCR) => T): K
   }
 }
 
-async function gqlListAll<T>(kind: ResourceListKind, fields: string, map: (item: RawCR) => T & { name: string }): Promise<T[]> {
+async function listAll<T>(resourceKind: ResourceKind, map: (item: RawCR) => T & { name: string }): Promise<T[]> {
+  const kind = LIST_KINDS[resourceKind]
   const items: Array<T & { name: string }> = []
   const seenTokens = new Set<string>()
   const generation = contextGeneration
@@ -669,7 +641,7 @@ async function gqlListAll<T>(kind: ResourceListKind, fields: string, map: (item:
 
   for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber += 1) {
     assertContextUnchanged(generation)
-    const page = await gqlListPage(kind, fields, {
+    const page = await listPage(resourceKind, {
       limit: LIST_PAGE_SIZE,
       ...(continueToken === undefined ? {} : { continue: continueToken }),
     })
@@ -678,28 +650,20 @@ async function gqlListAll<T>(kind: ResourceListKind, fields: string, map: (item:
     const nextToken = page.continue
     if (!nextToken) return items.sort((left, right) => left.name.localeCompare(right.name))
     if (seenTokens.has(nextToken)) {
-      throw protocolError(`GraphQL returned a repeated ${kind} continuation token; retry the read.`)
+      throw protocolError(`Databricks returned a repeated ${kind} continuation token; retry the read.`)
     }
     seenTokens.add(nextToken)
     continueToken = nextToken
   }
 
-  throw protocolError(`GraphQL ${kind} list exceeded the ${MAX_LIST_PAGES}-page safety limit; retry the read.`)
+  throw protocolError(`Databricks ${kind} list exceeded the ${MAX_LIST_PAGES}-page safety limit; retry the read.`)
 }
 
-async function gqlGet(kind: ResourceKind, name: string, fields: string): Promise<RawCR> {
-  const query = `query($n: String!) { ${GRAPHQL_GROUP} { ${VERSION} { ${kind}(name: $n) { ${fields} } } } }`
-  const data = await graphqlQuery<unknown>(
-    query,
-    { n: name },
-  )
-  const group = isRecord(data) ? data[GRAPHQL_GROUP] : undefined
-  const version = isRecord(group) ? group[VERSION] : undefined
-  if (!isRecord(version) || !Object.prototype.hasOwnProperty.call(version, kind)) {
-    throw protocolError(`GraphQL did not return a valid ${kind} result; retry the read.`)
-  }
-  const obj = version[kind]
-  if (obj === null) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
+// getCR reads one named resource. A 404 Status surfaces as NotFound through
+// kubeResponseError; a 200 body that is not the resource shape is a protocol
+// failure, never an empty result.
+async function getCR(kind: ResourceKind, name: string): Promise<RawCR> {
+  const obj = await kubeRequest<unknown>(`${kind} read`, `Databricks ${kind} could not be loaded.`, client => client.get(RESOURCE_REFS[kind], name))
   return validateResource(obj, kind, 'read')
 }
 
@@ -721,7 +685,7 @@ async function applyTokenSecret(input: {
   key: string
   token: string
 }) {
-  const metadata: Record<string, unknown> = { name: input.name, namespace: input.namespace }
+  const metadata: KubeObjectMeta = { name: input.name, namespace: input.namespace }
   if (input.owner?.metadata.uid) {
     metadata.ownerReferences = [{
       apiVersion: `${GROUP}/${VERSION}`,
@@ -730,7 +694,7 @@ async function applyTokenSecret(input: {
       uid: input.owner.metadata.uid,
     }]
   }
-  await applyCR({
+  await applyCR(SECRETS, {
     apiVersion: 'v1',
     kind: 'Secret',
     metadata,
@@ -762,15 +726,15 @@ export const api = {
   },
 
   async listConnectionsPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Connection>> {
-    return mapListPage(await gqlListPage('Connections', F_CONNECTION, options), connectionFromCR)
+    return mapListPage(await listPage('Connection', options), connectionFromCR)
   },
 
   async listConnections(): Promise<Connection[]> {
-    return gqlListAll('Connections', F_CONNECTION, connectionFromCR)
+    return listAll('Connection', connectionFromCR)
   },
 
   async getConnection(name: string): Promise<Connection> {
-    return connectionFromCR(await gqlGet('Connection', name, F_CONNECTION))
+    return connectionFromCR(await getCR('Connection', name))
   },
 
   async saveConnection(input: {
@@ -788,7 +752,7 @@ export const api = {
     const secretNamespace = input.secretNamespace || DEFAULT_SECRET_NAMESPACE
     const secretKey = input.secretKey || DEFAULT_SECRET_KEY
     const generation = contextGeneration
-    const conn = await applyCR({
+    const conn = await applyCR(CONNECTIONS, {
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
       metadata: { name },
@@ -843,15 +807,15 @@ export const api = {
   },
 
   async listWarehousesPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Warehouse>> {
-    return mapListPage(await gqlListPage('Warehouses', F_WAREHOUSE, options), warehouseFromCR)
+    return mapListPage(await listPage('Warehouse', options), warehouseFromCR)
   },
 
   async listWarehouses(): Promise<Warehouse[]> {
-    return gqlListAll('Warehouses', F_WAREHOUSE, warehouseFromCR)
+    return listAll('Warehouse', warehouseFromCR)
   },
 
   async getWarehouse(name: string): Promise<Warehouse> {
-    return warehouseFromCR(await gqlGet('Warehouse', name, F_WAREHOUSE))
+    return warehouseFromCR(await getCR('Warehouse', name))
   },
 
   async saveWarehouse(input: {
@@ -860,7 +824,7 @@ export const api = {
     warehouseID: string
   }): Promise<Warehouse> {
     validateResourceName(input.name, 'warehouse name')
-    const created = await applyCR({
+    const created = await applyCR(WAREHOUSES, {
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Warehouse',
       metadata: { name: input.name },
@@ -877,11 +841,11 @@ export const api = {
   },
 
   async listTablesPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Table>> {
-    return mapListPage(await gqlListPage('Tables', F_TABLE, options), tableFromCR)
+    return mapListPage(await listPage('Table', options), tableFromCR)
   },
 
   async listTables(): Promise<Table[]> {
-    return gqlListAll('Tables', F_TABLE, tableFromCR)
+    return listAll('Table', tableFromCR)
   },
 
   async saveTable(input: {
@@ -893,7 +857,7 @@ export const api = {
     table: string
   }): Promise<Table> {
     validateResourceName(input.name, 'table name')
-    const created = await applyCR({
+    const created = await applyCR(TABLES, {
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Table',
       metadata: { name: input.name },
@@ -913,6 +877,6 @@ export const api = {
   },
 
   async getTable(name: string): Promise<Table> {
-    return tableFromCR(await gqlGet('Table', name, F_TABLE))
+    return tableFromCR(await getCR('Table', name))
   },
 }

@@ -66,7 +66,7 @@ func newProjectAssistantSandboxManager() *projectAssistantSandboxManager {
 
 // acquire serializes use of a cached project environment inside App Studio's
 // enforced single-writer deployment. The Instance annotations are a durable
-// recovery/eviction fence, but the production GraphQL apply path is not a
+// recovery/eviction fence, but the production apply path is an upsert, not a
 // compare-and-swap primitive; multi-replica cache ownership must move to the
 // provider's durable execution-claim store before the deployment is scaled.
 func (m *projectAssistantSandboxManager) acquire(tenantKey, cacheKey, runID string) (func(), error) {
@@ -361,7 +361,7 @@ func projectAssistantRunSandboxInstanceCached(instance *unstructured.Unstructure
 // claimProjectAssistantRunSandboxInstance persists the active run identity for
 // crash recovery, suspended-run reattachment, and safe quota eviction. The
 // in-process sandbox manager provides exclusivity in the currently enforced
-// single-writer deployment; GraphQL applyYaml is create-or-update rather than
+// single-writer deployment; the tenant apply is create-or-update rather than
 // a compare-and-swap operation, so these annotations must not be described as
 // a distributed lock.
 func (s *Server) claimProjectAssistantRunSandboxInstance(ctx context.Context, c *asclient.Client, scope store.Scope, name, runID string) (time.Time, error) {

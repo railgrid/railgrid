@@ -67,7 +67,7 @@ type OAuthApp struct {
 type Server struct {
 	cfg      Config
 	store    store.Store
-	gql      *tenant.GraphQLClient
+	tenant   *tenant.Client
 	engine   *engine.Engine
 	bg       *background
 	events   *eventBus
@@ -102,17 +102,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	// The tenant GraphQL client is nil without a hub URL; resource + chat
+	// The tenant client is nil without a hub URL; resource + chat
 	// endpoints then return a clear 501 rather than crashing (bare-hub dev).
-	var gql *tenant.GraphQLClient
+	var tenantClient *tenant.Client
 	if cfg.HubURL != "" {
-		gql = tenant.NewGraphQLClient(cfg.HubURL, cfg.HubInsecure)
+		tenantClient = tenant.NewClient(cfg.HubURL, cfg.HubInsecure)
 	}
 
 	return &Server{
 		cfg:          cfg,
 		store:        st,
-		gql:          gql,
+		tenant:       tenantClient,
 		engine:       engine.New(),
 		events:       newEventBus(),
 		liveRuns:     newRunRegistry(),

@@ -390,11 +390,13 @@ describe('mounted resource deletion state', () => {
     expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Deleting this repository.'))).toBeDefined()
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(true)
 
-    deleteRequest.reject({ reason: 'GraphQLError', message: 'delete failed' })
+    // What api.ts surfaces for a non-Status kcp failure (a KubeError mapped to
+    // the portal's {reason, message} contract).
+    deleteRequest.reject({ reason: 'HTTPError', message: '500: delete failed' })
     await settle()
 
     expect(textContent(root)).not.toContain('Deleting this repository.')
-    expect(textContent(root)).toContain('GraphQLError: delete failed')
+    expect(textContent(root)).toContain('HTTPError: 500: delete failed')
     expect(textContent(root)).toContain('orders')
     expect(findNode(root, node => node.type === 'button' && textContent(node).trim() === 'Refresh')?.props.disabled).toBe(false)
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More repository actions')?.props.disabled).toBe(false)
@@ -434,11 +436,13 @@ describe('mounted resource deletion state', () => {
     expect(findNode(root, node => node.props.role === 'status' && node.props['aria-live'] === 'polite' && textContent(node).includes('Deleting this connection.'))).toBeDefined()
     expect(findNode(root, node => node.type === 'button' && node.props['aria-label'] === 'More connection actions')?.props.disabled).toBe(true)
 
-    deleteRequest.reject({ reason: 'GraphQLError', message: 'delete failed' })
+    // What api.ts surfaces for a non-Status kcp failure (a KubeError mapped to
+    // the portal's {reason, message} contract).
+    deleteRequest.reject({ reason: 'HTTPError', message: '500: delete failed' })
     await settle()
 
     expect(textContent(root)).not.toContain('Deleting this connection.')
-    expect(textContent(root)).toContain('GraphQLError: delete failed')
+    expect(textContent(root)).toContain('HTTPError: 500: delete failed')
     expect(textContent(root)).toContain('github')
     expect(back).not.toHaveBeenCalled()
     expect(mocks.toast).not.toHaveBeenCalled()

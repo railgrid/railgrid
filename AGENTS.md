@@ -9,7 +9,7 @@ test, format, lint, and regenerate code.
 > multi-tenant control plane.
 
 Deeper references live in [`DEVELOPERS.md`](./DEVELOPERS.md) and [`docs/`](./docs)
-(per-provider architecture docs, security, organizations, graphql, mcp). Keep
+(per-provider architecture docs, security, organizations, hub proxy, mcp). Keep
 those authoritative — this file is the map, not the territory.
 
 ---
@@ -42,7 +42,6 @@ apis/                 First-party API types (faros, tenancy, providers groups)
 cmd/                  Binaries
   faros/                CLI (also the agent: `faros agent run`)
   faros-hub/            Hub control-plane server
-  graphql/              GraphQL gateway (listener + gateway subcommands)
   release/              Release-tagging helper
 pkg/                  Hub + agent + shared libraries
   hub/                  Hub server, controllers, provider integration, tenancy
@@ -55,7 +54,7 @@ config/               Generated CRDs (config/crds) + kcp resources (config/kcp)
 hack/                 Codegen + boilerplate + dev scripts
 test/e2e/             End-to-end suites (see §7)
 deploy/               Dockerfiles + Helm charts
-docs/                 Architecture docs (per-provider, security, mcp, graphql)
+docs/                 Architecture docs (per-provider, security, mcp, hub proxy)
 Makefile              The single source of truth for build/test/lint/codegen
 Tiltfile              Local dev loop (embedded kcp + static auth)
 go.work               Workspace: root + standalone provider modules
@@ -63,8 +62,8 @@ go.work               Workspace: root + standalone provider modules
 
 `go.work` members: `.`, `provider-sdk`, every provider module under
 `providers/` (`agents`, `app-studio`, `code`, `databricks`, `edges`,
-`infrastructure`, `kuery`, `quickstart`), and the external
-`kubernetes-graphql-gateway` + `contrib-metering` checkouts. Every provider is
+`infrastructure`, `kuery`, `quickstart`), and the external `contrib-metering`
+checkout. Every provider is
 standalone with its own `go.mod`; none compile into the hub binary any more
 (the `RegisterBuiltin` machinery in `pkg/hub/providers/builtin.go` still exists
 but has no registrations).
@@ -79,7 +78,7 @@ demand — never `go install` them globally.
 
 | Task | Command | Notes |
 |------|---------|-------|
-| Build all binaries | `make build` | faros CLI + hub + graphql |
+| Build all binaries | `make build` | faros CLI + hub |
 | Build hub | `make build-hub` | hub binary only; provider portals build per provider (§5.3) |
 | Build hub w/ embedded portal | `make build-hub-portal` | `portal_embed` build tag |
 | Unit tests | `make test` | all packages except `test/e2e` |
@@ -264,8 +263,8 @@ and no postMessage handshake. **A provider bundle executes as fully trusted code
 in the portal document.** Bundles must reach the hub through
 `farosContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
 `Authorization` + tenant headers and allows only the provider's own
-`/services/providers/{name}/` and `/ui/providers/{name}/`, `/graphql/`,
-`/clusters/`, `/api/orgs/{org}/`, and GET `/api/providers`. `farosContext.token`
+`/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
+`/api/orgs/{org}/`, and GET/HEAD `/api/providers`. `farosContext.token`
 is deprecated (one-release fallback) and will be removed. See
 [`docs/providers.md`](docs/providers.md) §"Portal changes" and §"Security
 considerations".
@@ -329,9 +328,10 @@ never call the global `fetch` for a hub request. Two auth models coexist;
 - **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
   `kuery`/`quickstart` read the tenant off `faros-context` instead, so they only
   use `serviceBase`.
-- **cluster-in-path model** (`code`, `edges`, `infrastructure`, and databricks'
-  GraphQL): address kcp by `/graphql/<cluster>` or `/services/providers/<name>`
-  with just the bearer token; they don't use `tenantHeaders`.
+- **cluster-in-path model** (`code`, `edges`, `infrastructure`, `databricks`):
+  address kcp by `/clusters/<cluster>` (the `portalkit` kube client over the
+  hub's kcp proxy) or their own `/services/providers/<name>` with just the
+  bearer token; they don't use `tenantHeaders`.
 
 Rule of thumb: **need a confirm, an icon, a table, a status pill, or tenant
 headers → import from `portalkit`, don't reinvent.** New shared primitive → add
@@ -429,8 +429,8 @@ The hub is the only publicly-reachable component. Key areas:
 - `providers/` — provider integration (see §5.2).
 - `tenant/`, `provider_tenant_resolver.go` — org/workspace middleware + identity
   resolution.
-- `restapi/`, `graphql.go`, `serviceaccounts/`, `quota/`, `portal*.go` — REST
-  API surface, GraphQL hook, SA management, quotas, portal serving.
+- `restapi/`, `serviceaccounts/`, `quota/`, `portal*.go` — REST API surface,
+  SA management, quotas, portal serving.
 - `pkg/virtual/builder/` — kcp virtual-workspace handlers: the agent-proxy
   (tunnel auth, status, SSH creds) and the multi-cluster MCP server.
 
@@ -582,10 +582,10 @@ responsive, or interaction behavior.
 
 faros runs on kcp; some symptoms that look like faros bugs are actually upstream:
 
-- **GraphQL / OpenAPI proxy misbehaving** — faros serves OpenAPI/GraphQL through a
-  kcp virtual workspace. Broken VW OpenAPI serving surfaces as hub-side proxy
+- **OpenAPI proxy misbehaving** — faros serves OpenAPI/discovery through a kcp
+  virtual workspace. Broken VW OpenAPI serving surfaces as hub-side proxy
   issues; the fix is usually kcp-side, not faros. Check the kcp VW openapi path
-  before assuming the bug is in the faros gateway.
+  before assuming the bug is in the faros proxy.
 - **`kubectl get <resource>` "temporarily unavailable" for one resource in an
   APIBinding (e.g. templates), intermittently** — APIExport *virtual storage*
   (CachedResource) discovery fails when the consumer workspace is on a different
@@ -602,5 +602,6 @@ faros runs on kcp; some symptoms that look like faros bugs are actually upstream
 - `docs/providers.md` + per-provider arch docs — provider plane deep dives.
 - `docs/security.md`, `docs/organizations.md`, `docs/provider-scoping.md` —
   tenancy + isolation model.
-- `docs/graphql.md` — GraphQL gateway.
+- `docs/hub-proxy-workspace-access.md` — the hub kcp proxy's membership-gated
+  per-workspace access (`/clusters/{cluster}`).
 - `CONTRIBUTING.md` — contribution workflow.

@@ -235,7 +235,7 @@ With `kcp.external.enabled=true` the chart renders a `Deployment` with a
 embedded kcp rather than rendering something that cannot work.
 
 Every replica serves the full request surface — API proxy, portal, provider
-proxies, GraphQL — and no request is pinned to a pod, so no session affinity is
+proxies — and no request is pinned to a pod, so no session affinity is
 needed on the ingress. Three pieces of hub state are what make that true:
 
 - **Singleton controllers** (provider provisioning, MCPServer, organization
@@ -250,14 +250,11 @@ needed on the ingress. Three pieces of hub state are what make that true:
   observed by the replica that received the beat reaches the others over the
   catalog watch instead of each replica timing the provider out on its own.
 
-Two things cost more per replica rather than less:
+One thing costs more per replica rather than less:
 
 - The per-IP auth rate limiter is per replica, so N replicas admit up to N times
   the configured burst. Enforce a hard global bound at the ingress if you need
   one.
-- `hub.embeddedGraphQL` runs a schema listener per replica, so each one watches
-  the APIExportEndpointSlice and rebuilds schemas independently. Correct, but N
-  times the discovery load on kcp.
 
 ---
 

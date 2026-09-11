@@ -17,7 +17,7 @@ material; read the one for an area before non-trivial work in it:
 | Area | Reference |
 |---|---|
 | The `faros` CLI: `env`, `app`, `commit`, `sandbox`, `mcp`, edges | [references/cli.md](references/cli.md) |
-| Login, tokens, org/workspace IDs, hub REST, URL grammar, GraphQL | [references/access.md](references/access.md) |
+| Login, tokens, org/workspace IDs, hub REST, URL grammar, kube REST by cluster | [references/access.md](references/access.md) |
 | App Studio: projects, assistant, files, attachments, sandbox, promote, publish | [references/app-studio.md](references/app-studio.md) |
 | code provider: connections, repositories, commits, checkout, CI, packages | [references/code.md](references/code.md) |
 | infrastructure: templates, instances, data plane, access gate, app tokens | [references/infrastructure.md](references/infrastructure.md) |

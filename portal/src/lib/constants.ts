@@ -3,7 +3,6 @@ export const API_PATHS = {
   version: '/version',
   tokenLogin: '/auth/token-login',
   authorize: '/auth/authorize',
-  graphql: (clusterName: string) => `/graphql/${clusterName}`,
 } as const
 
 export const STORAGE_KEYS = {

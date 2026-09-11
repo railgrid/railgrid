@@ -108,7 +108,7 @@ policies.
 | Edge ssh | `wss://<hub>/services/providers/edges/edgeproxy/clusters/{clusterName}/apis/edges.faros.sh/v1alpha1/linuxservers/{edge}/ssh[?cmd=…]` |
 | Per-edge MCP | `/services/providers/edges/agent/{clusterName}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{edge}/mcp` |
 | Aggregate MCP | `/services/mcpserver/{clusterName}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp` |
-| GraphQL | `POST /graphql/{clusterName}` (docs sometimes show `/graphql/clusters/{id}`; try the first) |
+| Kube REST by cluster | `/clusters/{clusterName}/apis/{group}/{version}/{resource}` (core group: `/clusters/{clusterName}/api/v1/…`) — what the portals and `kubectl` use |
 | Provider UI assets | `/ui/providers/{provider}/…` (no token forwarded) |
 | kcp APIExport virtual workspace | `/services/apiexport/…` (provider ServiceAccount tokens only) |
 
@@ -213,22 +213,25 @@ nothing to bind), `permissionClaims`, `edgeProxyAccess`, `dependencies`,
 `schemaDigest`, `readOnly`, `risk`, `limits`, `consent`, `deprecation`.
 Provider skills appear as `assistantSkills[]`.
 
-## 8. GraphQL
+## 8. Kube REST by cluster
 
-`POST https://<hub>/graphql/<clusterName>` with the bearer. The gateway
-builds a per-request kcp client as the caller. Naming: API group dots become
-underscores (`faros_sh`, `infrastructure_faros_sh`), core is `v1`, lists are
-plural PascalCase with `limit` and `continue`, single objects take
-`(name: "…")`, append `Yaml` for raw YAML, `applyYaml(yaml: …)` mutation
-writes any object.
+Tenant resources are plain Kubernetes REST through the hub's kcp proxy at
+`https://<hub>/clusters/<clusterName>/…` with the bearer. The proxy authorizes
+the caller by workspace membership and forwards to kcp as that user, so any
+workspace you are a member of works, not only your default one. Creates are
+`POST`, full updates `PUT`, partial updates `PATCH` with
+`application/merge-patch+json`, create-or-update is server-side apply
+(`PATCH` with `application/apply-patch+yaml`, `?force=true`).
 
 ```bash
-curl -s -X POST "$HUB/graphql/$CLUSTER" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"query":"{ infrastructure_faros_sh { v1alpha1 { Instances { items { metadata { name } status { phase } } } } } }"}'
+curl -s "$HUB/clusters/$CLUSTER/apis/code.faros.sh/v1alpha1/repositories" -H "Authorization: Bearer $TOKEN"
 ```
 
-Via kubectl: `kubectl create --raw '/graphql/<clusterName>' -f body.json`
-(UNVERIFIED on a live hub; the embedded handler mounts `/graphql/{cluster}`).
+The kubectl equivalent:
+
+```bash
+kubectl --server="$HUB/clusters/$CLUSTER" --token="$TOKEN" get repositories.code.faros.sh
+```
 
 ## 9. kubectl cheat sheet in a workspace
 

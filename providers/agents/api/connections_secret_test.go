@@ -10,144 +10,109 @@ package api
 
 // Tests for the read-before-merge path that owns connection credentials. The
 // merge sends the Secret's whole StringData, so what these assert is that a
-// read the gateway could not answer never reaches the apply: the apply would
+// read the workspace could not answer never reaches the apply: the apply would
 // carry only the updates and drop every key already stored.
 
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
-	"sigs.k8s.io/yaml"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/llm"
 	"github.com/faroshq/provider-agents/store"
 	"github.com/faroshq/provider-agents/tenant"
+	"github.com/faroshq/provider-agents/tenant/tenanttest"
 )
-
-// fakeGateway is a GraphQL gateway that answers Secret reads however a test
-// asks and records every applyYaml it receives.
-type fakeGateway struct {
-	mu sync.Mutex
-	// getErr, when set, is returned as a GraphQL error for a Secret read.
-	getErr string
-	// secret is the Secret returned for a read when getErr is empty.
-	secret map[string]string
-	// applied holds the StringData of each applyYaml the gateway saw.
-	applied []map[string]string
-	// gets counts Secret reads.
-	gets int
-	// connType, when set, makes the gateway answer Connection reads with a
-	// connection of that spec.type.
-	connType string
-}
-
-func (g *fakeGateway) applies() []map[string]string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]map[string]string(nil), g.applied...)
-}
-
-func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Query     string         `json:"query"`
-		Variables map[string]any `json:"variables"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	w.Header().Set("Content-Type", "application/json")
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	switch {
-	case strings.Contains(body.Query, "applyYaml"):
-		var obj map[string]any
-		_ = yaml.Unmarshal([]byte(body.Variables["yaml"].(string)), &obj)
-		data := map[string]string{}
-		if sd, ok := obj["stringData"].(map[string]any); ok {
-			for k, v := range sd {
-				data[k], _ = v.(string)
-			}
-		}
-		g.applied = append(g.applied, data)
-		out, _ := yaml.Marshal(obj)
-		_, _ = w.Write([]byte(`{"data":{"applyYaml":` + jsonString(string(out)) + `}}`))
-
-	case strings.Contains(body.Query, "ConnectionYaml"):
-		obj := map[string]any{
-			"apiVersion": "agents.faros.sh/v1alpha1",
-			"kind":       "Connection",
-			"metadata":   map[string]any{"name": testSecretConn},
-			"spec":       map[string]any{"type": g.connType, "channel": "C123"},
-			"status":     map[string]any{},
-		}
-		y, _ := yaml.Marshal(obj)
-		_, _ = w.Write([]byte(`{"data":{"agents_faros_sh":{"v1alpha1":{"ConnectionYaml":` +
-			jsonString(string(y)) + `}}}}`))
-
-	case strings.Contains(body.Query, "applyStatusYaml"):
-		_, _ = w.Write([]byte(`{"data":{"applyStatusYaml":"ok"}}`))
-
-	case strings.Contains(body.Query, "SecretYaml"):
-		g.gets++
-		if g.getErr != "" {
-			_, _ = w.Write([]byte(`{"errors":[{"message":` + jsonString(g.getErr) + `}]}`))
-			return
-		}
-		// A stored Secret comes back with base64 `data`, which is what the
-		// merge reads; `stringData` is write-only.
-		enc := map[string]any{}
-		for k, v := range g.secret {
-			enc[k] = base64.StdEncoding.EncodeToString([]byte(v))
-		}
-		obj := map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Secret",
-			"metadata": map[string]any{
-				"name":      connectionSecretName(testSecretConn),
-				"namespace": llm.SecretNamespace,
-			},
-			"type": "Opaque",
-			"data": enc,
-		}
-		y, _ := yaml.Marshal(obj)
-		_, _ = w.Write([]byte(`{"data":{"v1":{"SecretYaml":` + jsonString(string(y)) + `}}}`))
-
-	default:
-		_, _ = w.Write([]byte(`{"errors":[{"message":"unexpected query"}]}`))
-	}
-}
-
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
 
 const testSecretConn = "team-chat"
 
-func gatewayClient(t *testing.T, g *fakeGateway) *agentsclient.Client {
+// secretReadError makes every Secret read fail with an internal error
+// carrying msg — the shape a proxy or kcp outage takes at the caller.
+func secretReadError(msg string) func(tenanttest.Request) *metav1.Status {
+	return func(req tenanttest.Request) *metav1.Status {
+		if req.Verb == "get" && req.GVR == agentsclient.SecretGVR {
+			st := apierrors.NewInternalError(errors.New(msg)).ErrStatus
+			return &st
+		}
+		return nil
+	}
+}
+
+// storedSecret seeds the connection Secret with data, base64-encoded under
+// `data` the way the API server returns it; `stringData` is write-only.
+func storedSecret(data map[string]string) *unstructured.Unstructured {
+	enc := map[string]any{}
+	for k, v := range data {
+		enc[k] = base64.StdEncoding.EncodeToString([]byte(v))
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      connectionSecretName(testSecretConn),
+			"namespace": llm.SecretNamespace,
+		},
+		"type": "Opaque",
+		"data": enc,
+	}}
+}
+
+func storedConnection(connType string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "agents.faros.sh/v1alpha1",
+		"kind":       "Connection",
+		"metadata":   map[string]any{"name": testSecretConn},
+		"spec":       map[string]any{"type": connType, "channel": "C123"},
+		"status":     map[string]any{},
+	}}
+}
+
+// appliedSecrets returns the StringData of every Secret write the workspace
+// accepted, in order.
+func appliedSecrets(srv *tenanttest.Server) []map[string]string {
+	var out []map[string]string
+	for _, w := range srv.Writes() {
+		if w.GVR != agentsclient.SecretGVR || w.Object == nil {
+			continue
+		}
+		data := map[string]string{}
+		sd, _, _ := unstructured.NestedStringMap(w.Object.Object, "stringData")
+		for k, v := range sd {
+			data[k] = v
+		}
+		out = append(out, data)
+	}
+	return out
+}
+
+func workspaceClient(t *testing.T, ws *tenanttest.Server) *agentsclient.Client {
 	t.Helper()
-	srv := httptest.NewServer(g)
+	srv := httptest.NewServer(ws)
 	t.Cleanup(srv.Close)
-	scope, err := tenant.NewGraphQLClient(srv.URL, false).For("c1", "test-token")
+	scope, err := tenant.NewClient(srv.URL, false).For("c1", "test-token")
 	if err != nil {
 		t.Fatalf("scope: %v", err)
 	}
-	return agentsclient.NewFromGraphQL(scope)
+	return agentsclient.NewFromScope(scope)
 }
 
-// A read the gateway could not answer must abort the merge. Falling through
+// A read the workspace could not answer must abort the merge. Falling through
 // with an empty map would apply only the update, dropping the bot token and the
 // OAuth pair the Secret already held.
 func TestMergeConnectionSecretAbortsOnUnreadableSecret(t *testing.T) {
-	g := &fakeGateway{getErr: "connection refused talking to the workspace"}
-	c := gatewayClient(t, g)
+	ws := tenanttest.New()
+	ws.Add(storedSecret(map[string]string{"token": "xoxb-existing"}))
+	ws.Intercept = secretReadError("connection refused talking to the workspace")
+	c := workspaceClient(t, ws)
 
 	err := mergeConnectionSecret(context.Background(), c, testSecretConn,
 		map[string]string{signingSecretKey: "s3cr3t"})
@@ -157,7 +122,7 @@ func TestMergeConnectionSecretAbortsOnUnreadableSecret(t *testing.T) {
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("error should carry the read failure, got %v", err)
 	}
-	if applied := g.applies(); len(applied) != 0 {
+	if applied := appliedSecrets(ws); len(applied) != 0 {
 		t.Fatalf("nothing may be written when the read failed, applied %v", applied)
 	}
 }
@@ -165,37 +130,41 @@ func TestMergeConnectionSecretAbortsOnUnreadableSecret(t *testing.T) {
 // NotFound is the one error that legitimately means "no Secret yet": the merge
 // proceeds and creates it from the updates alone.
 func TestMergeConnectionSecretCreatesWhenAbsent(t *testing.T) {
-	g := &fakeGateway{getErr: "secrets \"faros-agents-conn-team-chat\" not found"}
-	c := gatewayClient(t, g)
+	ws := tenanttest.New()
+	c := workspaceClient(t, ws)
 
 	if err := mergeConnectionSecret(context.Background(), c, testSecretConn,
 		map[string]string{signingSecretKey: "s3cr3t"}); err != nil {
 		t.Fatalf("NotFound must be treated as empty, got %v", err)
 	}
-	applied := g.applies()
+	applied := appliedSecrets(ws)
 	if len(applied) != 1 {
 		t.Fatalf("want one apply, got %d", len(applied))
 	}
 	if applied[0][signingSecretKey] != "s3cr3t" {
 		t.Fatalf("apply should carry the update, got %v", applied[0])
 	}
+	if got := ws.Get(agentsclient.SecretGVR, llm.SecretNamespace, connectionSecretName(testSecretConn)); got == nil {
+		t.Fatal("the Secret should exist in the workspace after the merge")
+	}
 }
 
 // The documented behaviour: a successful read means every key the merge does
 // not mention survives it.
 func TestMergeConnectionSecretKeepsUnmentionedKeys(t *testing.T) {
-	g := &fakeGateway{secret: map[string]string{
+	ws := tenanttest.New()
+	ws.Add(storedSecret(map[string]string{
 		"token":         "xoxb-existing",
 		"client_id":     "cid",
 		"client_secret": "csec",
-	}}
-	c := gatewayClient(t, g)
+	}))
+	c := workspaceClient(t, ws)
 
 	if err := mergeConnectionSecret(context.Background(), c, testSecretConn,
 		map[string]string{signingSecretKey: "s3cr3t"}); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	applied := g.applies()
+	applied := appliedSecrets(ws)
 	if len(applied) != 1 {
 		t.Fatalf("want one apply, got %d", len(applied))
 	}
@@ -211,15 +180,15 @@ func TestMergeConnectionSecretKeepsUnmentionedKeys(t *testing.T) {
 	}
 }
 
-// enableInboundOn drives the handler against the fake gateway.
-func enableInboundOn(t *testing.T, g *fakeGateway) *httptest.ResponseRecorder {
+// enableInboundOn drives the handler against the fake workspace.
+func enableInboundOn(t *testing.T, ws *tenanttest.Server) *httptest.ResponseRecorder {
 	t.Helper()
-	srv := httptest.NewServer(g)
+	srv := httptest.NewServer(ws)
 	t.Cleanup(srv.Close)
 	s := &Server{
-		cfg:   Config{WebhookKey: "unit-test-webhook-key"},
-		store: store.NewMemoryStore(),
-		gql:   tenant.NewGraphQLClient(srv.URL, false),
+		cfg:    Config{WebhookKey: "unit-test-webhook-key"},
+		store:  store.NewMemoryStore(),
+		tenant: tenant.NewClient(srv.URL, false),
 	}
 	r := httptest.NewRequest(http.MethodPost, "/connections/"+testSecretConn+"/inbound",
 		strings.NewReader(`{"publicBaseURL":"https://agents.example.test"}`))
@@ -236,8 +205,10 @@ func enableInboundOn(t *testing.T, g *fakeGateway) *httptest.ResponseRecorder {
 // enableInbound. Treating it as "no secret stored" would reject a correctly
 // configured Slack connection as missing its signing secret.
 func TestEnableInboundSlackFailsClosedOnUnreadableSecret(t *testing.T) {
-	g := &fakeGateway{connType: "slack", getErr: "connection refused talking to the workspace"}
-	w := enableInboundOn(t, g)
+	ws := tenanttest.New()
+	ws.Add(storedConnection("slack"))
+	ws.Intercept = secretReadError("connection refused talking to the workspace")
+	w := enableInboundOn(t, ws)
 
 	if w.Code == http.StatusBadRequest {
 		t.Fatalf("an unreadable Secret must not be reported as a missing signing secret: %s", w.Body.String())
@@ -254,13 +225,15 @@ func TestEnableInboundSlackFailsClosedOnUnreadableSecret(t *testing.T) {
 // secret token over whatever the Secret already holds, because deliveries in
 // flight still carry the old one.
 func TestEnableInboundTelegramDoesNotOverwriteSecretItCouldNotRead(t *testing.T) {
-	g := &fakeGateway{connType: "telegram", getErr: "connection refused talking to the workspace"}
-	w := enableInboundOn(t, g)
+	ws := tenanttest.New()
+	ws.Add(storedConnection("telegram"))
+	ws.Intercept = secretReadError("connection refused talking to the workspace")
+	w := enableInboundOn(t, ws)
 
 	if w.Code < 500 {
 		t.Fatalf("want a server-side failure, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, applied := range g.applies() {
+	for _, applied := range appliedSecrets(ws) {
 		if _, ok := applied[signingSecretKey]; ok {
 			t.Fatalf("a signing secret was written despite the failed read: %v", applied)
 		}

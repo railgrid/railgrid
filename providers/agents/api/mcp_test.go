@@ -162,7 +162,7 @@ func TestMCPToolInputSchemas(t *testing.T) {
 	}
 }
 
-// TestMCPCallWithoutHub asserts a tool call on a hub-less server (gql == nil)
+// TestMCPCallWithoutHub asserts a tool call on a hub-less server (tenant == nil)
 // fails with the configuration error, not a panic or an empty success.
 func TestMCPCallWithoutHub(t *testing.T) {
 	result := mcpRPC(t, "/mcp", "tools/call", map[string]any{"name": "list_agents", "arguments": map[string]any{}})

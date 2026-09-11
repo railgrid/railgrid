@@ -1,16 +1,44 @@
-// GraphQL client for the edges provider's portal.
+// Kubernetes REST client for the edges provider's portal.
 //
-// Reads/writes go through the hub's embedded GraphQL gateway at /graphql/<cluster>
-// (same origin as the portal). The gateway serves every CRD bound in the tenant
-// workspace — including the edges provider's two kinds — so the portal pulls
-// KubernetesClusters + LinuxServers without a custom REST endpoint. Auth is the
-// caller's bearer token (from FarosContext); the workspace is the path segment.
+// Reads/writes go through the hub's kcp proxy at /clusters/<cluster>/... (same
+// origin as the portal), which forwards each request into the tenant workspace
+// as the caller. The workspace binds the edges provider's APIExport, so the
+// portal reads KubernetesClusters, LinuxServers, Services and Workloads with
+// plain Kubernetes wire shapes — List envelopes, Status bodies, merge patches
+// and server-side apply — and no schema translation layer in between. The
+// host-owned transport (farosContext.fetch) injects Authorization; the cluster
+// ID is the path segment.
 
 import type { Edge, EdgeDetail, EdgeType, ErrorResponse } from './types'
 import { providerFetch, type ProviderFetch } from './portalkit/tenant'
+import {
+  createKubeClient,
+  isKubeError,
+  isKubeResourceUnavailable,
+  KubeError,
+  kubeResourcePath,
+  type KubeClient,
+  type KubeObject,
+  type KubeResourceRef,
+  type KubeStatus,
+} from './portalkit/kube'
 
-// Kubernetes list options are deliberately small: GraphQL treats continue
-// values as opaque strings and the portal only needs bounded cursor pages.
+// Every edges kind the portal touches lives in one group/version. Resource
+// names are the plural REST segments from the provider's CRDs.
+const EDGES_GROUP = 'edges.faros.sh'
+const EDGES_VERSION = 'v1alpha1'
+const EDGES_API_VERSION = `${EDGES_GROUP}/${EDGES_VERSION}`
+const KUBERNETES_CLUSTERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'kubernetesclusters' }
+const LINUX_SERVERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'linuxservers' }
+const SERVICES: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'services' }
+const WORKLOADS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'workloads', namespaced: true }
+const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
+
+// Server-side-apply field manager for the portal's own writes.
+const FIELD_MANAGER = 'faros-edges-portal'
+
+// Kubernetes list options are deliberately small: continue values are opaque
+// strings and the portal only needs bounded cursor pages.
 export interface KubernetesListOptions {
   limit?: number
   continue?: string
@@ -96,70 +124,83 @@ let hostFetch: ProviderFetch | null = null
 export function setHostFetch(fetchImpl?: ProviderFetch | null) {
   hostFetch = fetchImpl ?? null
 }
-function hubFetch(): ProviderFetch {
-  return providerFetch({ fetch: hostFetch, token: bearerToken })
-}
 export function setTenant(name?: string | null) {
   const next = name || null
   if (next !== clusterName) contextGeneration += 1
   clusterName = next
 }
 
-async function graphql<T>(
-  query: string,
-  variables: Record<string, unknown> = {},
-  context: RequestContext = requestContext(),
-): Promise<T> {
-  assertCurrentContext(context)
+// fencedTransport binds a transport to the context that started the request:
+// it refuses to send once the context has moved on, and a transport failure
+// after a switch surfaces as ContextChanged rather than the network error.
+function fencedTransport(context: RequestContext): ProviderFetch {
+  const transport = providerFetch({ fetch: hostFetch, token: context.token })
+  return async (input, init) => {
+    assertCurrentContext(context)
+    try {
+      return await transport(input, init)
+    } catch (error) {
+      assertCurrentContext(context)
+      throw error
+    }
+  }
+}
+
+function requireTenant(context: RequestContext): string {
   if (!context.tenant) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  let res: Response
+  return context.tenant
+}
+
+// toErrorResponse maps a kube client failure onto the {reason, message}
+// contract the views branch on. A named-object 404 is NotFound (the detail
+// views treat that as authoritative); a 404 for the resource *type* means the
+// workspace has no edges APIBinding, which must not read as "this edge was
+// deleted". A client-detected protocol failure on a 2xx body (not JSON, no
+// items array, inconsistent pagination) is ProtocolError; every other HTTP
+// failure stays HTTPError with the server's Status message.
+function toErrorResponse(error: unknown): unknown {
+  if (!isKubeError(error)) return error
+  if (error.status >= 200 && error.status < 300) return protocolError(error.message)
+  if (error.status === 404) {
+    if (isKubeResourceUnavailable(error)) {
+      return <ErrorResponse>{ reason: 'ResourceUnavailable', message: `the edges API is not available in this workspace: ${error.message}` }
+    }
+    return <ErrorResponse>{ reason: 'NotFound', message: error.message }
+  }
+  return <ErrorResponse>{ reason: 'HTTPError', message: error.message }
+}
+
+function isNotFoundResponse(error: unknown): boolean {
+  return (error as { reason?: string } | null)?.reason === 'NotFound'
+}
+
+// withKube runs one unit of work against a client bound to the request
+// context. The context is checked before the first byte goes out, after every
+// response body is read (onResponse), and once more after the work resolves,
+// so a tenant or token switch mid-flight rejects with ContextChanged instead
+// of handing the caller another workspace's data.
+async function withKube<T>(
+  work: (client: KubeClient) => Promise<T>,
+  context: RequestContext = requestContext(),
+): Promise<T> {
+  assertCurrentContext(context)
+  const client = createKubeClient({
+    fetch: fencedTransport(context),
+    cluster: requireTenant(context),
+    fieldManager: FIELD_MANAGER,
+    onResponse: () => assertCurrentContext(context),
+  })
+  let result: T
   try {
-    res = await hubFetch()('/graphql/' + context.tenant, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers,
-      body: JSON.stringify({ query, variables }),
-    })
+    result = await work(client)
   } catch (error) {
     assertCurrentContext(context)
-    throw error
-  }
-  let text: string
-  try {
-    text = await res.text()
-  } catch (error) {
-    assertCurrentContext(context)
-    throw error
+    throw toErrorResponse(error)
   }
   assertCurrentContext(context)
-  if (!res.ok) {
-    throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
-  }
-  let parsed: unknown = {}
-  if (text) {
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw protocolError('GraphQL returned malformed JSON; retry the read.')
-    }
-  }
-  if (!isRecord(parsed)) {
-    throw protocolError('GraphQL returned a malformed response envelope; retry the read.')
-  }
-  const body = parsed as { data?: unknown; errors?: unknown }
-  if (body.errors !== undefined) {
-    if (!Array.isArray(body.errors) || !body.errors.every((entry) => isRecord(entry) && typeof entry.message === 'string')) {
-      throw protocolError('GraphQL returned malformed errors; retry the read.')
-    }
-    if (body.errors.length) {
-      throw <ErrorResponse>{ reason: 'GraphQLError', message: body.errors.map((entry) => String((entry as { message: string }).message)).join('; ') }
-    }
-  }
-  assertCurrentContext(context)
-  return (body.data ?? {}) as T
+  return result
 }
 
 interface RawItem {
@@ -172,22 +213,6 @@ interface RawItem {
     lastHeartbeatTime?: string
   }
 }
-
-const STATUS_SEL = `
-  metadata { name creationTimestamp labels }
-  status { phase connected hostname agentVersion lastHeartbeatTime }
-`
-
-const LIST_QUERY = `
-  query ListEdges {
-    edges_faros_sh {
-      v1alpha1 {
-        KubernetesClusters { items { ${STATUS_SEL} } }
-        LinuxServers { items { ${STATUS_SEL} } }
-      }
-    }
-  }
-`
 
 function toEdge(it: RawItem, type: EdgeType): Edge {
   const s = it.status ?? {}
@@ -204,83 +229,60 @@ function toEdge(it: RawItem, type: EdgeType): Edge {
   }
 }
 
-// listEdges returns both kinds merged into one list, each stamped with its type.
+function edgeResource(type: EdgeType): { ref: KubeResourceRef; kind: EdgeDetail['kind'] } {
+  return type === 'server'
+    ? { ref: LINUX_SERVERS, kind: 'LinuxServer' }
+    : { ref: KUBERNETES_CLUSTERS, kind: 'KubernetesCluster' }
+}
+
+// listEdges returns both kinds merged into one list, each stamped with its
+// type. The two collections are walked in parallel; the fleet is small enough
+// that the merged list is unpaged.
 export async function listEdges(): Promise<Edge[]> {
-  const data = await graphql<{
-    edges_faros_sh?: {
-      v1alpha1?: {
-        KubernetesClusters?: { items?: RawItem[] }
-        LinuxServers?: { items?: RawItem[] }
-      }
-    }
-  }>(LIST_QUERY)
-  const v = data.edges_faros_sh?.v1alpha1
-  const kube = (v?.KubernetesClusters?.items ?? []).map((it) => toEdge(it, 'kubernetes'))
-  const server = (v?.LinuxServers?.items ?? []).map((it) => toEdge(it, 'server'))
-  return [...kube, ...server].sort((a, b) => a.name.localeCompare(b.name))
+  return withKube(async (client) => {
+    const [clusters, servers] = await Promise.all([
+      client.listAll<KubeObject & RawItem>(KUBERNETES_CLUSTERS),
+      client.listAll<KubeObject & RawItem>(LINUX_SERVERS),
+    ])
+    const kube = clusters.map((it) => toEdge(it, 'kubernetes'))
+    const server = servers.map((it) => toEdge(it, 'server'))
+    return [...kube, ...server].sort((a, b) => a.name.localeCompare(b.name))
+  })
+}
+
+interface RawEdgeObject extends KubeObject {
+  metadata: {
+    name: string
+    namespace?: string
+    uid?: string
+    resourceVersion?: string
+    generation?: number
+    creationTimestamp?: string
+    labels?: Record<string, string>
+    annotations?: Record<string, string>
+    managedFields?: unknown
+    [key: string]: unknown
+  }
+  spec?: EdgeDetail['spec']
+  status?: {
+    URL?: string
+    phase?: string
+    connected?: boolean
+    hostname?: string
+    agentVersion?: string
+    lastHeartbeatTime?: string
+    joinToken?: string
+    workspacePath?: string
+    conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string; observedGeneration?: number }>
+  }
 }
 
 // getEdge fetches one edge with the product-facing status plus a read-only
 // object snapshot for the detail view's opt-in technical disclosure. The
 // default view never renders the API group/version or raw object shape.
 export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail> {
-  const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
-  const apiVersion = 'edges.faros.sh/v1alpha1'
-  // The two specs share no fields: scheduling labels exist only on
-  // KubernetesClusterSpec, and the SSH fields only on LinuxServerSpec. GraphQL
-  // rejects the entire query on one unknown field, so selecting a field the
-  // kind does not have breaks the whole detail view, not just that column.
-  const specSelection = type === 'server'
-    ? `sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace }`
-    : 'labels'
-  const data = await graphql<{
-    edges_faros_sh?: {
-      v1alpha1?: Record<string, {
-        metadata: {
-          name: string
-          namespace?: string
-          uid?: string
-          resourceVersion?: string
-          generation?: number
-          creationTimestamp?: string
-          labels?: Record<string, string>
-          annotations?: Record<string, string>
-        }
-        spec?: {
-          labels?: Record<string, string>
-          sshPort?: number
-          sshUserMapping?: string
-          sshKeySecretRef?: { name?: string; namespace?: string }
-          sshCredentialsRef?: { name?: string; namespace?: string }
-        }
-        status?: {
-          URL?: string
-          phase?: string
-          connected?: boolean
-          hostname?: string
-          agentVersion?: string
-          lastHeartbeatTime?: string
-          joinToken?: string
-          workspacePath?: string
-          conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string; observedGeneration?: number }>
-        }
-      } | null>
-    }
-  }>(
-    `query GetEdge($name: String!) {
-       edges_faros_sh { v1alpha1 { ${kind}(name: $name) {
-         metadata { name namespace uid resourceVersion generation creationTimestamp labels annotations }
-         spec { ${specSelection} }
-         status {
-           URL phase connected hostname agentVersion lastHeartbeatTime joinToken workspacePath
-           conditions { type status reason message lastTransitionTime observedGeneration }
-         }
-       } } }
-     }`,
-    { name },
-  )
-  const cr = data.edges_faros_sh?.v1alpha1?.[kind]
-  if (!cr) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} ${name} not found` }
+  const { ref, kind } = edgeResource(type)
+  const cr = await withKube((client) => client.get<RawEdgeObject>(ref, name))
   const s = cr.status ?? {}
   // The bootstrap token is an onboarding credential, not part of the
   // read-only technical object snapshot. Keep it on EdgeDetail for the join
@@ -288,21 +290,14 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
   const technicalStatus = Object.fromEntries(
     Object.entries(s).filter(([key]) => key !== 'joinToken'),
   )
-  const metadata = cr.metadata
+  // managedFields is server-side-apply bookkeeping; it is noise in a snapshot
+  // meant for a human to read.
+  const { managedFields: _managedFields, ...metadata } = cr.metadata
   const spec = cr.spec ?? {}
   const rawObject: Record<string, unknown> = {
-    apiVersion,
-    kind,
-    metadata: {
-      name: metadata.name,
-      ...(metadata.namespace ? { namespace: metadata.namespace } : {}),
-      ...(metadata.uid ? { uid: metadata.uid } : {}),
-      ...(metadata.resourceVersion ? { resourceVersion: metadata.resourceVersion } : {}),
-      ...(metadata.generation !== undefined ? { generation: metadata.generation } : {}),
-      ...(metadata.creationTimestamp ? { creationTimestamp: metadata.creationTimestamp } : {}),
-      ...(metadata.labels ? { labels: metadata.labels } : {}),
-      ...(metadata.annotations ? { annotations: metadata.annotations } : {}),
-    },
+    apiVersion: cr.apiVersion ?? EDGES_API_VERSION,
+    kind: cr.kind ?? kind,
+    metadata,
     spec,
     status: technicalStatus,
   }
@@ -316,8 +311,8 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
     hostname: s.hostname,
     agentVersion: s.agentVersion,
     lastHeartbeatTime: s.lastHeartbeatTime,
-    apiVersion,
-    kind: kind as EdgeDetail['kind'],
+    apiVersion: EDGES_API_VERSION,
+    kind,
     namespace: metadata.namespace,
     uid: metadata.uid,
     resourceVersion: metadata.resourceVersion,
@@ -334,33 +329,26 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
 }
 
 export async function deleteEdge(edge: Edge): Promise<void> {
-  const field = edge.type === 'server' ? 'deleteLinuxServer' : 'deleteKubernetesCluster'
-  await graphql(
-    `mutation Del($name: String!) { edges_faros_sh { v1alpha1 { ${field}(name: $name) } } }`,
-    { name: edge.name },
-  )
+  const { ref } = edgeResource(edge.type)
+  await withKube((client) => client.delete(ref, edge.name))
 }
 
 // createEdge creates a KubernetesCluster or LinuxServer. Only name + optional
-// labels are set here; the rest defaults server-side. The GraphQL input type
-// names follow the gateway convention (EdgesFarosShV1alpha1<Kind>_Input).
+// labels are set here; the rest defaults server-side.
 export async function createEdge(
   name: string,
   type: EdgeType,
   labels?: Record<string, string>,
 ): Promise<void> {
-  const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
-  const field = type === 'server' ? 'createLinuxServer' : 'createKubernetesCluster'
-  const object: Record<string, unknown> = {
-    metadata: { name, ...(labels && Object.keys(labels).length ? { labels } : {}) },
-    spec: type === 'kubernetes' && labels && Object.keys(labels).length ? { labels } : {},
+  const { ref, kind } = edgeResource(type)
+  const hasLabels = !!labels && Object.keys(labels).length > 0
+  const object: KubeObject = {
+    apiVersion: EDGES_API_VERSION,
+    kind,
+    metadata: { name, ...(hasLabels ? { labels } : {}) },
+    spec: type === 'kubernetes' && hasLabels ? { labels } : {},
   }
-  await graphql(
-    `mutation Create($object: EdgesFarosShV1alpha1${kind}_Input!) {
-       edges_faros_sh { v1alpha1 { ${field}(object: $object) { metadata { name } } } }
-     }`,
-    { object },
-  )
+  await withKube((client) => client.create(ref, object))
 }
 
 // EdgeProbe is the join-token + connection snapshot the wizard polls for.
@@ -370,23 +358,17 @@ export interface EdgeProbe {
   agentVersion?: string
 }
 
-// probeEdge fetches the join token + connection state for a freshly-created edge.
+// probeEdge fetches the join token + connection state for a freshly-created
+// edge. A not-yet-visible edge is null, not an error, because the wizard polls.
 export async function probeEdge(name: string, type: EdgeType): Promise<EdgeProbe | null> {
-  const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
-  const data = await graphql<{
-    edges_faros_sh?: {
-      v1alpha1?: Record<string, { status?: { joinToken?: string; connected?: boolean; agentVersion?: string } } | null>
-    }
-  }>(
-    `query Probe($name: String!) {
-       edges_faros_sh { v1alpha1 { ${kind}(name: $name) {
-         status { joinToken connected agentVersion }
-       } } }
-     }`,
-    { name },
-  )
-  const cr = data.edges_faros_sh?.v1alpha1?.[kind]
-  if (!cr) return null
+  const { ref } = edgeResource(type)
+  let cr: RawEdgeObject
+  try {
+    cr = await withKube((client) => client.get<RawEdgeObject>(ref, name))
+  } catch (error) {
+    if (isNotFoundResponse(error)) return null
+    throw error
+  }
   return {
     joinToken: cr.status?.joinToken,
     connected: !!cr.status?.connected,
@@ -441,10 +423,11 @@ export interface CatalogEntry {
 
 // fetchServiceCatalog returns every service type's form descriptor. It is static
 // provider metadata (not tenant-scoped), so it is fetched directly from the
-// provider backend rather than through the GraphQL gateway.
+// provider backend rather than from the tenant workspace.
 export async function fetchServiceCatalog(): Promise<CatalogEntry[]> {
   const headers: Record<string, string> = { Accept: 'application/json' }
-  const res = await hubFetch()('/services/providers/edges/catalog', { credentials: 'same-origin', headers })
+  const transport = providerFetch({ fetch: hostFetch, token: bearerToken })
+  const res = await transport('/services/providers/edges/catalog', { credentials: 'same-origin', headers })
   if (!res.ok) {
     throw <ErrorResponse>{ reason: 'HTTPError', message: (await res.text()) || res.statusText }
   }
@@ -483,16 +466,6 @@ interface RawEdgeService {
   }
 }
 
-const EDGE_SVC_SEL = `
-  metadata { name creationTimestamp labels }
-  spec {
-    edgeRef { kind name }
-    targetRef { namespace name }
-    host type scheme port instructions authSecretRef { name namespace }
-  }
-  status { phase version installType url conditions { type status reason message lastTransitionTime } }
-`
-
 function toEdgeService(it: RawEdgeService): EdgeService {
   const s = it.status ?? {}
   return {
@@ -524,55 +497,60 @@ interface RawListPage<T> {
 }
 
 function optionalListString(
-  collection: Record<string, unknown>,
+  metadata: Record<string, unknown>,
   key: 'continue' | 'resourceVersion',
   kind: string,
 ): string | undefined {
-  if (!(key in collection) || collection[key] === undefined || collection[key] === null) return undefined
-  if (typeof collection[key] !== 'string') {
+  if (!(key in metadata) || metadata[key] === undefined || metadata[key] === null) return undefined
+  if (typeof metadata[key] !== 'string') {
     throw protocolError(`${kind} list response had an invalid ${key}`)
   }
-  const value = collection[key] as string
+  const value = metadata[key] as string
   return key === 'continue' && value.length === 0 ? undefined : value
 }
 
-function optionalRemainingItemCount(collection: Record<string, unknown>, kind: string): number | undefined {
-  if (!('remainingItemCount' in collection) || collection.remainingItemCount === undefined || collection.remainingItemCount === null) return undefined
-  const value = collection.remainingItemCount
+function optionalRemainingItemCount(metadata: Record<string, unknown>, kind: string): number | undefined {
+  if (!('remainingItemCount' in metadata) || metadata.remainingItemCount === undefined || metadata.remainingItemCount === null) return undefined
+  const value = metadata.remainingItemCount
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw protocolError(`${kind} list response had an invalid remainingItemCount`)
   }
   return value
 }
 
-function listCollection(data: unknown, kind: 'Services' | 'Workloads'): Record<string, unknown> {
-  const group = isRecord(data) ? data.edges_faros_sh : undefined
-  const version = isRecord(group) ? group.v1alpha1 : undefined
-  const collection = isRecord(version) ? version[kind] : undefined
-  if (!isRecord(collection)) {
+// listEnvelope validates the shape of a Kubernetes List response: an items
+// array plus an optional metadata object carrying the pagination cursor.
+function listEnvelope(data: unknown, kind: 'Services' | 'Workloads'): { items: unknown[]; metadata: Record<string, unknown> } {
+  if (!isRecord(data)) {
     throw protocolError(`${kind} list response was missing ${kind}`)
   }
-  if (!Array.isArray(collection.items)) {
+  if (!Array.isArray(data.items)) {
     throw protocolError(`${kind} list response was missing its items array`)
   }
-  return collection
+  if (data.metadata !== undefined && data.metadata !== null && !isRecord(data.metadata)) {
+    throw protocolError(`${kind} list response had malformed list metadata`)
+  }
+  return { items: data.items, metadata: isRecord(data.metadata) ? data.metadata : {} }
 }
 
+// parseListPage is stricter than the kit's normalizeList on purpose: the
+// server-mode tables trust the cursor metadata to decide whether more rows
+// exist, so a malformed or self-contradicting envelope fails closed instead of
+// quietly ending (or looping) the walk.
 function parseListPage<T>(
   data: unknown,
   kind: 'Services' | 'Workloads',
   mapItem: (item: unknown, index: number) => T,
 ): RawListPage<T> {
-  const collection = listCollection(data, kind)
-  const nextContinue = optionalListString(collection, 'continue', kind)
-  const remainingItemCount = optionalRemainingItemCount(collection, kind)
+  const { items, metadata } = listEnvelope(data, kind)
+  const nextContinue = optionalListString(metadata, 'continue', kind)
+  const remainingItemCount = optionalRemainingItemCount(metadata, kind)
   if (remainingItemCount !== undefined &&
     ((remainingItemCount > 0 && nextContinue === undefined) ||
       (remainingItemCount === 0 && nextContinue !== undefined))) {
     throw protocolError(`${kind} list response had inconsistent continue and remainingItemCount metadata`)
   }
-  const resourceVersion = optionalListString(collection, 'resourceVersion', kind)
-  const items = collection.items as unknown[]
+  const resourceVersion = optionalListString(metadata, 'resourceVersion', kind)
   return {
     items: items.map(mapItem),
     continue: nextContinue,
@@ -590,6 +568,49 @@ function mapListPage<T, U>(page: RawListPage<T>, map: (item: T) => U): Kubernete
   }
 }
 
+// fetchListPage issues one GET against a collection and returns the decoded
+// body without normalizing it, so parseListPage can validate the raw envelope.
+// The path and query are built exactly as the kit's list() builds them.
+async function fetchListPage(
+  ref: KubeResourceRef,
+  namespace: string | undefined,
+  options: KubernetesListOptions,
+  context: RequestContext,
+): Promise<unknown> {
+  assertCurrentContext(context)
+  const cluster = requireTenant(context)
+  const url = new URL(kubeResourcePath(cluster, ref, { namespace }), 'http://placeholder.invalid')
+  if (options.limit !== undefined) url.searchParams.set('limit', String(options.limit))
+  if (options.continue !== undefined) url.searchParams.set('continue', options.continue)
+  const target = url.pathname + url.search
+  const res = await fencedTransport(context)(target, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  })
+  let text: string
+  try {
+    text = await res.text()
+  } catch (error) {
+    assertCurrentContext(context)
+    throw error
+  }
+  assertCurrentContext(context)
+  let parsed: unknown = null
+  if (text) {
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      if (res.ok) throw protocolError('the workspace returned malformed JSON; retry the read.')
+    }
+  }
+  if (!res.ok) {
+    const status = isRecord(parsed) && parsed.kind === 'Status' ? parsed as unknown as KubeStatus : null
+    throw toErrorResponse(new KubeError('GET', target, res.status, status, text.trim() || res.statusText))
+  }
+  return parsed
+}
+
 function parseRawEdgeService(item: unknown, index: number): RawEdgeService {
   if (!isRecord(item) || !isRecord(item.metadata) || typeof item.metadata.name !== 'string' || !item.metadata.name) {
     throw protocolError(`Services list item ${index} was malformed`)
@@ -602,21 +623,7 @@ async function listServicesPageRaw(
   context: RequestContext = requestContext(),
 ): Promise<RawListPage<RawEdgeService>> {
   const request = validateListOptions(options, 'Services')
-  const variables: Record<string, unknown> = {}
-  if (request.limit !== undefined) variables.limit = request.limit
-  if (request.continue !== undefined) variables.continue = request.continue
-  const data = await graphql<unknown>(
-    `query ListServicesPage($limit: Int, $continue: String) {
-       edges_faros_sh { v1alpha1 {
-         Services(limit: $limit, continue: $continue) {
-           items { ${EDGE_SVC_SEL} }
-           continue remainingItemCount resourceVersion
-         }
-       } }
-     }`,
-    variables,
-    context,
-  )
+  const data = await fetchListPage(SERVICES, undefined, request, context)
   return parseListPage(data, 'Services', parseRawEdgeService)
 }
 
@@ -630,20 +637,7 @@ export async function listServicesPage(options: KubernetesListOptions = {}): Pro
 // target a resource beyond the table's current cursor page, and the instance
 // view must distinguish an authoritative not-found from an incomplete list.
 export async function getService(name: string): Promise<EdgeService> {
-  const data = await graphql<{
-    edges_faros_sh?: {
-      v1alpha1?: {
-        Service?: RawEdgeService | null
-      }
-    }
-  }>(
-    `query GetService($name: String!) {
-       edges_faros_sh { v1alpha1 { Service(name: $name) { ${EDGE_SVC_SEL} } } }
-     }`,
-    { name },
-  )
-  const resource = data.edges_faros_sh?.v1alpha1?.Service
-  if (!resource) throw <ErrorResponse>{ reason: 'NotFound', message: `Service ${name} not found` }
+  const resource = await withKube((client) => client.get<KubeObject & RawEdgeService>(SERVICES, name))
   return toEdgeService(resource)
 }
 
@@ -677,7 +671,7 @@ async function listAllPages<T>(
 }
 
 // listServices returns every Service across all edges (for the top-level
-// Services view). The page walker is bounded so a broken gateway cannot leave
+// Services view). The page walker is bounded so a broken server cannot leave
 // the refresh pending forever or silently return a partial aggregate.
 export async function listServices(): Promise<EdgeService[]> {
   const items = await listAllPages('Services', listServicesPageRaw)
@@ -693,12 +687,7 @@ export async function listEdgeServices(edgeName: string): Promise<EdgeService[]>
 // guidance surfaced to AI clients on the service's MCP endpoint. Leaves the rest
 // of the spec untouched.
 export async function updateEdgeServiceInstructions(name: string, instructions: string): Promise<void> {
-  await graphql(
-    `mutation SetInstructions($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
-       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
-     }`,
-    { name, object: { metadata: { name }, spec: { instructions } } },
-  )
+  await withKube((client) => client.patch(SERVICES, name, { spec: { instructions } }, { type: 'merge' }))
 }
 
 // EdgeServiceEdit is the editable subset of a Service's spec (edgeRef is fixed
@@ -718,7 +707,7 @@ export interface EdgeServiceEdit {
 
 // updateEdgeService merge-patches the editable spec fields. host and targetRef
 // are mutually exclusive — the unused one is cleared (null/empty) so switching
-// target mode takes effect.
+// target mode takes effect. JSON merge patch deletes a field set to null.
 export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promise<void> {
   const byHost = e.targetMode ? e.targetMode === 'host' : !!e.host?.trim()
   const spec: Record<string, unknown> = {
@@ -733,12 +722,7 @@ export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promi
         ? { namespace: e.targetNamespace?.trim() || 'default', name: e.targetName.trim() }
         : null,
   }
-  await graphql(
-    `mutation UpdateService($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
-       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
-     }`,
-    { name, object: { metadata: { name }, spec } },
-  )
+  await withKube((client) => client.patch(SERVICES, name, { spec }, { type: 'merge' }))
 }
 
 // createKubeEdgeService declares a service behind a Kubernetes Service on a
@@ -762,29 +746,21 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
   } else if (d.targetName?.trim()) {
     spec.targetRef = { namespace: d.targetNamespace?.trim() || 'default', name: d.targetName.trim() }
   }
-  const object: Record<string, unknown> = {
+  const object: KubeObject = {
+    apiVersion: EDGES_API_VERSION,
+    kind: 'Service',
     metadata: {
       name: d.name,
       labels: { 'edges.faros.sh/edge': d.edgeName },
     },
     spec,
   }
-  await graphql(
-    `mutation CreateService($object: EdgesFarosShV1alpha1Service_Input!) {
-       edges_faros_sh { v1alpha1 { createService(object: $object) { metadata { name } } } }
-     }`,
-    { object },
-  )
+  await withKube((client) => client.create(SERVICES, object))
 }
 
 // deleteEdgeService removes a Service (used for declared kube services).
 export async function deleteEdgeService(name: string): Promise<void> {
-  await graphql(
-    `mutation DelService($name: String!) {
-       edges_faros_sh { v1alpha1 { deleteService(name: $name) } }
-     }`,
-    { name },
-  )
+  await withKube((client) => client.delete(SERVICES, name))
 }
 
 // connectEdgeService writes the credential Secret and patches the EdgeService's
@@ -793,52 +769,35 @@ export async function deleteEdgeService(name: string): Promise<void> {
 export async function connectEdgeService(name: string, token: string): Promise<void> {
   const secretName = `faros-edges-svc-${name}`
 
-  // 1. Upsert the Secret holding the token.
-  //
-  // applyYaml is a server-side apply on the gateway's ROOT mutation, so it is
-  // idempotent — re-pasting a token just overwrites the old one, no
-  // create-then-update-on-error dance.
-  //
-  // The manifest is emitted as JSON rather than YAML on purpose: YAML is a
-  // superset of JSON, so the gateway parses it either way, and JSON.stringify
-  // settles every quoting question about whatever characters the token holds.
-  // Hand-built YAML would need escaping rules we'd get wrong eventually.
-  //
-  // The faros-system namespace already exists in the tenant workspace — the
-  // edges RBAC reconciler creates it when an edge registers, which always
-  // precedes a Service.
-  await graphql(`mutation ApplySecret($yaml: String!) { applyYaml(yaml: $yaml) }`, {
-    yaml: JSON.stringify({
+  await withKube(async (client) => {
+    // 1. Upsert the Secret holding the token. Server-side apply is idempotent —
+    //    re-pasting a token just overwrites the old one, no
+    //    create-then-update-on-error dance.
+    //
+    //    The faros-system namespace already exists in the tenant workspace —
+    //    the edges RBAC reconciler creates it when an edge registers, which
+    //    always precedes a Service.
+    await client.apply(SECRETS, {
       apiVersion: 'v1',
       kind: 'Secret',
       metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
       type: 'Opaque',
       stringData: { token },
-    }),
-  })
+    })
 
-  // 2. Point the Service at the Secret. updateService issues a JSON merge
-  //    patch, so spec.authSecretRef is added without disturbing the rest of the
-  //    spec (edgeRef/type/port).
-  await graphql(
-    `mutation SetAuth($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
-       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
-     }`,
-    {
-      name,
-      object: {
-        metadata: { name },
-        spec: { authSecretRef: { name: secretName, namespace: EDGE_SVC_SECRET_NS } },
-      },
-    },
-  )
+    // 2. Point the Service at the Secret. A JSON merge patch adds
+    //    spec.authSecretRef without disturbing the rest of the spec
+    //    (edgeRef/type/port).
+    await client.patch(SERVICES, name, {
+      spec: { authSecretRef: { name: secretName, namespace: EDGE_SVC_SECRET_NS } },
+    }, { type: 'merge' })
+  })
 }
 
 // ─── Workloads (Workload) ─────────────────────────────────────────────
-// The GraphQL gateway exposes the edges group's Workload kind alongside
-// the two connectable kinds. The scheduler fans each Workload out into
-// Placements across matching KubernetesCluster edges; status.edges rolls the
-// per-edge state back up.
+// The edges group's Workload kind sits alongside the two connectable kinds.
+// The scheduler fans each Workload out into Placements across matching
+// KubernetesCluster edges; status.edges rolls the per-edge state back up.
 
 import type { Workload } from './types'
 
@@ -877,12 +836,6 @@ function toWorkload(it: RawWorkload): Workload {
   }
 }
 
-const WORKLOAD_SEL = `
-  metadata { name creationTimestamp }
-  spec { simple { image } replicas placement { strategy edgeSelector { matchLabels } } }
-  status { phase readyReplicas availableReplicas edges { edgeName phase readyReplicas message } }
-`
-
 function parseRawWorkload(item: unknown, index: number): RawWorkload {
   if (!isRecord(item) || !isRecord(item.metadata) || typeof item.metadata.name !== 'string' || !item.metadata.name) {
     throw protocolError(`Workloads list item ${index} was malformed`)
@@ -890,26 +843,16 @@ function parseRawWorkload(item: unknown, index: number): RawWorkload {
   return item as unknown as RawWorkload
 }
 
+// Workloads are namespaced; the portal creates them in `default` (where the
+// agent materializes their Deployments) and lists that namespace only.
+const WORKLOAD_NS = 'default'
+
 async function listWorkloadsPageRaw(
   options: KubernetesListOptions = {},
   context: RequestContext = requestContext(),
 ): Promise<RawListPage<RawWorkload>> {
   const request = validateListOptions(options, 'Workloads')
-  const variables: Record<string, unknown> = {}
-  if (request.limit !== undefined) variables.limit = request.limit
-  if (request.continue !== undefined) variables.continue = request.continue
-  const data = await graphql<unknown>(
-    `query ListWorkloadsPage($limit: Int, $continue: String) {
-       edges_faros_sh { v1alpha1 {
-         Workloads(limit: $limit, continue: $continue) {
-           items { ${WORKLOAD_SEL} }
-           continue remainingItemCount resourceVersion
-         }
-       } }
-     }`,
-    variables,
-    context,
-  )
+  const data = await fetchListPage(WORKLOADS, WORKLOAD_NS, request, context)
   return parseListPage(data, 'Workloads', parseRawWorkload)
 }
 
@@ -924,16 +867,13 @@ export async function listWorkloads(): Promise<Workload[]> {
 }
 
 export async function getWorkload(name: string): Promise<Workload | null> {
-  const data = await graphql<{
-    edges_faros_sh?: { v1alpha1?: { Workload?: RawWorkload | null } }
-  }>(
-    `query GetWorkload($namespace: String!, $name: String!) {
-       edges_faros_sh { v1alpha1 { Workload(namespace: $namespace, name: $name) { ${WORKLOAD_SEL} } } }
-     }`,
-    { namespace: WORKLOAD_NS, name },
-  )
-  const cr = data.edges_faros_sh?.v1alpha1?.Workload
-  return cr ? toWorkload(cr) : null
+  try {
+    const cr = await withKube((client) => client.get<KubeObject & RawWorkload>(WORKLOADS, name, { namespace: WORKLOAD_NS }))
+    return toWorkload(cr)
+  } catch (error) {
+    if (isNotFoundResponse(error)) return null
+    throw error
+  }
 }
 
 export interface WorkloadDraft {
@@ -944,13 +884,10 @@ export interface WorkloadDraft {
   selector: Record<string, string>
 }
 
-// Workloads are namespaced; the portal creates them in `default` (where the
-// agent materializes their Deployments). The gateway requires an explicit
-// `namespace` argument on namespaced create/get/delete mutations.
-const WORKLOAD_NS = 'default'
-
 export async function createWorkload(d: WorkloadDraft): Promise<void> {
-  const object: Record<string, unknown> = {
+  const object: KubeObject = {
+    apiVersion: EDGES_API_VERSION,
+    kind: 'Workload',
     metadata: { name: d.name, namespace: WORKLOAD_NS },
     spec: {
       simple: { image: d.image },
@@ -961,21 +898,11 @@ export async function createWorkload(d: WorkloadDraft): Promise<void> {
       },
     },
   }
-  await graphql(
-    `mutation CreateWorkload($namespace: String!, $object: EdgesFarosShV1alpha1Workload_Input!) {
-       edges_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
-     }`,
-    { namespace: WORKLOAD_NS, object },
-  )
+  await withKube((client) => client.create(WORKLOADS, object, { namespace: WORKLOAD_NS }))
 }
 
 export async function deleteWorkload(name: string): Promise<void> {
-  await graphql(
-    `mutation DelWorkload($namespace: String!, $name: String!) {
-       edges_faros_sh { v1alpha1 { deleteWorkload(namespace: $namespace, name: $name) } }
-     }`,
-    { namespace: WORKLOAD_NS, name },
-  )
+  await withKube((client) => client.delete(WORKLOADS, name, { namespace: WORKLOAD_NS }))
 }
 
 // deployMarketplaceApp does the two-step marketplace deploy: (1) create a Helm
@@ -992,18 +919,18 @@ export async function deployMarketplaceApp(opts: {
   port: number
   instructions?: string
 }): Promise<void> {
-  const workload: Record<string, unknown> = {
+  const workload: KubeObject = {
+    apiVersion: EDGES_API_VERSION,
+    kind: 'Workload',
     metadata: { name: opts.name, namespace: WORKLOAD_NS },
     spec: {
       helm: {
         repoURL: opts.chart.repoURL,
         chart: opts.chart.chart,
         version: opts.chart.version,
-        // The gateway types spec.helm.values as the JSONString scalar: it
-        // validates a STRING and json-decodes it server-side, so a nested
-        // object is rejected before the resolver runs. Encode here; the
-        // stored Workload still carries the real object.
-        ...(opts.values ? { values: JSON.stringify(opts.values) } : {}),
+        // spec.helm.values is an embedded object on the CRD; it goes over the
+        // wire as-is.
+        ...(opts.values ? { values: opts.values } : {}),
       },
       placement: {
         strategy: 'Singleton',
@@ -1013,12 +940,7 @@ export async function deployMarketplaceApp(opts: {
       },
     },
   }
-  await graphql(
-    `mutation CreateHelmWorkload($namespace: String!, $object: EdgesFarosShV1alpha1Workload_Input!) {
-       edges_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
-     }`,
-    { namespace: WORKLOAD_NS, object: workload },
-  )
+  await withKube((client) => client.create(WORKLOADS, workload, { namespace: WORKLOAD_NS }))
 
   await createKubeEdgeService({
     name: opts.name,

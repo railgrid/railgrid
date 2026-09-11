@@ -574,8 +574,8 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// is layered on by the sweeper (see Provider.Ready()).
 	//
 	// An APIExport alone counts: such a provider contributes CRDs to the
-	// workspaces that Enable it and is fully usable via kubectl and the GraphQL
-	// gateway with no hub-proxied surface at all. That shape is the common case
+	// workspaces that Enable it and is fully usable via kubectl and the kcp
+	// proxy with no hub-proxied surface at all. That shape is the common case
 	// for org-owned providers, which frequently ship an API and no portal UI.
 	// It opens no route — the proxies independently 404 when UIURL/BackendURL
 	// are nil — it only stops the portal from rendering the provider as broken.

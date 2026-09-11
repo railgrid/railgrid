@@ -24,16 +24,17 @@ export interface ErrorResponse {
   message: string
 }
 
-// Kubernetes list options are deliberately small: the GraphQL gateway treats
-// continue tokens as opaque values and the portal only needs bounded server
-// pages for the resource lists it owns.
+// Kubernetes list options are deliberately small: kcp treats continue tokens
+// as opaque values and the portal only needs bounded server pages for the
+// resource lists it owns.
 export interface KubernetesListOptions {
   limit?: number
   continue?: string
 }
 
-// KubernetesListPage is the typed transport envelope returned by a GraphQL
-// list query. A null/empty continue token means this is the terminal page;
+// KubernetesListPage is the typed transport envelope of one Kubernetes List
+// response (metadata.continue / remainingItemCount / resourceVersion flattened
+// beside the items). An absent continue token means this is the terminal page;
 // remainingItemCount is only supplied by Kubernetes when it can be estimated.
 export interface KubernetesListPage<T> {
   items: T[]
@@ -143,8 +144,8 @@ export interface Collaborator {
 
 // Package is a read-only view of an artifact published under a repository on the
 // host (container image, npm/maven package, …). The code provider's crawler
-// mirrors each into a Package CR (status subresource); the portal reads them via
-// the GraphQL gateway. Observed state — ready/message surface the crawler's
+// mirrors each into a Package CR (status subresource); the portal reads them
+// straight from kcp. Observed state — ready/message surface the crawler's
 // Ready condition so a failed mirror is debuggable from the UI.
 export interface Package {
   name: string

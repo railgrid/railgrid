@@ -74,7 +74,7 @@ export interface WorkspaceRow {
   // `?? ''` or `w.displayName || w.uuid` before reading.
   displayName?: string
   // kcp logical-cluster short hash backing the workspace. Used to
-  // retarget `/graphql/{clusterName}` when the user switches workspace
+  // retarget `/clusters/{clusterName}` when the user switches workspace
   // in the sidebar; omitted by the hub until the workspace reports Ready.
   clusterName?: string
   deletionRequestedAt?: string | null
@@ -772,7 +772,7 @@ export const useTenantStore = defineStore('tenant', () => {
   // bootstrap drives the first-login experience. It polls /api/orgs and
   // the active org's /workspaces until the hub's org-bootstrap controller
   // has produced a personal org and a workspace that reports a clusterName
-  // (i.e. its kcp cluster is Ready and /graphql/{cluster} will resolve).
+  // (i.e. its kcp cluster is Ready and /clusters/{cluster} will resolve).
   // While it waits, bootstrapState stays 'provisioning' and App.vue shows
   // the "creating control plane" takeover.
   //
@@ -1037,7 +1037,7 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== Workspace membership =====
   // Org membership only grants the org context; a member sees a
   // workspace only once they have a workspace-scope row here (the
-  // backend also grants the matching kcp RBAC so the GraphQL gateway
+  // backend also grants the matching kcp RBAC so the kcp proxy
   // lets them in). This is how you grant access to an *existing*
   // workspace — creating one grants the creator automatically.
 

@@ -24,12 +24,13 @@ import (
 	"strings"
 	"testing"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
+
+	asclient "github.com/faroshq/provider-app-studio/client"
 )
 
 func TestOptionalGitCreationEndpoints(t *testing.T) {
@@ -157,10 +158,14 @@ func TestConnectRepositoryIsIdempotentAndPermissionScoped(t *testing.T) {
 	}
 }
 
-func TestOptionalGitGraphQLMissingProviderIsAdvisory(t *testing.T) {
+func TestOptionalGitUnservedProviderAPIIsAdvisory(t *testing.T) {
 	dyn := newProjectCreationTestDynamicClient()
 	dyn.PrependReactor("list", "connections", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, errors.New(`Cannot query field "code_faros_sh" on type "Query". Did you mean "ai_faros_sh"?`)
+		// kcp's answer for an API that is not bound in the workspace.
+		return true, nil, &apierrors.StatusError{ErrStatus: metav1.Status{
+			Code: http.StatusNotFound, Reason: metav1.StatusReasonNotFound,
+			Message: "the server could not find the requested resource",
+		}}
 	})
 	client := asclient.NewFromDynamic(dyn)
 	readiness, err := projectCreateReadiness(context.Background(), client)
@@ -171,10 +176,10 @@ func TestOptionalGitGraphQLMissingProviderIsAdvisory(t *testing.T) {
 	if err != nil || plan.projectBinding() != nil {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
-	if codeProviderResourceMissing(errors.New(`Cannot query field "ai_faros_sh" on type "Query"`)) {
-		t.Fatal("misclassified App Studio initialization")
+	if codeProviderResourceMissing(apierrors.NewNotFound(codeConnectionsGVR.GroupResource(), "github")) {
+		t.Fatal("misclassified a missing Connection object as an unserved provider API")
 	}
-	if codeProviderResourceMissing(errors.New("forbidden: code_faros_sh")) {
+	if codeProviderResourceMissing(apierrors.NewForbidden(codeConnectionsGVR.GroupResource(), "github", errors.New("denied"))) {
 		t.Fatal("misclassified authorization failure")
 	}
 }

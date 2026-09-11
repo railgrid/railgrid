@@ -32,11 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
-	"sigs.k8s.io/yaml"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
 )
 
 func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
@@ -622,49 +621,43 @@ func TestResolveProjectComponentImagesKeepsPackagesBoundToProjectRepository(t *t
 		"spec":   map[string]any{"repositoryRef": "repo-a"},
 		"status": map[string]any{"phase": "Succeeded", "commitSHA": "current"},
 	}}
-	listYAML, err := yaml.Marshal(packages)
-	if err != nil {
-		t.Fatalf("marshal packages: %v", err)
-	}
-	commitYAML, err := yaml.Marshal([]unstructured.Unstructured{commit})
-	if err != nil {
-		t.Fatalf("marshal repository commits: %v", err)
-	}
 	const selector = codeLabelRepository + "=repo-a"
-	graphql := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Query     string         `json:"query"`
-			Variables map[string]any `json:"variables"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode GraphQL request: %v", err)
-		}
-		if req.Variables["labelSelector"] != selector {
-			t.Fatalf("labelSelector variable = %#v, want %q", req.Variables["labelSelector"], selector)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(req.Query, "RepositoryCommitsYaml") {
-			_, _ = fmt.Fprintf(w, `{"data":{"code_faros_sh":{"v1alpha1":{"RepositoryCommitsYaml":%q}}}}`, string(commitYAML))
-			return
-		}
-		_, _ = fmt.Fprintf(w, `{"data":{"code_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, string(listYAML))
-	}))
-	t.Cleanup(graphql.Close)
-	scope, err := tenant.NewGraphQLClient(graphql.URL, false).For("cluster-id", "caller-token")
+	proxy := tenanttest.NewServer(t)
+	for i := range packages {
+		// The package helpers build status-only objects; the API store keys
+		// objects by name, and the selection under test ignores the name.
+		packages[i].SetName(fmt.Sprintf("package-%d", i))
+		proxy.Add(codePackagesGVR, &packages[i])
+	}
+	proxy.Add(codeRepositoryCommitsGVR, &commit)
+	scope, err := proxy.Client().For("cluster-id", "caller-token")
 	if err != nil {
-		t.Fatalf("create GraphQL scope: %v", err)
+		t.Fatalf("create tenant scope: %v", err)
 	}
 	project := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
 	images, err := (&Server{}).resolveProjectComponentImages(
 		context.Background(),
-		asclient.NewFromGraphQL(scope),
+		asclient.NewFromScope(scope),
 		project,
 		[]projectBuildComponent{{Name: "app"}},
 	)
 	if err != nil {
 		t.Fatalf("resolve component images: %v", err)
+	}
+	lists := 0
+	for _, request := range proxy.Requests() {
+		if request.Method != http.MethodGet || request.Name != "" {
+			continue
+		}
+		lists++
+		if got := request.Query.Get("labelSelector"); got != selector {
+			t.Fatalf("%s list labelSelector = %q, want %q", request.GVR.Resource, got, selector)
+		}
+	}
+	if lists == 0 {
+		t.Fatal("no list requests reached the tenant proxy")
 	}
 	if got := images["app"].Image; got != "ghcr.io/acme/repo-a/app@sha256:aaa" {
 		t.Fatalf("resolved app image = %q, want repo-a image", got)

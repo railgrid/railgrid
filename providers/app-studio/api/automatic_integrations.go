@@ -272,9 +272,9 @@ func automaticProviderCatalogResourceKey(provider string, gvr schema.GroupVersio
 }
 
 // automaticProviderResource carries the published plural resource name into
-// the GraphQL-backed tenant client. Kind+s is not correct for irregular
-// plurals (and is unnecessary because catalog actions already publish the
-// exact resource segment).
+// the tenant client. Kind+s is not correct for irregular plurals (and is
+// unnecessary because catalog actions already publish the exact resource
+// segment, which is also the REST path segment).
 func automaticProviderResource(gvr schema.GroupVersionResource, kind, resource string) tenant.Resource {
 	plural := strings.TrimSpace(resource)
 	if plural != "" {

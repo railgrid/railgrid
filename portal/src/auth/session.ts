@@ -1,22 +1,20 @@
 // Single source of truth for "the session is dead — bounce to /login".
 //
-// Before this module the detection was scattered: the GraphQL layer had
-// its own 401/403/404 handler, while every REST `fetch` in the stores
-// re-implemented its own `if (!res.ok)` check and silently swallowed an
-// expired token (the user kept seeing errors instead of being sent to
-// login). Now both paths funnel through here:
+// Before this module the detection was scattered: every REST `fetch` in
+// the stores re-implemented its own `if (!res.ok)` check and silently
+// swallowed an expired token (the user kept seeing errors instead of being
+// sent to login). Now every path funnels through here:
 //   - REST callers use authFetch(), which injects the bearer and fires
 //     notifySessionExpired() on a 401.
-//   - The GraphQL handler (composables/useGraphQL.ts) and the auth store
-//     call notifySessionExpired() directly.
+//   - The auth store calls notifySessionExpired() directly.
 //
 // The redirect itself lives in the shell (App.vue), reached via a window
 // event. We deliberately do NOT import `@/router` or any Pinia store
 // here: this module is pulled into provider micro-frontend bundles via
 // the `@faros-edges` alias, and a static router/store import drags the
-// entire portal SPA into each provider's IIFE (see the long note in
-// composables/useGraphQL.ts). Depending only on `@/auth/token` (pure
-// functions) and the DOM keeps this leaf-level and cycle-free.
+// entire portal SPA into each provider's IIFE. Depending only on
+// `@/auth/token` (pure functions) and the DOM keeps this leaf-level and
+// cycle-free.
 import { loadAuth, isExpired, refreshToken } from '@/auth/token'
 
 // Window event the shell listens for to drop a dead session and redirect
@@ -25,7 +23,7 @@ import { loadAuth, isExpired, refreshToken } from '@/auth/token'
 export const SESSION_EXPIRED_EVENT = 'faros-session-expired'
 
 // One page load can fan out a dozen authenticated requests (provider
-// list + admin probe + N GraphQL queries). When the token dies they all
+// list + admin probe + N workspace reads). When the token dies they all
 // come back 401 at once; without this latch each one would fire the event
 // and race a separate logout()+router.replace(). Latch until the next
 // successful login re-arms it via resetSessionExpired().
@@ -101,9 +99,7 @@ function tenantHeaders(): Record<string, string> {
 // 403 and 404 are intentionally NOT treated as session failures here:
 // for an authenticated user they're legitimate authorization / not-found
 // answers (e.g. /api/admin/* returns 403 to a non-admin), and logging the
-// user out on them would be wrong. (The GraphQL gateway is the exception —
-// there a 403/404 means the cluster route itself is gone — so that nuance
-// stays in composables/useGraphQL.ts.)
+// user out on them would be wrong.
 export async function authFetch(
   path: string,
   opts: RequestInit & AuthHeaderOptions = {},

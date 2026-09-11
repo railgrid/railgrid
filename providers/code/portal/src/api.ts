@@ -1,12 +1,21 @@
-// GraphQL client for the code provider's portal.
+// Kubernetes REST client for the code provider's portal.
 //
-// Every read and write goes through the hub's embedded GraphQL gateway at
-// /graphql/<cluster> — reads as `code_faros_sh { v1alpha1 { … } }`
-// queries, writes as create/update/delete mutations (and applyYaml for
-// create-or-update). The shell pushes farosContext.tenant (kcp cluster name,
-// used as the /graphql path segment) and farosContext.token (bearer). The one
-// non-gateway call is oauthConfig, which probes the provider backend directly.
+// Every read and write goes through the hub's kcp proxy at
+// /clusters/<cluster>/apis/code.faros.sh/v1alpha1/… — plain Kubernetes wire
+// shapes: List envelopes for reads, server-side apply for create-or-update,
+// merge-patch for targeted updates, DELETE with a Status body on failure. The
+// shell pushes farosContext.tenant (kcp cluster name, used as the /clusters
+// path segment) and farosContext.token (bearer). The one non-kcp call is
+// oauthConfig, which probes the provider backend directly.
 
+import {
+  createKubeClient,
+  isKubeError,
+  isKubeNotFound,
+  type KubeClient,
+  type KubeError,
+  type KubeResourceRef,
+} from './portalkit/kube'
 import type {
   Collaborator,
   Connection,
@@ -28,6 +37,30 @@ const GROUP = 'code.faros.sh'
 const VERSION = 'v1alpha1'
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
+// FIELD_MANAGER names this portal as the server-side-apply owner of the fields
+// it writes, so a later apply from the same portal can change them without
+// force-taking ownership from another manager.
+const FIELD_MANAGER = 'provider-code'
+
+type CodeResourceKind = 'Connection' | 'Repository' | 'DeployKey' | 'Collaborator' | 'Package'
+type NonRepositoryKind = Exclude<CodeResourceKind, 'Repository'>
+
+// CODE_RESOURCES maps each Kind to its plural REST segment (the CRD `plural`
+// under providers/code/config/crds). Code-group resources are cluster-scoped
+// within the workspace.
+const CODE_RESOURCES: Record<CodeResourceKind, KubeResourceRef> = {
+  Connection: { group: GROUP, version: VERSION, resource: 'connections' },
+  Repository: { group: GROUP, version: VERSION, resource: 'repositories' },
+  DeployKey: { group: GROUP, version: VERSION, resource: 'deploykeys' },
+  Collaborator: { group: GROUP, version: VERSION, resource: 'collaborators' },
+  Package: { group: GROUP, version: VERSION, resource: 'packages' },
+}
+// SECRETS is the core-group ref for the credential Secret a Connection points at.
+const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
+
+function isCodeResourceKind(kind: unknown): kind is CodeResourceKind {
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(CODE_RESOURCES, kind)
+}
 
 
 let bearerToken: string | null = null
@@ -81,7 +114,7 @@ function assertRequestContext(context: APIRequestContext): void {
   }
 }
 
-// The GraphQL path is built from the cluster name, not the provider basePath,
+// The kube REST path is built from the cluster name, not the provider basePath,
 // but basePath is still part of the shell authority. Track it so in-flight
 // requests are fenced when the host switches provider roots.
 export function setBasePath(ctxBasePath?: string | null) {
@@ -131,9 +164,38 @@ function protocolError(message: string): ErrorResponse {
   return { reason: 'ProtocolError', message }
 }
 
-function isKubernetesGraphQLNotFound(error: unknown, resource: string, name: string): boolean {
-  const value = error as { reason?: string; message?: string }
-  return value.reason === 'GraphQLError' && value.message === `${resource} "${name}" not found`
+// isKubeObjectNotFound reports a 404 Status for exactly the named object of the
+// requested resource — details.name must match, and details.group/kind must
+// agree when the server filled them in. A 404 for the resource *type* (no
+// APIBinding yet) or for some other object referenced during admission is not
+// an absence of this object and must never be swallowed.
+function isKubeObjectNotFound(error: unknown, ref: KubeResourceRef, name: string): boolean {
+  if (!isKubeNotFound(error)) return false
+  const details = (error as KubeError).body?.details
+  if (!details || details.name !== name) return false
+  if (details.group !== undefined && details.group !== ref.group) return false
+  if (details.kind !== undefined && details.kind !== ref.resource) return false
+  return true
+}
+
+// kubeErrorResponse maps a transport-level KubeError onto the {reason, message}
+// contract the views render. Client-side protocol failures (the vendored client
+// reports them with the successful HTTP status and no Status body) become
+// ProtocolError; every server failure keeps its HTTP status in the message.
+function kubeErrorResponse(error: KubeError): ErrorResponse {
+  if (error.status >= 200 && error.status < 300) return protocolError(error.message)
+  return { reason: 'HTTPError', message: `${error.status}: ${error.message}` }
+}
+
+// kubeCall runs one client request and normalizes its failure. Non-kube
+// failures (ContextChanged, fetch rejections) pass through untouched.
+async function kubeCall<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    if (isKubeError(error)) throw kubeErrorResponse(error)
+    throw error
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -201,9 +263,6 @@ function validateRawCR(
   }
   return value as unknown as RawCR
 }
-
-type CodeResourceKind = 'Connection' | 'Repository' | 'DeployKey' | 'Collaborator' | 'Package'
-type NonRepositoryKind = Exclude<CodeResourceKind, 'Repository'>
 
 function requireResourceString(record: Record<string, unknown>, key: string, label: string): void {
   if (typeof record[key] !== 'string' || !(record[key] as string).trim()) {
@@ -315,56 +374,23 @@ function validateResourceForKind(
     : validateCodeResource(value, kind, label, options)
 }
 
-// graphqlQuery runs a query against the hub's embedded GraphQL gateway at
-// /graphql/<cluster> (same origin as the portal). The gateway serves every CRD
-// bound in the tenant workspace — including the code provider's — so read-only
-// views can pull CRs without a custom REST endpoint. Auth is the caller's own
-// bearer token; the workspace is the path segment.
-async function graphqlQuery<T>(query: string, variables: Record<string, unknown>, context = captureRequestContext()): Promise<T> {
+// kubeClientFor builds a kube REST client bound to one captured request
+// context: the host-owned transport (which injects Authorization) and the
+// tenant's kcp cluster as the /clusters/<cluster> path segment. The client's
+// onResponse hook re-asserts the context after every response body is read, so
+// a workspace or token switch mid-flight fails the request instead of letting a
+// stale answer land in the new context.
+function kubeClientFor(context: APIRequestContext): KubeClient {
   assertRequestContext(context)
   if (!context.clusterName) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
-  const res = await context.fetch('/graphql/' + context.clusterName, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers,
-    body: JSON.stringify({ query, variables }),
+  return createKubeClient({
+    fetch: context.fetch,
+    cluster: context.clusterName,
+    fieldManager: FIELD_MANAGER,
+    onResponse: () => assertRequestContext(context),
   })
-  const text = await res.text()
-  assertRequestContext(context)
-  if (!res.ok) {
-    throw <ErrorResponse>{ reason: 'HTTPError', message: `${res.status}: ${text || res.statusText}` }
-  }
-  let parsed: unknown
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    throw protocolError('GraphQL gateway returned malformed JSON')
-  }
-  if (!isRecord(parsed)) {
-    throw protocolError('GraphQL gateway returned an invalid response envelope')
-  }
-  const body = parsed as { data?: unknown; errors?: unknown }
-  if (hasOwn(parsed, 'errors')) {
-    if (!Array.isArray(body.errors)) {
-      throw protocolError('GraphQL gateway response included a malformed errors field')
-    }
-    const messages = body.errors.map((entry, index) => {
-      if (!isRecord(entry) || typeof entry.message !== 'string') {
-        throw protocolError(`GraphQL gateway response included malformed error entry ${index}`)
-      }
-      return entry.message
-    })
-    if (messages.length) {
-      throw <ErrorResponse>{ reason: 'GraphQLError', message: messages.join('; ') }
-    }
-  }
-  if (!isRecord(body.data)) {
-    throw protocolError('GraphQL gateway response did not include an object data field')
-  }
-  return body.data as T
 }
 
 function condTrue(cr: RawCR, type: string): boolean {
@@ -552,110 +578,63 @@ export function normalizeResourceName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253) || 'x'
 }
 
-// ── GraphQL write helpers ──────────────────────────────────────────────────
-// All writes go through the gateway's mutation API (no kcp REST proxy). applyCR
-// wraps applyYaml, whose server-side create-or-update semantics make writes
-// idempotent and handle the "adopt an existing object" case (e.g. a leftover
-// credential Secret) without client-side resourceVersion juggling.
-async function applyCR(manifest: Record<string, unknown>, context?: APIRequestContext): Promise<RawCR> {
-  const data = await graphqlQuery<{ applyYaml?: unknown }>(
-    'mutation($y: String!) { applyYaml(yaml: $y) }',
-    { y: JSON.stringify(manifest) },
-    context,
-  )
-  // applyYaml returns the applied object as a JSON string (JSONString scalar);
-  // tolerate an already-parsed object too.
-  const raw = data.applyYaml
-  if (raw === undefined || raw === null) throw protocolError('applyYaml response was missing')
-  try {
-    const object = typeof raw === 'string' ? JSON.parse(raw) : raw
-    const manifestKind = manifest.kind
-    const resource = typeof manifestKind === 'string' &&
-      ['Connection', 'Repository', 'DeployKey', 'Collaborator', 'Package'].includes(manifestKind)
-      ? validateResourceForKind(object, manifestKind as CodeResourceKind, 'applyYaml response', { requireTypeMeta: true })
-      : validateRawCR(object, 'applyYaml response', {
-          requireSpec: hasOwn(manifest, 'spec'),
-          requireTypeMeta: true,
-        })
-    const expectedMetadata = isRecord(manifest.metadata) ? manifest.metadata : null
-    if (resource.apiVersion !== manifest.apiVersion || resource.kind !== manifest.kind ||
-      !expectedMetadata || resource.metadata.name !== expectedMetadata.name) {
-      throw protocolError('applyYaml returned a different resource than requested')
-    }
-    return resource
-  } catch (error) {
-    if ((error as ErrorResponse).reason === 'ProtocolError') throw error
-    throw protocolError('applyYaml returned malformed JSON')
+// ── Kubernetes write helpers ───────────────────────────────────────────────
+// refForManifest resolves the REST ref an apply targets from the manifest's
+// apiVersion/kind: the code group's CRDs, or the core-group Secret that holds a
+// Connection's credential.
+function refForManifest(manifest: Record<string, unknown>): KubeResourceRef {
+  if (isCodeResourceKind(manifest.kind) && manifest.apiVersion === `${GROUP}/${VERSION}`) {
+    return CODE_RESOURCES[manifest.kind]
   }
+  if (manifest.kind === 'Secret' && manifest.apiVersion === 'v1') return SECRETS
+  throw protocolError(`apply does not support ${String(manifest.apiVersion)} ${String(manifest.kind)}`)
 }
 
-// deleteCR deletes a code-group resource by name via the delete<Kind> mutation.
-async function deleteCR(kind: string, name: string, context?: APIRequestContext): Promise<void> {
-  const field = `delete${kind}`
-  const data = await graphqlQuery<unknown>(
-    `mutation($n: String!) { code_faros_sh { v1alpha1 { delete${kind}(name: $n) } } }`,
-    { n: name },
-    context,
-  )
-  const version = codeVersionPayload(data, field)
-  if (!hasOwn(version, field)) {
-    throw protocolError(`${field} response was missing ${field}`)
+// applyCR is server-side apply (create-or-update). Its idempotent semantics
+// handle the "adopt an existing object" case (e.g. a leftover credential
+// Secret) without client-side resourceVersion juggling; the portal's field
+// manager owns exactly the fields the manifest carries.
+async function applyCR(manifest: Record<string, unknown>, context = captureRequestContext()): Promise<RawCR> {
+  const ref = refForManifest(manifest)
+  const client = kubeClientFor(context)
+  const object = await kubeCall(() => client.apply(ref, manifest as never))
+  const resource = isCodeResourceKind(manifest.kind)
+    ? validateResourceForKind(object, manifest.kind, 'apply response', { requireTypeMeta: true })
+    : validateRawCR(object, 'apply response', {
+        requireSpec: hasOwn(manifest, 'spec'),
+        requireTypeMeta: true,
+      })
+  const expectedMetadata = isRecord(manifest.metadata) ? manifest.metadata : null
+  if (resource.apiVersion !== manifest.apiVersion || resource.kind !== manifest.kind ||
+    !expectedMetadata || resource.metadata.name !== expectedMetadata.name) {
+    throw protocolError('apply returned a different resource than requested')
   }
+  return resource
 }
 
-// deleteCodeResource makes delete retries safe for the exact Kubernetes
-// resource miss emitted by the GraphQL gateway. Capture authority once so a
-// concurrent workspace/token switch cannot redirect any part of the request.
-async function deleteCodeResource(kind: CodeResourceKind, resource: string, name: string): Promise<void> {
+// deleteCodeResource deletes a code-group resource by name. An exact
+// Kubernetes miss for that object makes retries idempotent; any other failure
+// (a type-level 404, a lookalike miss for a different object, a 5xx) surfaces.
+// Capture authority once so a concurrent workspace/token switch cannot redirect
+// any part of the request.
+async function deleteCodeResource(kind: CodeResourceKind, name: string): Promise<void> {
   const context = captureRequestContext()
+  const ref = CODE_RESOURCES[kind]
+  const client = kubeClientFor(context)
   try {
-    await deleteCR(kind, name, context)
+    await client.delete(ref, name)
   } catch (error) {
-    if (!isKubernetesGraphQLNotFound(error, `${resource}.${GROUP}`, name)) throw error
+    if (isKubeObjectNotFound(error, ref, name)) return
+    if (isKubeError(error)) throw kubeErrorResponse(error)
+    throw error
   }
 }
 
-// ── GraphQL read helpers ───────────────────────────────────────────────────
-// The gateway returns each CR as a metadata/spec/status object — the same shape
-// the kcp REST proxy does — so the *FromCR mappers consume GraphQL items as-is.
-// We select the full spec/status the mappers read; the group code.faros.sh
-// is the GraphQL field code_faros_sh (dots → underscores), list fields are
-// the capitalised plural (Connections), single-get is the capitalised singular
-// (Connection(name: …)).
-const GQL_META = 'metadata { name uid generation creationTimestamp deletionTimestamp }'
-const GQL_COND = 'conditions { type status reason message }'
-const F_CONNECTION = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration ${GQL_COND} }`
-// Detail fragment: adds generation/observedGeneration and per-condition
-// lastTransitionTime so the detail view can explain why a connection is pending.
-const F_CONNECTION_DETAIL = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration conditions { type status reason message lastTransitionTime } }`
-const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch } status { htmlURL cloneURL sshURL observedGeneration ${GQL_COND} }`
-// Detail fragment adds per-condition lastTransitionTime for the conditions card.
-const F_REPOSITORY_DETAIL = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch } status { repoID htmlURL cloneURL sshURL observedGeneration conditions { type status reason message lastTransitionTime } }`
-const F_DEPLOYKEY = `${GQL_META} spec { repositoryRef title publicKey readOnly } status { keyID secretRef { name } observedGeneration ${GQL_COND} }`
-const F_COLLABORATOR = `${GQL_META} spec { repositoryRef username permission } status { invitationID observedGeneration ${GQL_COND} }`
-const F_PACKAGE = `${GQL_META} spec { repositoryRef } status { packageName type visibility htmlURL versionCount updatedAt observedGeneration ${GQL_COND} }`
-
-function codeVersionPayload(data: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(data) || !hasOwn(data, 'code_faros_sh') || !isRecord(data.code_faros_sh)) {
-    throw protocolError(`${label} response was missing code_faros_sh`)
-  }
-  const group = data.code_faros_sh
-  if (!hasOwn(group, VERSION) || !isRecord(group[VERSION])) {
-    throw protocolError(`${label} response was missing ${VERSION}`)
-  }
-  return group[VERSION]
-}
-
-function listResourceKind(kind: string): CodeResourceKind {
-  switch (kind) {
-    case 'Connections': return 'Connection'
-    case 'Repositories': return 'Repository'
-    case 'DeployKeys': return 'DeployKey'
-    case 'Collaborators': return 'Collaborator'
-    case 'Packages': return 'Package'
-    default: throw protocolError(`Unsupported code resource list ${kind}`)
-  }
-}
+// ── Kubernetes read helpers ────────────────────────────────────────────────
+// kcp returns each CR as a metadata/spec/status object, which the *FromCR
+// mappers consume as-is after per-item shape validation. Lists carry the
+// standard List envelope (metadata.continue / remainingItemCount /
+// resourceVersion), which the vendored client flattens onto the page.
 
 const DEFAULT_LIST_LIMIT = 100
 const MAX_LIST_PAGES = 100
@@ -691,81 +670,57 @@ function mapListPage<T>(page: RawListPage, map: (item: RawCR) => T): KubernetesL
   }
 }
 
-// gqlListPage queries one Kubernetes list page. The gateway treats limit and
-// continue as optional arguments, so undefined variables are omitted from the
-// JSON request while the query remains usable for both the first and next page.
-async function gqlListPage(
-  kind: string,
-  fields: string,
-  labelselector: string | undefined,
+// kubeListPage fetches one Kubernetes list page. limit and continue are
+// optional query parameters, so an undefined option is simply omitted and the
+// same call serves both the first and every following page. The vendored
+// client already rejects "remaining items but no continue token"; the
+// remaining consistency and shape checks live here so a malformed page fails
+// closed rather than rendering as complete.
+async function kubeListPage(
+  kind: CodeResourceKind,
+  labelSelector: string | undefined,
   options: KubernetesListOptions | undefined,
-  context?: APIRequestContext,
+  context: APIRequestContext,
 ): Promise<RawListPage> {
-  validateListOptions(options, `${kind} list`)
-  const declarations = labelselector === undefined
-    ? ['$limit: Int', '$continue: String']
-    : ['$sel: String!', '$limit: Int', '$continue: String']
-  const args = [
-    ...(labelselector === undefined ? [] : ['labelselector: $sel']),
-    'limit: $limit',
-    'continue: $continue',
-  ]
-  const variables: Record<string, unknown> = {}
-  if (labelselector !== undefined) variables.sel = labelselector
-  if (options?.limit !== undefined) variables.limit = options.limit
-  if (options?.continue !== undefined) variables.continue = options.continue
-  const query = `query(${declarations.join(', ')}) { code_faros_sh { v1alpha1 { ${kind}(${args.join(', ')}) { resourceVersion continue remainingItemCount items { ${fields} } } } } }`
-  const data = await graphqlQuery<unknown>(query, variables, context)
-  const version = codeVersionPayload(data, `${kind} list`)
-  if (!hasOwn(version, kind) || !isRecord(version[kind])) {
-    throw protocolError(`${kind} list response was missing ${kind}`)
-  }
-  const list = version[kind]
-  if (!hasOwn(list, 'items') || !Array.isArray(list.items)) {
-    throw protocolError(`${kind} list response was missing its items array`)
-  }
+  const label = `${kind} list`
+  validateListOptions(options, label)
+  const client = kubeClientFor(context)
+  const page = await kubeCall(() => client.list(CODE_RESOURCES[kind], {
+    labelSelector,
+    limit: options?.limit,
+    continue: options?.continue,
+  }))
 
-  const continueValue = list.continue
-  if (continueValue !== undefined && continueValue !== null && typeof continueValue !== 'string') {
-    throw protocolError(`${kind} list response had an invalid continue token`)
-  }
-  const remainingItemCount = list.remainingItemCount
-  validateOptionalInteger(remainingItemCount, `${kind} list response remainingItemCount`)
-  const resourceVersion = list.resourceVersion
-  validateOptionalString(resourceVersion, `${kind} list response resourceVersion`)
-
-  const resourceKind = listResourceKind(kind)
-  const items = list.items.map((item, index) => validateResourceForKind(item, resourceKind, `${kind} list item ${index}`))
-  const nextContinue = typeof continueValue === 'string' && continueValue.length > 0 ? continueValue : undefined
-  if (typeof remainingItemCount === 'number' &&
-    ((remainingItemCount > 0 && nextContinue === undefined) || (remainingItemCount === 0 && nextContinue !== undefined))) {
-    throw protocolError(`${kind} list response had inconsistent continue and remainingItemCount metadata`)
+  validateOptionalInteger(page.remainingItemCount, `${label} response remainingItemCount`)
+  const items = page.items.map((item, index) => validateResourceForKind(item, kind, `${label} item ${index}`))
+  const nextContinue = page.continue
+  if (typeof page.remainingItemCount === 'number' &&
+    ((page.remainingItemCount > 0 && nextContinue === undefined) || (page.remainingItemCount === 0 && nextContinue !== undefined))) {
+    throw protocolError(`${label} response had inconsistent continue and remainingItemCount metadata`)
   }
   return {
     items,
     continue: nextContinue,
-    remainingItemCount: typeof remainingItemCount === 'number' ? remainingItemCount : undefined,
-    resourceVersion: typeof resourceVersion === 'string' ? resourceVersion : undefined,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
   }
 }
 
-// gqlListAll walks only lists with a server-side selector (or workspace-wide
-// lists). Opaque cursor repetition and unbounded streams are protocol failures;
+// kubeListAll walks every page of a workspace-wide (or label-selected) list.
+// Opaque cursor repetition and unbounded streams are protocol failures;
 // returning a partial aggregate would make the UI silently incomplete.
-async function gqlListAll(
-  kind: string,
-  fields: string,
-  labelselector: string | undefined,
+async function kubeListAll(
+  kind: CodeResourceKind,
+  labelSelector: string | undefined,
   context: APIRequestContext,
 ): Promise<RawCR[]> {
   const items: RawCR[] = []
   const seenContinueTokens = new Set<string>()
   let continueToken: string | undefined
   for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber += 1) {
-    const page = await gqlListPage(
+    const page = await kubeListPage(
       kind,
-      fields,
-      labelselector,
+      labelSelector,
       continueToken === undefined
         ? { limit: DEFAULT_LIST_LIMIT }
         : { limit: DEFAULT_LIST_LIMIT, continue: continueToken },
@@ -782,50 +737,32 @@ async function gqlListAll(
   throw protocolError(`${kind} list exceeded the maximum page count`)
 }
 
-// gqlList queries a resource's list field and returns the RawCR-shaped items. An
-// optional labelselector narrows the set server-side.
-async function gqlList(kind: string, fields: string, labelselector?: string, context?: APIRequestContext): Promise<RawCR[]> {
-  const decl = labelselector !== undefined ? '($sel: String!)' : ''
-  const arg = labelselector !== undefined ? '(labelselector: $sel)' : ''
-  const query = `query${decl} { code_faros_sh { v1alpha1 { ${kind}${arg} { items { ${fields} } } } } }`
-  const data = await graphqlQuery<unknown>(
-    query,
-    labelselector !== undefined ? { sel: labelselector } : {},
-    context,
-  )
-  const version = codeVersionPayload(data, `${kind} list`)
-  if (!hasOwn(version, kind) || !isRecord(version[kind])) {
-    throw protocolError(`${kind} list response was missing ${kind}`)
-  }
-  const list = version[kind]
-  if (!hasOwn(list, 'items') || !Array.isArray(list.items)) {
-    throw protocolError(`${kind} list response was missing its items array`)
-  }
-  const resourceKind = listResourceKind(kind)
-  return list.items.map((item, index) => validateResourceForKind(item, resourceKind, `${kind} list item ${index}`))
+// kubeList is the unpaged list (no limit, so kcp answers in one response) for
+// the small per-repository sets the detail view filters client-side.
+async function kubeList(kind: CodeResourceKind, labelSelector?: string, context = captureRequestContext()): Promise<RawCR[]> {
+  const client = kubeClientFor(context)
+  const page = await kubeCall(() => client.list(CODE_RESOURCES[kind], { labelSelector }))
+  return page.items.map((item, index) => validateResourceForKind(item, kind, `${kind} list item ${index}`))
 }
 
-// gqlGet fetches a single named object (capitalised-singular field). The
-// gateway may represent absence as either null data or an exact Kubernetes
-// GraphQL error; both become the stable portal NotFound contract.
-async function gqlGet(kind: CodeResourceKind, resource: string, name: string, fields: string, context?: APIRequestContext): Promise<RawCR> {
-  const query = `query($n: String!) { code_faros_sh { v1alpha1 { ${kind}(name: $n) { ${fields} } } } }`
-  let data: unknown
+// kubeGet fetches a single named object. Only an exact Kubernetes miss for
+// that object becomes the stable portal NotFound contract; a type-level 404
+// or a miss for some other object stays an HTTPError so the view does not
+// mistake it for deletion.
+async function kubeGet(kind: CodeResourceKind, name: string, context = captureRequestContext()): Promise<RawCR> {
+  const ref = CODE_RESOURCES[kind]
+  const client = kubeClientFor(context)
+  let object: unknown
   try {
-    data = await graphqlQuery<unknown>(query, { n: name }, context)
+    object = await client.get(ref, name)
   } catch (error) {
-    if (isKubernetesGraphQLNotFound(error, `${resource}.${GROUP}`, name)) {
+    if (isKubeObjectNotFound(error, ref, name)) {
       throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
     }
+    if (isKubeError(error)) throw kubeErrorResponse(error)
     throw error
   }
-  const version = codeVersionPayload(data, `${kind} get`)
-  if (!hasOwn(version, kind)) {
-    throw protocolError(`${kind} get response was missing ${kind}`)
-  }
-  const obj = version[kind]
-  if (obj === null) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
-  return validateResourceForKind(obj, kind, `${kind} get response`)
+  return validateResourceForKind(object, kind, `${kind} get response`)
 }
 
 export const api = {
@@ -835,19 +772,19 @@ export const api = {
     context?: APIReadContext,
   ): Promise<KubernetesListPage<Connection>> {
     return mapListPage(
-      await gqlListPage('Connections', F_CONNECTION, undefined, options, requestReadContext(context)),
+      await kubeListPage('Connection', undefined, options, requestReadContext(context)),
       connFromCR,
     )
   },
 
   async listConnections(context?: APIReadContext): Promise<Connection[]> {
-    return (await gqlListAll('Connections', F_CONNECTION, undefined, requestReadContext(context))).map(connFromCR)
+    return (await kubeListAll('Connection', undefined, requestReadContext(context))).map(connFromCR)
   },
 
   // getConnection fetches one Connection with the full spec/status the detail
   // view renders — used to diagnose a connection stuck in "pending".
   async getConnection(name: string): Promise<ConnectionDetail> {
-    return connDetailFromCR(await gqlGet('Connection', 'connections', name, F_CONNECTION_DETAIL))
+    return connDetailFromCR(await kubeGet('Connection', name))
   },
 
   // connect creates the Connection, then the token Secret it references — in
@@ -894,8 +831,8 @@ export const api = {
     // The credential Secret has an ownerReference to this Connection. Delete
     // only the owner and let Kubernetes garbage collection remove the Secret;
     // deleting the credential first would leave a live Connection unusable when
-    // this mutation fails. An exact Kubernetes miss makes retries idempotent.
-    await deleteCodeResource('Connection', 'connections', name)
+    // this request fails. An exact Kubernetes miss makes retries idempotent.
+    await deleteCodeResource('Connection', name)
   },
 
   // oauthConfig probes the provider backend (via the hub /services proxy) for
@@ -945,17 +882,17 @@ export const api = {
     context?: APIReadContext,
   ): Promise<KubernetesListPage<Repository>> {
     return mapListPage(
-      await gqlListPage('Repositories', F_REPOSITORY, undefined, options, requestReadContext(context)),
+      await kubeListPage('Repository', undefined, options, requestReadContext(context)),
       repoFromCR,
     )
   },
 
   async listRepositories(context?: APIReadContext): Promise<Repository[]> {
-    return (await gqlListAll('Repositories', F_REPOSITORY, undefined, requestReadContext(context))).map(repoFromCR)
+    return (await kubeListAll('Repository', undefined, requestReadContext(context))).map(repoFromCR)
   },
 
   async getRepository(name: string): Promise<RepositoryDetail> {
-    return repoDetailFromCR(await gqlGet('Repository', 'repositories', name, F_REPOSITORY_DETAIL))
+    return repoDetailFromCR(await kubeGet('Repository', name))
   },
 
   async createRepository(input: {
@@ -984,32 +921,21 @@ export const api = {
   },
 
   async deleteRepository(name: string): Promise<void> {
-    await deleteCodeResource('Repository', 'repositories', name)
+    await deleteCodeResource('Repository', name)
   },
 
   // updateRepositoryConnection repoints an existing Repository at a different
-  // Connection. The update<Kind> mutation is a server-side merge-patch, so only
-  // spec.connectionRef changes; the controller re-resolves the new credential/
-  // owner on the next reconcile.
+  // Connection. A merge-patch touches only spec.connectionRef; the controller
+  // re-resolves the new credential/owner on the next reconcile.
   async updateRepositoryConnection(name: string, connectionRef: string): Promise<Repository> {
-    const data = await graphqlQuery<unknown>(
-      `mutation($n: String!, $ref: String!) {
-        code_faros_sh { v1alpha1 {
-          updateRepository(name: $n, object: { spec: { connectionRef: $ref } }) { ${F_REPOSITORY} }
-        } }
-      }`,
-      { n: name, ref: connectionRef },
-    )
-    const version = codeVersionPayload(data, 'updateRepository')
-    if (!hasOwn(version, 'updateRepository')) {
-      throw protocolError('updateRepository response was missing updateRepository')
-    }
-    return repoFromCR(validateRepositoryResource(version.updateRepository, 'updateRepository response'))
+    const client = kubeClientFor(captureRequestContext())
+    const object = await kubeCall(() => client.patch(CODE_RESOURCES.Repository, name, { spec: { connectionRef } }))
+    return repoFromCR(validateRepositoryResource(object, 'updateRepository response'))
   },
 
   // ── Deploy keys ──────────────────────────────────────────────────────────
   async listDeployKeys(repositoryRef: string): Promise<DeployKey[]> {
-    return (await gqlList('DeployKeys', F_DEPLOYKEY)).map(keyFromCR).filter(k => k.repositoryRef === repositoryRef)
+    return (await kubeList('DeployKey')).map(keyFromCR).filter(k => k.repositoryRef === repositoryRef)
   },
 
   async createDeployKey(input: {
@@ -1033,12 +959,12 @@ export const api = {
   },
 
   async deleteDeployKey(name: string): Promise<void> {
-    await deleteCodeResource('DeployKey', 'deploykeys', name)
+    await deleteCodeResource('DeployKey', name)
   },
 
   // ── Collaborators ────────────────────────────────────────────────────────
   async listCollaborators(repositoryRef: string): Promise<Collaborator[]> {
-    return (await gqlList('Collaborators', F_COLLABORATOR)).map(collabFromCR).filter(c => c.repositoryRef === repositoryRef)
+    return (await kubeList('Collaborator')).map(collabFromCR).filter(c => c.repositoryRef === repositoryRef)
   },
 
   async createCollaborator(input: {
@@ -1062,31 +988,30 @@ export const api = {
   },
 
   async deleteCollaborator(name: string): Promise<void> {
-    await deleteCodeResource('Collaborator', 'collaborators', name)
+    await deleteCodeResource('Collaborator', name)
   },
 
   // ── Packages (read-only) ─────────────────────────────────────────────────
   // Packages are observed host state the code provider's crawler mirrors into
-  // Package CRs (one per artifact, owned by the Repository). We read them via
-  // the GraphQL gateway — like every other CR — instead of hitting the host on
-  // every page view (which GitHub rate-limits). listPackages narrows to one
-  // repository by the label the crawler stamps; listAllPackages spans the
-  // workspace for the Packages tab.
+  // Package CRs (one per artifact, owned by the Repository). We read them from
+  // kcp — like every other CR — instead of hitting the host on every page view
+  // (which GitHub rate-limits). listPackages narrows to one repository by the
+  // label the crawler stamps; listAllPackages spans the workspace for the
+  // Packages tab.
   async listPackagesPage(
     repositoryRef: string,
     options: KubernetesListOptions = {},
     context?: APIReadContext,
   ): Promise<KubernetesListPage<Package>> {
     return mapListPage(
-      await gqlListPage('Packages', F_PACKAGE, `${PACKAGE_REPO_LABEL}=${repositoryRef}`, options, requestReadContext(context)),
+      await kubeListPage('Package', `${PACKAGE_REPO_LABEL}=${repositoryRef}`, options, requestReadContext(context)),
       pkgFromCR,
     )
   },
 
   async listPackages(repositoryRef: string): Promise<Package[]> {
-    return (await gqlListAll(
-      'Packages',
-      F_PACKAGE,
+    return (await kubeListAll(
+      'Package',
       `${PACKAGE_REPO_LABEL}=${repositoryRef}`,
       requestReadContext(),
     )).map(pkgFromCR)
@@ -1097,13 +1022,13 @@ export const api = {
     context?: APIReadContext,
   ): Promise<KubernetesListPage<PackageRow>> {
     return mapListPage(
-      await gqlListPage('Packages', F_PACKAGE, undefined, options, requestReadContext(context)),
+      await kubeListPage('Package', undefined, options, requestReadContext(context)),
       pkgRowFromCR,
     )
   },
 
   async listAllPackages(): Promise<PackageRow[]> {
-    return (await gqlListAll('Packages', F_PACKAGE, undefined, requestReadContext())).map(pkgRowFromCR)
+    return (await kubeListAll('Package', undefined, requestReadContext())).map(pkgRowFromCR)
   },
 }
 

@@ -679,7 +679,7 @@ func (b *projectAssistantRunSandbox) close(ctx context.Context) error {
 }
 
 func (b *projectAssistantRunSandbox) deleteInstance(ctx context.Context) error {
-	if b == nil || b.server == nil || (b.server.gql == nil && b.server.projectClientFor == nil) {
+	if b == nil || b.server == nil || (b.server.tenant == nil && b.server.projectClientFor == nil) {
 		return nil
 	}
 	client, err := b.server.clientFor(b.id)
@@ -699,10 +699,10 @@ func (b *projectAssistantRunSandbox) deleteInstance(ctx context.Context) error {
 	if owner != "" && owner != strings.TrimSpace(metadata.RunID) {
 		return fmt.Errorf("%w: refuse to delete run sandbox claimed by another run", errProjectAssistantRunSandboxConflict)
 	}
-	// The provider GraphQL delete path currently does not preserve Kubernetes
-	// DeleteOptions preconditions. Ownership is therefore fenced by the durable
-	// claim annotation plus App Studio's single-writer manager, not by pretending
-	// a resource-version precondition reaches Infrastructure.
+	// Ownership is fenced by the durable claim annotation plus App Studio's
+	// single-writer manager rather than a resource-version precondition: the
+	// claim check above is what decides whether this run may delete the
+	// Instance, and the sandbox may legitimately have been updated since.
 	err = resource.Delete(ctx, b.instance.Name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -782,7 +782,7 @@ func (s *Server) cleanupInterruptedProjectAssistantRunSandbox(ctx context.Contex
 		return fmt.Errorf("%w: interrupted sandbox cache generation does not match run", errProjectAssistantRunSandboxConflict)
 	}
 	manager.releaseExact(tenantKey, name, run.ID)
-	if s.gql == nil && s.projectClientFor == nil {
+	if s.tenant == nil && s.projectClientFor == nil {
 		return errors.New("project client is not configured for interrupted sandbox cleanup")
 	}
 	client, err := s.clientFor(id)
@@ -843,7 +843,7 @@ func (b *projectAssistantRunSandbox) retain(ctx context.Context) error {
 	if b.runState != nil {
 		b.runState.SetSandboxMetadata(b.metadataSnapshot())
 	}
-	if b.server == nil || (b.server.gql == nil && b.server.projectClientFor == nil) {
+	if b.server == nil || (b.server.tenant == nil && b.server.projectClientFor == nil) {
 		return nil
 	}
 	client, err := b.server.clientFor(b.id)

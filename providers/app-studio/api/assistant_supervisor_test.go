@@ -29,11 +29,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
 	"github.com/gorilla/mux"
+
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *testing.T) {
@@ -1305,33 +1307,13 @@ func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjec
 
 func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
 	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
-		case strings.Contains(request.Query, "applyYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"applyYaml": projectYAML}})
-		case strings.Contains(request.Query, "SecretYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
+	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), messages, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), messages, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := messages.CreateProjectBootstrapPermit(context.Background(), scope, "test-user", projectInitialBootstrapPromptDigest("build a todo app")); err != nil {
 		t.Fatal(err)
@@ -1418,23 +1400,10 @@ func TestProjectAssistantRunStartInitialBootstrapSeesTranscriptAfterReservation(
 }
 
 func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.T) {
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(request.Query, "ProjectYaml") {
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-			"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}},
-		}})
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -1476,24 +1445,11 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 
 func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(request.Query, "ProjectYaml") {
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-			"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
-		}})
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 
 	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
@@ -1666,28 +1622,12 @@ func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 
 func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct{ Query string }
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
-		case strings.Contains(request.Query, "SecretYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	firstPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"},
 	}}
@@ -1769,25 +1709,9 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 
 func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct{ Query string }
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
-		case strings.Contains(request.Query, "SecretYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	tests := []struct {
 		name        string
@@ -1803,7 +1727,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			memoryStore := store.NewMemoryStore()
-			server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+			server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 			server.assistantEngine = terminalStartRouteEngine{err: tt.err}
 			scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 			createAssistantThreadForHTTPTest(t, memoryStore, scope, "thread-1", "test-user")
@@ -1845,28 +1769,12 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 
 func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct{ Query string }
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
-		case strings.Contains(request.Query, "SecretYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-	}))
-	defer graphQL.Close()
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	latestPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},

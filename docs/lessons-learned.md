@@ -95,7 +95,8 @@ The hub proxy pinned every user token to `User.Spec.DefaultCluster` — a 403
 *before* kcp was consulted, "regardless of whether the user actually has RBAC
 there. So kcp would authorize them — but the proxy pre-check funnels
 user-token traffic to the single DefaultCluster." Two subsystems then routed
-*around our own platform*: App Studio went through the GraphQL gateway, and
+*around our own platform*: App Studio originally went through a GraphQL gateway
+(since replaced by the kcp proxy), and
 provider-Enable went through a hub handler using the kcp-admin client — the
 workaround for a too-tight gate was admin credentials. Lesson: if kcp's
 authorizer can answer the question, let it; every pre-check you add is a

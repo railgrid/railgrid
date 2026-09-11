@@ -43,7 +43,7 @@ All paths relative to repo root; the edges provider is a separate Go module at
    to start creating Services.
 4. **Portal** — `providers/edges/portal/src/Workloads.vue` (list + create via
    `Wizard.vue`-style inline form), `api.ts` `createWorkload(WorkloadDraft)`
-   GraphQL mutation (`WORKLOAD_NS = 'default'`).
+   kube REST create through the hub's kcp proxy (`WORKLOAD_NS = 'default'`).
 
 ### Service/MCP path that already works end-to-end
 
@@ -176,7 +176,7 @@ login), **pihole** (session) — then fan out.
    materializes — now as Deployment **and** ClusterIP Service
    (`kubectl get deploy,svc -n default` on the edge cluster), and that
    deleting the Workload prunes both.
-2. **Phase 2**: create a helm Workload by hand (kubectl/GraphQL) — e.g.
+2. **Phase 2**: create a helm Workload by hand (kubectl, or the portal) — e.g.
    grafana — confirm the Placement carries the rendered bundle, the chart's
    objects (incl. PVC) appear on the edge, and the Service name equals the
    workload name (fullnameOverride).
@@ -196,8 +196,9 @@ login), **pihole** (session) — then fan out.
 
 - Shell emits `setValueForKeyFakeAssocArray … _encode` noise on every command —
   pipe through `grep -vE '_encode|_decode'`.
-- Edges provider portal talks GraphQL (`graphql()` helper in `api.ts`) to the
-  hub gateway at `/graphql/{cluster}`; mutations need explicit `namespace`.
+- Edges provider portal talks plain kube REST (`portalkit` kube client in
+  `api.ts`) to the hub's kcp proxy at `/clusters/{cluster}`; writes need an
+  explicit `namespace`.
 - The catalog auth kinds (Basic, PVEAPIToken, Pi-hole session) are coded to
   documented APIs but **not live-tested** — marketplace testing will exercise
   qbittorrent/pihole/grafana for real; fix `svc_catalog.go` if the wire format

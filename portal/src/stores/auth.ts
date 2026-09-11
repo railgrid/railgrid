@@ -130,7 +130,7 @@ export const useAuthStore = defineStore('auth', () => {
     clusterName.value = null
   }
 
-  // setClusterName retargets every `/graphql/{clusterName}` query to a
+  // setClusterName retargets every `/clusters/{clusterName}` request to a
   // different kcp logical cluster. Called from the tenant→auth sync in
   // App.vue when the user picks a different workspace in the sidebar
   // switcher (without this, MCP/edges/workload pages keep showing data

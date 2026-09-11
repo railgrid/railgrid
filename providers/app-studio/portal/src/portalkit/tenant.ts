@@ -8,9 +8,10 @@
 //
 // Applies to portals on the "hub-proxy" auth model (X-Faros-* headers + tenant
 // from localStorage): agents, app-studio, kuery, quickstart. Portals that
-// address kcp by cluster name in the path (code, edges, infrastructure — the
-// /graphql/<cluster> and /services/providers/<name> forms) use a different
-// model and only need readTenant() at most.
+// address kcp by cluster ID in the path (code, edges, infrastructure,
+// databricks — the /clusters/<cluster> kube REST form in ./kube.ts, plus
+// /services/providers/<name>) use a different model and only need
+// readTenant() at most.
 //
 // Synced to BOTH the vanilla-TS and Vue portalkit copies (it is plain TS).
 
@@ -74,7 +75,7 @@ export function tenantHeaders(opts: { token?: string | null; json?: boolean } = 
 // portal origin, injects Authorization and the X-Faros-* tenant headers from
 // the host's own state, and refuses same-origin paths outside the provider's
 // allow list (its own /services/providers/<name>/ and /ui/providers/<name>/,
-// /graphql/, /clusters/, /api/orgs/<org>/, and GET /api/providers).
+// /clusters/, /api/orgs/<org>/, and GET /api/providers).
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 // ProviderFetchContext is the slice of farosContext providerFetch reads.

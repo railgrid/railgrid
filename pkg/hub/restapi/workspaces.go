@@ -163,8 +163,8 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	// Grant cluster-admin to the caller in the freshly-minted workspace.
 	// Without this the workspace is unreachable from the portal (the
-	// GraphQL gateway calls into kcp on the caller's bearer token and
-	// kcp 403s without a matching ClusterRoleBinding). The org bootstrap
+	// kcp proxy forwards the caller's bearer token to kcp and kcp 403s
+	// without a matching ClusterRoleBinding). The org bootstrap
 	// controller only ever seeded the binding for the user's default
 	// workspace — any portal-created workspace stayed RBAC-less.
 	callerUser, err := h.mgr.client.Users().Get(r.Context(), tc.User, metav1.GetOptions{})
@@ -369,7 +369,7 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 	view := WorkspaceView{UUID: wsUUID, OrgUUID: orgUUID, DisplayName: dn}
 	// Best-effort cluster-name lookup: omit when the workspace has not
 	// reached Ready (no spec.cluster yet) so the portal can show the row
-	// but skip retargeting GraphQL until it settles. The error case is
+	// but skip retargeting /clusters/{id} until it settles. The error case is
 	// indistinguishable from "not Ready" here and the row is still useful
 	// for display, so swallow it.
 	if cluster, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); err == nil && cluster != "" {

@@ -18,7 +18,7 @@ TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/quickstart/portal"
 )
-TS_FILES=(dashboardtile.ts faros-ui.css form-select.ts icons.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
+TS_FILES=(dashboardtile.ts faros-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -72,14 +72,14 @@ AGENTKIT_VUE_FILES=(
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts page-state.ts styles.ts tabs.ts tenant.ts)
+VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
 HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 
 # README.md documents the canonical kit but is not a distributable vendored
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
-TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs page-state.ts)
+TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs kube.behavior.test.mjs page-state.ts)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
 AGENTKIT_CANONICAL_ONLY=(README.md styles.conformance.test.mjs)
 AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs)

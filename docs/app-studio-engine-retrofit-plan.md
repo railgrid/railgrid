@@ -15,7 +15,8 @@ Key facts about app-studio that shape the plan:
 - `Project.spec.environments[].bindings[].resourceRef` already records
   group/version/**resource**/kind + raw values — the binding contract is
   already self-contained; the reconciler never needs to read Templates.
-- No controller-runtime anywhere; `tenant/` GraphQL transport has NO Watch.
+- No controller-runtime anywhere; `tenant/` is a per-request caller-scoped
+  dynamic client over the hub's kcp proxy with NO Watch/informer loop.
   The reconciler rides the APIExport VW via kcp multicluster-provider
   (per-shard fan-out — one endpoint per shard, binding one URL hides tenants).
 - Single-writer invariant: chart hard-fails `replicaCount != 1`. The manager

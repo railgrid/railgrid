@@ -6,7 +6,7 @@ import { useTenantStore } from '@/stores/tenant'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useRoute, useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
-import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
+import { SESSION_EXPIRED_EVENT } from '@/auth/session'
 import { useLayoutInsets } from '@/composables/useLayoutInsets'
 import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
@@ -24,7 +24,7 @@ const route = useRoute()
 const router = useRouter()
 
 // A portal bearer authenticates the caller; auth.clusterName is only the
-// current workspace's GraphQL target. Organization-only screens therefore
+// current workspace's kcp cluster target. Organization-only screens therefore
 // remain authenticated while the target is intentionally empty.
 const hasPortalSession = computed(() => !!auth.token)
 
@@ -74,11 +74,11 @@ watchEffect(() => {
   document.documentElement.style.setProperty('--k-toast-bottom-offset', toastBottomOffset.value)
 })
 
-// A dead gateway session (401/403/404) is detected deep inside
-// useGraphQL, which can't import `@/router` without dragging the whole
-// SPA into provider bundles. It signals here instead; the shell owns
-// the logout + redirect. `replace`, not `push`, so Back doesn't return
-// to the page that just failed to authenticate.
+// A dead session (401) is detected inside @/auth/session, which can't
+// import `@/router` without dragging the whole SPA into provider bundles.
+// It signals here instead; the shell owns the logout + redirect.
+// `replace`, not `push`, so Back doesn't return to the page that just
+// failed to authenticate.
 function onSessionExpired() {
   auth.logout()
   void router.replace({ name: 'login' })
@@ -123,16 +123,13 @@ watch(
 )
 
 // Tenant → auth bridge: the shell's workspace switcher changes the active
-// workspace in the tenant store, but every `/graphql/{cluster}`
-// query is built from auth.clusterName. Without this sync the user switches
-// workspace and the MCP/edges/workload pages keep showing data
-// from the login-time DefaultCluster. Mirror activeWorkspace.clusterName →
-// auth.clusterName so:
-//   1. useGraphQLQuery's watchEffect (which reads auth.isAuthenticated, a
-//      getter over s.clusterName) re-fires and re-queries the new cluster.
-//   2. ProviderFrame's watch on auth.clusterName pushes a fresh
-//      farosContext to the mounted provider element; its auth-adapter
-//      hydrates and its useGraphQLQuery re-fires the same way.
+// workspace in the tenant store, but every provider request to
+// `/clusters/{cluster}` is built from auth.clusterName. Without this sync
+// the user switches workspace and the MCP/edges/workload pages keep showing
+// data from the login-time DefaultCluster. Mirror
+// activeWorkspace.clusterName → auth.clusterName so ProviderFrame's watch on
+// auth.clusterName pushes a fresh farosContext to the mounted provider
+// element and its API layer retargets the new cluster.
 // The hub omits clusterName until the workspace reports Ready. Keep the
 // retained login cluster during the initial async hydration (this watcher is
 // intentionally not immediate), but clear it as soon as an explicit org-only
