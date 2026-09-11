@@ -82,6 +82,9 @@ go build -o bin/faros-hub ./cmd/faros-hub
         # absent at first boot — see pkg/hub/server.go.
         '.faros-kro.kubeconfig',
     ],
+    # The standalone generic runner is reached through its enrolled Edge
+    # Service and is not a hub dependency; runner edits must not restart KCP.
+    ignore=['pkg/runner'],
     resource_deps=['portal'],
     labels=['hub'],
 )
