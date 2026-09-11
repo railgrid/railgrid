@@ -8902,19 +8902,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </template>
 
             <template v-else-if="wizardOpen">
-              <div class="mb-4 grid gap-2 rounded-md border border-border-subtle bg-surface p-3 text-[12px]">
-                <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
-                  <input v-model="createWithGit" type="checkbox" class="app-studio-touch-target" :disabled="projectCreationPending || !reviewedGitConnection" />
-                  Create a private Git repository (recommended)
-                </label>
-                <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
-                <a v-if="!reviewedGitConnection" :href="CODE_CONNECTIONS_URL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target text-accent underline underline-offset-2">Connect GitHub</a>
-                <p v-if="createGitError" role="alert" class="text-danger">{{ createGitError }}</p>
-                <div v-if="createGitError || !reviewedGitConnection" class="flex gap-2">
-                  <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
-                  <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="createWithGit = false; createGitError = ''">Continue without Git</button>
-                </div>
-              </div>
               <NewProjectWizard
                 :ctx="props.ctx"
                 :initial-prompt="prompt"
@@ -8933,7 +8920,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 @retry-attachment="retryPreProjectAttachment"
                 @setup-action="onWizardSetupAction"
                 @retry-setup="onWizardSetupRetry"
-              />
+              >
+                <template #repository-options>
+                  <div class="grid min-w-0 gap-2 text-[12px]">
+                    <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
+                      <input v-model="createWithGit" type="checkbox" class="app-studio-touch-target" :disabled="projectCreationPending || !reviewedGitConnection" />
+                      Create a private Git repository (recommended)
+                    </label>
+                    <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
+                    <a v-if="!reviewedGitConnection" :href="CODE_CONNECTIONS_URL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target text-accent underline underline-offset-2">Connect GitHub</a>
+                    <p v-if="createGitError" role="alert" class="text-danger">{{ createGitError }}</p>
+                    <div v-if="createGitError || !reviewedGitConnection" class="flex flex-wrap gap-2">
+                      <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="onWizardSetupRetry">Check again</button>
+                      <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="projectCreationPending" @click="createWithGit = false; createGitError = ''">Continue without Git</button>
+                    </div>
+                  </div>
+                </template>
+              </NewProjectWizard>
             </template>
 
             <template v-else>

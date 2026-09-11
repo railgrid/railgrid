@@ -465,6 +465,8 @@ onMounted(async () => {
               </div>
             </label>
 
+            <slot name="repository-options" />
+
             <div id="template-impact" class="grid gap-3 border-t border-border-subtle pt-4">
               <div class="flex items-start gap-3">
                 <span class="mt-0.5 text-accent"><Package class="h-4 w-4" :stroke-width="1.75" /></span>
