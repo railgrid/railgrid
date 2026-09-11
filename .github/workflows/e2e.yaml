@@ -10,8 +10,31 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR validation only; publishing runs have unique groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.changes.outputs.mode }}
+      providers: ${{ steps.changes.outputs.providers }}
+      portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
+      image-matrix: ${{ steps.changes.outputs.image-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-changes
+        id: changes
+
   actions-node-sdk:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Actions Node SDK package contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -32,6 +55,8 @@ jobs:
   # embedded kcp's fixed etcd port (2380), so they run sequentially in one
   # job rather than as a matrix.
   e2e-providers:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Provider suites (embedded kcp subprocesses)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -70,6 +95,8 @@ jobs:
         run: make e2e-edges
 
   e2e-standalone:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Standalone (embedded kcp + static token)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -138,6 +165,8 @@ jobs:
 
 
   e2e-ssh:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: SSH Server-Mode (hub-only cluster)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -198,6 +227,8 @@ jobs:
             /tmp/kind-logs/
           retention-days: 3
   e2e-oidc:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: OIDC (Dex + auth-code flow)
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -269,6 +300,8 @@ jobs:
           retention-days: 3
 
   e2e-external-kcp:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: External KCP (kcp via Helm + static token)
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -341,6 +374,8 @@ jobs:
   # cluster. Proves kubectl streams down the reverse tunnel through the hub
   # backend proxy to the out-of-process edges provider.
   e2e-edges-connectivity:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Edges connectivity (agent tunnel → kubectl + ssh + workload)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -370,3 +405,17 @@ jobs:
           name: e2e-edges-connectivity-logs
           path: ${{ runner.temp }}/faros-e2e-edges-connectivity/
           retention-days: 3
+
+  result:
+    name: E2E result
+    if: always()
+    needs: [changes, actions-node-sdk, e2e-edges-connectivity, e2e-external-kcp, e2e-oidc, e2e-providers, e2e-ssh, e2e-standalone]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require selected jobs to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 hack/ci/result.py e2e

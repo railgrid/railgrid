@@ -6,10 +6,11 @@ on:
   push:
     tags:
       - 'v*'
-  # On PRs, the jobs below run in build-only mode (push: false, single-arch)
+  # On PRs and manual runs, jobs use build-only mode (push: false, single-arch)
   # so a broken Dockerfile or build context is caught before a release tag.
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,8 +26,31 @@ env:
   HUB_IMAGE_NAME: ${{ github.repository_owner }}/faros-hub
   AGENT_IMAGE_NAME: ${{ github.repository_owner }}/faros-agent
 
+# Cancel superseded PR validation only; publishing runs have unique groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.changes.outputs.mode }}
+      providers: ${{ steps.changes.outputs.providers }}
+      portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
+      image-matrix: ${{ steps.changes.outputs.image-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-changes
+        id: changes
+
   build-and-push-hub-image:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,7 +60,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' || github.event_name == 'release')
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -57,9 +81,9 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile.hub
-          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
+          # Multi-arch publishing; single-arch validation on PRs and manual runs.
+          platforms: ${{ (github.event_name == 'push' || github.event_name == 'release') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ (github.event_name == 'push' || github.event_name == 'release') }}
           cache-from: type=gha,scope=hub
           cache-to: type=gha,mode=max,scope=hub
           tags: ${{ steps.meta.outputs.tags }}
@@ -69,72 +93,25 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
 
-  # PR-only validation that every provider Dockerfile + build context still
-  # builds, before the split sync ever reaches a mirror. Each provider is a
-  # self-contained build context (providers/<name>/). These builds are NEVER
+  # PR and manual validation of selected provider Dockerfiles and build contexts,
+  # before the split sync reaches a mirror. The selector preserves companion
+  # images and their distinct contexts in the full matrix. These builds are NEVER
   # pushed here — provider images are published per-provider, stamped with the
   # provider's own version, by provider-release.yaml on a `providers/<name>/v*`
   # tag. (Publishing here would tag provider images with the hub version.)
   build-and-push-provider-images:
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: quickstart
-            image: ${{ github.repository_owner }}/faros-quickstart-provider
-          - name: infrastructure
-            image: ${{ github.repository_owner }}/faros-infrastructure-provider
-          - name: code
-            image: ${{ github.repository_owner }}/faros-code-provider
-          - name: kuery
-            image: ${{ github.repository_owner }}/faros-kuery-provider
-          - name: app-studio
-            image: ${{ github.repository_owner }}/faros/app-studio-provider
-          - name: databricks
-            image: ${{ github.repository_owner }}/faros-databricks-provider
-          - name: agents
-            image: ${{ github.repository_owner }}/faros-agents-provider
-          - name: edges
-            image: ${{ github.repository_owner }}/faros-edges-provider
-          # Companion image of the infrastructure provider (the dev-agent its
-          # kro backend injects into development-mode pods); published by
-          # provider-release.yaml on the infrastructure provider's tag.
-          - name: infrastructure/dev-agent
-            image: ${{ github.repository_owner }}/faros-dev-agent
-            # Self-contained Dockerfile with module-local paths — keeps its
-            # own context (no provider-sdk dependency).
-            context: ./providers/infrastructure/dev-agent
-          # Universal coding sandbox toolchain image. It is published by
-          # provider-release.yaml on the infrastructure provider's tag.
-          - name: infrastructure/universal-dev
-            image: ${{ github.repository_owner }}/faros-universal-dev
-            context: ./providers/infrastructure/dev-agent
-            dockerfile: ./providers/infrastructure/dev-agent/Dockerfile.universal
-          # Second infrastructure companion: the access gate every publishable
-          # template renders in front of its app. Non-default Dockerfile in the
-          # provider module root, hence the explicit context/dockerfile.
-          - name: access-proxy
-            image: ${{ github.repository_owner }}/faros-access-proxy
-            # Shares the infrastructure go.mod, which resolves provider-sdk
-            # in-tree — repo-root context like every provider image.
-            context: .
-            dockerfile: ./providers/infrastructure/Dockerfile.access-proxy
+      matrix: ${{ fromJSON(needs.changes.outputs.image-matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Log in to the Container registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -153,15 +130,17 @@ jobs:
           # copy it into the build (docker build -f providers/<n>/Dockerfile .).
           context: ${{ matrix.context || '.' }}
           file: ${{ matrix.dockerfile || format('./providers/{0}/Dockerfile', matrix.name) }}
-          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
+          # Provider publication stays in provider-release.yaml.
+          platforms: linux/amd64
+          push: false
           cache-from: type=gha,scope=provider-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=provider-${{ matrix.name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
   build-and-push-agent-image:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -171,7 +150,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' || github.event_name == 'release')
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -192,9 +171,9 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile.agent
-          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
+          # Multi-arch publishing; single-arch validation on PRs and manual runs.
+          platforms: ${{ (github.event_name == 'push' || github.event_name == 'release') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ (github.event_name == 'push' || github.event_name == 'release') }}
           cache-from: type=gha,scope=agent
           cache-to: type=gha,mode=max,scope=agent
           tags: ${{ steps.meta.outputs.tags }}
@@ -203,3 +182,17 @@ jobs:
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
+
+  result:
+    name: Images result
+    if: always()
+    needs: [changes, build-and-push-agent-image, build-and-push-hub-image, build-and-push-provider-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require selected jobs to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 hack/ci/result.py images

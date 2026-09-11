@@ -30,6 +30,9 @@ GOLANGCI_LINT_VER := v2.11.4
 GOLANGCI_LINT_BIN := golangci-lint
 GOLANGCI_LINT := $(TOOLSDIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
+ACTIONLINT_VER := v1.7.7
+ACTIONLINT := $(TOOLSDIR)/actionlint-$(ACTIONLINT_VER)
+
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -510,6 +513,17 @@ verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachab
 	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
 
 # --- Tool installation ---
+
+.PHONY: verify-ci-selection verify-workflows
+verify-ci-selection: ## Test CI change selection and completion gates (requires hack/ci/requirements-test.txt)
+	@python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", "Install hack/ci/requirements-test.txt"'
+	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
+
+verify-workflows: $(ACTIONLINT) ## Validate CI workflows with pinned Actionlint
+	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml
+
+$(ACTIONLINT):
+	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/rhysd/actionlint/cmd/actionlint actionlint $(ACTIONLINT_VER)
 
 tools: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) $(GOLANGCI_LINT) ## Install all dev tools
 
@@ -2523,7 +2537,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-boilerplate verify-codegen verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

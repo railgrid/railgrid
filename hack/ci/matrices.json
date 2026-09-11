@@ -1,0 +1,95 @@
+{
+  "portals": [
+    {
+      "provider": "agents",
+      "test": true,
+      "typecheck": true
+    },
+    {
+      "provider": "app-studio",
+      "test": true,
+      "typecheck": true
+    },
+    {
+      "provider": "code",
+      "test": false,
+      "typecheck": false
+    },
+    {
+      "provider": "databricks",
+      "test": true,
+      "typecheck": true
+    },
+    {
+      "provider": "edges",
+      "test": true,
+      "typecheck": true
+    },
+    {
+      "provider": "infrastructure",
+      "test": false,
+      "typecheck": false
+    },
+    {
+      "provider": "kuery",
+      "test": true,
+      "typecheck": true
+    },
+    {
+      "provider": "quickstart",
+      "test": false,
+      "typecheck": true
+    }
+  ],
+  "images": [
+    {
+      "name": "quickstart",
+      "image": "faros-quickstart-provider"
+    },
+    {
+      "name": "infrastructure",
+      "image": "faros-infrastructure-provider"
+    },
+    {
+      "name": "code",
+      "image": "faros-code-provider"
+    },
+    {
+      "name": "kuery",
+      "image": "faros-kuery-provider"
+    },
+    {
+      "name": "app-studio",
+      "image": "faros/app-studio-provider"
+    },
+    {
+      "name": "databricks",
+      "image": "faros-databricks-provider"
+    },
+    {
+      "name": "agents",
+      "image": "faros-agents-provider"
+    },
+    {
+      "name": "edges",
+      "image": "faros-edges-provider"
+    },
+    {
+      "name": "infrastructure/dev-agent",
+      "image": "faros-dev-agent",
+      "context": "./providers/infrastructure/dev-agent"
+    },
+    {
+      "name": "infrastructure/universal-dev",
+      "image": "faros-universal-dev",
+      "context": "./providers/infrastructure/dev-agent",
+      "dockerfile": "./providers/infrastructure/dev-agent/Dockerfile.universal"
+    },
+    {
+      "name": "access-proxy",
+      "image": "faros-access-proxy",
+      "context": ".",
+      "dockerfile": "./providers/infrastructure/Dockerfile.access-proxy"
+    }
+  ]
+}

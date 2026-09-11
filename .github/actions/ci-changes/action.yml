@@ -1,0 +1,22 @@
+name: Select CI checks
+description: Select provider UI checks from the full PR diff, otherwise run full CI
+outputs:
+  mode:
+    description: full or provider-ui
+    value: ${{ steps.select.outputs.mode }}
+  providers:
+    description: JSON array of affected providers
+    value: ${{ steps.select.outputs.providers }}
+  portal-matrix:
+    description: Portal matrix including the existing test and typecheck flags
+    value: ${{ steps.select.outputs.portal-matrix }}
+  image-matrix:
+    description: Provider image matrix including existing build metadata
+    value: ${{ steps.select.outputs.image-matrix }}
+runs:
+  using: composite
+  steps:
+    - name: Classify changed paths
+      id: select
+      shell: bash
+      run: python3 hack/ci/selection.py

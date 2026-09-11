@@ -5,12 +5,36 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Cancel superseded PR validation only; publishing runs have unique groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.changes.outputs.mode }}
+      providers: ${{ steps.changes.outputs.providers }}
+      portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
+      image-matrix: ${{ steps.changes.outputs.image-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-changes
+        id: changes
+
   build:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -32,6 +56,8 @@ jobs:
   # that replace, copy the "Set up Go workspace" step from e2e.yaml into this
   # job, or it will silently test the published SDK instead of the diff.
   test-modules:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Test (${{ matrix.module }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -131,6 +157,8 @@ jobs:
       run: ./hack/govulncheck.sh ${{ matrix.module }}
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -178,6 +206,8 @@ jobs:
       run: make verify-design-docs
 
   verify-codegen:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -199,6 +229,8 @@ jobs:
   # portals below. Its production build runs vue-tsc first, so this single job
   # covers both the root typecheck and the generated Vite bundle.
   portal:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     name: Root portal
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -228,37 +260,13 @@ jobs:
   # their test/typecheck contract as part of `npm run build`, so those matrix
   # entries skip duplicate invocations below.
   provider-portals:
+    needs: changes
     name: Provider portal (${{ matrix.provider }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - provider: agents
-            test: true
-            typecheck: true
-          - provider: app-studio
-            test: true
-            typecheck: true
-          - provider: code
-            test: false
-            typecheck: false
-          - provider: databricks
-            test: true
-            typecheck: true
-          - provider: edges
-            test: true
-            typecheck: true
-          - provider: infrastructure
-            test: false
-            typecheck: false
-          - provider: kuery
-            test: true
-            typecheck: true
-          - provider: quickstart
-            test: false
-            typecheck: true
+      matrix: ${{ fromJSON(needs.changes.outputs.portal-matrix) }}
     defaults:
       run:
         working-directory: providers/${{ matrix.provider }}/portal
@@ -284,3 +292,34 @@ jobs:
 
       - name: Build portal
         run: npm run build
+
+  verify-ci-selection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CI contract test dependency
+        run: python3 -m pip install -r hack/ci/requirements-test.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test CI selection and completion contracts
+        run: make verify-ci-selection
+      - name: Lint workflow syntax
+        run: make verify-workflows
+
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, build, govulncheck, lint, portal, provider-portals, test-modules, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require selected jobs to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 hack/ci/result.py ci
