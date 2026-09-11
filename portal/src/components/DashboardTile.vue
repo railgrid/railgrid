@@ -14,6 +14,8 @@ import {
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
 import { createProviderContext } from '@/providers/providerContext'
+import { resolveProviderBundle } from '@/providers/providerBundle'
+import { authFetch } from '@/auth/session'
 import type { ProviderDTO } from '@/stores/providers'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import {
@@ -144,9 +146,11 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // Pass the catalog version even when the element is already defined. App
     // Studio uses the bootstrap reload to refresh its lazy-loader registry;
     // page and dashboard callers coalesce through the shared loader.
-    await loadProviderScript(name, version, document, undefined, {
-      integrity: props.provider.mainJSIntegrity,
-    })
+    // Org-owned providers load through a hub-issued grant over their edge;
+    // platform providers use the loader's fixed URL (providerBundle.ts).
+    const bundle = await resolveProviderBundle(props.provider, authFetch)
+    if (!isCurrentLoad(generation, name, version)) return
+    await loadProviderScript(name, version, document, undefined, bundle)
   } catch {
     if (isCurrentLoad(generation, name, version)) loadState.value = 'error'
     return

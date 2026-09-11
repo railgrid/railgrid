@@ -88,6 +88,15 @@ export interface ProviderScriptOptions {
   // URL. When absent the bundle loads unpinned, which is logged: a provider
   // bundle executes as trusted code in this document.
   integrity?: string | null
+  // Bundle URL to load instead of the default /ui/providers/<name>/main.js.
+  // An org-owned ("bring your own") provider's bundle lives behind the
+  // tenant's edge tunnel, and a <script src> carries no identity the hub could
+  // scope by; the hub therefore hands the portal a same-origin URL carrying a
+  // short-lived grant (POST /api/providers/<name>/ui-grant, see
+  // stores/providers.ts resolveBundle). Must stay same-origin: the loader sets
+  // no crossorigin attribute, so a cross-origin URL would load unpinned and
+  // untrusted.
+  src?: string | null
 }
 
 function injectProviderScript(
@@ -97,6 +106,7 @@ function injectProviderScript(
   bootstrapGeneration: string,
   timeoutMs: number,
   integrity: string | null,
+  bundleSrc: string | null,
 ): ProviderScriptAttempt {
   const scriptID = `faros-provider-script-${name}`
   const current = doc.getElementById(scriptID) as HTMLScriptElement | null
@@ -108,7 +118,7 @@ function injectProviderScript(
   }
 
   current?.remove()
-  const src = `/ui/providers/${name}/main.js?v=${encodeURIComponent(version)}`
+  const src = bundleSrc || `/ui/providers/${name}/main.js?v=${encodeURIComponent(version)}`
   let cancel = (_reason?: Error) => {}
   const promise = new Promise<void>((resolve, reject) => {
     const script = doc.createElement('script')
@@ -183,6 +193,7 @@ export function loadProviderScript(
 ): Promise<void> {
   const requestedVersion = version ?? '0'
   const integrity = options.integrity || null
+  const bundleSrc = options.src || null
   const loads = documentLoads(doc)
   const current = loads.get(name)
   if (current?.version === requestedVersion) return current.promise
@@ -212,7 +223,7 @@ export function loadProviderScript(
     bootstrapGeneration,
     promise: predecessor.then(() => {
       if (cancelled) throw cancelled
-      attempt = injectProviderScript(doc, name, requestedVersion, bootstrapGeneration, timeoutMs, integrity)
+      attempt = injectProviderScript(doc, name, requestedVersion, bootstrapGeneration, timeoutMs, integrity, bundleSrc)
       return attempt.promise
     }),
     cancel: (reason = new Error(`cancelled provider "${name}" version ${requestedVersion}`)) => {

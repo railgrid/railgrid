@@ -77,8 +77,10 @@ type providerDTO struct {
 	// /ui/providers/{name}/main.js. The portal sets it as the script's
 	// integrity attribute so the browser refuses a bundle that differs from
 	// the one the hub hashed at registration. Empty when the hub has no pin
-	// (org-owned providers, builtin routes, or a failed hash fetch); the
-	// portal then loads the bundle unpinned and logs a warning.
+	// (builtin routes or a failed hash fetch); the portal then loads the
+	// bundle unpinned and logs a warning. Always empty for an org-owned
+	// provider: its bundle URL and pin are issued per load by
+	// POST /api/providers/{name}/ui-grant (ui_grant.go).
 	MainJSIntegrity string `json:"mainJSIntegrity,omitempty"`
 	// BuiltinRoute, when set, tells the portal to render the named Vue
 	// route inside its own SPA instead of loading /main.js as a custom

@@ -36,8 +36,10 @@ export interface ProviderDTO {
   iconURL?: string
   // Subresource Integrity pin ("sha384-...") the hub computed for
   // /ui/providers/{name}/main.js at registration. The loader sets it as the
-  // script's integrity attribute; absent (older hub, org-owned provider, or a
-  // failed hash fetch) means the bundle loads unpinned with a console warning.
+  // script's integrity attribute; absent (older hub or a failed hash fetch)
+  // means the bundle loads unpinned with a console warning. Always absent for
+  // an org-owned provider: its bundle URL and pin come from the grant the
+  // portal requests at load time (providers/providerBundle.ts).
   mainJSIntegrity?: string
   // True when the provider requests background access to the workspace's
   // edge clusters (verb "proxy" on edges) on Enable. Rendered in the

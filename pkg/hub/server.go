@@ -448,6 +448,14 @@ func (s *Server) Run(ctx context.Context) error {
 	// own providers are folded in for callers who present a verified Org.
 	providerListHandler := providers.NewListHandler(providerRegistry)
 	router.Handle(providers.PathListProviders, providerListHandler).Methods("GET")
+	// Bundle grants for org-owned providers: the portal cannot load an
+	// org's bundle with an anonymous <script src>, so it asks here, as the
+	// user, for a short-lived grant the UI proxy redeems over the edge
+	// (pkg/hub/providers/ui_grant.go). Registered ahead of the heartbeat
+	// PathPrefix route below, which would otherwise claim every POST under
+	// /api/providers/. Configured with the auth stack further down.
+	providerUIGrantHandler := providers.NewUIGrantHandler(providerRegistry, uiProxy, logger)
+	router.Handle(providers.PathProviderUIGrant, providerUIGrantHandler).Methods("POST")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
 	// A heartbeat lands on exactly one replica but every replica routes provider
@@ -732,7 +740,16 @@ func (s *Server) Run(ctx context.Context) error {
 				tenant.OptionalOrgMiddleware(userResolver, membershipLookup),
 				catalogWorkloads.resolveWorkloadServiceAccount,
 			))
-			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys))
+			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys)
+			backendProxy.SetTenantResolver(providerTenantResolver)
+			// The UI proxy serves an org-owned bundle only against a grant the
+			// portal obtained as the user. Minting and redemption share the
+			// cross-replica secret and the delegated issuer with the backend
+			// proxy, so the tenant's cluster sees the same delegated identity
+			// for an asset fetch as for an API call.
+			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
+			uiProxy.SetUIGrantKeys(delegatedProofKeys)
+			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.

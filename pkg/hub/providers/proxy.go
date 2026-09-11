@@ -34,6 +34,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
 )
 
 // NewUIProxy returns an http.Handler serving /ui/providers/{name}/* by reverse
@@ -270,6 +271,11 @@ type ProviderProxy struct {
 	// SetDelegationPolicy.
 	delegation DelegationPolicy
 
+	// uiGrantKeys opens the grants that let the UI proxy serve an org-owned
+	// provider's bundle over its edge (ui_grant.go). Only the UI proxy sets
+	// it; nil means grant-bearing requests are refused.
+	uiGrantKeys serviceaccounts.ProofKeySource
+
 	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
 	// provider's backend origin. Provider action routes (/actions/*) are a
 	// public data-plane surface and ride this proxy like any other verb —
@@ -326,12 +332,19 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// missing feature but a wrong answer: it silently served the platform
 	// provider to a tenant who had deliberately replaced it.
 	//
-	// UI proxy stays platform-scoped: it serves static assets, and an org's
-	// bundle is not something the hub hosts.
+	// The UI proxy cannot resolve by caller: a <script src> carries no
+	// bearer. An org-owned bundle is instead addressed by a grant the portal
+	// obtained while authenticated (ui_grant.go), which names the org; a
+	// request without one is platform-scoped, as before.
 	//
 	// Resolve the caller once here; resolveProvider, the delegated-token
 	// path, and setHeaders all read the memo (see resolveCaller).
-	if !p.fallbackForSPA {
+	if p.fallbackForSPA {
+		if grant := r.URL.Query().Get(UIGrantQueryParam); grant != "" {
+			p.serveOrgUIAsset(w, r, name, rest, grant)
+			return
+		}
+	} else {
 		r = p.withResolvedCaller(r)
 	}
 	prov, found := p.resolveProvider(r, name)

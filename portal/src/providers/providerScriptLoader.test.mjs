@@ -232,6 +232,23 @@ test('pins the bundle with subresource integrity when the catalog carries a hash
   await load
 })
 
+test('loads an org-owned bundle from the granted URL the hub returned', async () => {
+  const doc = providerDocument()
+  const integrity = 'sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb'
+  const src = '/ui/providers/infrastructure/main.js?v=v0.1.20&grant=fpui_sealed'
+  const load = loadProviderScript('infrastructure', 'v0.1.20', doc, 15_000, { integrity, src })
+  await Promise.resolve()
+  assert.equal(doc.appended.length, 1)
+  const script = doc.appended[0]
+  // The grant rides in the URL; the loader must use it verbatim rather than
+  // rebuilding the platform path from name and version.
+  assert.equal(script.src, src)
+  assert.equal(script.integrity, integrity)
+  assert.equal(script.crossOrigin, undefined)
+  script.onload()
+  await load
+})
+
 test('loads an unpinned bundle with a warning when the catalog carries no hash', async () => {
   const doc = providerDocument()
   const warnings = []

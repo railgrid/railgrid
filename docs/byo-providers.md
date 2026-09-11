@@ -630,21 +630,38 @@ in URL paths.
   cannot keep a platform provider of the same name looking alive. Org providers
   therefore never set `HeartbeatRequired`, leaving readiness resting on endpoint
   validity. An org-scoped heartbeat path is future work.
-- **The provider UI is not portable; the backend is.** `/services/providers/{name}`
-  now resolves in the caller's Org and routes an org-owned provider over its edge
-  tunnel. `/ui/providers/{name}` does not: it still resolves platform-only, so an
-  Org self-hosting a provider that ships a micro-frontend gets the PLATFORM's
-  bundle while its own copy serves the API — wrong rather than broken, which is
-  the harder failure to notice.
+- **The provider UI is portable, through a grant.** `/services/providers/{name}`
+  resolves in the caller's Org and routes an org-owned provider over its edge
+  tunnel. `/ui/providers/{name}` cannot do the same by itself: the bundle is
+  loaded with a plain `<script src>`
+  ([ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue)), which carries
+  no `Authorization` header, so there is no identity on an asset GET to scope
+  by — and the platform edges provider refuses tunnel requests with no bearer,
+  so the hub cannot fetch the bundle anonymously either. Before this was
+  closed, an Org self-hosting a provider that ships a micro-frontend got the
+  PLATFORM's bundle (or its 503, when that copy was stale) while its own copy
+  served the API.
 
-  This is not the same change as the backend one. The bundle is loaded with a
-  plain `<script src="/ui/providers/{name}/main.js">`
-  ([ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue)), so the request
-  carries no `Authorization` header, and `BrowserIdentity` — the hub's only way
-  to name a caller — requires one. There is no identity on an asset GET to scope
-  by. Closing it needs either the portal fetching the bundle with credentials
-  and injecting it as a blob, or the Org encoded in the asset path so no
-  identity is needed. Both are portal-visible changes; neither is a proxy tweak.
+  The portal now asks first: `POST /api/providers/{name}/ui-grant`, as the
+  user under the selected org/workspace (the same `TenantResolver` membership
+  check the backend proxy makes). The hub confirms the Org owns a copy of
+  `{name}` with a UI served by the same authority as its backend (the edge
+  route fronts that Service), hashes the bundle through the caller's own
+  delegated route for Subresource Integrity, and answers with
+  `/ui/providers/{name}/main.js?v=…&grant=…` plus the pin. The grant is a
+  sealed, five-minute, single-provider token naming `(user, org, workspace)`.
+  When the script tag fetches that URL, the UI proxy opens the grant, resolves
+  the ORG's copy, mints the delegated token for the tuple it names, and
+  forwards over the edge hop — the same hop and token swap as
+  `serveOverEdge`, so an asset fetch and an API call look identical at the
+  far end. A URL without a grant stays platform-scoped. See
+  [pkg/hub/providers/ui_grant.go](../pkg/hub/providers/ui_grant.go) and
+  [portal/src/providers/providerBundle.ts](../portal/src/providers/providerBundle.ts).
+
+  The bundle keeps its `/ui/providers/{name}/` shape on purpose: the
+  provider's vendored portalkit derives `/services/providers/{name}` from the
+  `basePath` the host passes, and the host's provider-fetch allow list is
+  unchanged, so a bundle built before this change loads as-is.
 
 - **No edge-driven install.** The Org installs the chart itself with the returned
   kubeconfig. One-click install onto a chosen edge needs credential projection

@@ -29,7 +29,11 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   assert.match(tile, /canReloadProviderScriptInDocument,[\s\S]*invalidateProviderScript,[\s\S]*loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
   assert.match(tile, /props\.provider\.name, props\.provider\.version, props\.provider\.ready/)
   assert.match(tile, /const generation = loadGeneration\.begin\(\)/)
-  assert.match(tile, /await loadProviderScript\(name, version, document, undefined, \{\s*integrity: props\.provider\.mainJSIntegrity,\s*\}\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
+  // The bundle (URL + SRI pin) is resolved first — an org-owned provider's
+  // comes from a hub-issued grant — and the generation is re-checked after
+  // that await before the shared loader runs.
+  assert.match(tile, /import \{ resolveProviderBundle \} from '@\/providers\/providerBundle'/)
+  assert.match(tile, /const bundle = await resolveProviderBundle\(props\.provider, authFetch\)\s*if \(!isCurrentLoad\(generation, name, version\)\) return\s*await loadProviderScript\(name, version, document, undefined, bundle\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
   assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\) \|\| !mountRef\.value\) return/)
   assert.match(tile, /function retryLoad\(\)[\s\S]*if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
   assert.match(tile, /addEventListener\('faros-provider-bootstrap-retry', onProviderBootstrapRetry\)/)

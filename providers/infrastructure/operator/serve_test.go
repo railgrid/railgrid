@@ -188,6 +188,44 @@ func TestEnsureProviderServeBindsServeRoleFromEnv(t *testing.T) {
 	}
 }
 
+// The provider kubeconfig the operator mounts is also the heartbeat bearer:
+// the SDK reads it from FAROS_PROVIDER_KUBECONFIG. Without that variable serve
+// beat unauthenticated, an enforcing hub answered 401, and the provider went
+// stale — which took every consumer of /ui/providers/infrastructure down with
+// it.
+func TestEnsureProviderServeWiresHeartbeatCredential(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &v1alpha1.InfrastructureProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
+		Spec: v1alpha1.InfrastructureProviderSpec{
+			Hub: v1alpha1.HubSpec{URL: "https://heartbeat-hub.internal"},
+			Provider: v1alpha1.ProviderServeSpec{
+				Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"},
+			},
+		},
+	}
+	if err := EnsureProviderServe(context.Background(), client, provider, []byte("provider-kubeconfig"), nil, nil); err != nil {
+		t.Fatalf("EnsureProviderServe: %v", err)
+	}
+	deployment, err := client.AppsV1().Deployments(ServeNamespace).Get(context.Background(), provider.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
+		env[variable.Name] = variable.Value
+	}
+	if env["FAROS_PROVIDER_KUBECONFIG"] != providerKubeconfigMount {
+		t.Errorf("FAROS_PROVIDER_KUBECONFIG = %q, want %q", env["FAROS_PROVIDER_KUBECONFIG"], providerKubeconfigMount)
+	}
+	if env["INFRASTRUCTURE_KUBECONFIG"] != providerKubeconfigMount {
+		t.Errorf("INFRASTRUCTURE_KUBECONFIG = %q, want %q", env["INFRASTRUCTURE_KUBECONFIG"], providerKubeconfigMount)
+	}
+	if _, set := env["FAROS_HUB_TOKEN"]; set {
+		t.Errorf("FAROS_HUB_TOKEN set without spec.hub.tokenSecret")
+	}
+}
+
 func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	provider := &v1alpha1.InfrastructureProvider{

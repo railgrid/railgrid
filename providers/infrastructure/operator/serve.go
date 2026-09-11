@@ -82,6 +82,13 @@ func EnsureProviderServe(
 		{Name: "PORT", Value: fmt.Sprintf("%d", port)},
 		{Name: "FAROS_PROVIDER_NAME", Value: "infrastructure"},
 		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
+		// The hub-minted provider kubeconfig is also the heartbeat credential:
+		// the SDK resolves its bearer from FAROS_HUB_TOKEN, else from the
+		// kubeconfig at FAROS_PROVIDER_KUBECONFIG (provider-sdk/hubclient
+		// token.go). Every Helm-installed provider sets the latter; without it
+		// serve beats unauthenticated, a hub enforcing heartbeat auth answers
+		// 401, and the provider is marked stale within a few minutes.
+		{Name: "FAROS_PROVIDER_KUBECONFIG", Value: providerKubeconfigMount},
 	}
 	if cr.Spec.ProviderWorkspace != "" {
 		// The mounted kubeconfig may be root-scoped (the supplied-admin flow,

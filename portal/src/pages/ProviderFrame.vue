@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import { useProvidersStore } from '@/stores/providers'
+import { resolveProviderBundle } from '@/providers/providerBundle'
+import { authFetch } from '@/auth/session'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore } from '@/stores/theme'
@@ -321,9 +323,14 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
   const ready = customElements.whenDefined(tag)
 
   try {
-    await loadProviderScript(name, version, document, undefined, {
-      integrity: entry.value?.mainJSIntegrity,
-    })
+    // An org-owned provider's bundle is fetched through its edge tunnel
+    // against a grant the hub issues to this user; a platform bundle is the
+    // fixed URL the loader derives. See providers/providerBundle.ts.
+    const bundle = entry.value
+      ? await resolveProviderBundle(entry.value, authFetch)
+      : {}
+    if (!isCurrentMount(generation, name)) return
+    await loadProviderScript(name, version, document, undefined, bundle)
 
     // 5s timeout so a script that loaded but never called customElements.define
     // doesn't hang the loader forever.

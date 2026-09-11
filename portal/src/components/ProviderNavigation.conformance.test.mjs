@@ -17,7 +17,12 @@ test('provider host consumers honor replace navigation while preserving push by 
 test('provider page and dashboard consumers coordinate versioned bootstrap reloads', () => {
   for (const source of [frame, tile]) {
     assert.match(source, /loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
-    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*integrity: (?:entry\.value\?|props\.provider)\.mainJSIntegrity,\s*\}\)/)
+    // Both consumers resolve the bundle (URL + SRI pin; a grant for an
+    // org-owned provider) through the shared resolver as the user, then hand
+    // it to the shared loader — neither builds the script URL itself.
+    assert.match(source, /import \{ resolveProviderBundle \} from '@\/providers\/providerBundle'/)
+    assert.match(source, /await resolveProviderBundle\((?:entry\.value|props\.provider), authFetch\)/)
+    assert.match(source, /await loadProviderScript\(name, version, document, undefined, bundle\)/)
     assert.doesNotMatch(source, /document\.createElement\('script'\)/)
   }
   assert.match(frame, /invalidateProviderScript\(name, version\)/)

@@ -726,6 +726,16 @@ element. There is no iframe and no postMessage handshake. The shape:
    negotiate (it sends no `Access-Control-Allow-Origin`), so the script would
    fail to load. Without a pin it loads anyway and logs a warning. The `?v=`
    cache-buster does not interact with SRI, which hashes the response body.
+
+   An org-owned provider (`scope: "org"`) is loaded from the same path shape
+   but with a grant: the portal first `POST`s `/api/providers/{name}/ui-grant`
+   as the user (`providerBundle.ts`), and the hub answers with
+   `/ui/providers/{name}/main.js?v=…&grant=…` plus the bundle's pin, hashed
+   through the caller's delegated edge route. The UI proxy redeems the grant
+   into a delegated token and serves the bundle over the org's edge tunnel;
+   a grant-less URL stays platform-scoped. See
+   [byo-providers.md](./byo-providers.md) §"Known gaps" and
+   [pkg/hub/providers/ui_grant.go](../pkg/hub/providers/ui_grant.go).
 2. **Mount the element.** After `customElements.whenDefined('faros-provider-{name}')`
    the host appends `<faros-provider-{name}>` into its own DOM. The provider
    shares the portal stylesheet (CSS variables cascade in), so there is no
@@ -1112,7 +1122,10 @@ workspace by hand.
     swapped behind the URL after registration is refused by the browser
     until the hub re-admits it.
     Org-owned providers are served over the edge tunnel and never dialled by
-    the hub, so they currently load unpinned (the loader logs a warning).
+    the reconciler; their pin is computed at grant time instead
+    (`POST /api/providers/{name}/ui-grant` hashes the bundle through the
+    caller's delegated route, `pkg/hub/providers/ui_grant.go`) and returned
+    with the bundle URL, so they load pinned too.
   - **Host fetch, no raw token.** The host hands the bundle
     `farosContext.fetch` (Authorization + tenant headers injected by the host,
     same-origin allow list) instead of the user's id token. `token` is still
