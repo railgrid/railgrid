@@ -33,9 +33,10 @@ What works today:
 - **Edge engagement** (`engagement/`): watches `Edge` objects across every
   tenant workspace that Enabled the provider (APIExport virtual
   workspace), and syncs each connected kubernetes edge through the hub's
-  edges-proxy using the provider SA credential the Enable-time grant
-  authorizes. Engaged clusters are keyed `{tenantCluster}/{edgeName}` and
-  labelled with their tenant.
+  edges-proxy as the workspace-local `faros-kuery` ServiceAccount the
+  controller provisions there (the `faros-kuery-edgeproxy` grant gives it
+  verb `proxy` on kubernetesclusters). Engaged clusters are keyed
+  `{tenantCluster}/{edgeName}` and labelled with their tenant.
 - **Tenant-scoped query API** (`queryapi/`): `POST /api/query` takes a
   kuery `QuerySpec`; the cluster filter is force-rewritten to the caller's
   `X-Faros-Tenant` before it reaches the engine — the only path to the

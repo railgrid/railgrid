@@ -51,8 +51,9 @@ Everything in the skill was read from the faros source and docs on
 2026-09-09, then corrected against a live hub the same day. Route tables,
 CRD fields, and MCP tool names are the parts most likely to drift. When you
 change one of those in the repo, update the matching reference file in the
-same PR. Section 11 of `SKILL.md` lists claims from older docs that are
-already wrong; grow that list rather than letting agents rediscover them.
+same PR. `references/troubleshooting.md` is the list of error strings and
+latencies agents actually hit; grow it rather than letting agents rediscover
+them.
 
 Two kinds of content have different shelf lives, and the skill now says so
 in rule 6. **Shapes and mechanisms** — the URL grammar, what an APIBinding
@@ -62,7 +63,8 @@ per-hub and per-org and were already wrong once. Prefer teaching an agent
 the runtime query (`GET /api/providers`, MCP `tools/list`) over adding
 another list it will trust for too long.
 
-Section 9 collects what only shows up when you actually drive a hub:
+Section 8 of `SKILL.md` and `references/troubleshooting.md` collect what only
+shows up when you actually drive a hub:
 Cloudflare blocking non-browser HTTP clients, calling MCP tools without an
 MCP client, org-scoped providers missing from the aggregate, and the states
 that look like failures but are only latency. Add to it whenever a session

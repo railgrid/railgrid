@@ -22,7 +22,7 @@ on the aggregate as `agents__*`.
 | `budget {window day\|month, usdLimit, tokenLimit}` | Breach suspends schedules and background runs; chat stays |
 | `channels[] {name, connectionRef, primary}` | Named channel roles |
 
-Status: `phase Ready|Suspended`, `lastRunAt`, `usage {windowStart, tokens, usd}`, `suspendedReason`.
+Status: `phase Ready|Suspended`, `lastRunAt`, `usage {windowStart, tokens, usd}`, `suspendedReason` — may stay `{}` on current builds even after successful runs; judge by `GET /api/runs?agent=<name>` instead.
 
 Tool families: `core` (always: memory, self-scheduling, notify, ask,
 delegate), `web` (`web_fetch`; `web_search` needs a `websearch` connection),
@@ -117,7 +117,7 @@ GET    /api/runs/{id}                         {…summary, input, output, source
 GET    /api/runs/{id}/wait?timeoutSeconds=    long-poll (default 60, cap 300)
 POST   /api/runs/{id}/cancel                  → 202
 GET    /api/events                            SSE: run phase changes and inbox activity
-GET|POST /api/schedules ; GET|PUT|DELETE /api/schedules/{name} ; POST /api/schedules/{name}/run
+GET|POST /api/schedules ; PUT|DELETE /api/schedules/{name} (no GET by name: 405) ; POST /api/schedules/{name}/run → 202 {runID}
 GET|POST /api/triggers ; GET|PUT|DELETE /api/triggers/{name} ; POST /api/triggers/{name}/run
 GET|POST /api/toolsets ; GET|PUT|DELETE /api/toolsets/{name}
 GET|POST /api/connections ; GET|PUT|DELETE /api/connections/{name}
@@ -131,11 +131,20 @@ POST   /webhooks/triggers/{cluster}/{name}/{token} ; POST /webhooks/channels/{cl
 
 Create and update bodies use flat fields: `name`, `displayName`,
 `description`, `systemPrompt`, `autonomy`, `modelCredential`,
-`modelFallbacks`, `budgetTokens`, `budgetUSD`, `maxToolTurns`,
-`timeoutSeconds`, `delegates`, `channels`, `interactiveFamilies`,
-`backgroundFamilies`, `interactiveToolsets`, `backgroundToolsets`,
-`interactiveConnections`, `backgroundConnections`. Only fields you send
-change; list fields replace wholesale.
+`modelFallbacks`, `budgetTokens`, `budgetUSD`, `delegates`, `channels`,
+`interactiveFamilies`, `backgroundFamilies`, `interactiveToolsets`,
+`backgroundToolsets`, `interactiveConnections`, `backgroundConnections`.
+`maxToolTurns` and `timeoutSeconds` are accepted **only by `PUT`**
+(and `agents__update_agent`); on `POST /api/agents` they are dropped
+silently (`spec.limits` stays `{}`) — create, then `PUT` them. Only fields
+you send change; list fields replace wholesale.
+
+Schedules: `POST /api/schedules` takes
+`{name, agentRef, type cron|wakeup|heartbeat, schedule?, timeZone?, runAt?, task?, checklist?, suspend?, channelRef?}`
+(e.g. `{"name":"digest-hourly","agentRef":"digest","type":"cron","schedule":"0 * * * *","timeZone":"UTC","task":"…"}`);
+`POST …/schedules/{name}/run` → 202 `{"runID":…}`, then
+`GET /api/runs/{runID}/wait`. There is **no** `GET /api/schedules/{name}`
+(405): read one schedule from the list, or `kubectl get schedules.agents.faros.sh <name>`.
 
 ## 4. Invocation semantics
 

@@ -67,10 +67,10 @@ kubectl get template application -o jsonpath='{.spec.sampleValues}'
 |---|---|---|---|---|
 | `simple-webapp` v0.3.0 | Workloads | public | yes (Node.js) | One container, one port, public URL. Values: `name`*, `image`* (prod), `port` (8080), `replicas` 1..10, `env` map, `connections {database, cache}`, `expose.hostnamePrefix`, `access public\|private`. Status: `url`, `host`, `ready`. |
 | `application` v0.1.0 | Workloads | public | yes (Node.js) | `web` + `api` + Postgres on one host; `/api/*` routed to the api container with the path preserved. Values: `name`*, `webImage`*, `apiImage`* (prod), `webPort`, `apiPort` (8080), `database {version "15"\|"16", size small\|medium\|large}` (immutable), `oidc {mode none\|byo}` (dev preview auth only), `access`, `expose.hostnamePrefix`. Contract: bind `0.0.0.0`, honor `$PORT`, api reads `DATABASE_URL` (`postgres://appuser:…@host:5432/appdb`, `sslmode=disable`), DB starts empty, retry first connect, frontend calls `/api/*` same-origin. |
-| `worker` v0.2.0 | Workloads | internal | yes | Deployment only, no Service. `replicas` 1..5, `env`, `connections {database, cache}`. |
-| `cron-job` v0.2.0 | Workloads | internal | no | `name`*, `image`*, `schedule` (`"0 * * * *"` UTC), `env`, `connections {database, cache}`. |
+| `worker` v0.2.0 | Workloads | internal | yes | Deployment only, no Service. `replicas` 1..5, `env`, `connections {database, cache}`. Dev component `worker` has sync/logs/restart but no `exec`. |
+| `cron-job` v0.2.0 | Workloads | internal | no | `name`*, `image`*, `schedule` (`"0 * * * *"` UTC), `env`, `connections {database, cache}`. **No `command`/`args`**: the entrypoint does the work; with a public image drive it via `env` (e.g. `node:20-alpine` + `NODE_OPTIONS=--import=data:text/javascript;base64,…`). |
 | `database` v0.1.0 | Databases | internal | no | Standalone Postgres. `name`* (≤ 50), `version "15"\|"16"` (immutable). Status: `host`, `port`, `ready`, `connectionSecretRef` → Secret `<name>-db-credentials` with `host/port/user/dbname/password/uri`. DB `appdb`, user `appuser`. Consumed via a workload's `connections.database`. |
-| `redis-cache` v0.2.0 | Databases | internal | no | Ephemeral Redis. `size small(64Mi)\|medium(256Mi)\|large(1Gi)`, `version "6"\|"7"`. Secret `<name>-credentials`, key `uri` (`redis://:<pw>@<name>:6379`, no TLS). Consumed via `connections.cache`. |
+| `redis-cache` v0.2.0 | Databases | internal | no | Ephemeral Redis. `name`* (≤ 63), `size small(64Mi)\|medium(256Mi)\|large(1Gi)`, `version "6"\|"7"`. Secret `<name>-credentials`, key `uri` (`redis://:<pw>@<name>:6379`, no TLS). Consumed via `connections.cache`. |
 | `browser` v0.1.0 | Agent tools | optional | no | Headless Chromium + Playwright MCP, reached via data-plane `proxy` verb. |
 | `searxng` | Search | | no | Backs agents' `web_search`. |
 | `universal-coding-sandbox` | Development | internal | yes | Disabled unless the operator enables it. |
@@ -110,14 +110,17 @@ world-readable ConfigMap); use the slot.
 - **A brand-new host fails TLS for several minutes.** Because the certificate
   is issued per hostname at that edge, a freshly created instance resolves in
   DNS but rejects the TLS handshake (curl exit 35, `sslv3 alert handshake
-  failure`) until issuance completes. Measured on a dev hub: 4–8 minutes
-  from promote to first 200. `status.phase` is already `Ready` and the pods are
+  failure`) until issuance completes. Measured on a dev hub: 0–9 minutes
+  from promote to first 200 (eleven runs: ~0, ~0, 2 m 50 s, ~4, ~5, 5 m 20 s,
+  5 m 30 s, ~7, 8 m 51 s). `status.phase` is already `Ready` and the pods are
   serving; only the edge certificate is missing, so there is nothing to fix.
   Distinguish it from a real failure by hitting an existing instance on the same
   base domain — if that serves and the new one does not, it is issuance —
   and confirm with
-  `openssl s_client -connect <host>:443 -servername <host>`, which shows a
-  subject CN matching the host once the certificate exists.
+  `openssl s_client -connect <host>:443 -servername <host> </dev/null | openssl x509 -noout -subject`,
+  which prints `Could not find certificate from <stdin>` while issuance is
+  pending (that output is the signal) and a subject CN matching the host
+  once the certificate exists.
   Root cause (`providers/infrastructure/docs/application-template-architecture.md`,
   "TLS for the app base domain"): Cloudflare Universal SSL covers only the
   zone apex and one level below. A base domain below the apex (e.g.
@@ -196,7 +199,10 @@ UID 1000, seccomp RuntimeDefault, all capabilities dropped.
 sandbox: image inputs may be omitted, declared components run a dev image
 with hot reload, and files are pushed with the data plane or MCP. Node.js is
 the only toolchain in the shipped dev images. Dev instances default to
-`access: private`.
+`access: private`; `access: public` is honored in development mode too.
+The `exec` verb exists only on components whose template declares it
+(`application`, `simple-webapp`); `worker` answers 404
+`exec is not declared for component worker`.
 
 Data-plane verbs (through the hub, as you; production instances answer 409).
 `faros sandbox` ([cli.md](cli.md)) wraps them:
@@ -208,7 +214,7 @@ GET  …/instances/{name}/components/{c}/process    → {running, port, portReac
 POST …/instances/{name}/components/{c}/sync       {files[{path,content,encoding?}], deletePaths[], restart ""|auto|always, sourceRevision?, sourceDigest?}
                                                    → {phase:"Synced", changed[], deleted[], reloadRuns[], restarted, sourceRevision, sourceDigest}
 POST …/instances/{name}/components/{c}/restart
-POST …/instances/{name}/components/{c}/env
+POST …/instances/{name}/components/{c}/env        {env:{KEY:value,…}} → {phase:"EnvUpdated", applied[], restarted:false}; live process env only (a kubectl change to values.env needs this plus restart to reach a running pod); GET is 405
 POST …/instances/{name}/components/{c}/exec       start: header Idempotency-Key (required) + {action:"start", argv[], workdir?, timeoutSeconds ≤120, sourceRevision?, sourceDigest?} → {sessionID, requestID, state:"queued", sourceRevision, sourceDigest}
                                                    run:   Idempotency-Key optional + {action:"run", argv[], workdir?, timeoutSeconds?, sourceRevision?, sourceDigest?} → poll-shaped result
                                                    poll:  {action:"poll", sessionID} → {state queued|running|succeeded|failed|canceled|timed_out, exitCode, stdout, stderr, truncated}

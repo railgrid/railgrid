@@ -9,9 +9,11 @@ git smart-HTTP. You declare `Connection`, `Repository`, `DeployKey`, and
 GitHub state with the GitHub API. `status.cloneURL` and `status.sshURL` are
 GitHub's own URLs. Clone and push with GitHub credentials.
 
-HTTP surface of the provider itself: `/healthz`, `/readyz`, `/mcp`,
-`/mcp/sse`, `/oauth/github/{config,start,callback}`, and the embedded
-portal. CRUD is kubectl or kube REST through `/clusters/<cluster>`, or the MCP
+HTTP surface of the provider itself: `/healthz`, `/readyz` (liveness of the
+HTTP process only: both stayed 200, and the catalog stayed `ready: true`,
+while the controllers were dead for an hour — judge reconciliation by the
+freshness of `Repository`/`Package` status instead), `/mcp`, `/mcp/sse`,
+`/oauth/github/{config,start,callback}`, and the embedded portal. CRUD is kubectl or kube REST through `/clusters/<cluster>`, or the MCP
 tools.
 
 ## 2. CRDs (`code.faros.sh/v1alpha1`, all cluster-scoped)
@@ -120,7 +122,7 @@ comes from the bearer; never ask the user for a tenant path.
 | `delete_repository` | `name` | **Deletes the GitHub repo.** Idempotent. |
 | `commit_files` | `repositoryRef`, `message?` (≤ 512 chars incl. body), `branch?`, `files[{path,content,encoding?}]`, `deletePaths[]` | Stores a bundle, creates a `RepositoryCommit`, waits ≤ 75 s, returns `{name,phase,commitSHA,commitURL,branch,files,deletedPaths}`. Uses the GitHub Git Data API; no clone. Limits and errors below. |
 | `checkout_repository` | `repositoryRef`, `ref?`, `binaryEncoding?` (`base64`) | Returns one JSON **text** block `{repositoryRef,name,phase,ref,commitSHA,files[{path,content,encoding?}],skipped[]}`; there is no `outputSchema`/`structuredContent` (parse `content[0].text`). Caps below. |
-| `build_status` | `repositoryRef`, `workflowFileName`, `ref?`, `maxLogLines?` (200) | Latest run for that workflow plus per-job conclusions and failure log tails |
+| `build_status` | `repositoryRef`, `workflowFileName`, `ref?`, `maxLogLines?` (200) | Latest run for that workflow plus per-job conclusions and failure log tails. `workflowFileName` is the basename under `.github/workflows/` — `build.yaml` for the shipped scaffolds (the template's `development.build.workflowPath`), not the tool description's `faros-app-studio-build.yml` |
 | `rebuild` | `repositoryRef`, `workflowFileName`, `ref?` | `workflow_dispatch`; returns `{dispatched}` |
 | `add_deploy_key` | `name`, `repositoryRef`, `title?`, `publicKey?`, `readOnly?` | Omit `publicKey` to generate |
 | `add_collaborator` | `name`, `repositoryRef`, `username`, `permission?` | |

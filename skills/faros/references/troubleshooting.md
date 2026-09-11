@@ -29,10 +29,11 @@ Exact strings are in backticks; `…` marks elided detail.
 | 401 on the MCP endpoint | Bearer missing, or not a member of that workspace | Use the connect token or your hub token; 429 = retry after 60 s |
 | 503 on the MCP endpoint | Verifier unavailable, or (ServiceAccount bearers) the workspace-path lookup is down | Retry |
 | `400 Accept must contain both 'application/json' and 'text/event-stream'` | Wrong `Accept` | Send `Accept: application/json, text/event-stream` |
-| HTTP 200 but the call failed | Tool errors come back as `result.isError: true` with text in `result.content[0].text` | Test `isError`, never the status |
+| HTTP 200 but the call failed | Tool errors come back as `result.isError: true` with text in `result.content[0].text`; on success the field is absent, not `false` | Test `(.result.isError // false)`, never the status |
 | A `<provider>__*` tool does not exist | Provider is org-scoped (BYO): federated only for a human bearer in a team workspace, never for the connect token (a ServiceAccount), and the org copy hides the platform copy of the same name | Call `tools/list` with your own hub `TOKEN`, or use kubectl / the provider's REST API ([mcp-and-edges.md](mcp-and-edges.md)) |
 | `provider <method> response exceeds the 96 MiB limit; the result is too large to federate` | Tool result over the aggregate's cap | Ask for less (fewer files, no `binaryEncoding`) |
-| `faros ssh` fails on an OIDC hub | Known gap: the ssh path sends a bearer only when the kubeconfig has a literal token | Use a static-token kubeconfig |
+| `kuery__kuery_query` → `validating /properties/spec: … want one of "null, array"` (or, with a byte array, `cannot unmarshal array into Go value of type v1alpha1.QuerySpec`) | The tool's schema declares `spec` as bytes; no spec can pass | `POST $HUB/services/providers/kuery/api/query` with the same body |
+| kuery query answers `{}`, `GET …/kuery/api/edges` → `{"edges":[]}` | `kuery` is not enabled in this workspace (its tools are federated regardless), or its edge engagement fails provider-side (`GET …/api/status` → `engagedEdges: 0`) | Enable the provider with its four claims; if `engagedEdges` stays 0 with connected edges, the operator checks the kuery provider logs |
 
 ### App Studio
 
@@ -45,6 +46,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | Create → 409 `a code Repository named "<n>" already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name` | An explicit `name` is the repository name and is never suffixed | Adopt with `existingRepositoryRef`, pick another name, or delete the repo |
 | Create → `name must be a valid DNS label` | Explicit `name` is not a DNS label | Lowercase letters, digits, `-` |
 | Fresh project: `repository.status: Provisioning`, `Creating repository "<n>".` | Repository CR still being created; latency | Poll `.repository.ready == true` |
+| Repository still `Provisioning` after 2 min and `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` prints nothing (no conditions, no finalizer) | The code provider's controllers are not reconciling at all (seen after a kcp outage: `error starting endpoint watcher … connection refused`, then silence); every new project, commit and checkout stalls | Operator restarts the code provider; nothing on the client side helps |
 | `code__commit_files` → `repository "<name>" not found` on a new project | Project Ready, Repository not yet | Same: poll `.repository.ready` |
 | `code__commit_files` on a prompt-created project → `repository "<project>" not found` | Repository name differs from the project name | Use `.repository.ref` |
 | 409 `wait for or stop the active assistant run before <action>` | An assistant run owns the project (template, hydrate, sync, delete, file writes) | Wait until `turns/active` is 204 |
@@ -60,7 +62,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | Assistant: `only binary files changed (…), and this workspace's Code provider does not accept binary commits yet; …` | `code__commit_files` does not declare `files[].encoding` | Binaries stay uncommitted in the workspace; text commits normally |
 | `private preview inspection is unavailable: the app-studio deployment has no usable FAROS_HUB_PUBLIC_URL (chart value hub.publicURL, …)` | Deployment misconfiguration | Operator sets `hub.publicURL` |
 | Dev sync 409 `workspace sync revision is older than the applied revision` | A plain/CLI sync moved the agent's applied revision past the sender's | Continue numbering from the applied revision; App Studio renumbers and retries once by itself |
-| `production setting "expose.hostnamePrefix" is locked after the first deployment` | Something already deployed prod (App Studio auto-promotes the scaffold) | Promote with `{}` or the same prefix |
+| `production setting "expose.hostnamePrefix" is locked after the first deployment` | Production was already deployed with another prefix by an earlier promote (yours, the portal's, or the assistant's `promote_project`); App Studio never promotes by itself | Read `GET …/promotion` `.production`; promote with `{}` or the same prefix |
 | `promotion.build.status: none` after pushing | Commit not recorded through faros | Use `code__commit_files` / `faros commit` |
 | `promotion.build.status: incomplete` | A component has no `sha-<commit>` image | `code__build_status`, then `code__rebuild` |
 
@@ -94,13 +96,18 @@ Exact strings are in backticks; `…` marks elided detail.
 | Instance `Valid=True` but an input has no effect (e.g. `connections` → no `DATABASE_URL`) | The template doesn't declare that key; undeclared keys are accepted silently | `kubectl get template <t> -o jsonpath='{.spec.schema.properties}'`; use a template that declares it |
 | Instance `Valid=False` / `InvalidValues` | `spec.values` violates the template schema | `describe_template` |
 | Instance Ready but no `status.url` | Template `exposure: internal`; not latency | Never poll for a URL |
-| New instance URL fails TLS, curl exit 35, `sslv3 alert handshake failure` | Per-host edge certificate still issuing (base domain below the Cloudflare zone apex) | Wait (see §2; observed 0–6 min); operator fix: `*.<baseDomain>` edge cert |
+| New instance URL fails TLS, curl exit 35, `sslv3 alert handshake failure` | Per-host edge certificate still issuing (base domain below the Cloudflare zone apex) | Wait (see §2; observed 0–9 min); operator fix: `*.<baseDomain>` edge cert |
+| `openssl s_client … \| openssl x509 -noout -subject` → `Could not find certificate from <stdin>` | No certificate for that host yet — the same issuance latency | Wait; the command prints the host's CN once issued |
 | Pod stuck in `CreateContainerConfigError` after setting `connections.database`/`cache` | Named instance's Secret does not exist (wrong name, other workspace, not provisioned) | Provision the `database`/`redis-cache` in the same workspace, or fix the name |
 | Exec → `sourceRevision is required for start: component "<c>" reports no applied source revision — sync its workspace first …` | Nothing synced yet, or a reload pending | Any sync (`dev_sync`, `faros sandbox sync`), then retry |
 | Exec → `Idempotency-Key is required for start` / `action must be "start", "run", "poll", or "cancel"` | Wrong exec shape | Use `run` (one call) or `start` + `poll` with the header |
 | Exec `run` returns `state: "running"` | Command outlived the ≤ 90 s wait | `poll` with the `sessionID` (or repeat `dev_exec` with the same `idempotencyKey`) |
 | `faros sandbox exec` exits 124 | Still running at `--timeout` + 10 s | Shorter command, or poll yourself |
 | `faros sandbox exec` → `<i>/<c> has no source revision; run 'faros sandbox sync …' first …` | No applied revision | `faros sandbox sync` |
+| `faros sandbox exec` → `HTTP 404: exec is not declared for component worker` | The template declares no `exec` verb for that component (`worker`) | Use `faros sandbox logs`; test from an `application`/`simple-webapp` sandbox instead |
+| Synced source changes are not visible; `Synced … restarted=false`, `faros sandbox status` shows the same `attempt N` | A non-Vite dev server keeps running the old code (reload rules cover only `package.json`/lockfiles) | `faros sandbox restart <i> <c>`, then probe a route only the new code has |
+| `kubectl apply` changed `values.env` on a dev-mode Instance but the process still sees the old value, even after `faros sandbox restart` | The pod's env is read at container start; `restart` restarts the process only | `POST …/components/<c>/env {"env":{…}}` then `faros sandbox restart` (keep the kubectl change so it survives a re-render) |
+| `faros app sync` → Cloudflare 502 `origin_bad_gateway` from `sync-development` on a brand-new `worker` project | The workspace is empty; the sandbox has nothing to run | Commit files first (`faros commit`), then sync |
 | Sync 413 `sync request body exceeds 100663296 bytes; …` / `sync request too large: …` | Over 96 MiB body, 500 files, 25 MiB/file or 48 MiB decoded | Fewer files per request |
 | `dev_sync` → `nothing was synced — component "<c>" cannot receive binary files …` | A target component's dev agent does not list `base64` in `syncEncodings` | Drop the binaries from the call; check `process` → `syncEncodings` |
 | Workspace `read` → 413 `… above the 1048576-byte text limit …` / 422 `… is not UTF-8 text: it is a binary file …` | Opaque file in the run-sandbox workspace API | Not readable as text by design |
@@ -117,6 +124,9 @@ Exact strings are in backticks; `…` marks elided detail.
 |---|---|---|
 | Agent run has no edge tools | Background run; only chat and channel runs get `edges__*` | Use chat/channel runs |
 | Agent MCP tools say "open the agents UI once" | Provider has not seen the workspace over the UI path yet | Open the Agents page once, retry |
+| `GET /api/schedules/{name}` → 405 | The route does not exist (only list, `PUT`, `DELETE`, `…/run`) | Read it from `GET /api/schedules` or `kubectl get schedules.agents.faros.sh <name>` |
+| Agent created with `maxToolTurns`/`timeoutSeconds` but `spec.limits` is `{}` | `POST /api/agents` ignores those fields; only `PUT` (and `agents__update_agent`) sets them | `PUT /api/agents/<name>` with the limits after creating |
+| Agent `status` stays `{}` after successful runs | Status is not populated on current builds | Judge by `GET /api/runs?agent=<name>` |
 
 ## 2. Latency is not failure
 
@@ -125,7 +135,7 @@ Decide "not yet" vs "wrong" before acting.
 
 | Symptom | Usually | Confirm it is only latency |
 |---|---|---|
-| New `Instance` URL fails the TLS handshake (curl exit 35) | Certificate for that hostname still issuing; observed 0–6 min, don't debug before 10 | An existing instance on the same base domain serves 200; `openssl s_client -connect <host>:443 -servername <host>` shows no matching CN yet |
+| New `Instance` URL fails the TLS handshake (curl exit 35) | Certificate for that hostname still issuing; observed 0–9 min, don't debug before 10 | An existing instance on the same base domain serves 200; `openssl s_client -connect <host>:443 -servername <host>` shows no matching CN yet |
 | `promotion.build.status: none` right after green CI | Package crawl hasn't seen the image (every 30 s for 10 min after a commit succeeds; else every 2 min) | `build.commitSHA` already equals your commit |
 | `build.status: incomplete`, one component `missing`, CI green | Crawl has seen one package, not the other | Both jobs succeeded in `code__build_status` |
 | Fresh project: repository `Provisioning` | Repository CR still being created | `.repository.ready` turns true |
@@ -142,7 +152,9 @@ Reference timeline for one App Studio project, measured on a dev hub
 | create → scaffold commit `Succeeded` | 15–40 s |
 | create → dev instance Ready | ~2.5 min |
 | `code__commit_files` → commit recorded | ~7 s |
-| commit → `promotable: true` | 3.2–4.5 min |
+| commit → `promotable: true` | 3.2–4.5 min (first sample set) |
 | first promote → prod Ready | 1–1.5 min |
-| first promote → new hostname serves TLS | 0–6 min (five runs: ~0, ~0, 2 m 50 s, ~4, 5 m 20 s) |
+| first promote → new hostname serves TLS | 0–9 min (eleven runs: ~0, ~0, 2 m 50 s, ~4, ~5, 5 m 20 s, 5 m 30 s, ~7, 8 m 51 s) |
+| commit → `promotable: true` (second sample set) | 2 m 45 s, 4 m 00 s, 4 m 40 s, 4 m 57 s, 5 m 01 s |
+| promote → prod Ready (second sample set) | 42 s, 42 s, 50 s |
 | assistant turn end → reconciler commit | 5–15 s |
