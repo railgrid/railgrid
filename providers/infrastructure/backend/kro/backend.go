@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -186,8 +187,52 @@ const (
 	// (bookworm, not slim: dev flows need git and the usual build tools).
 	DefaultNodeDevImage      = "docker.io/library/node:22-bookworm"
 	DefaultUniversalDevImage = "ghcr.io/faroshq/faros-universal-dev:latest"
-	DefaultDevAgentImage     = "ghcr.io/faroshq/faros-dev-agent:latest"
+	// DevAgentImageRepository is where provider-release.yaml publishes the
+	// dev-agent injector, tagged with the infrastructure provider's own
+	// release version (vX.Y.Z) alongside :latest.
+	DevAgentImageRepository = "ghcr.io/faroshq/faros-dev-agent"
+	// DefaultDevAgentImage is the dev-agent default for non-release builds
+	// (local `go build`, Tilt, kind side-loading). Release builds default to
+	// DevAgentImageRepository:<version> instead — see defaultDevAgentImage.
+	DefaultDevAgentImage = DevAgentImageRepository + ":latest"
 )
+
+// providerVersion is the provider binary's own release version, handed over
+// by main (stamped via -ldflags "-X main.buildVersion=vX.Y.Z" by the provider
+// Dockerfile's VERSION build arg). Empty or "dev" for local builds.
+var providerVersion string
+
+// releaseVersionRE matches the versions provider-release.yaml publishes
+// images under (tag providers/infrastructure/vX.Y.Z, optionally with a
+// dot-separated prerelease such as -rc1 / -rc.1). It deliberately rejects
+// `git describe` output (v1.2.3-4-gabcdef, -dirty) so an ad-hoc local build
+// stamped from git never defaults to a registry tag that was never pushed.
+var releaseVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$`)
+
+// SetProviderVersion records the running provider's build version. Call it
+// once from main before constructing the backend.
+func SetProviderVersion(version string) { providerVersion = strings.TrimSpace(version) }
+
+// IsReleaseVersion reports whether version is a published provider release
+// (vX.Y.Z[-prerelease]) — i.e. one whose companion images exist in the
+// registry under that exact tag.
+func IsReleaseVersion(version string) bool {
+	return releaseVersionRE.MatchString(version) && !strings.HasSuffix(version, "-dirty")
+}
+
+// defaultDevAgentImage is the dev-agent injector image used when
+// FAROS_DEV_AGENT_IMAGE is unset. A release build pins the dev agent shipped
+// in the SAME release (DevAgentImageRepository:<version>): a mutable :latest
+// combined with the injector's IfNotPresent pull policy would keep whatever
+// :latest a node cached first, so provider upgrades would never reach
+// sandboxes. Non-release builds keep :latest so kind/Tilt flows that
+// side-load a locally built :latest keep working.
+func defaultDevAgentImage() string {
+	if IsReleaseVersion(providerVersion) {
+		return DevAgentImageRepository + ":" + providerVersion
+	}
+	return DefaultDevAgentImage
+}
 
 // devImageTokens collects the platform-managed dev-mode images: every
 // FAROS_DEV_IMAGE_<TOOLCHAIN> env var becomes ${faros.devImage.<toolchain>}
@@ -199,7 +244,7 @@ func devImageTokens() map[string]string {
 	out := map[string]string{
 		devImageTokenPrefix + "node}":      DefaultNodeDevImage,
 		devImageTokenPrefix + "universal}": DefaultUniversalDevImage,
-		devAgentImageToken:                 DefaultDevAgentImage,
+		devAgentImageToken:                 defaultDevAgentImage(),
 	}
 	const envPrefix = "FAROS_DEV_IMAGE_"
 	for _, kv := range os.Environ() {

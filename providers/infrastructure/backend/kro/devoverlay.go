@@ -651,8 +651,13 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"image": agentImage,
 		// The default-for-:latest Always policy would force a registry pull
 		// even when the image is side-loaded (kind/local dev) and fail the pod
-		// if the registry copy is missing. Production pins digests via
-		// FAROS_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
+		// if the registry copy is missing — or silently replace the local
+		// build with the published one. So IfNotPresent stays, and freshness
+		// comes from the reference instead: release builds default to the
+		// immutable per-release tag (defaultDevAgentImage) and production may
+		// pin a digest via FAROS_DEV_AGENT_IMAGE, where IfNotPresent is
+		// equivalent to Always. Only a deployment that explicitly configures a
+		// mutable tag (e.g. :latest) keeps whatever a node cached first.
 		"imagePullPolicy": "IfNotPresent",
 		"command":         []any{"/faros-dev-agent", "--install", devAgentBinDir},
 		"volumeMounts": []any{

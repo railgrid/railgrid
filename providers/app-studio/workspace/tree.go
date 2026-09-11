@@ -51,6 +51,10 @@ type ReplaceTreeOptions struct {
 	// untouched even though Files omits them — e.g. files the checkout
 	// skipped (too large, or binaries an older Code provider cannot return).
 	PreservePaths []string
+	// PreserveOmitted leaves every current path Files omits untouched, so the
+	// replacement writes but never deletes. Use it when the source cannot say
+	// exactly which paths it left out (a truncated skip list).
+	PreserveOmitted bool
 }
 
 // ReplaceTreeResult describes the paths changed by an exact tree replacement.
@@ -130,6 +134,11 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 			return ReplaceTreeResult{}, err
 		}
 		preserve[clean] = struct{}{}
+	}
+	if opts.PreserveOmitted {
+		for filePath := range current {
+			preserve[filePath] = struct{}{}
+		}
 	}
 	entries, written, deleted, changedPaths, err := planTreeReplacement(files, current, preserve)
 	if err != nil {

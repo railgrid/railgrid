@@ -347,6 +347,108 @@ func TestSandboxExecRequiresAuthoritativeSync(t *testing.T) {
 	}
 }
 
+// instanceAPIPath is the fake hub's kube API path of instance shop-dev.
+const instanceAPIPath = "/clusters/cl-b/apis/infrastructure.faros.sh/v1alpha1/instances/shop-dev"
+
+func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		instance http.HandlerFunc
+		project  http.HandlerFunc
+		want     string
+		notWant  string
+	}{
+		{
+			name: "project label",
+			instance: func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"app-studio.faros.sh/project": "shop"}}})
+			},
+			want:    "run 'faros app sync shop' first",
+			notWant: "run 'faros sandbox sync",
+		},
+		{
+			name: "project owner reference",
+			instance: func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "ownerReferences": []map[string]any{{"apiVersion": "ai.faros.sh/v1alpha1", "kind": "Project", "name": "shop"}}}})
+			},
+			want: "run 'faros app sync shop' first",
+		},
+		{
+			name: "unreadable instance, App Studio project of the prefix exists",
+			instance: func(w http.ResponseWriter, r *http.Request) {
+				writeTestStatus(w, http.StatusForbidden, "Forbidden", "cannot get instances")
+			},
+			project: func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"name": "shop"})
+			},
+			want: "run 'faros app sync shop' first",
+		},
+		{
+			name: "plain instance",
+			instance: func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"faros.sh/template": "application"}}})
+			},
+			// A readable instance without the marker is not App Studio's,
+			// whatever its name.
+			project: func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"name": "shop"})
+			},
+			want:    "run 'faros sandbox sync shop-dev api <dir>' first",
+			notWant: "faros app sync",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newFakeHub(t)
+			hub.useKubeconfig("cl-b")
+			hub.handle("GET "+dataPlanePrefix+"/components/api/process", func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, map[string]any{"running": true})
+			})
+			hub.handle("GET "+instanceAPIPath, tc.instance)
+			if tc.project != nil {
+				hub.handle("GET "+appStudioPrefix+"/shop", tc.project)
+			}
+			_, err := runSandboxExec(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, hubTarget{}, "shop-dev", "api", []string{"ls"}, "", time.Minute)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(err.Error(), tc.notWant) {
+				t.Fatalf("err = %v, must not contain %q", err, tc.notWant)
+			}
+		})
+	}
+}
+
+func TestPrintProcessStatusSyncLine(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{name: "no syncEncodings", status: `{"running":true}`, want: "utf-8 only (binary files are not synced to this component)"},
+		{name: "utf-8 only", status: `{"running":true,"syncEncodings":["utf-8"]}`, want: "utf-8 only (binary files are not synced to this component)"},
+		{name: "base64", status: `{"running":true,"syncEncodings":["utf-8","base64"]}`, want: "utf-8, base64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := printProcessStatus(&buf, json.RawMessage(tc.status)); err != nil {
+				t.Fatal(err)
+			}
+			var line string
+			for _, l := range strings.Split(buf.String(), "\n") {
+				if strings.HasPrefix(l, "Sync:") {
+					line = l
+				}
+			}
+			if line == "" || !strings.HasSuffix(line, tc.want) {
+				t.Fatalf("Sync line = %q, want suffix %q; output:\n%s", line, tc.want, buf.String())
+			}
+			if tc.want == "utf-8, base64" && strings.Contains(line, "not synced") {
+				t.Fatalf("Sync line = %q", line)
+			}
+		})
+	}
+}
+
 func TestSandboxStatusCommand(t *testing.T) {
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")

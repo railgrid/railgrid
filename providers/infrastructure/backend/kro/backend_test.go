@@ -246,6 +246,49 @@ func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
 	}
 }
 
+func TestDevAgentImageDefaultFollowsReleaseVersion(t *testing.T) {
+	original := providerVersion
+	t.Cleanup(func() { providerVersion = original })
+	t.Setenv("FAROS_DEV_AGENT_IMAGE", "")
+
+	for _, tc := range []struct {
+		version string
+		want    string
+	}{
+		// Release builds pin the dev agent shipped in the same release.
+		{"v0.1.20", DevAgentImageRepository + ":v0.1.20"},
+		{" v0.1.20 ", DevAgentImageRepository + ":v0.1.20"},
+		{"v0.0.1-rc1", DevAgentImageRepository + ":v0.0.1-rc1"},
+		{"v1.2.3-rc.1", DevAgentImageRepository + ":v1.2.3-rc.1"},
+		// Local / unreleased builds keep :latest (kind/Tilt side-load it).
+		{"", DefaultDevAgentImage},
+		{"dev", DefaultDevAgentImage},
+		{"0.1.20", DefaultDevAgentImage},
+		{"v0.1.20-4-gabcdef1", DefaultDevAgentImage},
+		{"v0.1.20-dirty", DefaultDevAgentImage},
+		{"v0.1.20-4-gabcdef1-dirty", DefaultDevAgentImage},
+		{"main", DefaultDevAgentImage},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			SetProviderVersion(tc.version)
+			if got := devImageTokens()[devAgentImageToken]; got != tc.want {
+				t.Fatalf("dev agent default for version %q = %q, want %q", tc.version, got, tc.want)
+			}
+			if got := New(nil).tokens[devAgentImageToken]; got != tc.want {
+				t.Fatalf("backend dev agent token for version %q = %q, want %q", tc.version, got, tc.want)
+			}
+		})
+	}
+
+	// An explicit FAROS_DEV_AGENT_IMAGE always wins over the versioned default.
+	SetProviderVersion("v0.1.20")
+	pinned := DevAgentImageRepository + "@sha256:" + strings.Repeat("c", 64)
+	t.Setenv("FAROS_DEV_AGENT_IMAGE", pinned)
+	if got := devImageTokens()[devAgentImageToken]; got != pinned {
+		t.Fatalf("dev agent with explicit override = %q, want %q", got, pinned)
+	}
+}
+
 func TestBackendRejectsMutableUniversalImageRegardlessOfGate(t *testing.T) {
 	for _, gate := range []string{"", "false", "true"} {
 		t.Run("gate="+gate, func(t *testing.T) {

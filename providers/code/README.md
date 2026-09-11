@@ -306,6 +306,12 @@ within about 30 seconds of publish. Other ecosystems keep using the cache.
 A RepositoryCommit that hits a GitHub rate limit stays `Running` with Ready
 reason `RateLimited` and is retried when the limit resets; it is marked `Failed`
 only when the reset falls more than 15 minutes after the commit started.
+Repositories, Connections, DeployKeys, and Collaborators that hit a rate limit
+likewise report Ready reason `RateLimited` (a Connection also reports it on
+`Validated`) with the reset time, and are retried when the limit resets rather
+than through error backoff. The one-shot RepositoryCheckout and
+RepositoryBuildStatus requests fail with the rate-limit message instead of
+waiting.
 
 GitHub API calls through the backend's go-github client, including workflow
 build-status reads, share a serialized request gate per credential and host.

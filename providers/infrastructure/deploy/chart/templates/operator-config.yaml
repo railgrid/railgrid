@@ -97,9 +97,12 @@ spec:
   sandbox:
     runtimeClassName: {{ $sandboxRuntimeClass | quote }}
   {{- end }}
-  {{- if or .Values.development.agentImage .Values.development.images }}
+  {{- $devAgentImage := include "infrastructure.devAgentImage" . }}
+  {{- if or $devAgentImage .Values.development.images }}
   development:
-    {{- with .Values.development.agentImage }}
+    {{- with $devAgentImage }}
+    # development.agentImage, else this release's faros-dev-agent — the
+    # operator maps it onto the serve Deployment's FAROS_DEV_AGENT_IMAGE.
     agentImage: {{ . | quote }}
     {{- end }}
     {{- if .Values.development.images }}

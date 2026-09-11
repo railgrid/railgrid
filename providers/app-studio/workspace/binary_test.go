@@ -254,3 +254,30 @@ func TestReplaceTreeRestoresBinariesAndPreservesSkippedPaths(t *testing.T) {
 		t.Fatalf("oversized tree binary = %v", err)
 	}
 }
+
+func TestReplaceTreePreserveOmittedNeverDeletes(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := binaryTestScope()
+	for _, file := range []PutOptions{
+		{Path: "public/unlisted.png", Data: pngBytes(512)},
+		{Path: "src/main.ts", Data: []byte("old\n")},
+	} {
+		if _, err := store.PutFile(ctx, scope, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{
+		Files:           []File{{Path: "src/main.ts", Content: "new\n"}},
+		PreserveOmitted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.Written, ",") != "src/main.ts" || len(result.Deleted) != 0 {
+		t.Fatalf("replace result = %#v, want a write and no deletes", result)
+	}
+	if exists, _ := store.FileExists(ctx, scope, "public/unlisted.png"); !exists {
+		t.Fatal("omitted path was deleted")
+	}
+}

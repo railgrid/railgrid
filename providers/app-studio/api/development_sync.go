@@ -130,15 +130,42 @@ type projectWorkspaceSyncSnapshot struct {
 	Files []projectSandboxSyncFile
 	// BinaryFiles are base64 entries, read only when the caller asked for
 	// them; BinaryPaths always lists every binary in the workspace.
-	BinaryFiles    []projectSandboxSyncFile
-	BinaryPaths    []string
+	BinaryFiles []projectSandboxSyncFile
+	BinaryPaths []string
+	// OversizedPaths are files left out for size: text past the workspace
+	// read bound and binaries past the per-file binary bound.
+	OversizedPaths []string
 	DeletedPaths   []string
 	SourceRevision uint64
 }
 
+// Reasons a workspace file did not reach a development component, reported
+// per component in the sync-development result's "skipped" list.
+const (
+	// projectSyncSkipBinaryUnsupported: a binary file for a component whose
+	// development agent does not advertise base64 in its syncEncodings.
+	projectSyncSkipBinaryUnsupported = "binary-unsupported"
+	// projectSyncSkipTooLarge: a file over the per-file sync bound.
+	projectSyncSkipTooLarge = "too-large"
+	// projectSyncSkipSyncLimit: a binary that would push one sync past the
+	// agent's total size or file-count bound.
+	projectSyncSkipSyncLimit = "sync-limit"
+)
+
+// projectSyncSkippedFile is one file a component's sync left out. Path is
+// component-relative, like the agent's own "changed" list.
+type projectSyncSkippedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 type projectDevelopmentSyncResponse struct {
 	Target projectDevelopmentSyncTargetInfo `json:"target"`
-	Result json.RawMessage                  `json:"result,omitempty"`
+	// Result maps each component to its agent's sync reply (phase, changed,
+	// ...), plus a "skipped" list of {path, reason} when App Studio left
+	// files out of that component's sync (see projectSyncSkip*). A phase of
+	// Synced does not mean every file arrived; check skipped.
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 type projectSandboxSyncResult struct {
@@ -303,6 +330,8 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
 	routedBinaries := routeProjectSyncFiles(snapshot.BinaryFiles, target.Components)
+	routedBinaryPaths := routeProjectSyncFiles(projectSyncPathEntries(snapshot.BinaryPaths), target.Components)
+	routedOversized := routeProjectSyncFiles(projectSyncPathEntries(snapshot.OversizedPaths), target.Components)
 	routedDeleted := routeProjectSyncDeletedPaths(snapshot.DeletedPaths, target.Components)
 	// A populated workspace whose files all fall outside every component
 	// directory would "succeed" while shipping nothing to the sandbox — the
@@ -322,9 +351,15 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
 		componentFiles := routed[component]
+		var overBounds []string
 		if binaryComponents[component] {
-			componentFiles = appendProjectSyncBinaries(p.Name, component, componentFiles, routedBinaries[component])
+			componentFiles, overBounds = appendProjectSyncBinaries(p.Name, component, componentFiles, routedBinaries[component])
 		}
+		skipped := projectComponentSyncSkipped(
+			projectSyncEntryPaths(routedBinaryPaths[component]),
+			projectSyncEntryPaths(routedOversized[component]),
+			overBounds,
+			binaryComponents[component])
 		request := projectSandboxSyncRequest{
 			Files:        componentFiles,
 			DeletedPaths: routedDeleted[component],
@@ -335,7 +370,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		if err != nil {
 			return nil, err
 		}
-		results[component] = json.RawMessage(body)
+		results[component] = withProjectSyncSkipped(body, skipped)
 	}
 	aggregated, err := json.Marshal(results)
 	if err != nil {
@@ -734,7 +769,7 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 	}
 	files := make([]projectSandboxSyncFile, 0, len(list.Files))
 	var binaryFiles []projectSandboxSyncFile
-	var binaryPaths []string
+	var binaryPaths, oversizedPaths []string
 	for _, f := range list.Files {
 		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
 		if err != nil {
@@ -742,7 +777,11 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 		}
 		if read.Binary {
 			binaryPaths = append(binaryPaths, read.Path)
-			if !includeBinary || read.Size > hubmcp.BinaryFileMaxBytes {
+			if read.Size > hubmcp.BinaryFileMaxBytes {
+				oversizedPaths = append(oversizedPaths, read.Path)
+				continue
+			}
+			if !includeBinary {
 				continue
 			}
 			data, err := s.workspaces.ReadFileBytes(ctx, scope, read.Path, hubmcp.BinaryFileMaxBytes)
@@ -753,6 +792,7 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 			continue
 		}
 		if read.Truncated {
+			oversizedPaths = append(oversizedPaths, read.Path)
 			continue
 		}
 		files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
@@ -770,7 +810,7 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 		}
 	}
 	sort.Strings(deleted)
-	return projectWorkspaceSyncSnapshot{Files: files, BinaryFiles: binaryFiles, BinaryPaths: binaryPaths, DeletedPaths: deleted, SourceRevision: revision}, nil
+	return projectWorkspaceSyncSnapshot{Files: files, BinaryFiles: binaryFiles, BinaryPaths: binaryPaths, OversizedPaths: oversizedPaths, DeletedPaths: deleted, SourceRevision: revision}, nil
 }
 
 // projectSandboxSyncDigest is the component-local source identity shared with
@@ -868,17 +908,76 @@ func (s *Server) noteSyncBinariesSkipped(id identity, ref dataPlaneRef, componen
 	}
 }
 
+func projectSyncEntryPaths(entries []projectSandboxSyncFile) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+// projectComponentSyncSkipped lists, sorted by path, the component's files
+// its sync left out: every binary when the agent cannot take base64, files
+// over the per-file bound, and binaries over one sync's bounds. All paths
+// are component-relative.
+func projectComponentSyncSkipped(binaryPaths, oversizedPaths, overBoundsPaths []string, binaryOK bool) []projectSyncSkippedFile {
+	reasons := map[string]string{}
+	for _, p := range oversizedPaths {
+		reasons[p] = projectSyncSkipTooLarge
+	}
+	for _, p := range overBoundsPaths {
+		reasons[p] = projectSyncSkipSyncLimit
+	}
+	if !binaryOK {
+		// The agent would refuse the binary whatever its size.
+		for _, p := range binaryPaths {
+			reasons[p] = projectSyncSkipBinaryUnsupported
+		}
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	out := make([]projectSyncSkippedFile, 0, len(reasons))
+	for p, reason := range reasons {
+		out = append(out, projectSyncSkippedFile{Path: p, Reason: reason})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// withProjectSyncSkipped adds a "skipped" list to one component's sync
+// result, keeping every field the agent returned. Nothing skipped leaves the
+// body untouched, so the field is additive and absent when empty.
+func withProjectSyncSkipped(body []byte, skipped []projectSyncSkippedFile) json.RawMessage {
+	if len(skipped) == 0 {
+		return json.RawMessage(body)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return json.RawMessage(body)
+	}
+	encoded, err := json.Marshal(skipped)
+	if err != nil {
+		return json.RawMessage(body)
+	}
+	fields["skipped"] = encoded
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return json.RawMessage(body)
+	}
+	return merged
+}
+
 // appendProjectSyncBinaries adds base64 entries to one component's text
 // files within the agent's bounds (48 MiB decoded, 500 files per request).
-// A binary past the bounds is left out (and logged) rather than failing the
-// whole sync, so text edits always reach the sandbox.
-func appendProjectSyncBinaries(project, component string, files, binaries []projectSandboxSyncFile) []projectSandboxSyncFile {
+// A binary past the bounds is left out (logged, and returned in dropped)
+// rather than failing the whole sync, so text edits always reach the sandbox.
+func appendProjectSyncBinaries(project, component string, files, binaries []projectSandboxSyncFile) (out []projectSandboxSyncFile, dropped []string) {
 	var total int64
 	for _, file := range files {
 		total += int64(len(file.Content))
 	}
-	out := append([]projectSandboxSyncFile(nil), files...)
-	var dropped []string
+	out = append([]projectSandboxSyncFile(nil), files...)
 	for _, binary := range binaries {
 		size := int64(base64.StdEncoding.DecodedLen(len(binary.Content)))
 		if len(out) >= hubmcp.BundleMaxFiles || total+size > hubmcp.BundleMaxBytes {
@@ -891,7 +990,7 @@ func appendProjectSyncBinaries(project, component string, files, binaries []proj
 	if len(dropped) > 0 {
 		klog.Warningf("development sync for project %s component %s: %d binary file(s) exceed one sync's bounds and were not sent: %s", project, component, len(dropped), strings.Join(dropped, ", "))
 	}
-	return out
+	return out, dropped
 }
 
 func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {

@@ -432,3 +432,34 @@ func TestRunCommitTextOnlySkipsSchemaCheck(t *testing.T) {
 		t.Fatalf("tools/list calls = %d, commit calls = %d; a text-only commit needs no schema check", mcp.listCalls, len(mcp.calls))
 	}
 }
+
+func TestRunCommitDryRunReportsExactBinarySize(t *testing.T) {
+	clone := newCommitTestRepo(t)
+	// 4036 and 4037 bytes encode with "==" and "=" padding, where
+	// base64.DecodedLen overstates the size by 2 and 1.
+	sizes := map[string]int{"logo.png": 4036, "icon.png": 4037, "even.bin": 4038}
+	for name, size := range sizes {
+		data := make([]byte, size)
+		for i := range data {
+			data[i] = byte(i % 251)
+		}
+		if err := os.WriteFile(filepath.Join(clone, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitTest(t, clone, "add", "-A")
+	gitTest(t, clone, "commit", "-q", "-m", "Add images")
+	t.Chdir(clone)
+	// Dry-run never calls the hub; the fake kubeconfig only guards that.
+	newFakeHub(t).useKubeconfig("cl-b")
+
+	var out, errOut bytes.Buffer
+	if err := runCommit(context.Background(), &out, &errOut, hubTarget{}, "shop", "main", "origin", true); err != nil {
+		t.Fatalf("runCommit: %v\n%s", err, errOut.String())
+	}
+	for name, size := range sizes {
+		if want := fmt.Sprintf("write  %s (%d bytes, binary)\n", name, size); !strings.Contains(out.String(), want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out.String())
+		}
+	}
+}

@@ -364,13 +364,10 @@ type kubeStatus struct {
 // message when the body is a Kubernetes Status (or {"error": …}), otherwise
 // the trimmed text body.
 func decodeAPIError(method, path string, code int, body []byte) error {
-	msg := ""
+	msg, reason := "", ""
 	var st kubeStatus
 	if json.Unmarshal(body, &st) == nil && st.Message != "" {
-		msg = st.Message
-		if st.Reason != "" && !strings.Contains(msg, st.Reason) {
-			msg = st.Reason + ": " + msg
-		}
+		msg, reason = st.Message, st.Reason
 	} else {
 		var e struct {
 			Error   string `json:"error"`
@@ -389,11 +386,30 @@ func decodeAPIError(method, path string, code int, body []byte) error {
 	if msg == "" {
 		msg = http.StatusText(code)
 	}
-	err := fmt.Errorf("%s %s: HTTP %d: %s", method, path, code, msg)
+	var err error = &hubAPIError{Method: method, Path: path, Code: code, Reason: reason, Message: msg}
 	if code == http.StatusUnauthorized {
 		return withLoginHint(err)
 	}
 	return err
+}
+
+// hubAPIError is a failed REST answer; callers that handle a status code
+// (e.g. 409 on create) read it with errors.As. Message is the server's own
+// message (the Status message, or the body).
+type hubAPIError struct {
+	Method  string
+	Path    string
+	Code    int
+	Reason  string
+	Message string
+}
+
+func (e *hubAPIError) Error() string {
+	msg := e.Message
+	if e.Reason != "" && !strings.Contains(msg, e.Reason) {
+		msg = e.Reason + ": " + msg
+	}
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.Path, e.Code, msg)
 }
 
 func withLoginHint(err error) error {

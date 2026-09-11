@@ -43,8 +43,10 @@ type projectRestoreResponse struct {
 }
 
 // restoreProjectWorkspace is POST /api/projects/{project}/restore-workspace.
-// Unlike hydration, restore replaces the managed workspace tree exactly. It
-// does not move the repository branch, create a commit, or change production.
+// Unlike hydration, restore replaces the managed workspace tree exactly, except
+// that files the checkout skipped keep their workspace copies (and nothing is
+// deleted when the checkout could not list every skipped path). It does not
+// move the repository branch, create a commit, or change production.
 func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request) {
 	c, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -109,10 +111,12 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
+	preservePaths, skipListComplete := checkoutSkippedPaths(checkout.Skipped)
 	result, err := s.workspaces.ReplaceTree(r.Context(), scope, workspace.ReplaceTreeOptions{
 		Files:                  files,
 		ExpectedSourceRevision: req.ExpectedSourceRevision,
-		PreservePaths:          checkout.Skipped,
+		PreservePaths:          preservePaths,
+		PreserveOmitted:        !skipListComplete,
 	})
 	if err != nil {
 		if errors.Is(err, workspace.ErrSourceRevisionConflict) || errors.Is(err, workspace.ErrMutationConflict) {
@@ -153,6 +157,39 @@ func (s *Server) checkoutProjectRepository(r *http.Request, id identity, reposit
 		return checkoutToolResult{}, fmt.Errorf("decode checkout result: %w", err)
 	}
 	return checkout, nil
+}
+
+// checkoutSkipReasons are the suffixes the Code provider's checkout appends to
+// every skipped repository path, e.g. "public/logo.png (binary)" (see the Code
+// provider's backend/github/checkout.go and mcpserver/tools_checkout.go).
+var checkoutSkipReasons = []string{" (binary)", " (file too large)", " (file-count cap)", " (total-size cap)"}
+
+// checkoutSkippedPaths extracts the repository paths from checkout skip
+// entries, which carry a reason suffix and so never match a workspace path
+// as-is. complete is false when some entry names no path — the host truncated
+// the tree, the provider capped the list ("(more paths skipped)"), or the entry
+// has an unknown shape — so an omitted file may still exist at the commit and
+// restore must not delete any.
+func checkoutSkippedPaths(skipped []string) (paths []string, complete bool) {
+	complete = true
+	for _, entry := range skipped {
+		path, ok := checkoutSkippedPath(entry)
+		if !ok {
+			complete = false
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths, complete
+}
+
+func checkoutSkippedPath(entry string) (string, bool) {
+	for _, reason := range checkoutSkipReasons {
+		if path, ok := strings.CutSuffix(entry, reason); ok && strings.TrimSpace(path) != "" {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 // exactRestoreFiles validates that checkout returned the exact Git object

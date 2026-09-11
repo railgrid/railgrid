@@ -256,7 +256,7 @@ Studio to untrusted users. Empty keeps the cluster default runtime.
 | `FAROS_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |
 | `FAROS_CODING_SANDBOX_ENABLED` | `false` | Opts into seeding/admitting the platform-owned universal coding sandbox; enabled deployments require immutable universal and dev-agent images |
 | `FAROS_DEV_IMAGE_UNIVERSAL` | `ghcr.io/faroshq/faros-universal-dev:latest` | Platform-selected Node/Go/Python image token; the coding sandbox gate accepts only a digest-pinned override |
-| `FAROS_DEV_AGENT_IMAGE` | `ghcr.io/faroshq/faros-dev-agent:latest` | Platform-selected injector and control-token bootstrap image; the coding sandbox gate accepts only a digest-pinned override |
+| `FAROS_DEV_AGENT_IMAGE` | release build: `ghcr.io/faroshq/faros-dev-agent:<provider version>`; local build: `ghcr.io/faroshq/faros-dev-agent:latest` | Platform-selected injector and control-token bootstrap image; the coding sandbox gate accepts only a digest-pinned override. The default follows the binary's `-X main.buildVersion` stamp (the Dockerfile's `VERSION` build arg) so a release's sandboxes run that release's agent despite the injector's `IfNotPresent` pull policy |
 | `FAROS_SANDBOX_RUNTIME_CLASS_NAME` | (unset → cluster default runtime) | RuntimeClass (`gvisor` or `kata`) stamped on every synthesized development pod, including the universal coding sandbox; required before serving untrusted users |
 | `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Faros-Tenant` (dev only) |
 | `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |

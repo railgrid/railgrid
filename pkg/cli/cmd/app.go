@@ -19,6 +19,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,6 +117,40 @@ type appPromoteResponse struct {
 	} `json:"components,omitempty"`
 }
 
+// appHydrateResponse mirrors POST …/hydrate-workspace.
+type appHydrateResponse struct {
+	RepositoryRef string   `json:"repositoryRef"`
+	Ref           string   `json:"ref,omitempty"`
+	CommitSHA     string   `json:"commitSHA,omitempty"`
+	Written       []string `json:"written,omitempty"`
+	Skipped       []string `json:"skipped,omitempty"`
+}
+
+// appSyncResponse mirrors POST …/sync-development: the dev instance and each
+// component's dev agent sync reply, plus the files App Studio left out.
+type appSyncResponse struct {
+	Target struct {
+		ResourceName string `json:"ResourceName"`
+	} `json:"target"`
+	Result map[string]appSyncComponentResult `json:"result"`
+}
+
+type appSyncComponentResult struct {
+	syncResponse
+	Skipped []appSyncSkippedFile `json:"skipped,omitempty"`
+}
+
+type appSyncSkippedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// appSyncOutput is what 'faros app sync -o json' prints.
+type appSyncOutput struct {
+	Hydrate json.RawMessage `json:"hydrate"`
+	Sync    json.RawMessage `json:"sync"`
+}
+
 type appPublishingView struct {
 	Published   bool `json:"published"`
 	Publication *struct {
@@ -137,11 +172,12 @@ func newAppCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "app",
 		Aliases: []string{"apps"},
-		Short:   "Manage App Studio projects: list, create, status, promote, publish",
+		Short:   "Manage App Studio projects: list, create, status, sync, promote, publish",
 		Long: `Manage App Studio projects through the App Studio REST API, as you.
 
   faros app create shop --template application --display-name Shop --wait
   faros app status shop
+  faros app sync shop
   faros app promote shop --hostname-prefix shop
   faros app publish shop --mode public
 
@@ -153,6 +189,7 @@ Develop with 'faros sandbox' against <project>-dev and record commits with
 		newAppListCommand(&target),
 		newAppCreateCommand(&target),
 		newAppStatusCommand(&target),
+		newAppSyncCommand(&target),
 		newAppPromoteCommand(&target),
 		newAppPublishCommand(&target),
 	)
@@ -244,8 +281,12 @@ func newAppCreateCommand(target *hubTarget) *cobra.Command {
 		Long: `Create an App Studio project. One call creates the code Repository, the
 GitHub repo, the scaffold commit and the <name>-dev instance.
 
-A taken name silently gets a suffix, and the repository name is not always the
-project name: read it from 'faros app status'. With --wait the command returns
+The name is used as given for the project and its code Repository; it is never
+suffixed. If a Repository with that name already exists (often one left behind
+by a deleted project, which keeps its repository), the hub answers 409 Conflict:
+choose another name. Without a validated Git connection the project starts with
+no repository, and one connected later gets a suffixed name, so read the
+repository ref from 'faros app status'. With --wait the command returns
 once the repository is ready and the scaffold commit has succeeded — the point
 from which cloning and 'faros commit' work. Without --template, --prompt lets
 App Studio infer the template.`,
@@ -281,14 +322,17 @@ func runAppCreate(ctx context.Context, out, errOut io.Writer, target hubTarget, 
 	}
 	var raw json.RawMessage
 	if err := s.do(ctx, http.MethodPost, s.appStudioURL()+"/api/projects", req, &raw); err != nil {
+		// The hub never renames: a taken project or Repository name is a 409
+		// whose message says what collided and what to do.
+		var apiErr *hubAPIError
+		if errors.As(err, &apiErr) && apiErr.Code == http.StatusConflict {
+			return fmt.Errorf("project %q not created (HTTP 409): %s", req.Name, apiErr.Message)
+		}
 		return err
 	}
 	var p appProjectView
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("decoding project: %w", err)
-	}
-	if p.Name != "" && p.Name != req.Name {
-		_, _ = fmt.Fprintf(errOut, "faros app: name %q was taken; created %q\n", req.Name, p.Name)
 	}
 	if wait {
 		_, _ = fmt.Fprintf(errOut, "faros app: waiting for repository and scaffold commit of %s…\n", p.Name)
@@ -532,6 +576,109 @@ func formatAgeAt(now, t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+func newAppSyncCommand(target *hubTarget) *cobra.Command {
+	var output string
+	cmd := &cobra.Command{
+		Use:   "sync <name>",
+		Short: "Load the repository into the project workspace and sync it to <name>-dev",
+		Long: `Hydrate the project workspace from its repository's default branch, then run
+App Studio's authoritative development sync, which pushes the workspace to
+every component of the <name>-dev instance. Afterwards 'faros sandbox exec'
+works against <name>-dev.
+
+Use this rather than 'faros sandbox sync' on an App Studio dev instance: App
+Studio owns that instance's file set, and a sandbox sync replaces it. Files
+the sync left out (binaries a component's dev agent cannot take, files over
+the size limits) are listed per component.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(output); err != nil {
+				return err
+			}
+			return runAppSync(cmdContext(cmd), cmd.OutOrStdout(), cmd.ErrOrStderr(), *target, args[0], output)
+		},
+	}
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
+	return cmd
+}
+
+func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, name, output string) error {
+	s, err := newHubSession(ctx, target)
+	if err != nil {
+		return err
+	}
+	var res appSyncOutput
+	_, _ = fmt.Fprintf(errOut, "faros app: loading %s's workspace from its repository…\n", name)
+	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "hydrate-workspace"), map[string]any{}, &res.Hydrate); err != nil {
+		return fmt.Errorf("hydrating the workspace: %w", err)
+	}
+	_, _ = fmt.Fprintf(errOut, "faros app: syncing %s's workspace to its development instance…\n", name)
+	if err := s.do(ctx, http.MethodPost, projectURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {
+		return fmt.Errorf("syncing the development instance: %w", err)
+	}
+	if output == "json" {
+		return printJSON(out, res)
+	}
+	return printAppSync(out, res)
+}
+
+// printAppSync renders the hydrate and per-component sync summary.
+func printAppSync(w io.Writer, res appSyncOutput) error {
+	var hydrate appHydrateResponse
+	if len(res.Hydrate) > 0 {
+		if err := json.Unmarshal(res.Hydrate, &hydrate); err != nil {
+			return fmt.Errorf("decoding hydrate response: %w", err)
+		}
+	}
+	var synced appSyncResponse
+	if len(res.Sync) > 0 {
+		if err := json.Unmarshal(res.Sync, &synced); err != nil {
+			return fmt.Errorf("decoding sync response: %w", err)
+		}
+	}
+	source := formatStringOrDash(hydrate.RepositoryRef)
+	if hydrate.Ref != "" {
+		source += "@" + hydrate.Ref
+	}
+	if sha := hydrate.CommitSHA; sha != "" {
+		if len(sha) > 7 {
+			sha = sha[:7]
+		}
+		source += " (" + sha + ")"
+	}
+	_, _ = fmt.Fprintf(w, "workspace: loaded from %s, %d written, %d skipped\n", source, len(hydrate.Written), len(hydrate.Skipped))
+	for _, p := range hydrate.Skipped {
+		_, _ = fmt.Fprintf(w, "  skipped %s\n", p)
+	}
+	components := make([]string, 0, len(synced.Result))
+	for c := range synced.Result {
+		components = append(components, c)
+	}
+	sort.Strings(components)
+	instance := formatStringOrDash(synced.Target.ResourceName)
+	if len(components) == 0 {
+		_, _ = fmt.Fprintf(w, "%s: no component results\n", instance)
+	}
+	binaryUnsupported := false
+	for _, c := range components {
+		r := synced.Result[c]
+		line := fmt.Sprintf("%s/%s: %s, %d changed, %d deleted, restarted=%v, revision %d",
+			instance, c, formatStringOrDash(r.Phase), len(r.Changed), len(r.Deleted), r.Restarted, r.SourceRevision)
+		if len(r.Skipped) > 0 {
+			line += fmt.Sprintf(", %d skipped", len(r.Skipped))
+		}
+		_, _ = fmt.Fprintln(w, line)
+		for _, f := range r.Skipped {
+			_, _ = fmt.Fprintf(w, "  skipped %s (%s)\n", f.Path, formatStringOrDash(f.Reason))
+			binaryUnsupported = binaryUnsupported || f.Reason == "binary-unsupported"
+		}
+	}
+	if binaryUnsupported {
+		_, _ = fmt.Fprintln(w, "binary-unsupported: the component's dev agent does not accept binary files; update the instance to sync them")
+	}
+	return nil
 }
 
 func newAppPromoteCommand(target *hubTarget) *cobra.Command {

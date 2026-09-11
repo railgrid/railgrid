@@ -15,7 +15,9 @@ package shared
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,6 +55,26 @@ func SetCondition(conds *[]metav1.Condition, condType string, status metav1.Cond
 		Message:            msg,
 		ObservedGeneration: observedGen,
 	})
+}
+
+// RateLimitWait reports whether err is (or wraps) a *backend.RateLimitError
+// and, if so, how long to wait before retrying — until the host's reset, at
+// least a second — plus a Ready-condition message naming the reset. Callers
+// return ctrl.Result{RequeueAfter: wait} with a nil error: the backend refuses
+// requests locally until the reset, so an error-driven workqueue retry would
+// only spin.
+//
+// The message carries the absolute reset time rather than a countdown so that
+// rewriting it on every attempt is a no-op. A message that changed each time
+// would bump the object on every status write and re-enqueue it immediately,
+// defeating the wait.
+func RateLimitWait(err error, now time.Time) (time.Duration, string, bool) {
+	var limited *backend.RateLimitError
+	if !errors.As(err, &limited) {
+		return 0, "", false
+	}
+	wait := max(limited.RetryAt.Sub(now), time.Second)
+	return wait, "GitHub rate limit; retrying at " + limited.RetryAt.UTC().Format(time.RFC3339), true
 }
 
 // ResolveConnection fetches the Connection named ref in the same (cluster-scoped)

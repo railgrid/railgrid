@@ -175,9 +175,12 @@ faros app promote shop --hostname-prefix shop   # the prefix is locked after the
 faros app publish shop --mode public         # or restricted, or private
 ```
 
-`faros commit` sends only UTF-8 text files and refuses to run when the working
-tree is dirty or `origin/<branch>` has moved past your base. `faros sandbox
-sync` skips non-text files, and `exec` needs a prior sync.
+`faros commit` refuses to run when the working tree is dirty or
+`origin/<branch>` has moved past your base. `faros commit` and `faros sandbox
+sync` send binary files base64-encoded (at most 25 MiB each, 48 MiB per commit
+or sync) when the hub's code provider or the component's dev agent supports
+it. Otherwise `commit` refuses a change that includes binaries and `sync`
+skips them with a warning. `exec` needs a prior sync.
 
 ## Repository layout
 

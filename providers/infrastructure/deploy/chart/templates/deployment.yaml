@@ -65,9 +65,9 @@ spec:
             - name: FAROS_DEV_IMAGE_UNIVERSAL
               value: {{ .Values.development.images.universal | quote }}
             {{- end }}
-            {{- if .Values.development.agentImage }}
+            {{- with include "infrastructure.devAgentImage" . }}
             - name: FAROS_DEV_AGENT_IMAGE
-              value: {{ .Values.development.agentImage | quote }}
+              value: {{ . | quote }}
             {{- end }}
             {{- if $centralName }}
             - name: KRO_KUBECONFIG
@@ -197,8 +197,9 @@ spec:
             - name: FAROS_TENANT_LIMITRANGE
               value: "disabled"
             {{- end }}
-            {{- with .Values.development.agentImage }}
-            # Dev-mode agent injector image (${faros.devAgentImage}).
+            {{- with include "infrastructure.devAgentImage" . }}
+            # Dev-mode agent injector image (${faros.devAgentImage}):
+            # development.agentImage, else this release's faros-dev-agent.
             - name: FAROS_DEV_AGENT_IMAGE
               value: {{ . | quote }}
             {{- end }}

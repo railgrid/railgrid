@@ -178,7 +178,10 @@ whole file set, replaces the managed file set, and is what exec verifies
 against. Binary files (not UTF-8, or containing NUL) are sent base64-encoded
 when the component's dev agent advertises base64 sync (at most 25 MiB per
 binary file, 48 MiB per sync); against an older agent they are skipped with a
-warning.`,
+warning.
+
+For an App Studio project's <project>-dev instance, 'faros app sync <project>'
+pushes App Studio's own file set instead; a sandbox sync replaces that set.`,
 		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(output); err != nil {
@@ -407,9 +410,11 @@ func newSandboxExecCommand(target *hubTarget) *cobra.Command {
 		Use:   "exec <instance> <component> -- <argv...>",
 		Short: "Run a command in the component and exit with its exit code",
 		Long: `Run argv (no shell) against the component's last authoritative sync, print its
-stdout and stderr, and exit with its exit code. Run 'faros sandbox sync' first.
-The executor does not get the app's environment ($PORT, DATABASE_URL), so name
-ports explicitly.`,
+stdout and stderr, and exit with its exit code. Run 'faros sandbox sync' first
+(for an App Studio <project>-dev instance, 'faros app sync <project>').
+The command gets PORT (the component's dev server port, so it can reach the
+running app) and FAROS_COMPONENT, but not the app's own environment or
+secrets (DATABASE_URL and the like).`,
 		Args: cobra.MinimumNArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dash := cmd.ArgsLenAtDash(); dash >= 0 && dash != 2 {
@@ -451,6 +456,9 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 		return 0, err
 	}
 	if proc.SourceRevision == 0 || proc.SourceDigest == "" {
+		if project := appStudioProjectForInstance(ctx, s, instance); project != "" {
+			return 0, fmt.Errorf("%s/%s has no source revision; run 'faros app sync %s' first (exec needs an authoritative sync, and %s is managed by App Studio project %s, so 'faros sandbox sync' would replace its file set)", instance, component, project, instance, project)
+		}
 		return 0, fmt.Errorf("%s/%s has no source revision; run 'faros sandbox sync %s %s <dir>' first (exec needs an authoritative sync)", instance, component, instance, component)
 	}
 	execURL := componentURL(s, instance, component, "exec")
@@ -497,6 +505,55 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 		return 1, nil
 	}
 	return int(*res.ExitCode), nil
+}
+
+// appStudioInstanceProjectLabel mirrors providers/app-studio/bindings.ProjectLabel:
+// App Studio labels every instance it creates for a project (<project>-dev,
+// <project>-prod) with the project name.
+const appStudioInstanceProjectLabel = "app-studio.faros.sh/project"
+
+// instanceAPIURL is the tenant kube API path of an infrastructure Instance
+// (cluster-scoped) in the session's workspace.
+func instanceAPIURL(s *hubSession, name string) string {
+	return fmt.Sprintf("%s/clusters/%s/apis/infrastructure.faros.sh/v1alpha1/instances/%s",
+		s.Hub, url.PathEscape(s.Cluster), url.PathEscape(name))
+}
+
+// appStudioProjectForInstance returns the App Studio project that manages
+// instance, or "" when it is not App Studio-managed. It reads the instance's
+// project label (or its Project owner reference). When the instance cannot be
+// read, it falls back to the naming convention: "<project>-dev" where an App
+// Studio project <project> exists.
+func appStudioProjectForInstance(ctx context.Context, s *hubSession, instance string) string {
+	var inst struct {
+		Metadata struct {
+			Labels          map[string]string `json:"labels"`
+			OwnerReferences []struct {
+				APIVersion string `json:"apiVersion"`
+				Kind       string `json:"kind"`
+				Name       string `json:"name"`
+			} `json:"ownerReferences"`
+		} `json:"metadata"`
+	}
+	if err := s.do(ctx, http.MethodGet, instanceAPIURL(s, instance), nil, &inst); err == nil {
+		if project := strings.TrimSpace(inst.Metadata.Labels[appStudioInstanceProjectLabel]); project != "" {
+			return project
+		}
+		for _, o := range inst.Metadata.OwnerReferences {
+			if o.Kind == "Project" && strings.HasPrefix(o.APIVersion, "ai.faros.sh/") && o.Name != "" {
+				return o.Name
+			}
+		}
+		return ""
+	}
+	base, ok := strings.CutSuffix(instance, "-dev")
+	if !ok || base == "" {
+		return ""
+	}
+	if err := s.do(ctx, http.MethodGet, projectURL(s, base), nil, nil); err != nil {
+		return ""
+	}
+	return base
 }
 
 func execTerminal(state string) bool {
@@ -643,10 +700,17 @@ func printProcessStatus(w io.Writer, raw json.RawMessage) error {
 		rev = fmt.Sprintf("%d %s", p.SourceRevision, shortDigest(p.SourceDigest))
 	}
 	printRow(tw, "Source:", rev)
-	if len(p.SyncEncodings) > 0 {
-		printRow(tw, "Sync encodings:", strings.Join(p.SyncEncodings, ", "))
-	}
+	printRow(tw, "Sync:", syncEncodingsSummary(p))
 	return tw.Flush()
+}
+
+// syncEncodingsSummary says which files a sync can carry to the component.
+// An agent that omits syncEncodings, or lists no base64, takes text only.
+func syncEncodingsSummary(p processStatus) string {
+	if p.supportsEncoding(encodingBase64) {
+		return strings.Join(p.SyncEncodings, ", ")
+	}
+	return "utf-8 only (binary files are not synced to this component)"
 }
 
 func printInstanceStatus(w io.Writer, raw json.RawMessage) error {

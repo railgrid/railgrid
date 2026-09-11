@@ -106,6 +106,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	login, scopes, err := b.ValidateConnection(ctx, &conn, cred)
 	if err != nil {
+		// A rate limit says nothing about the credential: report it as such
+		// (not "rejected") and validate again once the host's limit resets.
+		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+			return r.fail(ctx, c, &conn, codev1alpha1.ReasonRateLimited, msg, wait)
+		}
 		return r.fail(ctx, c, &conn, "ValidationFailed", err.Error(), 0)
 	}
 

@@ -87,13 +87,16 @@ func TestAppendProjectSyncBinariesRespectsBundleBounds(t *testing.T) {
 		{Path: "b.glb", Content: large, Encoding: "base64"},
 		{Path: "c.png", Content: base64.StdEncoding.EncodeToString([]byte{0x89, 'P'}), Encoding: "base64"},
 	}
-	out := appendProjectSyncBinaries("demo", "web", text, binaries)
+	out, dropped := appendProjectSyncBinaries("demo", "web", text, binaries)
 	paths := make([]string, 0, len(out))
 	for _, file := range out {
 		paths = append(paths, file.Path)
 	}
 	if strings.Join(paths, ",") != "index.js,a.glb,c.png" {
 		t.Fatalf("bounded sync files = %v, want the second 25 MiB binary dropped", paths)
+	}
+	if strings.Join(dropped, ",") != "b.glb" {
+		t.Fatalf("dropped = %v, want [b.glb]", dropped)
 	}
 }
 

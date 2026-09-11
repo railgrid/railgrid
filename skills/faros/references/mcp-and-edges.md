@@ -1,9 +1,8 @@
 # MCP aggregate, MCPServer, edges, kuery reference
 
-Read from `pkg/hub/mcpaggregate/`, `pkg/apiurl/`, `providers/edges/`,
-`providers/kuery/` on 2026-09-09. Note that `docs/mcp-architecture.md` in
-the repo describes an older design (`providers/mcp`, `list_targets`) that no
-longer exists.
+Sources: `pkg/hub/mcpaggregate/`, `pkg/apiurl/`, `providers/edges/`,
+`providers/kuery/`. There is no `list_targets` tool; use
+`edges__cluster_list`.
 
 ## 1. The aggregate endpoint
 
@@ -17,40 +16,65 @@ https://<hub>/services/mcpserver/{clusterName}/apis/faros.sh/v1alpha1/mcpservers
   user with membership in that workspace, or another tenant ServiceAccount
   with `use` on `faros.sh/mcpservers/<name>`. 401 unauthenticated, 403 wrong
   tenant, 429 rate limited (retry after 60 s), 503 verifier unavailable.
-  Verifications cache for 60 s.
+  Verifications and the resolved tenant cache for 60 s. A ServiceAccount
+  bearer also needs the cluster's workspace path
+  resolved after TokenReview: an unknown cluster is 403, a lookup outage is
+  503 (fails closed rather than guessing the platform catalog).
 - Server identity `faros-mcpserver`; instructions tell the model tools are
   namespaced `<provider>__<tool>` and append each provider's own
   instructions under "Provider guidance". One resource: `faros://about`.
-- Federation: every Ready **platform** provider whose backend answers
-  `POST /mcp` `tools/list` (8 s discovery, 90 s per call). Org-owned (BYO)
-  providers are excluded. Tools are re-registered as `<provider>__<tool>`
-  in deterministic order. A provider returning 404 or 405 on `/mcp` is
-  silently dropped (this is how App Studio, an MCP client, is excluded).
-- Identity forwarding: the caller's bearer plus `X-Faros-Tenant` and
-  `X-Faros-Cluster` set to the cluster ID.
-- "Enabled" is not the filter. The aggregate lists every Ready platform
-  provider's tools; a tool from a provider you have not enabled fails with
+- Federation: every Ready provider in the verified caller's Org catalog
+  (`ListForOrg`: platform providers plus that Org's own) whose backend
+  answers `POST /mcp` `tools/list` (8 s discovery, 90 s per call). Tools are
+  re-registered as `<provider>__<tool>` in deterministic order. A provider
+  returning 404 or 405 on `/mcp` is silently dropped (this is how App Studio,
+  an MCP client, is excluded). Provider responses are capped at 96 MiB;
+  over the cap is an error
+  `provider <method> response exceeds the 96 MiB limit; the result is too large to federate`,
+  never a truncated body.
+- Org-owned (BYO) providers: federated only for a **human** bearer whose membership
+  was verified in a **team workspace**. The org copy **shadows** the
+  platform provider of the same name. It is reached over the platform edges
+  tunnel with a 10-minute delegated user token minted for (user,
+  workspace) plus `X-Faros-User`; the caller's bearer is never sent, and the
+  provider's own `BackendURL` is never dialled. When no delegated token can
+  be minted — a ServiceAccount bearer (including the MCPServer connect token
+  that `faros mcp url` and `faros env` hand out, and App Studio project
+  identities), an org-scope cluster, no issuer, no edge route — the provider
+  is skipped for that request, and the shadowed platform copy does **not**
+  come back.
+- Identity forwarding to platform providers: the caller's bearer plus
+  `X-Faros-Tenant` and `X-Faros-Cluster` set to the cluster ID.
+- "Enabled" is not the filter. The aggregate lists every Ready provider in
+  the Org catalog; a tool from a provider you have not enabled fails with
   RBAC or NotFound errors when called.
-- **Scope is the filter, and it bites.** Because org-owned providers are
-  excluded, a provider you use every day can be missing from the aggregate
-  entirely. Observed on a dev hub in 2026-09 where `infrastructure` was
-  `scope: org`: `tools/list` returned 69 tools from `agents` (32), `code` (12),
-  `edges` (23) and `kuery` (2), and **no `infrastructure__*` at all**. Every
-  instance operation had to go through kubectl or the provider's REST API.
-  Always call `tools/list` before planning a route through a tool; the
-  inventory below is what a provider *can* contribute, not what you have.
+- **Scope and bearer type are the filter, and they bite.** On a hub where
+  `infrastructure` is `scope: org`, your own hub token (OIDC/static) in a
+  team workspace gets the org copy if its edge route works, but the
+  long-lived connect token, a ServiceAccount, gets **no
+  `infrastructure__*` at all** — so MCP clients configured from
+  `faros mcp url` see no org-scoped providers.
+  Always call `tools/list` with the bearer you will actually use before
+  planning a route through a tool; the inventory below is what a provider
+  *can* contribute, not what you have.
 
 Get the URL and a token:
 
 ```bash
-faros mcp url --mcpserver-name default        # kubeconfig token; placeholder on OIDC hubs
+faros mcp url --mcpserver-name default        # long-lived token from the connect endpoint, also on OIDC hubs
+eval "$(faros env)"                           # MCP_URL, MCP_TOKEN (same connect token) plus TOKEN, ORG, WS, …
 curl -s "$HUB/api/orgs/$ORG/workspaces/$WS/mcpservers/default/connect" -H "$A" -H "X-Faros-Org: $ORG" -H "X-Faros-Workspace: $WS"
 # {"endpointURL":…,"serverName":"faros","token":…,"tokenReady":true}
 ```
 
+The connect token is the MCPServer's ServiceAccount token: it does not
+expire like an OIDC token, but it gets no org-owned (BYO) provider tools.
+For those, call the endpoint with your own hub bearer (`$TOKEN`).
+
 **Calling it without an MCP client.** The endpoint is plain JSON-RPC over
-HTTP, so `curl` is enough (see SKILL.md section 9.2). `Accept` must contain
-**both** `application/json` and `text/event-stream`, or the endpoint answers
+HTTP, so `curl` is enough (SKILL.md section 8, "MCP over plain HTTP").
+`Accept` must contain **both** `application/json` and `text/event-stream`,
+or the endpoint answers
 `400 Accept must contain both 'application/json' and 'text/event-stream'`.
 Replies always arrive as SSE (`event: message`, then `data: {…}`), so strip
 the leading `data: ` and parse the last JSON object. A failing tool still
@@ -92,8 +116,10 @@ status:
 
 The controller provisions ServiceAccount `<name>-mcp` in namespace `default`,
 its token Secret, and ClusterRole `faros:mcpserver:<name>`; federation
-status refreshes every 60 s. There is **no** edge label selector on the
-spec. Hub REST: `GET|POST /api/orgs/{org}/workspaces/{ws}/mcpservers`,
+status refreshes every 60 s. `status.federatedProviders` is
+enumerated as the server's own ServiceAccount: it reflects the Org's
+shadowing but lists no org-owned providers (a human bearer may see more).
+There is **no** edge label selector on the spec. Hub REST: `GET|POST /api/orgs/{org}/workspaces/{ws}/mcpservers`,
 `PATCH|DELETE …/{name}`, `GET …/{name}/connect`. To hand an agent narrower
 access, create a workspace service account and use its token, or a
 `readOnly` MCPServer.
@@ -155,8 +181,9 @@ server edges are reached with `faros ssh`.
 ### `infrastructure__*`
 
 `list_templates`, `describe_template`, `provision`, `list_instances`,
-`get_instance`, `update_instance`, `delete_instance`, `dev_sync`, `dev_logs`,
-`dev_restart`. Details in [infrastructure.md](infrastructure.md).
+`get_instance`, `update_instance`, `delete_instance`, `dev_sync`, `dev_exec`,
+`dev_logs`, `dev_restart`. Details in
+[infrastructure.md](infrastructure.md).
 
 ### `code__*`
 

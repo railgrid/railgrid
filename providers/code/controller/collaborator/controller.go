@@ -17,6 +17,7 @@ package collaborator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,6 +73,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if controllerutil.ContainsFinalizer(&collab, codev1alpha1.FinalizerCollaborator) {
 			if ready {
 				if err := b.RemoveCollaborator(ctx, conn, cred, repo, &collab); err != nil {
+					if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+						return r.waitForRateLimit(ctx, c, &collab, msg, wait)
+					}
 					return r.fail(ctx, c, &collab, "RemoveFailed", err.Error())
 				}
 			}
@@ -96,6 +100,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	res, err := b.EnsureCollaborator(ctx, conn, cred, repo, &collab)
 	if err != nil {
+		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+			return r.waitForRateLimit(ctx, c, &collab, msg, wait)
+		}
 		return r.fail(ctx, c, &collab, "EnsureFailed", err.Error())
 	}
 
@@ -138,10 +145,24 @@ func (r *Reconciler) resolve(ctx context.Context, c client.Client, collab *codev
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, collab *codev1alpha1.Collaborator, reason, msg string) (ctrl.Result, error) {
-	collab.Status.ObservedGeneration = collab.Generation
-	shared.SetCondition(&collab.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, collab.Generation)
-	if err := c.Status().Update(ctx, collab); err != nil {
+	if err := setNotReady(ctx, c, collab, reason, msg); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, fmt.Errorf("%s: %s", reason, msg)
+}
+
+// waitForRateLimit records the host rate limit on Ready and schedules the
+// retry for the reset instead of returning an error (see shared.RateLimitWait).
+func (r *Reconciler) waitForRateLimit(ctx context.Context, c client.Client, collab *codev1alpha1.Collaborator, msg string, wait time.Duration) (ctrl.Result, error) {
+	if err := setNotReady(ctx, c, collab, codev1alpha1.ReasonRateLimited, msg); err != nil {
+		return ctrl.Result{}, err
+	}
+	klog.FromContext(ctx).V(3).Info("collaborator rate limited, requeuing", "collaborator", collab.Name, "after", wait)
+	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+func setNotReady(ctx context.Context, c client.Client, collab *codev1alpha1.Collaborator, reason, msg string) error {
+	collab.Status.ObservedGeneration = collab.Generation
+	shared.SetCondition(&collab.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, collab.Generation)
+	return c.Status().Update(ctx, collab)
 }

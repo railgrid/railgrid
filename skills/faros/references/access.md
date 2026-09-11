@@ -1,6 +1,6 @@
 # Access reference: CLI, auth, hub REST, URL grammar
 
-Read from the faros source on 2026-09-09. Citations are repo-relative.
+Source citations are repo-relative paths in the faros repository.
 
 ## 1. CLI command tree
 
@@ -10,7 +10,7 @@ else `~/.kube/config`). Everything else is per command.
 
 | Command | Flags | What it does |
 |---|---|---|
-| `login` | `--hub-url` (or `$FAROS_HUB_URL`, required), `--token`, `-i/--interactive`, `--insecure-skip-tls-verify` | OIDC browser flow with PKCE and a localhost callback, or `POST /auth/token-login` with a static token. Writes cluster, context, and user named `faros` and sets it current. Re-login keeps a previously selected workspace on the same hub. |
+| `login` | `--hub-url` (or `$FAROS_HUB_URL`, required), `--token`, `-i/--interactive`, `--insecure-skip-tls-verify` | OIDC browser flow with PKCE and a localhost callback, or `POST /auth/token-login` with a static token. Writes cluster, context, and user named `faros` and sets it current. Re-login keeps the selected workspace on the same hub. |
 | `get-token` (hidden) | `--oidc-issuer-url`, `--oidc-client-id`, `--insecure-skip-tls-verify` | kubectl exec plugin. Prints an ExecCredential with `.status.token`; refreshes from `~/.config/faros/tokens/`. Usable by hand to obtain a bearer for curl. |
 | `use` (aliases `switch`, `ctx`) | `--org`, `--workspace` | Lists orgs and workspaces via hub REST, rewrites the `faros` cluster server to `<hub>/clusters/<clusterName>`. Names match case-insensitively; UUIDs win; ambiguity errors. No TTY plus a missing flag is an error. |
 | `connect` (aliases `ws`, `workspace`) | `-i` | kcp `kubectl ws` rebadged. Targets: `<edge>` enter an edge mount, `:` hub root, `..` up, `.` print, `-` previous, `~` home, `root:…` absolute. Kubeconfig surgery on the current context. |
@@ -23,7 +23,9 @@ else `~/.kube/config`). Everything else is per command.
 | `edge delete <name>` | | Irreversible |
 | `get <resource>` | | Only `edges`, `workloads` (`vw`), `placements`. Table output only. Use kubectl for anything else. |
 | `apply -f <file>` | `-f` | Single YAML doc, naive pluralization (`Kind+"s"`), full replace with resourceVersion. Prefer kubectl. |
-| `mcp url` | `--mcpserver-name <name>` or `--edge <name>` (exactly one) | Prints the endpoint plus Claude Code, Claude Desktop, and Codex snippets. Token is read from the kubeconfig `authInfo.token`, so OIDC users get a placeholder. |
+| `mcp url` | `--mcpserver-name <name>` or `--edge <name>` (exactly one) | Prints the endpoint plus Claude Code, Claude Desktop, and Codex snippets. With `--mcpserver-name` it fetches the long-lived MCPServer token from the hub's `…/mcpservers/{name}/connect` (works on OIDC hubs; the faros context must target the same workspace as the current context). Falls back to the kubeconfig `authInfo.token`, and prints a note on stderr when neither exists (OIDC + `--edge`) or the hub has not minted the token yet. |
+| `env` | `--json`, `--no-mcp`, `--org`, `--workspace` | Prints `export` lines for `HUB CLUSTER ORG WS TOKEN AS MCP_URL MCP_TOKEN`: `eval "$(faros env)"`. Details in [cli.md](cli.md). |
+| `app`, `commit`, `sandbox` | see [cli.md](cli.md) | App Studio projects, faros-recorded git commits, and the dev-instance data plane from a terminal. |
 | `ssh <name> [-- cmd…]` | | WebSocket to the LinuxServer `ssh` subresource. Interactive needs a TTY. `cat f \| faros ssh x -- "cat > /tmp/f"` copies files. No `-L`/`-R`. |
 | `agent run\|join\|install\|uninstall\|upgrade`, `install` | see below | Edge agent lifecycle on the target host, not laptop workflow |
 | `version` | | version, commit, build date, go version, platform |
@@ -48,7 +50,7 @@ Environment variables the CLI reads: `FAROS_HUB_URL`, `FAROS_AGENT_IMAGE`,
 and `HOME`. `FAROS_MCP_TOKEN` is only printed for the Codex snippet.
 
 Sources: `pkg/cli/cmd/{login,use,workspace,kubeconfig,edge,get,apply,mcp,ssh,agent,install,version}.go`,
-`pkg/cli/cmd/dev/`.
+`pkg/cli/cmd/{env,app,commit,sandbox,hubclient}.go`, `pkg/cli/cmd/dev/`.
 
 ## 2. Where credentials live
 
@@ -180,6 +182,13 @@ POST             /api/orgs/{org}/workspaces/{ws}/serviceaccounts             nar
 Unauthenticated: `GET /healthz` → `{"status","oidc","tokenLogin","issuerUrl","clientId"}`,
 `GET /readyz`, `GET /version`. Auth: `GET /auth/authorize`, `GET /auth/callback`,
 `POST /auth/refresh`, `POST /auth/token-login`.
+
+App access: `POST /auth/apps/token` (your hub
+bearer → a short-lived `fapp_` token bound to one private app) and
+`POST /auth/apps/verify` (called by the app's access gate, not by you).
+Private apps accept only `fapp_` tokens in `Authorization`; raw hub tokens
+are refused at the gate. Request, limits and errors:
+[infrastructure.md](infrastructure.md) section 5, "App access tokens".
 
 Enable semantics: the hub resolves org-scoped providers first (they shadow
 platform providers of the same name), rejects providers without an

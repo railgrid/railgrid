@@ -168,3 +168,74 @@ func TestAppCommands(t *testing.T) {
 		t.Fatalf("promote: %v values=%v out=%q", err, promote.Values, out)
 	}
 }
+
+func TestAppSyncCommand(t *testing.T) {
+	hub := newFakeHub(t)
+	path := hub.useKubeconfig("cl-b")
+
+	var calls []string
+	hub.handle("POST "+appStudioPrefix+"/shop/hydrate-workspace", func(w http.ResponseWriter, r *http.Request) {
+		b := new(bytes.Buffer)
+		_, _ = b.ReadFrom(r.Body)
+		calls = append(calls, "hydrate "+b.String())
+		writeTestJSON(w, map[string]any{"repositoryRef": "shop", "ref": "main", "commitSHA": "1234567890ab", "written": []string{"api/index.js", "web/index.html"}})
+	})
+	hub.handle("POST "+appStudioPrefix+"/shop/sync-development", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, "sync")
+		writeTestJSON(w, map[string]any{
+			"target": map[string]any{"ResourceName": "shop-dev"},
+			"result": map[string]any{
+				"web": map[string]any{"phase": "Synced", "changed": []string{"index.html"}, "restarted": true, "sourceRevision": 7,
+					"skipped": []map[string]any{{"path": "public/logo.png", "reason": "binary-unsupported"}}},
+				"api": map[string]any{"phase": "Synced", "changed": []string{"index.js"}, "sourceRevision": 7},
+			},
+		})
+	})
+
+	out, err := runRoot(t, path, "app", "sync", "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"hydrate {}", "sync"}) {
+		t.Fatalf("calls = %q, want hydrate with {} then sync", calls)
+	}
+	for _, want := range []string{
+		"workspace: loaded from shop@main (1234567), 2 written, 0 skipped",
+		"shop-dev/api: Synced, 1 changed, 0 deleted, restarted=false, revision 7\n",
+		"shop-dev/web: Synced, 1 changed, 0 deleted, restarted=true, revision 7, 1 skipped",
+		"  skipped public/logo.png (binary-unsupported)",
+		"dev agent does not accept binary files",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "shop-dev/api") > strings.Index(out, "shop-dev/web") {
+		t.Fatalf("components not sorted:\n%s", out)
+	}
+
+	out, err = runRoot(t, path, "app", "sync", "shop", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded appSyncOutput
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil || len(decoded.Hydrate) == 0 || !strings.Contains(string(decoded.Sync), "binary-unsupported") {
+		t.Fatalf("json output: %v\n%s", err, out)
+	}
+}
+
+func TestAppCreateConflictShowsServerMessage(t *testing.T) {
+	hub := newFakeHub(t)
+	path := hub.useKubeconfig("cl-b")
+	const msg = `a code Repository named "shop" already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name`
+	hub.handle("POST "+appStudioPrefix, func(w http.ResponseWriter, r *http.Request) {
+		writeTestStatus(w, http.StatusConflict, "Conflict", msg)
+	})
+	_, err := runRoot(t, path, "app", "create", "shop", "--template", "application")
+	if err == nil {
+		t.Fatal("expected a 409 to fail create")
+	}
+	if want := `project "shop" not created (HTTP 409): ` + msg; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}

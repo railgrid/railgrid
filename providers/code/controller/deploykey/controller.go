@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -86,6 +87,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if controllerutil.ContainsFinalizer(&key, codev1alpha1.FinalizerDeployKey) {
 			if ready && key.Status.KeyID != "" {
 				if err := b.DeleteDeployKey(ctx, conn, cred, repo, key.Status.KeyID); err != nil {
+					if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+						return r.waitForRateLimit(ctx, c, &key, msg, wait)
+					}
 					return r.fail(ctx, c, &key, "DeleteFailed", err.Error())
 				}
 			}
@@ -121,6 +125,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	res, err := b.EnsureDeployKey(ctx, conn, cred, repo, &key, publicKey)
 	if err != nil {
+		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+			return r.waitForRateLimit(ctx, c, &key, msg, wait)
+		}
 		return r.fail(ctx, c, &key, "EnsureFailed", err.Error())
 	}
 
@@ -233,12 +240,26 @@ func (r *Reconciler) deleteSecret(ctx context.Context, c client.Client, key *cod
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, key *codev1alpha1.DeployKey, reason, msg string) (ctrl.Result, error) {
-	key.Status.ObservedGeneration = key.Generation
-	shared.SetCondition(&key.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, key.Generation)
-	if err := c.Status().Update(ctx, key); err != nil {
+	if err := setNotReady(ctx, c, key, reason, msg); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, fmt.Errorf("%s: %s", reason, msg)
+}
+
+// waitForRateLimit records the host rate limit on Ready and schedules the
+// retry for the reset instead of returning an error (see shared.RateLimitWait).
+func (r *Reconciler) waitForRateLimit(ctx context.Context, c client.Client, key *codev1alpha1.DeployKey, msg string, wait time.Duration) (ctrl.Result, error) {
+	if err := setNotReady(ctx, c, key, codev1alpha1.ReasonRateLimited, msg); err != nil {
+		return ctrl.Result{}, err
+	}
+	klog.FromContext(ctx).V(3).Info("deploy key rate limited, requeuing", "deploykey", key.Name, "after", wait)
+	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+func setNotReady(ctx context.Context, c client.Client, key *codev1alpha1.DeployKey, reason, msg string) error {
+	key.Status.ObservedGeneration = key.Generation
+	shared.SetCondition(&key.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, key.Generation)
+	return c.Status().Update(ctx, key)
 }
 
 // secretName is the deterministic name of the generated private-key Secret.

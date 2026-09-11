@@ -105,12 +105,29 @@ tenantLimitRange:
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,
 # universal → ghcr.io/faroshq/faros-universal-dev:latest,
-# agent → ghcr.io/faroshq/faros-dev-agent:latest). When codingSandbox.enabled
+# agent → see agentImage below). When codingSandbox.enabled
 # is true, both universal and agentImage must be immutable digest references.
 development:
   # The injector image carrying the static faros-dev-agent binary
-  # (FAROS_DEV_AGENT_IMAGE).
+  # (FAROS_DEV_AGENT_IMAGE). Set it to pin a digest. Empty → the dev agent of
+  # THIS release: a released chart (appVersion vX.Y.Z) renders
+  # <agentImageRepository>:vX.Y.Z (published by the same provider release);
+  # the unreleased in-repo chart omits the env var and the binary picks its
+  # own release tag, or :latest for local builds (kind/Tilt side-load it).
+  # The injector pulls IfNotPresent, so never point this at a mutable tag
+  # like :latest in production — nodes keep the copy they cached first.
+  #
+  # Existing dev sandboxes pick up a new agent automatically once this
+  # resolved reference CHANGES (a chart upgrade to a new appVersion, or a new
+  # tag/digest here): the provider restarts with the new env, re-applies
+  # every Template's kro RGD with the new image, and kro re-reconciles all
+  # instances, which re-rolls each dev Deployment (Recreate; the workspace PVC
+  # is kept). If the reference string does not change (e.g. an explicit
+  # :latest), nothing re-renders — deleting dev pods is not enough either,
+  # since a node with the stale image cached reuses it; change the reference.
   agentImage: ""
+  # Repository the release-versioned default above is built from.
+  agentImageRepository: ghcr.io/faroshq/faros-dev-agent
   # Public ES256 JSON Web Key Set used by the injected preview bridge
   # to verify short-lived capabilities issued by App Studio. Configure the
   # current key and, during rotation, the previous key. Never put a private

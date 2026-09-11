@@ -22,7 +22,11 @@ COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY providers/infrastructure/ ./
 COPY --from=portal /portal/dist ./portal/dist
-RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/infrastructure-provider .
+# provider-release.yaml passes VERSION=vX.Y.Z; a release version makes the
+# binary default FAROS_DEV_AGENT_IMAGE to the same release's faros-dev-agent
+# image. Local builds keep "dev" (→ faros-dev-agent:latest, side-loadable).
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/infrastructure-provider .
 
 # 2b. Fetch the helm CLI. The operator (`controller` subcommand) shells out to
 #     helm to install/upgrade the kro release, so the runtime image needs it.

@@ -40,14 +40,32 @@ import (
 	"github.com/faroshq/provider-sdk/hubclient"
 	"github.com/faroshq/provider-sdk/vwhealth"
 
+	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
 	"github.com/faroshq/provider-infrastructure/install"
 	"github.com/faroshq/provider-infrastructure/mcpserver"
 	"github.com/faroshq/provider-infrastructure/server"
 	"github.com/faroshq/provider-infrastructure/tenant"
 )
 
-// heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
+// heartbeatVersion is reported to the hub by non-release builds; align with
+// manifest.yaml spec.version. Release builds report buildVersion instead.
 const heartbeatVersion = "0.1.0"
+
+// buildVersion is the provider release version, stamped by the provider
+// Dockerfile (-ldflags "-X main.buildVersion=${VERSION}"; provider-release.yaml
+// passes VERSION=vX.Y.Z). Local `go build`/Tilt builds keep "dev". A release
+// version selects the same release's faros-dev-agent image as the in-binary
+// default (backend/kro defaultDevAgentImage) and is what the heartbeat reports.
+var buildVersion = "dev"
+
+// reportedVersion is the version sent in hub heartbeats (FAROS_PROVIDER_VERSION
+// still overrides it inside hubclient.ConfigFromEnv).
+func reportedVersion() string {
+	if krobackend.IsReleaseVersion(buildVersion) {
+		return buildVersion
+	}
+	return heartbeatVersion
+}
 
 // Subcommands:
 //
@@ -68,6 +86,9 @@ const heartbeatVersion = "0.1.0"
 // The split lets dev clusters run init once (Makefile target) and
 // keeps the long-lived process scoped to the minted SA's grants.
 func main() {
+	// Before any subcommand builds the kro backend: release builds default the
+	// dev-agent injector to this release's image instead of :latest.
+	krobackend.SetProviderVersion(buildVersion)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "init":
@@ -206,7 +227,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	// client-secret bridge). Opt-in via FAROS_APP_BASE_DOMAIN + KRO_KUBECONFIG.
 	startInstanceController(ctx, kcpConfig)
 
-	hb, err := hubclient.ConfigFromEnv("infrastructure", heartbeatVersion)
+	hb, err := hubclient.ConfigFromEnv("infrastructure", reportedVersion())
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}

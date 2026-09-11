@@ -147,7 +147,13 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 	if dryRun {
 		for _, f := range plan.args.Files {
 			if f.Encoding == encodingBase64 {
-				_, _ = fmt.Fprintf(out, "write  %s (%d bytes, binary)\n", f.Path, base64.StdEncoding.DecodedLen(len(f.Content)))
+				// DecodedLen is the upper bound (it ignores padding), which
+				// overstated sizes by up to 2 bytes; report the real size.
+				raw, err := base64.StdEncoding.DecodeString(f.Content)
+				if err != nil {
+					return fmt.Errorf("%s: invalid base64 payload: %w", f.Path, err)
+				}
+				_, _ = fmt.Fprintf(out, "write  %s (%d bytes, binary)\n", f.Path, len(raw))
 				continue
 			}
 			_, _ = fmt.Fprintf(out, "write  %s (%d bytes)\n", f.Path, len(f.Content))

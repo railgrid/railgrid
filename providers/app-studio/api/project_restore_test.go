@@ -122,6 +122,116 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 	}
 }
 
+func TestCheckoutSkippedPaths(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		skipped  []string
+		want     []string
+		complete bool
+	}{
+		{name: "none", complete: true},
+		{
+			name:     "reason suffixes",
+			skipped:  []string{"public/logo.png (binary)", "assets/model (v2).glb (file too large)", "z.txt (file-count cap)", "y.txt (total-size cap)"},
+			want:     []string{"public/logo.png", "assets/model (v2).glb", "z.txt", "y.txt"},
+			complete: true,
+		},
+		{name: "capped list", skipped: []string{"a.png (binary)", "(more paths skipped)"}, want: []string{"a.png"}},
+		{name: "truncated tree", skipped: []string{"(tree truncated by the host: repository has more entries than the tree API returns)"}},
+		{name: "unknown shape", skipped: []string{"a.png (symlink)"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, complete := checkoutSkippedPaths(test.skipped)
+			if strings.Join(got, "|") != strings.Join(test.want, "|") || complete != test.complete {
+				t.Fatalf("checkoutSkippedPaths = %q, %v; want %q, %v", got, complete, test.want, test.complete)
+			}
+		})
+	}
+}
+
+// Checkout skip entries carry a reason suffix ("path (binary)"); restore must
+// match them to workspace paths or it deletes exactly the files it meant to keep.
+func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
+	logo := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0xff}
+	for _, test := range []struct {
+		name        string
+		skipped     []string
+		wantDeleted []string
+	}{
+		{
+			name:        "listed skips",
+			skipped:     []string{"public/logo.png (binary)", "data/big.json (file too large)"},
+			wantDeleted: []string{"stale.txt"},
+		},
+		{
+			// The list itself was capped: any omitted file may be a skipped
+			// one, so nothing is deleted.
+			name:    "capped skip list",
+			skipped: []string{"public/logo.png (binary)", "(more paths skipped)"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			commitSHA := strings.Repeat("a", 40)
+			project := projectForPromoteWithRepository("shop", "repo-a")
+			project.UID = types.UID("project-uid")
+			commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
+			client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
+			workspaces := workspace.NewFileStore(t.TempDir())
+			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
+			if _, err := workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "public/logo.png", Data: logo}); err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range []workspace.WriteOptions{
+				{Path: "data/big.json", Content: "{}\n"},
+				{Path: "stale.txt", Content: "remove\n"},
+			} {
+				if _, err := workspaces.WriteFile(ctx, scope, file); err != nil {
+					t.Fatal(err)
+				}
+			}
+			expectedRevision, err := workspaces.SourceRevision(ctx, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upstream := restoreCheckoutServer(t, checkoutToolResult{
+				CommitSHA: commitSHA,
+				Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
+				Skipped:   test.skipped,
+			}, nil)
+			defer upstream.Close()
+			server := &Server{
+				store:                        store.NewMemoryStore(),
+				workspaces:                   workspaces,
+				hubBase:                      upstream.URL,
+				projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
+				developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },
+			}
+
+			response := httptest.NewRecorder()
+			server.restoreProjectWorkspace(response, restoreRequest(commitSHA, expectedRevision))
+			if response.Code != http.StatusOK {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+			var restored projectRestoreResponse
+			if err := json.NewDecoder(response.Body).Decode(&restored); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(restored.Deleted, ",") != strings.Join(test.wantDeleted, ",") || strings.Join(restored.Skipped, ",") != strings.Join(test.skipped, ",") {
+				t.Fatalf("restore response = %#v", restored)
+			}
+			for _, kept := range []string{"public/logo.png", "data/big.json"} {
+				if exists, err := workspaces.FileExists(ctx, scope, kept); err != nil || !exists {
+					t.Fatalf("skipped file %s was not preserved (exists=%v, err=%v)", kept, exists, err)
+				}
+			}
+			if app, err := workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: "app.txt"}); err != nil || app.Content != "restored\n" {
+				t.Fatalf("restored app = %#v, err=%v", app, err)
+			}
+		})
+	}
+}
+
 func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	commitSHA := strings.Repeat("a", 40)
 	project := projectForPromoteWithRepository("shop", "repo-a")

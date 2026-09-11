@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,6 +76,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			// if the Connection/credential is already gone we still release.
 			if ready {
 				if err := b.DeleteRepository(ctx, conn, cred, &repo); err != nil {
+					if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+						return r.waitForRateLimit(ctx, c, &repo, msg, wait)
+					}
 					return r.fail(ctx, c, &repo, "DeleteFailed", err.Error())
 				}
 			}
@@ -101,6 +105,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	res, err := b.EnsureRepository(ctx, conn, cred, &repo)
 	if err != nil {
+		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
+			return r.waitForRateLimit(ctx, c, &repo, msg, wait)
+		}
 		if errors.Is(err, backend.ErrRepositoryIdentityConflict) {
 			return r.fail(ctx, c, &repo, "RepositoryIdentityConflict", err.Error())
 		}
@@ -141,10 +148,24 @@ func (r *Reconciler) resolve(ctx context.Context, c client.Client, repo *codev1a
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, repo *codev1alpha1.Repository, reason, msg string) (ctrl.Result, error) {
-	repo.Status.ObservedGeneration = repo.Generation
-	shared.SetCondition(&repo.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, repo.Generation)
-	if err := c.Status().Update(ctx, repo); err != nil {
+	if err := setNotReady(ctx, c, repo, reason, msg); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, fmt.Errorf("%s: %s", reason, msg)
+}
+
+// waitForRateLimit records the host rate limit on Ready and schedules the
+// retry for the reset instead of returning an error (see shared.RateLimitWait).
+func (r *Reconciler) waitForRateLimit(ctx context.Context, c client.Client, repo *codev1alpha1.Repository, msg string, wait time.Duration) (ctrl.Result, error) {
+	if err := setNotReady(ctx, c, repo, codev1alpha1.ReasonRateLimited, msg); err != nil {
+		return ctrl.Result{}, err
+	}
+	klog.FromContext(ctx).V(3).Info("repository rate limited, requeuing", "repository", repo.Name, "after", wait)
+	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+func setNotReady(ctx context.Context, c client.Client, repo *codev1alpha1.Repository, reason, msg string) error {
+	repo.Status.ObservedGeneration = repo.Generation
+	shared.SetCondition(&repo.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, repo.Generation)
+	return c.Status().Update(ctx, repo)
 }

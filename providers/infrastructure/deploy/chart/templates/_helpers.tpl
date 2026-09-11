@@ -76,6 +76,38 @@ pattern validation.
 {{- trim (default "" (default (dict) .Values.sandbox).runtimeClassName) -}}
 {{- end -}}
 
+{{/*
+devAgentImage resolves FAROS_DEV_AGENT_IMAGE (the faros-dev-agent injector
+every development pod runs). Both consumers — the legacy serve Deployment
+(init + serve containers) and the operator-managed InfrastructureProvider CR —
+go through this helper so they can never disagree.
+
+  1. development.agentImage, when set, always wins (a digest in production;
+     required as a digest when codingSandbox.enabled).
+  2. Otherwise, when the chart is a release package (appVersion vX.Y.Z[-pre],
+     stamped by provider-release.yaml via `helm package --app-version`), the
+     dev agent published by the SAME release:
+     <development.agentImageRepository>:<appVersion>. The injector uses
+     imagePullPolicy IfNotPresent, so a mutable :latest would keep whatever a
+     node cached first and provider upgrades would never reach sandboxes.
+  3. Otherwise (the in-repo chart, appVersion "0.1.0", used by local
+     kind/Tilt flows) empty: the env var is omitted and the binary falls back
+     to its own default (its release version, or :latest for local builds so
+     side-loaded images keep working).
+
+`default (dict)` keeps the lookup nil-safe for --reuse-values upgrades from a
+release predating development.agentImageRepository.
+*/}}
+{{- define "infrastructure.devAgentImage" -}}
+{{- $dev := default (dict) .Values.development -}}
+{{- $appVersion := toString .Chart.AppVersion -}}
+{{- if $dev.agentImage -}}
+{{- $dev.agentImage -}}
+{{- else if and (regexMatch `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$` $appVersion) (not (hasSuffix "-dirty" $appVersion)) -}}
+{{- printf "%s:%s" (default "ghcr.io/faroshq/faros-dev-agent" $dev.agentImageRepository) $appVersion -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "infrastructure.centralKroSecretKey" -}}
 {{- default "kubeconfig" .Values.centralKro.kubeconfigSecretRef.key -}}
 {{- end -}}

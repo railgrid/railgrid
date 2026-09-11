@@ -1,7 +1,6 @@
 # Agents provider reference
 
-Read from `providers/agents/` on 2026-09-09. REST base
-`https://<hub>/services/providers/agents` (written `$AG`). Headers as for
+REST base `https://<hub>/services/providers/agents` (written `$AG`). Headers as for
 every provider: bearer, `X-Faros-Org`, `X-Faros-Workspace`. MCP tools appear
 on the aggregate as `agents__*`.
 
