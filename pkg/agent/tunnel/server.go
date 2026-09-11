@@ -44,7 +44,16 @@ func setupRouter(downstream *rest.Config, sshPort int, svc SvcProxyOptions) *mux
 	router := mux.NewRouter()
 
 	// SSH handler — proxies the revdial connection to the host sshd on sshPort.
-	router.HandleFunc("/ssh", newSSHHandler(sshPort)).Methods("GET")
+	// A service-only host edge (currently MacOSServer) passes sshPort=0. Keep a
+	// truthful route for accidental callers while avoiding any startup or
+	// request-time dependency on sshd.
+	if sshPort > 0 {
+		router.HandleFunc("/ssh", newSSHHandler(sshPort)).Methods("GET")
+	} else {
+		router.HandleFunc("/ssh", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "ssh proxy is not enabled for this edge", http.StatusNotImplemented)
+		}).Methods("GET")
+	}
 
 	// Agent management API — provider-pulled service discovery (and future host
 	// facts). Available in both server and kubernetes modes.

@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/faroshq/faros/pkg/apiurl"
 	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
@@ -69,12 +70,13 @@ func newEdgeCreateCommand() *cobra.Command {
 				edgeType = "kubernetes"
 			}
 
-			// The connectable kind IS the type: KubernetesCluster or LinuxServer
-			// (no spec.type discriminator anymore).
-			kind, gvr := "KubernetesCluster", farosclient.KubernetesClusterGVR
-			if edgeType == "server" {
-				kind, gvr = "LinuxServer", farosclient.LinuxServerGVR
+			if edgeType != "kubernetes" && edgeType != "server" && edgeType != "macos" {
+				return fmt.Errorf("unknown --type %q: must be kubernetes, server, or macos", edgeType)
 			}
+
+			// The connectable kind IS the type: KubernetesCluster, LinuxServer,
+			// or MacOSServer (there is no spec.type discriminator).
+			kind, gvr := farosclient.EdgeKindForType(edgeType), farosclient.EdgeGVRForType(edgeType)
 
 			edge := &unstructured.Unstructured{
 				Object: map[string]interface{}{
@@ -119,7 +121,7 @@ func newEdgeCreateCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this edge (key=value pairs)")
-	cmd.Flags().StringVar(&edgeType, "type", "kubernetes", "Edge type: kubernetes or server")
+	cmd.Flags().StringVar(&edgeType, "type", "kubernetes", "Edge type: kubernetes, server, or macos")
 
 	return cmd
 }
@@ -165,8 +167,12 @@ func loadHubURL() string {
 func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 	fmt.Println()
 	fmt.Printf("# Step 1: Install the faros CLI (if not already installed)\n\n")
-	fmt.Printf("  # Linux/macOS — download from GitHub Releases:\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  # Download from GitHub Releases:\n")
+	if edgeType == "macos" {
+		fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_Darwin_$(uname -m).tar.gz | tar xz\n")
+	} else {
+		fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
+	}
 	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n")
 	fmt.Println()
 	fmt.Printf("  # Or via krew:\n")
@@ -174,7 +180,8 @@ func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 	fmt.Printf("  kubectl krew install faros/faros\n")
 	fmt.Println()
 
-	if edgeType == "kubernetes" {
+	switch edgeType {
+	case "kubernetes":
 		fmt.Printf("# Step 2: Connect this Kubernetes cluster as an edge\n\n")
 		fmt.Printf("  # Option A — Helm (recommended for production):\n")
 		fmt.Printf("  helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\\n")
@@ -196,8 +203,8 @@ func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type kubernetes \\\n")
 		fmt.Printf("    --token %s\n", joinToken)
-	} else {
-		fmt.Printf("# Step 2: Connect this server as an edge\n\n")
+	case "server":
+		fmt.Printf("# Step 2: Connect this Linux server as an edge\n\n")
 		fmt.Printf("  # Option A — persistent install as a systemd service (recommended):\n")
 		fmt.Printf("  faros agent join \\\n")
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
@@ -210,6 +217,25 @@ func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type server \\\n")
+		fmt.Printf("    --token %s\n", joinToken)
+	default:
+		fmt.Printf("# Step 2: Connect this macOS host as a service edge\n\n")
+		fmt.Printf("  # Persistent launchd service (configured non-root worker account):\n")
+		fmt.Printf("  sudo faros agent join \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --type macos \\\n")
+		fmt.Printf("    --worker-user \"$USER\" \\\n")
+		if _, cluster := apiurl.SplitBaseAndCluster(hubURL); cluster != "" && cluster != "default" {
+			fmt.Printf("    --cluster %s \\\n", cluster)
+		}
+		fmt.Printf("    --token %s\n", joinToken)
+		fmt.Println()
+		fmt.Printf("  # Foreground process (dev/validation):\n")
+		fmt.Printf("  faros agent run \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --type macos \\\n")
 		fmt.Printf("    --token %s\n", joinToken)
 	}
 	fmt.Println()
@@ -231,7 +257,7 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 				return err
 			}
 
-			edge, _, err := getEdgeByName(ctx, dynClient, name)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
@@ -245,10 +271,7 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 				}
 			}
 
-			edgeType := getNestedString(*edge, "spec", "type")
-			if edgeType == "" {
-				edgeType = "kubernetes"
-			}
+			edgeType := farosclient.EdgeTypeForGVR(gvr)
 
 			hubURL := loadHubURL()
 			printJoinCommand(name, edgeType, hubURL, joinToken)
@@ -285,11 +308,8 @@ func newEdgeListCommand() *cobra.Command {
 			printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGENT VERSION", "AGE")
 
 			for _, item := range items {
-				// The kind is the type: KubernetesCluster → kubernetes, LinuxServer → server.
-				edgeType := "kubernetes"
-				if item.GetKind() == "LinuxServer" {
-					edgeType = "server"
-				}
+				// The kind is the type: KubernetesCluster, LinuxServer, or MacOSServer.
+				edgeType := farosclient.EdgeTypeForGVR(edgeGVRForKind(item.GetKind()))
 				phase := getNestedString(item, "status", "phase")
 				connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 				agentVersion := getNestedString(item, "status", "agentVersion")
@@ -318,12 +338,12 @@ func newEdgeGetCommand() *cobra.Command {
 				return err
 			}
 
-			edge, _, err := getEdgeByName(ctx, dynClient, name)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
 
-			edgeType := getNestedString(*edge, "spec", "type")
+			edgeType := farosclient.EdgeTypeForGVR(gvr)
 			phase := getNestedString(*edge, "status", "phase")
 			hostname := getNestedString(*edge, "status", "hostname")
 			workspaceURL := getNestedString(*edge, "status", "workspaceURL")

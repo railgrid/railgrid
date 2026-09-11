@@ -63,6 +63,18 @@ func TestServiceViewTarget(t *testing.T) {
 			wantResource: "kubernetesclusters",
 			wantTarget:   "http://home-assistant.home.svc:8123",
 		},
+		{
+			name:         "macOS server proxies to host loopback",
+			view:         newServiceView("MacOSServer", "mac-1", "", "", 8123),
+			wantResource: "macosservers",
+			wantTarget:   "http://127.0.0.1:8123",
+		},
+		{
+			name:         "unknown edge kind has no tunnel resource",
+			view:         newServiceView("UnexpectedKind", "edge-1", "", "", 8123),
+			wantResource: "",
+			wantTarget:   "http://127.0.0.1:8123",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

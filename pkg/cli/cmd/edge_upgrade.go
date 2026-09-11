@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	farosclient "github.com/faroshq/faros/pkg/client"
 	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
@@ -45,12 +46,12 @@ up to date.`,
 				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
-			edge, _, err := getEdgeByName(ctx, dynClient, name)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
 
-			edgeType := getNestedString(*edge, "spec", "type")
+			edgeType := farosclient.EdgeTypeForGVR(gvr)
 			agentVersion := getNestedString(*edge, "status", "agentVersion")
 			hubVersion := pkgversion.Get()
 
@@ -72,6 +73,8 @@ up to date.`,
 				printKubernetesUpgradeInstructions(name)
 			case "server":
 				printServerUpgradeInstructions(name, loadHubURL())
+			case "macos":
+				printMacOSUpgradeInstructions(name)
 			default:
 				fmt.Printf("Unknown edge type %q — cannot determine upgrade method.\n", edgeType)
 			}
@@ -110,6 +113,18 @@ func printServerUpgradeInstructions(name, _ string) {
 	fmt.Println()
 	fmt.Printf("Then restart the agent:\n\n")
 	fmt.Printf("  sudo systemctl restart faros-agent-%s\n", name)
+	fmt.Println()
+	fmt.Printf("After upgrading, verify with:\n")
+	fmt.Printf("  faros edge list\n")
+}
+
+func printMacOSUpgradeInstructions(name string) {
+	fmt.Printf("To upgrade the macOS agent binary on the worker host:\n\n")
+	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n")
+	fmt.Println()
+	fmt.Printf("Then restart the launchd service:\n\n")
+	fmt.Printf("  sudo launchctl kickstart -k system/com.faros.agent.%s\n", name)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  faros edge list\n")

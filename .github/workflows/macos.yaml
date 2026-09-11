@@ -1,0 +1,38 @@
+name: macOS Edges
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This workflow compiles and tests the Darwin agent and the localhost health
+# stub. It has no registry, release, or publishing steps; release publication
+# remains owned by the existing release workflows.
+jobs:
+  darwin:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compile Darwin agent targets
+        run: make build-macos-agent
+      - name: Compile Darwin health stub targets
+        run: make build-macos-stub
+      - name: Run focused root agent tests
+        run: make test-macos-agent
+      - name: Run Edges provider tests
+        run: make test-edges-provider
+      - name: Run Edges portal checks
+        run: make test-edges-portal

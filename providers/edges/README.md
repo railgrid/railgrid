@@ -61,6 +61,7 @@ the hub — not where they reach this provider.
 
 ## Further reading
 
+- [docs/macos-edges.md](../../docs/macos-edges.md) — macOS `MacOSServer` service-edge test and runbook
 - [docs/platform-internal-networking.md](../../docs/platform-internal-networking.md) — tunnel design and HA survey
 - [docs/edges-marketplace.md](../../docs/edges-marketplace.md) — workload catalog
 - [docs/provider-connectivity-contract.md](../../docs/provider-connectivity-contract.md)

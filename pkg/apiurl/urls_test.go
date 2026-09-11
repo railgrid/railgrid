@@ -299,6 +299,37 @@ func TestEdgeProxyURL(t *testing.T) {
 	}
 }
 
+func TestEdgeProviderCoordinates(t *testing.T) {
+	tests := []struct {
+		name     string
+		edgeType string
+		resource string
+	}{
+		{name: "kubernetes", edgeType: "kubernetes", resource: "kubernetesclusters"},
+		{name: "linux", edgeType: "server", resource: "linuxservers"},
+		{name: "macOS", edgeType: "macos", resource: "macosservers"},
+		{name: "legacy default", edgeType: "", resource: "kubernetesclusters"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, group, resource := EdgeProviderCoordinates(tt.edgeType)
+			if provider != "edges" || group != "edges.faros.sh" || resource != tt.resource {
+				t.Fatalf("EdgeProviderCoordinates(%q) = (%q, %q, %q), want (edges, edges.faros.sh, %s)",
+					tt.edgeType, provider, group, resource, tt.resource)
+			}
+		})
+	}
+}
+
+func TestProviderAgentProxyURLUsesMacOSResource(t *testing.T) {
+	got := ProviderAgentProxyURL("https://hub:9443/", "macos", "root:faros:tenant", "mac-mini", "proxy")
+	want := "https://hub:9443/services/providers/edges/agent/root:faros:tenant/apis/edges.faros.sh/v1alpha1/macosservers/mac-mini/proxy"
+	if got != want {
+		t.Fatalf("ProviderAgentProxyURL() = %q, want %q", got, want)
+	}
+}
+
 // TestKubernetesMCPPath / TestKubernetesMCPURL / TestLinuxMCPPath /
 // TestLinuxMCPURL removed alongside their helpers when the per-kind
 // MCP endpoints collapsed into the MCPServer aggregate. MCPServer

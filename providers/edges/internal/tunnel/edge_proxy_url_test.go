@@ -26,10 +26,12 @@ import (
 func testServer(edgeProxyPublicPath string) *Server {
 	kube := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	linux := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	mac := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "macosservers"}
 	return &Server{
 		kinds: map[string]KindConfig{
 			kube.Resource:  {GVR: kube, Kind: "KubernetesCluster"},
 			linux.Resource: {GVR: linux, Kind: "LinuxServer"},
+			mac.Resource:   {GVR: mac, Kind: "MacOSServer"},
 		},
 		group:               "edges.faros.sh",
 		version:             "v1alpha1",
@@ -62,6 +64,13 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			obj:     "dev-edge-srv-1",
 			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
 		},
+		{
+			name:    "macOS server has no consumer data-plane URL",
+			gvr:     s.kinds["macosservers"].GVR,
+			cluster: "11tcw27t4rdtnacy",
+			obj:     "dev-edge-mac-1",
+			want:    "",
+		},
 	}
 
 	for _, tc := range cases {
@@ -69,6 +78,9 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			got := s.edgeProxyStatusURL(tc.gvr, tc.cluster, tc.obj)
 			if got != tc.want {
 				t.Fatalf("edgeProxyStatusURL()\n got  %q\n want %q", got, tc.want)
+			}
+			if tc.want == "" {
+				return
 			}
 
 			// The CLI externalizes status.URL against the hub host, then the

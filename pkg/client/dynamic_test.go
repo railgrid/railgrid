@@ -57,3 +57,30 @@ func TestTypedResourceCreateInjectsTypeMeta(t *testing.T) {
 		t.Errorf("expected kind 'Organization', got %q", got.GetKind())
 	}
 }
+
+func TestEdgeMappingsIncludeMacOSServer(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  string
+		gvr  schema.GroupVersionResource
+		kind string
+	}{
+		{name: "kubernetes", typ: "kubernetes", gvr: KubernetesClusterGVR, kind: "KubernetesCluster"},
+		{name: "linux", typ: "server", gvr: LinuxServerGVR, kind: "LinuxServer"},
+		{name: "macos", typ: "macos", gvr: MacOSServerGVR, kind: "MacOSServer"},
+		{name: "unknown defaults to kubernetes", typ: "other", gvr: KubernetesClusterGVR, kind: "KubernetesCluster"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EdgeGVRForType(tt.typ); got != tt.gvr {
+				t.Fatalf("EdgeGVRForType(%q) = %v, want %v", tt.typ, got, tt.gvr)
+			}
+			if got := EdgeKindForType(tt.typ); got != tt.kind {
+				t.Fatalf("EdgeKindForType(%q) = %q, want %q", tt.typ, got, tt.kind)
+			}
+			if got := EdgeTypeForGVR(tt.gvr); got != tt.typ && tt.typ != "other" {
+				t.Fatalf("EdgeTypeForGVR(%v) = %q, want %q", tt.gvr, got, tt.typ)
+			}
+		})
+	}
+}

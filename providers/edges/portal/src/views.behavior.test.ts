@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
   listEdgeServices: vi.fn(),
   setToken: vi.fn(),
   setTenant: vi.fn(),
+  setHostFetch: vi.fn(),
 }))
 const confirm = vi.hoisted(() => ({
   confirmDialog: vi.fn(),
@@ -149,6 +150,32 @@ async function renderServiceMarkup(props: Record<string, unknown>): Promise<stri
       await Promise.resolve()
       state.readLoaded.value = true
       state.readLoading.value = false
+      return state
+    },
+    ssrRender: source.ssrRender,
+  }
+  return renderToString(createSSRApp(Wrapper, props))
+}
+
+async function renderDetailMarkup(props: Record<string, unknown>): Promise<string> {
+  const source = Detail as unknown as {
+    setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
+    ssrRender: (...args: any[]) => unknown
+  }
+  const Wrapper = {
+    props: ['name', 'type', 'cluster', 'token'],
+    async setup(wrapperProps: Record<string, unknown>, context: Record<string, unknown>) {
+      const state = source.setup(wrapperProps, context)
+      const requests = api.getEdge.mock.results
+        .slice(-1)
+        .map(result => result.value as Promise<unknown>)
+        .concat(api.listEdgeServices.mock.results.slice(-1).map(result => result.value as Promise<unknown>))
+      await Promise.all(requests)
+      await Promise.resolve()
+      state.readComplete.value = true
+      state.loading.value = false
+      state.technicalExpanded.value = true
+      state.servicesExpanded.value = true
       return state
     },
     ssrRender: source.ssrRender,
@@ -899,6 +926,37 @@ describe('edge list views', () => {
     }
   })
 
+  it('selects a macOS edge for host service creation and preserves MacOSServer', async () => {
+    api.listEdges.mockResolvedValue([{ ...edge, name: 'mac-mini', type: 'macos' }])
+    api.fetchServiceCatalog.mockResolvedValue([{
+      type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none',
+      defaultPort: 17873, defaultScheme: 'http', credential: {},
+    }])
+    const mounted = await mount(ServiceCreate, { initialEdgeType: 'macos', initialEdgeName: 'mac-mini' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.selectedEdgeKey).toBe('macos/mac-mini')
+      expect(state.selectedEdge.type).toBe('macos')
+      expect(state.selectedEdgeIsHost).toBe(true)
+      expect(state.targetMode).toBe('host')
+
+      state.draft.name = 'runner'
+      state.draft.host = '127.0.0.1'
+      state.draft.port = 17873
+      await state.onCreate()
+      expect(api.createKubeEdgeService).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'runner',
+        edgeName: 'mac-mini',
+        edgeKind: 'MacOSServer',
+        host: '127.0.0.1',
+        targetName: '',
+      }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('labels blank-host services as agent loopback and treats no-auth credentials as not required', async () => {
     const detail = {
       ...service,
@@ -927,6 +985,34 @@ describe('edge list views', () => {
       expect(state.serviceStatCards[0]).toEqual(expect.objectContaining({
         id: 'status', detail: 'No credentials required',
       }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps MacOSServer services on host reachability in the editor', async () => {
+    const macService = {
+      ...service,
+      edgeName: 'mac-mini',
+      edgeKind: 'MacOSServer',
+      host: '127.0.0.1',
+      targetNamespace: '',
+      targetName: '',
+      hasCredentials: false,
+      conditions: [],
+    }
+    api.getService.mockResolvedValue(macService)
+    const mounted = await mount(ServiceEdit, {
+      service: macService,
+      serviceName: macService.name,
+      catalog: [{ type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none', credential: {} }],
+      edges: [{ ...edge, name: 'mac-mini', type: 'macos' }],
+    })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.edgeIsHost).toBe(true)
+      expect(state.targetMode).toBe('host')
     } finally {
       mounted.unmount()
     }
@@ -1074,6 +1160,125 @@ describe('edge list views', () => {
 })
 
 describe('edge detail actions', () => {
+  it('renders an executable macOS join command with hub origin and cluster scope', async () => {
+    const previousWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://console.dev.kyrosos.com' } },
+    })
+    const macDetail = {
+      ...edgeDetail,
+      name: 'mac-mini',
+      type: 'macos',
+      kind: 'MacOSServer',
+      connected: false,
+      phase: 'Pending',
+      joinToken: 'join-secret',
+      spec: {},
+    }
+    api.getEdge.mockResolvedValue(macDetail)
+    api.listEdgeServices.mockResolvedValue([])
+    try {
+      const rendered = (await renderDetailMarkup({
+        name: macDetail.name,
+        type: macDetail.type,
+        cluster: 'tenant-macos',
+        token: null,
+      })).replaceAll('&quot;', '"')
+      expect(rendered).toContain('sudo faros agent join')
+      expect(rendered).toContain('--hub-url https://console.dev.kyrosos.com/clusters/tenant-macos')
+      expect(rendered).toContain('--edge-name mac-mini')
+      expect(rendered).toContain('--type macos')
+      expect(rendered).toContain('--worker-user "$(id -un)"')
+      expect(rendered).toContain('--cluster tenant-macos')
+      expect(rendered).toContain('--token ••••••••••••••••')
+      expect(rendered).not.toContain('join-secret')
+
+      const previousNavigator = globalThis.navigator
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: { clipboard: { writeText } },
+      })
+      const mounted = await mount(Detail, {
+        name: macDetail.name,
+        type: macDetail.type,
+        cluster: 'tenant-macos',
+        token: null,
+      })
+      try {
+        await flush()
+        await flush()
+        const state = mounted.instance.setupState
+        await state.copy(state.joinCommand, 'join', 'agent join command')
+        expect(writeText).toHaveBeenCalledWith(expect.stringContaining('--token join-secret'))
+        expect(writeText.mock.calls[0][0]).toContain('sudo faros agent join')
+      } finally {
+        mounted.unmount()
+        Object.defineProperty(globalThis, 'navigator', {
+          configurable: true,
+          value: previousNavigator,
+        })
+      }
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: previousWindow,
+      })
+    }
+  })
+
+  it('renders a connected macOS host as service-only and separates service readiness', async () => {
+    const macDetail = {
+      ...edgeDetail,
+      name: 'mac-mini',
+      type: 'macos',
+      kind: 'MacOSServer',
+      connected: true,
+      phase: 'Ready',
+      spec: {},
+    }
+    api.getEdge.mockResolvedValue(macDetail)
+    api.listEdgeServices.mockResolvedValue([
+      { name: 'runner', edgeName: 'mac-mini', serviceType: 'generic', port: 17873, phase: 'Pending' },
+      { name: 'healthy', edgeName: 'mac-mini', serviceType: 'generic', port: 17874, phase: 'Ready' },
+    ])
+    const mounted = await mount(Detail, {
+      name: macDetail.name,
+      type: macDetail.type,
+      cluster: null,
+      token: null,
+    })
+    try {
+      await flush()
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.edgeTypeLabel).toBe('macOS host')
+      expect(state.edgeStatus).toBe('Connected')
+      expect(state.configurationRows).toEqual([
+        { label: 'Host access', value: 'Tunnel available', mono: false },
+        { label: 'Service readiness', value: '1/2 Ready', mono: false },
+        { label: 'Execution', value: 'Service-only host', mono: false },
+      ])
+      expect(state.actionItems).toEqual([{ id: 'delete', label: 'Delete macOS host', tone: 'danger', disabled: false, busy: false }])
+
+      const rendered = await renderDetailMarkup({
+        name: macDetail.name,
+        type: macDetail.type,
+        cluster: null,
+        token: null,
+      })
+      expect(rendered).toContain('Service-only host')
+      expect(rendered).toContain('1/2 Ready')
+      expect(rendered).not.toContain('Open terminal')
+      expect(rendered).not.toContain('SSH access')
+      expect(rendered).not.toContain('faros ssh')
+      expect(rendered).not.toContain('kubectl')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('routes delete through confirmation, locks the menu while busy, and retains the snapshot on failure', async () => {
     api.getEdge.mockResolvedValue(edgeDetail)
     api.listEdgeServices.mockResolvedValue([])
@@ -1217,7 +1422,8 @@ describe('edge onboarding controls', () => {
     expect(markup).toContain('for="edge-labels"')
     expect(markup).toContain('id="edge-type-kubernetes"')
     expect(markup).toContain('id="edge-type-server"')
-    expect(markup.match(/name="edge-type"/g)).toHaveLength(2)
+    expect(markup).toContain('id="edge-type-macos"')
+    expect(markup.match(/name="edge-type"/g)).toHaveLength(3)
 
     const mounted = await mount(Wizard, { cluster: null })
     try {
@@ -1228,6 +1434,33 @@ describe('edge onboarding controls', () => {
       expect(state.edgeType).toBe('server')
     } finally {
       mounted.unmount()
+    }
+  })
+
+  it('renders an executable macOS LaunchDaemon join command for the active cluster', async () => {
+    const previousWindow = globalThis.window
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://console.dev.kyrosos.com' } },
+    })
+    const mounted = await mount(Wizard, { cluster: 'tenant-macos' })
+    try {
+      const state = mounted.instance.setupState
+      state.name = 'mac-mini'
+      state.edgeType = 'macos'
+      expect(state.cliSnippet('join-secret')).toBe(`sudo faros agent join \\
+  --hub-url https://console.dev.kyrosos.com/clusters/tenant-macos \\
+  --edge-name mac-mini \\
+  --type macos \\
+  --worker-user "$(id -un)" \\
+  --cluster tenant-macos \\
+  --token join-secret`)
+    } finally {
+      mounted.unmount()
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: previousWindow,
+      })
     }
   })
 

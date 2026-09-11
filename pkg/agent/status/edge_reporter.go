@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"time"
 
@@ -95,8 +96,8 @@ const (
 // A var rather than a const so tests can shorten it.
 var heartbeatTimeout = 15 * time.Second
 
-// EdgeReporter sends heartbeats for an Edge resource.
-// It works for both EdgeTypeKubernetes and EdgeTypeServer.
+// EdgeReporter sends heartbeats for a connectable edge resource. It works for
+// Kubernetes, LinuxServer, and service-only MacOSServer agents.
 type EdgeReporter struct {
 	edgeName        string
 	gvr             schema.GroupVersionResource
@@ -106,6 +107,10 @@ type EdgeReporter struct {
 	// sshProxyPort is the local port of the SSH daemon the agent proxies to.
 	// Zero means SSH host key reporting is disabled (non-server-mode edges).
 	sshProxyPort int
+	// labels carries agent-owned host facts that are safe to persist on the
+	// connectable status. Keep this separate from metadata labels, which are
+	// operator-owned scheduling inputs.
+	labels map[string]string
 }
 
 // NewEdgeReporter creates a new EdgeReporter.
@@ -120,6 +125,34 @@ func NewEdgeReporter(edgeName string, gvr schema.GroupVersionResource, hubClient
 		hubClient:    hubClient,
 		tunnelState:  tunnelState,
 		sshProxyPort: sshProxyPort,
+	}
+}
+
+// SetHostFacts enables OS-aware status reporting without changing the legacy
+// constructor used by existing callers. The values are copied so a caller can
+// safely reuse its input map after setup.
+func (r *EdgeReporter) SetHostFacts(labels map[string]string) {
+	if len(labels) == 0 {
+		r.labels = nil
+		return
+	}
+	r.labels = make(map[string]string, len(labels))
+	for k, v := range labels {
+		r.labels[k] = v
+	}
+}
+
+// DarwinHostFacts returns the runtime facts that identify a macOS worker. It
+// intentionally returns no values on other platforms: a Linux container
+// running the agent for a Kubernetes edge must not be inferred as the host OS
+// of that edge.
+func DarwinHostFacts() map[string]string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	return map[string]string{
+		"kubernetes.io/os":   runtime.GOOS,
+		"kubernetes.io/arch": runtime.GOARCH,
 	}
 }
 
@@ -159,6 +192,9 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		"connected":         r.tunnelConnected,
 		"agentVersion":      pkgversion.Get(),
 		"lastHeartbeatTime": metav1.Now(),
+	}
+	if len(r.labels) > 0 {
+		statusPatch["labels"] = r.labels
 	}
 
 	// The sshd host public key is NOT patched here. It is reported once, on

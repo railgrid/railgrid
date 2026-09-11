@@ -110,7 +110,7 @@ function onWorkloadDismissResult(): void {
 }
 
 function openDetail(row: Record<string, unknown>): void {
-  const type = row.type === 'server' ? 'server' : 'kubernetes'
+  const type = row.type === 'server' ? 'server' : row.type === 'macos' ? 'macos' : 'kubernetes'
   navigate(edgeDetailPath(type, String(row.name)))
 }
 
@@ -168,12 +168,17 @@ function onEdgeCollectionActivated(): void {
 }
 
 async function onDelete(edge: Edge) {
-  if (!(await confirmDialog({ title: `Delete ${edge.type === 'server' ? 'server' : 'cluster'} "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  const label = edge.type === 'macos' ? 'macOS host' : edge.type === 'server' ? 'server' : 'cluster'
+  if (!(await confirmDialog({ title: `Delete ${label} "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   const expectedContextGeneration = contextGeneration.value
   try {
     await deleteEdge(edge)
     if (contextGeneration.value !== expectedContextGeneration) return
-    toast('info', `${edge.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${edge.name}.`)
+    if (edge.type === 'macos') {
+      toast('info', `macOS host deletion requested for ${edge.name}.`)
+    } else {
+      toast('info', `${edge.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${edge.name}.`)
+    }
     await refresh()
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'

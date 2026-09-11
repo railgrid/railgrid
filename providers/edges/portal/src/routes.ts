@@ -26,6 +26,10 @@ export interface EdgeNavigationDetail {
   replace?: boolean
 }
 
+function isEdgeTypeSegment(value: string | undefined): value is EdgeType {
+  return value === 'kubernetes' || value === 'server' || value === 'macos'
+}
+
 function decodeSegment(value: string): string {
   try {
     return decodeURIComponent(value)
@@ -77,7 +81,7 @@ export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
 
   if (parts[0] === 'connect' && parts[1] === 'edge') {
     if (parts.length === 2) return { page: 'edges', connect: { resource: 'edge' } }
-    const hasRequiredType = parts[2] === 'kubernetes' || parts[2] === 'server'
+    const hasRequiredType = isEdgeTypeSegment(parts[2])
     const actionIndex = hasRequiredType ? 3 : 2
     const requestedType = hasRequiredType ? parts[2] as EdgeType : undefined
     let successPath: string | undefined
@@ -129,7 +133,7 @@ export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
     if (parts.length === 2) return { page: 'services', create: { resource: 'service' } }
     if (
       parts.length >= 4 &&
-      (parts[2] === 'kubernetes' || parts[2] === 'server') &&
+      isEdgeTypeSegment(parts[2]) &&
       parts[3] !== ''
     ) {
       return {
@@ -157,7 +161,7 @@ export function parseSubPath(subPath: string | null | undefined): EdgeRoute {
     return { page: 'workloads' }
   }
 
-  if (parts[0] === 'edges' && parts.length >= 3 && (parts[1] === 'kubernetes' || parts[1] === 'server')) {
+  if (parts[0] === 'edges' && parts.length >= 3 && isEdgeTypeSegment(parts[1])) {
     return {
       page: 'edges',
       edge: { type: parts[1], name: decodeSegment(parts.slice(2).join('/')) },

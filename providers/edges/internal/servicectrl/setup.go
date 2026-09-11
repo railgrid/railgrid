@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package servicectrl reconciles Service objects: a discovery controller
-// that pulls host services from each connected LinuxServer agent and a
+// Package servicectrl reconciles Service objects: discovery controllers
+// that pull host services from each connected LinuxServer or MacOSServer agent and a
 // validation controller that checks configured credentials against the service.
 package servicectrl
 

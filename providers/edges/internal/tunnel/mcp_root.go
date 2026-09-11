@@ -189,6 +189,13 @@ func (p *Server) listReadyServices(ctx context.Context, cluster, token string) [
 			logger.Info("service discovery: skip (decode failed)", "service", name, "err", err.Error())
 			continue
 		}
+		if view.connResource() == "" {
+			// The Service CRD enum rejects unknown kinds, but this endpoint reads
+			// unstructured objects from tenant workspaces and must not turn an
+			// admission-bypassed value into a LinuxServer tunnel key.
+			logger.Info("service discovery: skip (unsupported edge kind)", "service", name, "kind", view.Spec.EdgeRef.Kind)
+			continue
+		}
 		if !svccatalog.HasTools(view.Spec.Type) {
 			continue // proxy-only type — contributes no tools, not noteworthy
 		}

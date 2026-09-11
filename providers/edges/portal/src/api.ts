@@ -3,7 +3,7 @@
 // Reads/writes go through the hub's kcp proxy at /clusters/<cluster>/... (same
 // origin as the portal), which forwards each request into the tenant workspace
 // as the caller. The workspace binds the edges provider's APIExport, so the
-// portal reads KubernetesClusters, LinuxServers, Services and Workloads with
+// portal reads KubernetesClusters, LinuxServers, MacOSServers, Services and Workloads with
 // plain Kubernetes wire shapes — List envelopes, Status bodies, merge patches
 // and server-side apply — and no schema translation layer in between. The
 // host-owned transport (farosContext.fetch) injects Authorization; the cluster
@@ -30,6 +30,7 @@ const EDGES_VERSION = 'v1alpha1'
 const EDGES_API_VERSION = `${EDGES_GROUP}/${EDGES_VERSION}`
 const KUBERNETES_CLUSTERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'kubernetesclusters' }
 const LINUX_SERVERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'linuxservers' }
+const MACOS_SERVERS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'macosservers' }
 const SERVICES: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'services' }
 const WORKLOADS: KubeResourceRef = { group: EDGES_GROUP, version: EDGES_VERSION, resource: 'workloads', namespaced: true }
 const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
@@ -230,23 +231,30 @@ function toEdge(it: RawItem, type: EdgeType): Edge {
 }
 
 function edgeResource(type: EdgeType): { ref: KubeResourceRef; kind: EdgeDetail['kind'] } {
-  return type === 'server'
-    ? { ref: LINUX_SERVERS, kind: 'LinuxServer' }
-    : { ref: KUBERNETES_CLUSTERS, kind: 'KubernetesCluster' }
+  if (type === 'server') return { ref: LINUX_SERVERS, kind: 'LinuxServer' }
+  if (type === 'macos') return { ref: MACOS_SERVERS, kind: 'MacOSServer' }
+  return { ref: KUBERNETES_CLUSTERS, kind: 'KubernetesCluster' }
 }
 
-// listEdges returns both kinds merged into one list, each stamped with its
-// type. The two collections are walked in parallel; the fleet is small enough
-// that the merged list is unpaged.
+// listEdges returns all connectable kinds merged into one list, each stamped
+// with its type. The collections are walked in parallel; the fleet is small
+// enough that the merged list is unpaged. MacOSServer is optional while older
+// tenant APIBindings converge, so an unavailable macOS collection contributes
+// no rows while real authorization/protocol failures still surface.
 export async function listEdges(): Promise<Edge[]> {
   return withKube(async (client) => {
-    const [clusters, servers] = await Promise.all([
+    const [clusters, servers, macos] = await Promise.all([
       client.listAll<KubeObject & RawItem>(KUBERNETES_CLUSTERS),
       client.listAll<KubeObject & RawItem>(LINUX_SERVERS),
+      client.listAll<KubeObject & RawItem>(MACOS_SERVERS).catch((error: unknown) => {
+        if (isKubeError(error) && isKubeResourceUnavailable(error)) return []
+        throw error
+      }),
     ])
     const kube = clusters.map((it) => toEdge(it, 'kubernetes'))
     const server = servers.map((it) => toEdge(it, 'server'))
-    return [...kube, ...server].sort((a, b) => a.name.localeCompare(b.name))
+    const mac = macos.map((it) => toEdge(it, 'macos'))
+    return [...kube, ...server, ...mac].sort((a, b) => a.name.localeCompare(b.name))
   })
 }
 
@@ -333,8 +341,8 @@ export async function deleteEdge(edge: Edge): Promise<void> {
   await withKube((client) => client.delete(ref, edge.name))
 }
 
-// createEdge creates a KubernetesCluster or LinuxServer. Only name + optional
-// labels are set here; the rest defaults server-side.
+// createEdge creates a KubernetesCluster, LinuxServer, or MacOSServer. Only
+// name + optional labels are set here; the rest defaults server-side.
 export async function createEdge(
   name: string,
   type: EdgeType,
@@ -436,8 +444,9 @@ export async function fetchServiceCatalog(): Promise<CatalogEntry[]> {
 
 // ─── Services (EdgeService) ───────────────────────────────────────
 // Cluster-scoped services on an edge host (e.g. Home Assistant on a
-// LinuxServer). Discovery materializes them; the user attaches a token to make
-// them Ready.
+// LinuxServer or MacOSServer). Discovery materializes Linux services; declared
+// services on Kubernetes and macOS use the same API and become Ready after the
+// target health check succeeds.
 
 import type { EdgeService, EdgeServiceDraft } from './types'
 

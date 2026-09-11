@@ -2029,7 +2029,7 @@ func edgeProxyGrantName(providerName string) string {
 // EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
 // cluster-qualified identity — see pkg/util/identity) the "proxy" verb on the
 // edges provider's group (edges.faros.sh, resources kubernetesclusters +
-// linuxservers) in the child workspace root:faros:tenants:{orgUUID}:{wsUUID}.
+// linuxservers + macosservers) in the child workspace root:faros:tenants:{orgUUID}:{wsUUID}.
 // The edges provider's tunnel edgeproxy handler SAR-checks exactly this tuple
 // (provider-sdk/tunnel/auth.go), so the grant is what lets a provider with
 // CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
@@ -2078,12 +2078,12 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 			// pkg/util/identity).
 			map[string]any{
 				"apiGroups": []any{"edges.faros.sh"},
-				"resources": []any{"kubernetesclusters", "linuxservers"},
+				"resources": []any{"kubernetesclusters", "linuxservers", "macosservers"},
 				"verbs":     []any{"get", "list", "watch", "proxy"},
 			},
 			map[string]any{
 				"apiGroups": []any{"edges.faros.sh"},
-				"resources": []any{"kubernetesclusters/status", "linuxservers/status"},
+				"resources": []any{"kubernetesclusters/status", "linuxservers/status", "macosservers/status"},
 				"verbs":     []any{"get", "update", "patch"},
 			},
 			// The tunnel reads AND writes Secrets + Namespaces DIRECTLY with the

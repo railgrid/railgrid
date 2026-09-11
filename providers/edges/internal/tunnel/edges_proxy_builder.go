@@ -87,7 +87,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		// 2. Parse cluster, resource (kind), name, and subresource from the URL path.
 		cluster, resource, name, subresource, ok := p.parseEdgesProxyPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
 			return
 		}
 
@@ -110,6 +110,14 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
+		}
+
+		// MacOSServer is a Service-only host edge. It intentionally has no
+		// Kubernetes API or SSH data-plane subresource; its authenticated Service
+		// path was handled above.
+		if resource == macOSServerResource {
+			http.Error(w, "MacOSServer supports Service proxy access only", http.StatusNotFound)
+			return
 		}
 
 		// 4. Look up the dialer registered by the agent-proxy-v2 handler.
@@ -782,7 +790,7 @@ func (t *edgeDeviceConnTransport) RoundTrip(req *http.Request) (*http.Response, 
 //
 // Expected format:
 //
-//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]
+//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{subresource}[/...]
 func (p *Server) parseEdgesProxyPath(path string) (cluster, resource, name, subresource string, ok bool) {
 	// Segments: [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource
 	//           [6]name [7]subresource (may have more after for k8s pass-through)
@@ -808,12 +816,16 @@ func (p *Server) parseEdgesProxyPath(path string) (cluster, resource, name, subr
 // subresource handler here.
 //
 // The default subresource is derived from the kind: KubernetesCluster is
-// reached over "k8s" (its Kubernetes API), LinuxServer over "ssh". Returns ""
-// when edgeProxyPublicPath is unset, so callers skip stamping.
+// reached over "k8s" (its Kubernetes API), LinuxServer over "ssh". MacOSServer
+// is Service-only, so it has no status URL. Returns "" when edgeProxyPublicPath
+// is unset, so callers skip stamping.
 //
 // Pattern: {edgeProxyPublicPath}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{subresource}
 func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, name string) string {
 	if p.edgeProxyPublicPath == "" {
+		return ""
+	}
+	if gvr.Resource == macOSServerResource {
 		return ""
 	}
 	subresource := "k8s"

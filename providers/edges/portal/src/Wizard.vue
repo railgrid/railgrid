@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
-import { ArrowLeft, Boxes, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
+import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
+import { MACOS_MASKED_JOIN_TOKEN, hubURLForCluster, macosJoinSnippet } from './macos'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import type { EdgeType, ErrorResponse } from './types'
 
@@ -83,26 +84,25 @@ watch(() => props.requiredType, (requiredType) => {
 }, { immediate: true })
 const edgeGuidanceValues = computed<CreateGuidanceValue[]>(() => [
   { label: 'Edge name', value: trimmed.value || 'Not entered yet', technical: true },
-  { label: 'Resource type', value: edgeType.value === 'kubernetes' ? 'KubernetesCluster' : 'LinuxServer', technical: true },
+  { label: 'Resource type', value: edgeType.value === 'kubernetes' ? 'KubernetesCluster' : edgeType.value === 'server' ? 'LinuxServer' : 'MacOSServer', technical: true },
   { label: 'Scheduling labels', value: labels.value.trim() || 'None', technical: true },
 ])
 const edgePrerequisites = [
-  'Access to the target cluster with Helm, or to the Linux host with the Faros CLI.',
+  'Access to the target cluster with Helm, or to the Linux/macOS host with the Faros CLI.',
   'A unique Kubernetes-compatible name in this workspace.',
   'Optional key=value labels if Workloads will target this edge.',
 ]
 const edgeNextSteps = [
-  'Faros creates a KubernetesCluster or LinuxServer resource and mints a one-time join token.',
+  'Faros creates a KubernetesCluster, LinuxServer, or MacOSServer resource and mints a one-time join token.',
   'Run the generated command on the target; the token is masked here and copied only when requested.',
   'The agent exchanges the token for an edge-scoped credential and opens its outbound tunnel.',
 ]
 
 const hubURL = computed(() => {
-  const origin = window.location.origin
-  return props.cluster ? `${origin}/clusters/${props.cluster}` : origin
+  return hubURLForCluster(props.cluster)
 })
 
-const masked = '••••••••••••••••'
+const masked = MACOS_MASKED_JOIN_TOKEN
 function helmSnippet(token: string) {
   return `helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\
   --namespace faros-agent --create-namespace \\
@@ -111,6 +111,7 @@ function helmSnippet(token: string) {
   --set agent.hub.token=${token}`
 }
 function cliSnippet(token: string) {
+  if (edgeType.value === 'macos') return macosJoinSnippet(trimmed.value, props.cluster, token)
   return `faros agent join \\
   --hub-url ${hubURL.value} \\
   --edge-name ${trimmed.value} \\
@@ -163,7 +164,7 @@ function parseLabels(): Record<string, string> {
 async function handleCreate() {
   if (!trimmed.value) { error.value = 'Name is required'; return }
   if (props.requiredType && edgeType.value !== props.requiredType) {
-    error.value = `This flow requires a ${props.requiredType === 'kubernetes' ? 'KubernetesCluster' : 'LinuxServer'} edge.`
+    error.value = `This flow requires a ${props.requiredType === 'kubernetes' ? 'KubernetesCluster' : props.requiredType === 'server' ? 'LinuxServer' : 'MacOSServer'} edge.`
     edgeType.value = props.requiredType
     return
   }
@@ -225,7 +226,7 @@ function fmt(s: number) {
   <div class="wiz">
     <div class="wiz-hero">
       <h1>Connect an edge</h1>
-      <p>A Kubernetes cluster or Linux/SSH server you want to manage from this workspace.</p>
+      <p>A Kubernetes cluster, Linux/SSH server, or macOS host you want to manage from this workspace.</p>
     </div>
 
     <ol class="wiz-steps" aria-label="Edge connection progress">
@@ -256,6 +257,10 @@ function fmt(s: number) {
               <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" :disabled="edgeTypeLocked && props.requiredType !== 'server'" />
               <Server :size="15" aria-hidden="true" /> <span><b>Server</b><small>Bare-metal or VM (SSH)</small></span>
             </label>
+            <label class="type" :class="{ sel: edgeType === 'macos' }" for="edge-type-macos">
+              <input id="edge-type-macos" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="macos" :disabled="edgeTypeLocked && props.requiredType !== 'macos'" />
+              <Laptop :size="15" aria-hidden="true" /> <span><b>macOS host</b><small>Host services and local runner</small></span>
+            </label>
           </fieldset>
           <p v-if="edgeTypeLocked" class="muted">This edge type is required to continue the originating {{ props.requiredType === 'kubernetes' ? 'workload' : 'resource' }} flow.</p>
 
@@ -285,7 +290,7 @@ function fmt(s: number) {
 
     <!-- Step 2 -->
     <div v-else-if="step === 2" class="wiz-card k-card">
-      <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : 'server' }}</h3>
+      <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : edgeType === 'macos' ? 'macOS host' : 'server' }}</h3>
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
 

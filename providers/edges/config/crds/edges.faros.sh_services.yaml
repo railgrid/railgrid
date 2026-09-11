@@ -41,7 +41,7 @@ spec:
       openAPIV3Schema:
         description: |-
           Service is an HTTP service running on the host next to an edge agent
-          (e.g. Home Assistant on a LinuxServer). The edges provider proxies to it
+          (e.g. Home Assistant on a LinuxServer or MacOSServer). The edges provider proxies to it
           through the reverse tunnel and, for known types, exposes MCP tools so AI
           agents can drive it.
 
@@ -103,11 +103,12 @@ spec:
                   kind:
                     default: LinuxServer
                     description: |-
-                      Kind is the connectable kind this service runs on. LinuxServer services
-                      are reached on the host loopback; KubernetesCluster services are reached
-                      through the cluster's DNS and require spec.targetRef.
+                      Kind is the connectable kind this service runs on. LinuxServer and
+                      MacOSServer services are reached on the host loopback; KubernetesCluster
+                      services are reached through the cluster's DNS and require spec.targetRef.
                     enum:
                     - LinuxServer
+                    - MacOSServer
                     - KubernetesCluster
                     type: string
                   name:

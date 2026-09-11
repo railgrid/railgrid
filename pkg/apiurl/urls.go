@@ -122,14 +122,17 @@ func EdgeAgentProxyURL(hubBase, cluster, edgeName, subresource string) string {
 	return strings.TrimRight(hubBase, "/") + EdgeAgentProxyPath(cluster, edgeName, subresource)
 }
 
-// EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server") to the
+// EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server" | "macos") to the
 // owning provider's backend-proxy name, API group and resource. The edge plane
-// is one provider `edges` holding both kinds under group edges.faros.sh;
-// only the resource differs by type. Any value other than "server" defaults to
-// kubernetes.
+// is one provider `edges` holding all kinds under group edges.faros.sh;
+// only the resource differs by type. Unknown values default to kubernetes for
+// backwards compatibility with callers that omitted the edge type.
 func EdgeProviderCoordinates(edgeType string) (provider, group, resource string) {
 	if edgeType == "server" {
 		return "edges", "edges.faros.sh", "linuxservers"
+	}
+	if edgeType == "macos" {
+		return "edges", "edges.faros.sh", "macosservers"
 	}
 	return "edges", "edges.faros.sh", "kubernetesclusters"
 }

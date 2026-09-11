@@ -46,6 +46,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&KubernetesClusterList{},
 		&LinuxServer{},
 		&LinuxServerList{},
+		&MacOSServer{},
+		&MacOSServerList{},
 		&Workload{},
 		&WorkloadList{},
 		&Placement{},

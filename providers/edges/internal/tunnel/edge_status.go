@@ -105,7 +105,12 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		// (now-deleted) mount_reconciler; it moved here when the edge plane
 		// became a standalone provider. Idempotent: same value on every
 		// reconnect. Empty when edgeProxyPublicPath is unconfigured.
-		if url := p.edgeProxyStatusURL(gvr, cluster, name); url != "" {
+		if gvr.Resource == macOSServerResource {
+			// MacOSServer is Service-only. Clear any stale URL if an object was
+			// restored from an older status snapshot; consumers must not infer an
+			// SSH or Kubernetes data plane from this kind's shared status shape.
+			delete(status, "URL")
+		} else if url := p.edgeProxyStatusURL(gvr, cluster, name); url != "" {
 			status["URL"] = url
 		}
 

@@ -21,7 +21,7 @@ data:
       name: edges
     spec:
       displayName: "Edges"
-      description: "Connect and manage Kubernetes clusters and Linux/SSH servers as edges: kubectl and SSH through the hub reverse tunnel, plus the edge MCP endpoint."
+      description: "Connect and manage Kubernetes clusters, Linux/SSH servers, and macOS hosts as edges: kubectl and SSH where supported, host-local Services through the hub reverse tunnel, plus the edge MCP endpoint."
       vendor: "faros"
       version: {{ .Chart.AppVersion | quote }}
       category: "Edges"

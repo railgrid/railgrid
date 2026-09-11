@@ -90,7 +90,12 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, err
 	}
 
-	saName := "edge-" + edge.GetName()
+	// Keep the historical name for KubernetesCluster/LinuxServer credentials so
+	// existing agents continue to reconnect. MacOSServer gets a kind-qualified
+	// prefix because all edge kinds share the tenant's faros-system namespace;
+	// a Mac edge named "build" must not adopt credentials for a legacy edge with
+	// the same name.
+	saName := edgeCredentialName(r.kind, edge.GetName())
 	tokenSecretName := saName + "-token"
 	kubeconfigSecretName := saName + "-kubeconfig"
 
@@ -161,7 +166,7 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 }
 
 // edgeOwnerRef returns an OwnerReference for the given connectable object,
-// using the reconciler's kind (KubernetesCluster | LinuxServer). Controller is
+// using the reconciler's kind (KubernetesCluster | LinuxServer | MacOSServer). Controller is
 // set to true so that Owns() watches (which default to OnlyControllerOwner) can
 // map child object changes back to the parent.
 func (r *RBACReconciler) edgeOwnerRef(edge edgeapi.Connectable) metav1.OwnerReference {
@@ -175,6 +180,15 @@ func (r *RBACReconciler) edgeOwnerRef(edge edgeapi.Connectable) metav1.OwnerRefe
 	}
 }
 
+// edgeCredentialName preserves the legacy edge-<name> contract for existing
+// kinds while isolating MacOSServer credentials from those objects.
+func edgeCredentialName(kind, edgeName string) string {
+	if kind == "MacOSServer" {
+		return "macos-edge-" + edgeName
+	}
+	return "edge-" + edgeName
+}
+
 // ensureOwnerRef checks if the object already has the expected OwnerReference
 // and patches it in if missing. This adopts pre-existing objects so that Owns()
 // watches can map child deletions back to the parent Edge.
@@ -182,6 +196,9 @@ func ensureOwnerRef(ctx context.Context, c client.Client, obj client.Object, own
 	for _, ref := range obj.GetOwnerReferences() {
 		if ref.UID == ownerRef.UID {
 			return nil
+		}
+		if ref.Controller != nil && *ref.Controller {
+			return fmt.Errorf("%s %q is already controlled by %s/%s", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), ref.APIVersion, ref.Name)
 		}
 	}
 	obj.SetOwnerReferences(append(obj.GetOwnerReferences(), ownerRef))
@@ -216,16 +233,23 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 			Namespace:       edgeNamespace,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &corev1.ServiceAccount{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err != nil {
+			return err
+		}
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	}
 	return nil
 }
 
 // desiredAgentRules returns the PolicyRules that the edge agent ClusterRole
 // should have. This ClusterRole is shared by every agent SA (one per edge), so
-// it covers BOTH kinds in the edges provider's group edges.faros.sh:
-// KubernetesCluster and LinuxServer. The agent reads its own edge and patches
+// it covers every connectable kind in the edges provider's group edges.faros.sh:
+// KubernetesCluster, LinuxServer, and MacOSServer. The agent reads its own edge and patches
 // its status (edge_reporter heartbeats status.connected/agentVersion/…), so it
 // needs get/list/watch + update/patch on the kinds AND their /status
 // subresource — otherwise the agent's status reporter is "forbidden ... cannot
@@ -237,6 +261,7 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 			Resources: []string{
 				"kubernetesclusters", "kubernetesclusters/status",
 				"linuxservers", "linuxservers/status",
+				"macosservers", "macosservers/status",
 			},
 			Verbs: []string{"get", "list", "watch", "update", "patch"},
 		},
@@ -354,8 +379,15 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 				Namespace: edgeNamespace,
 			},
 		},
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &rbacv1.ClusterRoleBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: crbName}, existing); err != nil {
+			return err
+		}
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	}
 	return nil
 }
@@ -378,21 +410,33 @@ func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Clie
 
 	cr := &rbacv1.ClusterRole{}
 	if err := c.Get(ctx, client.ObjectKey{Name: name}, cr); err == nil {
+		// Verify ownership before changing the policy. A same-named ClusterRole
+		// controlled by another edge must remain byte-for-byte untouched when
+		// this reconciler refuses to adopt it.
+		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
+			return err
+		}
 		if !rulesEqual(cr.Rules, desiredRules) {
 			cr.Rules = desiredRules
 			if err := c.Update(ctx, cr); err != nil {
 				return err
 			}
 		}
-		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
-			return err
-		}
 	} else if apierrors.IsNotFound(err) {
 		if err := c.Create(ctx, &rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{Name: name, OwnerReferences: []metav1.OwnerReference{ownerRef}},
 			Rules:      desiredRules,
-		}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return err
+		}); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+			existing := &rbacv1.ClusterRole{}
+			if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
+				return err
+			}
+			if err := ensureOwnerRef(ctx, c, existing, ownerRef); err != nil {
+				return err
+			}
 		}
 	} else {
 		return err
@@ -421,8 +465,15 @@ func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Clie
 				Namespace: edgeNamespace,
 			},
 		},
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &rbacv1.ClusterRoleBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: name}, existing); err != nil {
+			return err
+		}
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	}
 	return nil
 }
@@ -444,8 +495,15 @@ func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName 
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
 		Type: corev1.SecretTypeServiceAccountToken,
-	}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &corev1.Secret{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: secretName}, existing); err != nil {
+			return err
+		}
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	}
 	return nil
 }
@@ -506,8 +564,15 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 		},
 	}
 
-	if err := c.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := c.Create(ctx, secret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &corev1.Secret{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err != nil {
+			return err
+		}
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	}
 	return nil
 }

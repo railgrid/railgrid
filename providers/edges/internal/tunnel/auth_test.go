@@ -28,6 +28,7 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 )
 
 // The hub replaces a caller's own bearer with a delegated ServiceAccount token
@@ -316,5 +317,59 @@ func TestAuthorizeRefusesAForeignTokenThatResolvesToANonServiceAccount(t *testin
 	}
 	if len(rec.sarPaths) != 0 {
 		t.Error("a SAR was issued for an identity that could not be qualified")
+	}
+}
+
+func TestMacOSAgentIngressRejectsAServiceAccountForAnotherEdge(t *testing.T) {
+	const (
+		consumer = "tenant-a"
+		home     = "provider-home"
+	)
+	rec := &authRecorder{
+		username:      "system:serviceaccount:default:macos-edge-other",
+		groups:        []string{"system:serviceaccounts"},
+		authenticated: true,
+		allowed:       false,
+	}
+	cfg := rec.start(t)
+
+	s := testServer("/services/providers/edges/edgeproxy")
+	s.kcpConfig = cfg
+	s.tenantConfig = func(_ context.Context, cluster string) (*rest.Config, error) {
+		if cluster != consumer {
+			t.Fatalf("tenantConfig cluster = %q, want %q", cluster, consumer)
+		}
+		return cfg, nil
+	}
+	s.edgeConnManager = NewConnManager()
+	s.logger = klog.Background()
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/"+consumer+"/apis/edges.faros.sh/v1alpha1/macosservers/build/proxy", nil)
+	req.Header.Set("Authorization", "Bearer "+legacySAToken(t, home, "macos-edge-other"))
+	rr := httptest.NewRecorder()
+	s.AgentIngressHandler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong Mac edge identity status = %d, want 401 (body %q)", rr.Code, rr.Body.String())
+	}
+	if len(rec.tokenReviewPaths) != 1 || len(rec.sarPaths) != 1 {
+		t.Fatalf("got %d TokenReviews and %d SARs, want one each", len(rec.tokenReviewPaths), len(rec.sarPaths))
+	}
+	if got := rec.tokenReviewPaths[0]; !strings.Contains(got, "/clusters/"+home+"/") {
+		t.Fatalf("TokenReview path = %q, want the SA home cluster %q", got, home)
+	}
+	if got, want := rec.sarUsers[0], "system:kcp:serviceaccount:"+home+":default:macos-edge-other"; got != want {
+		t.Fatalf("SAR user = %q, want %q", got, want)
+	}
+	if got := rec.sarGroups[0]; len(got) != 0 {
+		t.Fatalf("foreign Mac SA groups = %v, want none", got)
+	}
+	want := authorizationv1.ResourceAttributes{
+		Verb: "proxy", Group: "edges.faros.sh", Version: "v1alpha1",
+		Resource: "macosservers", Name: "build",
+	}
+	if len(rec.sarAttributes) != 1 || rec.sarAttributes[0] != want {
+		t.Fatalf("SAR attributes = %+v, want %+v", rec.sarAttributes, want)
 	}
 }

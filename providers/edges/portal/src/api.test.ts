@@ -30,6 +30,7 @@ const SERVICES = `${BASE}/services`
 const WORKLOADS = `${BASE}/namespaces/default/workloads`
 const CLUSTERS = `${BASE}/kubernetesclusters`
 const SERVERS = `${BASE}/linuxservers`
+const MACOS = `${BASE}/macosservers`
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -40,7 +41,7 @@ function response(body: unknown, status = 200): Response {
 
 // A Kubernetes List envelope. `metadata` is passed through verbatim so the
 // pagination tests can hand the client malformed cursors.
-function list(kind: 'Service' | 'Workload' | 'KubernetesCluster' | 'LinuxServer', items: unknown[], metadata?: Record<string, unknown>): Response {
+function list(kind: 'Service' | 'Workload' | 'KubernetesCluster' | 'LinuxServer' | 'MacOSServer', items: unknown[], metadata?: Record<string, unknown>): Response {
   return response({
     apiVersion: 'edges.faros.sh/v1alpha1',
     kind: `${kind}List`,
@@ -286,6 +287,24 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     expect(calls.map((call) => call.path)).toEqual([`${SERVERS}/server-a`])
   })
 
+  it('reads macOS edges from the macosservers collection and preserves service-only status', async () => {
+    const calls = route(() => response({
+      apiVersion: 'edges.faros.sh/v1alpha1',
+      kind: 'MacOSServer',
+      metadata: { name: 'mac-mini' },
+      spec: {},
+      status: { connected: true, phase: 'Ready', conditions: [] },
+    }))
+
+    await expect(getEdge('mac-mini', 'macos')).resolves.toMatchObject({
+      name: 'mac-mini',
+      type: 'macos',
+      kind: 'MacOSServer',
+      spec: {},
+    })
+    expect(calls.map((call) => call.path)).toEqual([`${MACOS}/mac-mini`])
+  })
+
   it('reports a confirmed missing edge as NotFound', async () => {
     route(() => failure(404, 'NotFound', 'kubernetesclusters.edges.faros.sh "gone" not found', 'gone'))
 
@@ -300,17 +319,32 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       if (call.path === SERVERS) {
         return list('LinuxServer', [{ metadata: { name: 'a-server' }, status: { connected: false, phase: 'Pending' } }])
       }
+      if (call.path === MACOS) {
+        return list('MacOSServer', [{ metadata: { name: 'm-mac' }, status: { connected: true, phase: 'Ready' } }])
+      }
       return failure(404, 'NotFound', 'the server could not find the requested resource')
     })
 
     await expect(listEdges()).resolves.toEqual([
       { name: 'a-server', type: 'server', connected: false, phase: 'Pending' },
+      { name: 'm-mac', type: 'macos', connected: true, phase: 'Ready' },
       { name: 'z-kube', type: 'kubernetes', connected: true, phase: 'Ready', agentVersion: 'v1', labels: { env: 'prod' } },
     ])
     // One GET per kind, each against its own collection, no cursor threaded
     // by the caller.
-    expect(calls.map((call) => [call.method, call.path]).sort()).toEqual([['GET', CLUSTERS], ['GET', SERVERS]])
+    expect(calls.map((call) => [call.method, call.path]).sort()).toEqual([['GET', CLUSTERS], ['GET', SERVERS], ['GET', MACOS]])
     expect(calls.every((call) => call.query.continue === undefined)).toBe(true)
+  })
+
+  it('keeps older tenant bindings readable when the MacOSServer collection is unavailable', async () => {
+    const calls = route((call) => {
+      if (call.path === CLUSTERS) return list('KubernetesCluster', [])
+      if (call.path === SERVERS) return list('LinuxServer', [])
+      return failure(404, 'NotFound', 'the server could not find the requested resource')
+    })
+
+    await expect(listEdges()).resolves.toEqual([])
+    expect(calls.map((call) => call.path).sort()).toEqual([CLUSTERS, SERVERS, MACOS].sort())
   })
 
   it('retains edge joins when listing only one edge', async () => {
@@ -331,12 +365,16 @@ describe('unchanged edge fleet and CRUD contracts', () => {
 
     await createEdge('cluster-a', 'kubernetes', { region: 'eu' })
     await createEdge('server-a', 'server', { region: 'eu' })
+    await createEdge('mac-mini', 'macos')
     await deleteEdge({ name: 'server-a', type: 'server', connected: false })
+    await deleteEdge({ name: 'mac-mini', type: 'macos', connected: false })
 
     expect(calls.map((call) => [call.method, call.path])).toEqual([
       ['POST', CLUSTERS],
       ['POST', SERVERS],
+      ['POST', MACOS],
       ['DELETE', `${SERVERS}/server-a`],
+      ['DELETE', `${MACOS}/mac-mini`],
     ])
     expect(calls[0]?.body).toEqual({
       apiVersion: 'edges.faros.sh/v1alpha1',
@@ -351,16 +389,52 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       metadata: { name: 'server-a', labels: { region: 'eu' } },
       spec: {},
     })
-    expect(calls[2]?.body).toMatchObject({ kind: 'DeleteOptions' })
+    expect(calls[2]?.body).toEqual({
+      apiVersion: 'edges.faros.sh/v1alpha1',
+      kind: 'MacOSServer',
+      metadata: { name: 'mac-mini' },
+      spec: {},
+    })
+    expect(calls[3]?.body).toMatchObject({ kind: 'DeleteOptions' })
+    expect(calls[4]?.body).toMatchObject({ kind: 'DeleteOptions' })
   })
 
   it('probes a freshly created edge and treats a not-yet-visible one as null', async () => {
-    route((call) => call.path.endsWith('/pending')
+    const calls = route((call) => call.path.endsWith('/pending')
       ? failure(404, 'NotFound', 'linuxservers.edges.faros.sh "pending" not found', 'pending')
       : response({ metadata: { name: 'server-a' }, status: { joinToken: 'join-me', connected: true, agentVersion: 'v2' } }))
 
     await expect(probeEdge('server-a', 'server')).resolves.toEqual({ joinToken: 'join-me', connected: true, agentVersion: 'v2' })
     await expect(probeEdge('pending', 'server')).resolves.toBeNull()
+    await expect(probeEdge('mac-mini', 'macos')).resolves.toEqual({ joinToken: 'join-me', connected: true, agentVersion: 'v2' })
+    expect(calls.map((call) => call.path)).toEqual([
+      `${SERVERS}/server-a`,
+      `${SERVERS}/pending`,
+      `${MACOS}/mac-mini`,
+    ])
+  })
+
+  it('creates a host-local service against a MacOSServer without a Kubernetes target', async () => {
+    const calls = route((call) => response(call.body, 201))
+
+    await createKubeEdgeService({
+      name: 'runner',
+      edgeName: 'mac-mini',
+      edgeKind: 'MacOSServer',
+      serviceType: 'generic',
+      targetNamespace: '',
+      targetName: '',
+      scheme: 'http',
+      port: 17873,
+      host: '127.0.0.1',
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.body).toMatchObject({
+      kind: 'Service',
+      spec: { edgeRef: { kind: 'MacOSServer', name: 'mac-mini' }, host: '127.0.0.1', port: 17873 },
+    })
+    expect((calls[0]?.body as { spec: Record<string, unknown> }).spec.targetRef).toBeUndefined()
   })
 
   it('keeps service and workload mutations on their REST collections with kube wire shapes', async () => {

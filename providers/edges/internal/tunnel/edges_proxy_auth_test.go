@@ -54,6 +54,28 @@ const (
 	authTestServicePath = "/clusters/ws-1/apis/edges.faros.sh/v1alpha1/services/svc-1/proxy/"
 )
 
+func TestMacOSServerHasNoSSHOrKubernetesDataPlane(t *testing.T) {
+	for _, subresource := range []string{"ssh", "k8s"} {
+		t.Run(subresource, func(t *testing.T) {
+			var calls []string
+			s := newAuthTestServer(t, nil, &calls)
+			req := httptest.NewRequest(http.MethodGet,
+				"/clusters/ws-1/apis/edges.faros.sh/v1alpha1/macosservers/mac-1/"+subresource, nil)
+			req.Header.Set("Authorization", "Bearer caller-token")
+			rr := httptest.NewRecorder()
+
+			s.buildEdgesProxyHandler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("MacOSServer %s status = %d, want 404 (body %q)", subresource, rr.Code, rr.Body.String())
+			}
+			if len(calls) != 1 || calls[0] != "caller-token proxy edges.faros.sh/macosservers/mac-1@ws-1" {
+				t.Fatalf("authorization calls = %v, want one per-edge Mac authorization", calls)
+			}
+		})
+	}
+}
+
 func TestEdgesProxyHandlerAuthorizesEveryToken(t *testing.T) {
 	cases := []struct {
 		name         string

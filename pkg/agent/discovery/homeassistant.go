@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -57,8 +58,10 @@ func (d *homeAssistantDetector) Detect(ctx context.Context) (*DiscoveredService,
 		found = true
 	}
 
-	// 3. systemd (core venv installs) — only meaningful if not already a container.
-	if !found && d.detectSystemd(ctx) {
+	// 3. Host service manager (systemd on Linux, launchd on macOS) — only
+	// meaningful if not already a container. Probes are OS-gated so a
+	// service-only Darwin agent never depends on a Linux command being present.
+	if !found && d.detectHostService(ctx) {
 		svc.InstallType = "core"
 		found = true
 	}
@@ -128,6 +131,9 @@ func (d *homeAssistantDetector) detectContainer(ctx context.Context, svc *Discov
 
 // detectSystemd returns true if an HA systemd service unit is loaded.
 func (d *homeAssistantDetector) detectSystemd(ctx context.Context) bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return false
 	}
@@ -137,6 +143,40 @@ func (d *homeAssistantDetector) detectSystemd(ctx context.Context) bool {
 		return false
 	}
 	return strings.TrimSpace(out) != ""
+}
+
+// detectLaunchd returns true when a user or system launchd job contains a
+// Home Assistant label. launchctl is available on every supported macOS
+// release, while querying the current user's domain avoids requiring root.
+func (d *homeAssistantDetector) detectLaunchd(ctx context.Context) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return false
+	}
+	out, err := runCmd(ctx, "launchctl", "list")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		label := strings.ToLower(strings.TrimSpace(line))
+		if strings.Contains(label, "home-assistant") || strings.Contains(label, "homeassistant") || strings.Contains(label, "hass") {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *homeAssistantDetector) detectHostService(ctx context.Context) bool {
+	switch runtime.GOOS {
+	case "linux":
+		return d.detectSystemd(ctx)
+	case "darwin":
+		return d.detectLaunchd(ctx)
+	default:
+		return false
+	}
 }
 
 // detectObserver returns true if the HAOS/Supervised observer answers on :4357.

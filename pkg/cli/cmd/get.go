@@ -69,10 +69,7 @@ func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
 	printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
 
 	for _, item := range items {
-		edgeType := "kubernetes"
-		if item.GetKind() == "LinuxServer" {
-			edgeType = "server"
-		}
+		edgeType := farosclient.EdgeTypeForGVR(edgeGVRForKind(item.GetKind()))
 		phase := getNestedString(item, "status", "phase")
 		connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 		age := formatAge(item.GetCreationTimestamp().Time)

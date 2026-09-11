@@ -34,7 +34,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
@@ -91,17 +90,19 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Fetch the Edge resource to get the proxy URL from status. The Edge type
-	// now lives in the edges-connectivity provider (edges.faros.sh), so we
-	// read it via the dynamic client and pull status.URL out of the unstructured.
+	// Fetch the connectable resource to get the proxy URL from status. The edge
+	// type lives in the edges provider, so discover its GVR dynamically.
 	client, err := farosclient.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating faros client: %w", err)
 	}
 
-	edge, err := client.Dynamic().Resource(farosclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
+	edge, gvr, err := getEdgeByName(ctx, client.Dynamic(), name)
 	if err != nil {
 		return fmt.Errorf("fetching edge %q: %w", name, err)
+	}
+	if gvr != farosclient.LinuxServerGVR {
+		return fmt.Errorf("edge %q is a %s edge; SSH is only available for LinuxServer edges", name, farosclient.EdgeTypeForGVR(gvr))
 	}
 
 	edgeURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")

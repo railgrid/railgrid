@@ -40,6 +40,7 @@ import (
 //
 //	KubernetesCluster → edges.faros.sh/kubernetesclusters
 //	LinuxServer       → edges.faros.sh/linuxservers
+//	MacOSServer       → edges.faros.sh/macosservers
 //
 // The core module cannot import the provider module (it would cycle — the
 // provider imports core primitives), so the agent + CLI address these
@@ -59,6 +60,13 @@ var (
 		Group:    "edges.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "linuxservers",
+	}
+	// MacOSServerGVR addresses the edges provider's MacOSServer kind
+	// (cluster-scoped).
+	MacOSServerGVR = schema.GroupVersionResource{
+		Group:    "edges.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "macosservers",
 	}
 	// WorkloadGVR addresses the edges provider's Workload kind
 	// (namespaced): a workload scheduled across matching KubernetesCluster edges.
@@ -117,14 +125,46 @@ var (
 	}
 )
 
-// EdgeGVRForType maps an edge type ("kubernetes" | "server") to the connectable
-// resource's GVR. Server edges map to LinuxServer; everything else (default)
-// maps to KubernetesCluster.
+// EdgeGVRForType maps an edge type ("kubernetes" | "server" | "macos") to
+// the connectable resource's GVR. Unknown and empty types retain the historic
+// KubernetesCluster default.
 func EdgeGVRForType(edgeType string) schema.GroupVersionResource {
-	if edgeType == "server" {
+	switch edgeType {
+	case "server":
 		return LinuxServerGVR
+	case "macos":
+		return MacOSServerGVR
+	default:
+		return KubernetesClusterGVR
 	}
-	return KubernetesClusterGVR
+}
+
+// EdgeKindForType returns the Kubernetes kind corresponding to an agent edge
+// type. It is kept next to EdgeGVRForType so callers cannot accidentally map a
+// resource to the wrong kind when constructing an unstructured object.
+func EdgeKindForType(edgeType string) string {
+	switch edgeType {
+	case "server":
+		return "LinuxServer"
+	case "macos":
+		return "MacOSServer"
+	default:
+		return "KubernetesCluster"
+	}
+}
+
+// EdgeTypeForGVR returns the CLI/agent type for a connectable resource GVR.
+// Unknown resources retain the Kubernetes default for backwards compatibility
+// with callers that historically treated every non-server edge as Kubernetes.
+func EdgeTypeForGVR(gvr schema.GroupVersionResource) string {
+	switch gvr.Resource {
+	case LinuxServerGVR.Resource:
+		return "server"
+	case MacOSServerGVR.Resource:
+		return "macos"
+	default:
+		return "kubernetes"
+	}
 }
 
 // Client provides typed access to faros custom resources via the dynamic client.

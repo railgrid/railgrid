@@ -17,11 +17,13 @@ export interface FarosContext {
   subPath?: string
 }
 
-// EdgeType discriminates which kind an edge came from.
-export type EdgeType = 'kubernetes' | 'server'
+// EdgeType discriminates which kind an edge came from. The value is intentionally
+// provider-neutral in the UI while each API call maps it to the concrete CR kind.
+export type EdgeType = 'kubernetes' | 'server' | 'macos'
 
-// Edge is the unified UI row, merged from the two kinds (KubernetesCluster and
-// LinuxServer) that both embed the SDK's ConnectionStatus.
+// Edge is the unified UI row, merged from the connectable edge kinds. All kinds
+// embed the SDK's ConnectionStatus; service/harness readiness is rendered by
+// the separate EdgeService status and is never inferred from connected.
 export interface Edge {
   name: string
   type: EdgeType
@@ -46,7 +48,7 @@ export interface Condition {
 // EdgeDetail is a single edge with the full status needed for the detail view.
 export interface EdgeDetail extends Edge {
   apiVersion: string
-  kind: 'KubernetesCluster' | 'LinuxServer'
+  kind: 'KubernetesCluster' | 'LinuxServer' | 'MacOSServer'
   namespace?: string
   uid?: string
   resourceVersion?: string
@@ -103,7 +105,7 @@ export interface WorkloadEdgeStatus {
 export interface EdgeService {
   name: string
   edgeName: string
-  edgeKind?: string // LinuxServer | KubernetesCluster
+  edgeKind?: string // LinuxServer | MacOSServer | KubernetesCluster
   targetNamespace?: string // kube edges only
   targetName?: string // kube edges only
   host?: string // direct address; takes precedence over targetRef on either edge kind
@@ -120,17 +122,18 @@ export interface EdgeService {
   creationTimestamp?: string
 }
 
-// EdgeServiceDraft is the form payload for declaring a service on a
-// KubernetesCluster edge (kube services are not auto-discovered).
+// EdgeServiceDraft is the form payload for declaring a service on an edge.
+// Kubernetes services use targetRef; host edges (LinuxServer/MacOSServer) use
+// host, with a blank host meaning the agent's loopback.
 export interface EdgeServiceDraft {
   name: string
   edgeName: string
-  edgeKind?: string // LinuxServer | KubernetesCluster (derived from the selected edge)
+  edgeKind?: string // LinuxServer | MacOSServer | KubernetesCluster (derived from the selected edge)
   serviceType: string
   targetNamespace: string
   targetName: string
   scheme?: string // http | https (https for e.g. UniFi)
-  host?: string // LinuxServer only: target a device on the edge's LAN (e.g. a UniFi console)
+  host?: string // host edges: target a device on the edge's LAN (e.g. a UniFi console)
   port: number
   instructions?: string
 }

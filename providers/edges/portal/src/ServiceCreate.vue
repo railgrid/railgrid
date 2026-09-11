@@ -72,13 +72,13 @@ function edgeKey(edge: Pick<Edge, 'type' | 'name'>): string {
 }
 
 const selectedEdge = computed(() => edges.value.find((edge) => edgeKey(edge) === selectedEdgeKey.value))
-const selectedEdgeIsServer = computed(() => selectedEdge.value?.type === 'server')
+const selectedEdgeIsHost = computed(() => selectedEdge.value?.type !== 'kubernetes')
 const selectedCatalogEntry = computed(() => catalogFor(draft.value.serviceType))
 const hostRequired = computed(() => !!selectedCatalogEntry.value?.hostRequired)
 const schemeLocked = computed(() => !!catalogFor(draft.value.serviceType)?.schemeLocked)
 
 function resetTargetMode(): void {
-  targetMode.value = selectedEdgeIsServer.value || hostRequired.value ? 'host' : 'kube'
+  targetMode.value = selectedEdgeIsHost.value || hostRequired.value ? 'host' : 'kube'
 }
 
 function onEdgeChange(): void {
@@ -194,7 +194,7 @@ async function onCreate(): Promise<void> {
     await createKubeEdgeService({
       name,
       edgeName: edge.name,
-      edgeKind: edge.type === 'server' ? 'LinuxServer' : 'KubernetesCluster',
+      edgeKind: edge.type === 'server' ? 'LinuxServer' : edge.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster',
       serviceType: draft.value.serviceType,
       targetNamespace: draft.value.targetNamespace.trim() || 'default',
       targetName: byHost ? '' : draft.value.targetName.trim(),
@@ -280,7 +280,7 @@ onUnmounted(() => {
           <select v-model="selectedEdgeKey" class="k-input" @change="onEdgeChange">
             <option value="" disabled>Select an edge</option>
             <option v-for="edge in edges" :key="edgeKey(edge)" :value="edgeKey(edge)">
-              {{ edge.name }} ({{ edge.type === 'server' ? 'LinuxServer' : 'KubernetesCluster' }})
+              {{ edge.name }} ({{ edge.type === 'server' ? 'LinuxServer' : edge.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster' }})
             </option>
           </select>
         </label>
@@ -314,8 +314,8 @@ onUnmounted(() => {
           <label class="k-checkbox-hit">
             <input v-model="targetMode" name="service-create-target-mode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
           </label>
-          <label class="k-checkbox-hit" :class="{ 'is-disabled': selectedEdgeIsServer || hostRequired }">
-            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsServer || hostRequired" /> Kubernetes Service
+          <label class="k-checkbox-hit" :class="{ 'is-disabled': selectedEdgeIsHost || hostRequired }">
+            <input v-model="targetMode" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsHost || hostRequired" /> Kubernetes Service
           </label>
         </div>
       </div>

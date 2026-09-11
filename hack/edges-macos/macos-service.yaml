@@ -1,0 +1,20 @@
+# Apply this Service to the Faros tenant workspace after creating and joining
+# the MacOSServer. The object is intentionally explicit: no MacOSServer is
+# automatically enrolled as a coding worker.
+apiVersion: edges.faros.sh/v1alpha1
+kind: Service
+metadata:
+  name: macos-runner-stub
+  labels:
+    edges.faros.sh/edge: mac-mini
+spec:
+  edgeRef:
+    kind: MacOSServer
+    name: mac-mini
+  host: 127.0.0.1
+  type: generic
+  scheme: http
+  port: 17873
+  instructions: >-
+    This endpoint is a localhost-only health stub. It reports
+    executionEnabled=false and does not execute commands or enroll a worker.

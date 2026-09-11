@@ -27,6 +27,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/pprof"
@@ -65,8 +66,9 @@ import (
 // to disk after the first successful join-token authentication so that the
 // agent can reconnect on restart without needing the bootstrap join token again.
 type AgentConfig struct {
-	HubURL string `json:"hubURL"`
-	Token  string `json:"token"`
+	HubURL  string `json:"hubURL"`
+	Token   string `json:"token"`
+	Cluster string `json:"cluster,omitempty"`
 }
 
 // AgentConfigPath returns the path for the per-edge agent config file.
@@ -76,7 +78,14 @@ func AgentConfigPath(edgeName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".faros", "agent-"+edgeName+".json"), nil
+	return AgentConfigPathForHome(home, edgeName), nil
+}
+
+// AgentConfigPathForHome returns the per-edge config path under home. It is
+// used by installers that provision a service for a different local account
+// (for example a root-installed launchd daemon running as a worker user).
+func AgentConfigPathForHome(home, edgeName string) string {
+	return filepath.Join(home, ".faros", "agent-"+edgeName+".json")
 }
 
 // AgentKubeconfigPath returns the path for the per-edge agent kubeconfig file.
@@ -86,7 +95,13 @@ func AgentKubeconfigPath(edgeName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".faros", "agent-"+edgeName+".kubeconfig"), nil
+	return AgentKubeconfigPathForHome(home, edgeName), nil
+}
+
+// AgentKubeconfigPathForHome returns the per-edge kubeconfig path under home.
+// See AgentConfigPathForHome for why installers need this variant.
+func AgentKubeconfigPathForHome(home, edgeName string) string {
+	return filepath.Join(home, ".faros", "agent-"+edgeName+".kubeconfig")
 }
 
 // SaveAgentKubeconfig decodes the base64-encoded kubeconfig returned by the hub
@@ -104,9 +119,37 @@ func SaveAgentKubeconfig(edgeName, kubeconfigB64 string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	//nolint:gosec // kubeconfig with credentials; world-read would be a security issue
-	if err := os.WriteFile(path, kubeconfigBytes, 0600); err != nil {
+	if err := writeCredentialFile(path, kubeconfigBytes); err != nil {
 		return fmt.Errorf("writing agent kubeconfig to %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeCredentialFile rewrites a credential file without exposing its
+// previous or new contents to other users. Existing files are opened without
+// truncation, then restricted before their contents are replaced. The close
+// error is joined with any write error so callers never lose a filesystem
+// failure reported during cleanup.
+func writeCredentialFile(path string, data []byte) (err error) {
+	//nolint:gosec // credential file path is selected by the agent's local configuration
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, f.Close())
+	}()
+	if err := f.Chmod(0600); err != nil {
+		return fmt.Errorf("setting credential file permissions: %w", err)
+	}
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncating credential file: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("writing credential file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("syncing credential file: %w", err)
 	}
 	return nil
 }
@@ -181,16 +224,35 @@ func SaveAgentConfig(edgeName, hubURL, token string) error {
 	if err != nil {
 		return err
 	}
+	return SaveAgentConfigAt(path, AgentConfig{HubURL: hubURL, Token: token})
+}
+
+// SaveAgentConfigWithCluster persists a durable agent token and its explicit
+// kcp cluster context. The legacy SaveAgentConfig helper remains available for
+// callers that do not need an explicit cluster.
+func SaveAgentConfigWithCluster(edgeName, hubURL, token, cluster string) error {
+	path, err := AgentConfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	return SaveAgentConfigAt(path, AgentConfig{HubURL: hubURL, Token: token, Cluster: cluster})
+}
+
+// SaveAgentConfigAt writes a persisted agent config at path with owner-only
+// permissions. Callers that install for another account should chown the file
+// to that account after this function returns.
+func SaveAgentConfigAt(path string, cfg AgentConfig) error {
+	if path == "" {
+		return fmt.Errorf("agent config path is required")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	cfg := AgentConfig{HubURL: hubURL, Token: token}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling agent config: %w", err)
 	}
-	//nolint:gosec // config file with token, world-read would be a security issue
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := writeCredentialFile(path, data); err != nil {
 		return fmt.Errorf("writing agent config to %s: %w", path, err)
 	}
 	return nil
@@ -232,16 +294,21 @@ func clusterFromConfig(cfg *rest.Config) string {
 	return cluster
 }
 
-// AgentType discriminates whether the agent connects a Kubernetes cluster or a
-// bare-metal / systemd server to the hub.
+// AgentType discriminates which connectable resource the agent registers and
+// serves through the hub. Host agents share the same tunnel and Service path;
+// only LinuxServer exposes the optional SSH bridge.
 type AgentType string
 
 const (
-	// AgentTypeKubernetes connects a Kubernetes cluster (registers an Edge with spec.type=kubernetes).
+	// AgentTypeKubernetes connects a Kubernetes cluster (registers a KubernetesCluster).
 	AgentTypeKubernetes AgentType = "kubernetes"
-	// AgentTypeServer connects a bare-metal / systemd host via SSH
-	// (registers an Edge with spec.type=server).
+	// AgentTypeServer connects a bare-metal Linux host via SSH
+	// (registers a LinuxServer).
 	AgentTypeServer AgentType = "server"
+	// AgentTypeMacOS connects a macOS host as a service-only edge. It registers
+	// a MacOSServer and deliberately does not probe, generate, or upload SSH
+	// credentials.
+	AgentTypeMacOS AgentType = "macos"
 )
 
 // hubClientTimeout bounds every request the agent makes to the hub.
@@ -277,11 +344,13 @@ func resolveType(raw string) (AgentType, error) {
 		return AgentTypeKubernetes, nil
 	case string(AgentTypeServer):
 		return AgentTypeServer, nil
+	case string(AgentTypeMacOS):
+		return AgentTypeMacOS, nil
 	default:
 		return "", fmt.Errorf(
-			"invalid type %q: must be %q or %q",
+			"invalid type %q: must be %q, %q, or %q",
 			raw,
-			string(AgentTypeKubernetes), string(AgentTypeServer),
+			string(AgentTypeKubernetes), string(AgentTypeServer), string(AgentTypeMacOS),
 		)
 	}
 }
@@ -297,8 +366,8 @@ type Options struct {
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
-	// Type controls whether the agent registers as a Kubernetes edge or a
-	// Server edge. Defaults to AgentTypeKubernetes.
+	// Type controls whether the agent registers as a Kubernetes, Linux server,
+	// or macOS service edge. Defaults to AgentTypeKubernetes.
 	Type AgentType
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
@@ -449,7 +518,7 @@ func New(opts *Options) (*Agent, error) {
 			"the default becomes enforce in the next release (allowed CIDRs: %v)", svcCIDRs)
 	}
 
-	// Auto-discover or auto-generate an SSH private key for server-type edges
+	// Auto-discover or auto-generate an SSH private key for Linux server edges
 	// when no credentials were provided. This makes `faros agent join --type
 	// server` work out of the box: the agent generates a keypair, installs the
 	// public half into authorized_keys, and ships the private half to the hub
@@ -535,6 +604,12 @@ func New(opts *Options) (*Agent, error) {
 		hubTLSConfig: hubTLSConfig,
 		svcProxy:     tunnel.SvcProxyOptions{AllowedCIDRs: svcCIDRs, Policy: svcPolicy},
 	}
+	// MacOSServer is intentionally service-only. Keep the shared server-mode
+	// tunnel but disable the SSH bridge even when the CLI's Linux-compatible
+	// default --ssh-proxy-port=22 was left in place.
+	if agentType == AgentTypeMacOS {
+		opts.SSHProxyPort = 0
+	}
 
 	// In server mode there is no downstream Kubernetes cluster to connect to.
 	if agentType == AgentTypeKubernetes {
@@ -574,7 +649,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	hubClient := farosclient.NewFromDynamic(hubDynamic)
 
-	if a.agentType == AgentTypeServer {
+	if a.agentType == AgentTypeServer || a.agentType == AgentTypeMacOS {
 		return a.runServerMode(ctx, logger, hubClient)
 	}
 	return a.runKubernetesMode(ctx, logger, hubClient)
@@ -758,6 +833,9 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}()
 	} else {
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		if a.agentType == AgentTypeMacOS {
+			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
+		}
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -803,7 +881,9 @@ func (a *Agent) refreshHubClientFromSavedKubeconfig() (*farosclient.Client, erro
 	return farosclient.NewFromDynamic(dynClient), nil
 }
 
-// runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
+// runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
+// hosts additionally expose SSH; MacOSServer hosts use the same reverse tunnel
+// and Service proxy without requiring sshd.
 func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
 	// Skip edge registration when:
 	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
@@ -818,17 +898,18 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
 		}
-		logger.Info("Edge registered", "type", "server")
+		logger.Info("Edge registered", "type", a.agentType)
 	}
 
-	// Set up SSH credentials if provided.
+	// Set up SSH credentials only for LinuxServer edges. A macOS worker is
+	// service-only by default and must not depend on sshd or upload credentials.
 	// In join-token mode the token is not a valid kcp credential, so skip
 	// credential setup — the hub manages SSH credentials server-side.
-	if a.opts.Token == "" {
+	if a.agentType == AgentTypeServer && a.opts.Token == "" {
 		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
 			return fmt.Errorf("setting up SSH credentials: %w", err)
 		}
-	} else {
+	} else if a.agentType == AgentTypeServer {
 		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
 	}
 
@@ -882,16 +963,16 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		serverDeliverOnce.Do(func() { close(serverAgentKubeconfigDelivered) })
 	}
 
-	// In join-token mode, pass SSH credentials as WebSocket headers so the hub
+	// In join-token mode, pass LinuxServer SSH credentials as WebSocket headers so the hub
 	// can store them server-side (the agent's join token is not a valid kcp
 	// credential for creating secrets). The sshd host key travels on EVERY
 	// connect, whatever the mode: the provider records it write-once (it is
 	// no longer re-asserted via the heartbeat status patch), so an agent that
 	// first connects with a saved kubeconfig must still get to report it.
 	var sshHeaders http.Header
-	if a.opts.Token != "" {
+	if a.agentType == AgentTypeServer && a.opts.Token != "" {
 		sshHeaders = a.buildSSHHeaders()
-	} else {
+	} else if a.agentType == AgentTypeServer {
 		sshHeaders = a.sshHostKeyHeader()
 	}
 
@@ -930,6 +1011,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		}()
 	} else {
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		if a.agentType == AgentTypeMacOS {
+			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
+		}
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -937,7 +1021,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		}()
 	}
 
-	logger.Info("Agent started successfully (server mode)")
+	logger.Info("Agent started successfully (host mode)", "type", a.agentType)
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
 	return nil
@@ -1274,38 +1358,37 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 func (a *Agent) registerEdge(ctx context.Context, client *farosclient.Client) error {
 	logger := klog.FromContext(ctx)
 
-	edgeType := "kubernetes"
-	if a.agentType == AgentTypeServer {
-		edgeType = "server"
-	}
+	edgeType := string(a.agentType)
+	gvr := farosclient.EdgeGVRForType(edgeType)
+	kind := farosclient.EdgeKindForType(edgeType)
 
-	res := client.Dynamic().Resource(farosclient.EdgeGVRForType(edgeType))
+	res := client.Dynamic().Resource(gvr)
 
 	existing, err := res.Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
-	if err != nil {
-		logger.Info("Creating Edge", "name", a.opts.EdgeName, "type", edgeType)
+	if apierrors.IsNotFound(err) {
+		logger.Info("Creating edge", "name", a.opts.EdgeName, "type", edgeType, "kind", kind)
 		labels := map[string]interface{}{}
 		for k, v := range a.opts.Labels {
 			labels[k] = v
 		}
 		edge := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": farosclient.KubernetesClusterGVR.GroupVersion().String(),
-			"kind":       "Edge",
+			"apiVersion": gvr.GroupVersion().String(),
+			"kind":       kind,
 			"metadata": map[string]interface{}{
 				"name":   a.opts.EdgeName,
 				"labels": labels,
 			},
-			"spec": map[string]interface{}{
-				"type": edgeType,
-			},
+			"spec": map[string]interface{}{},
 		}}
 		if _, err := res.Create(ctx, edge, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("creating edge: %w", err)
 		}
 		return nil
+	} else if err != nil {
+		return fmt.Errorf("getting edge: %w", err)
 	}
 
-	logger.Info("Updating Edge", "name", a.opts.EdgeName, "type", edgeType)
+	logger.Info("Updating edge", "name", a.opts.EdgeName, "type", edgeType, "kind", kind)
 	labels, _, _ := unstructured.NestedStringMap(existing.Object, "metadata", "labels")
 	if labels == nil {
 		labels = map[string]string{}
@@ -1315,10 +1398,6 @@ func (a *Agent) registerEdge(ctx context.Context, client *farosclient.Client) er
 	}
 	if err := unstructured.SetNestedStringMap(existing.Object, labels, "metadata", "labels"); err != nil {
 		return fmt.Errorf("setting edge labels: %w", err)
-	}
-	// Keep spec.type in sync.
-	if err := unstructured.SetNestedField(existing.Object, edgeType, "spec", "type"); err != nil {
-		return fmt.Errorf("setting edge spec.type: %w", err)
 	}
 	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("updating edge: %w", err)

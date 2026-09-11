@@ -34,10 +34,22 @@ import (
 var edgeKindGVRs = []schema.GroupVersionResource{
 	farosclient.KubernetesClusterGVR,
 	farosclient.LinuxServerGVR,
+	farosclient.MacOSServerGVR,
 }
 
-// getEdgeByName fetches a connectable resource by name across both kinds
-// (KubernetesCluster, LinuxServer), returning the object and the GVR it was
+func edgeGVRForKind(kind string) schema.GroupVersionResource {
+	switch kind {
+	case "LinuxServer":
+		return farosclient.LinuxServerGVR
+	case "MacOSServer":
+		return farosclient.MacOSServerGVR
+	default:
+		return farosclient.KubernetesClusterGVR
+	}
+}
+
+// getEdgeByName fetches a connectable resource by name across all connectable
+// kinds (KubernetesCluster, LinuxServer, MacOSServer), returning the object and the GVR it was
 // found under. The CLI addresses edges by name; the kind is discovered here.
 func getEdgeByName(ctx context.Context, dyn dynamic.Interface, name string) (*unstructured.Unstructured, schema.GroupVersionResource, error) {
 	for _, gvr := range edgeKindGVRs {
@@ -49,16 +61,27 @@ func getEdgeByName(ctx context.Context, dyn dynamic.Interface, name string) (*un
 			return nil, gvr, err
 		}
 	}
-	return nil, schema.GroupVersionResource{}, fmt.Errorf("edge %q not found (searched KubernetesCluster + LinuxServer)", name)
+	return nil, schema.GroupVersionResource{}, fmt.Errorf("edge %q not found (searched KubernetesCluster + LinuxServer + MacOSServer)", name)
 }
 
-// listAllEdges lists every connectable resource across both kinds, merged.
+// listAllEdges lists every connectable resource across all kinds, merged.
 func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Unstructured, error) {
 	var items []unstructured.Unstructured
 	for _, gvr := range edgeKindGVRs {
 		list, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("listing %s: %w", gvr.Resource, err)
+		}
+		// Some dynamic API responses omit per-item TypeMeta. Preserve the GVR
+		// that produced each item so callers can still render a MacOSServer or
+		// LinuxServer correctly instead of falling back to Kubernetes.
+		for i := range list.Items {
+			if list.Items[i].GetKind() == "" {
+				list.Items[i].SetKind(farosclient.EdgeKindForType(farosclient.EdgeTypeForGVR(gvr)))
+			}
+			if list.Items[i].GetAPIVersion() == "" {
+				list.Items[i].SetAPIVersion(gvr.GroupVersion().String())
+			}
 		}
 		items = append(items, list.Items...)
 	}

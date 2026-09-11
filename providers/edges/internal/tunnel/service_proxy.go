@@ -118,14 +118,22 @@ func (v *serviceView) isKube() bool {
 // connResource is the tunnel ConnManager resource segment for the referenced
 // edge kind.
 func (v *serviceView) connResource() string {
-	if v.isKube() {
+	switch v.Spec.EdgeRef.Kind {
+	case "", linuxServerKind:
+		return linuxServerResource
+	case kubernetesClusterKind:
 		return kubernetesClusterResource
+	case macOSServerKind:
+		return macOSServerResource
+	default:
+		// The CRD enum rejects this, but the proxy also receives unstructured
+		// objects from clients and must fail closed if admission was bypassed.
+		return ""
 	}
-	return linuxServerResource
 }
 
 // targetHost is the agent-side address of the service: cluster DNS for a
-// KubernetesCluster edge, the host loopback for a LinuxServer edge.
+// KubernetesCluster edge, the host loopback for a LinuxServer or MacOSServer edge.
 func (v *serviceView) targetHost() string {
 	// spec.host wins on either edge kind: dial the address directly (loopback, or
 	// a device on the edge's LAN like a UniFi console).
@@ -216,7 +224,13 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 		return
 	}
 
-	// Resolve the tunnel for the referenced edge (LinuxServer or KubernetesCluster).
+	// Resolve the tunnel for the referenced edge (LinuxServer, MacOSServer, or
+	// KubernetesCluster).
+	if svc.connResource() == "" {
+		logger.Info("service references unsupported edge kind", "cluster", cluster, "name", name, "kind", svc.Spec.EdgeRef.Kind)
+		http.Error(w, "unsupported service edge kind", http.StatusBadRequest)
+		return
+	}
 	key := edgeConnKey(svc.connResource(), cluster, svc.Spec.EdgeRef.Name)
 	dialer, found := p.edgeConnManager.Load(key)
 	if !found {
@@ -240,6 +254,9 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 const (
 	linuxServerResource       = "linuxservers"
 	kubernetesClusterResource = "kubernetesclusters"
+	macOSServerResource       = "macosservers"
+	linuxServerKind           = "LinuxServer"
+	macOSServerKind           = "MacOSServer"
 	kubernetesClusterKind     = "KubernetesCluster"
 )
 

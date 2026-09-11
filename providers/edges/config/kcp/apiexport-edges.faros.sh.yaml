@@ -15,13 +15,18 @@ spec:
     storage:
       crd: {}
   - group: edges.faros.sh
+    name: macosservers
+    schema: v260911-5c089fd5.macosservers.edges.faros.sh
+    storage:
+      crd: {}
+  - group: edges.faros.sh
     name: placements
     schema: v260718-e83a64f.placements.edges.faros.sh
     storage:
       crd: {}
   - group: edges.faros.sh
     name: services
-    schema: v260904-9ab06b67.services.edges.faros.sh
+    schema: v260911-5c089fd5.services.edges.faros.sh
     storage:
       crd: {}
   - group: edges.faros.sh

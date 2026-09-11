@@ -1,4 +1,4 @@
-.PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal
+.PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
@@ -88,6 +88,46 @@ build-access-proxy: ## Build the published-app access-proxy binary (infrastructu
 # the faros CLI binary (cmd/faros/) with ENTRYPOINT [/faros, agent, run].
 build-agent: build-faros
 
+## macOS agent compile/test gates. These targets deliberately use the caller's
+## GOCACHE/GOTMPDIR/TMPDIR so local and CI builds share the environment-provided
+## disk-backed caches. They only build binaries; no release or publishing step is
+## implied.
+test-macos-agent: ## Run focused root agent/client/apiurl/CLI tests
+	go test ./pkg/agent/... ./pkg/client ./pkg/apiurl ./pkg/cli/...
+
+test-edges-provider: ## Run the complete standalone Edges provider test suite
+	mkdir -p providers/edges/portal/dist && touch providers/edges/portal/dist/.gitkeep
+	cd providers/edges && go test ./...
+
+test-edges-portal: ## Run the Edges portal tests and TypeScript check
+	cd providers/edges/portal && npm ci && npm test && npm run typecheck
+
+build-macos-agent: build-macos-agent-arm64 build-macos-agent-amd64 ## Compile the agent for Darwin arm64 and amd64
+
+build-macos-agent-arm64: ## Compile the agent for Darwin arm64
+	mkdir -p $(BINDIR)
+	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-darwin-arm64 ./cmd/faros/
+
+build-macos-agent-amd64: ## Compile the agent for Darwin amd64
+	mkdir -p $(BINDIR)
+	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-darwin-amd64 ./cmd/faros/
+
+build-macos-stub-native: ## Compile the localhost-only health stub for the current platform
+	mkdir -p $(BINDIR)
+	go build $(GOFLAGS) -o $(BINDIR)/macos-stub ./hack/edges-macos/
+
+build-macos-stub: build-macos-stub-arm64 build-macos-stub-amd64 ## Compile the health stub for downloadable Darwin architectures
+
+build-macos-stub-arm64: ## Compile the health stub for Darwin arm64
+	mkdir -p $(BINDIR)
+	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -o $(BINDIR)/macos-stub-darwin-arm64 ./hack/edges-macos/
+
+build-macos-stub-amd64: ## Compile the health stub for Darwin amd64
+	mkdir -p $(BINDIR)
+	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -o $(BINDIR)/macos-stub-darwin-amd64 ./hack/edges-macos/
+
+verify-macos-edges: test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-stub ## Run all macOS Edges compile and focused verification gates
+
 build-quickstart-provider-portal: ## Build the quickstart provider's micro-frontend (Vite + TS → portal/dist)
 	cd providers/quickstart/portal && npm install --no-audit --no-fund && npm run build
 
@@ -113,9 +153,10 @@ build-edges-provider: build-edges-provider-portal ## Build the edges provider bi
 	cd providers/edges && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/edges-provider .
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the edges provider's
-## API (KubernetesCluster + LinuxServer, both in edges.faros.sh), then sync
-## the schema bodies into the Helm chart's files/schemas/ directory. Provider
-## init applies them at runtime so tenants that bind the APIExport get both kinds.
+## API (KubernetesCluster, LinuxServer, and MacOSServer in edges.faros.sh), then
+## sync the schema bodies into the Helm chart's files/schemas/ directory.
+## Provider init applies them at runtime so tenants that bind the APIExport get
+## all connectable edge kinds.
 codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the edges provider's local API (+ chart schemas)
 	@mkdir -p providers/edges/config/crds providers/edges/config/kcp providers/edges/deploy/chart/files/schemas
 	cd providers/edges && \
@@ -123,7 +164,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
-	@for r in kubernetesclusters linuxservers workloads placements services; do \
+	@for r in kubernetesclusters linuxservers macosservers workloads placements services; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.faros.sh.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.faros.sh.yaml; \
 	done
@@ -520,7 +561,7 @@ verify-ci-selection: ## Test CI change selection and completion gates (requires 
 	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
 
 verify-workflows: $(ACTIONLINT) ## Validate CI workflows with pinned Actionlint
-	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml
+	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml .github/workflows/macos.yaml
 
 $(ACTIONLINT):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/rhysd/actionlint/cmd/actionlint actionlint $(ACTIONLINT_VER)

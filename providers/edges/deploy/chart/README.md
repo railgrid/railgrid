@@ -1,6 +1,6 @@
 # faros-edges-provider
 
-Standalone faros provider for edges — both Kubernetes clusters and Linux/SSH servers, under one group edges.faros.sh. Terminates the agent reverse tunnel (revdial) in-process, owns the KubernetesCluster + LinuxServer API + its APIExport, and exposes kubectl/SSH/MCP through the hub backend proxy. Ships the provider Deployment (horizontally scalable — each agent dials one replica and a Lease registry + pod-to-pod relay route requests to the tunnel's owner), a ClusterIP Service, and the CatalogEntry that registers the provider with the faros hub.
+Standalone faros provider for edges — Kubernetes clusters, Linux/SSH servers, and macOS hosts, under one group edges.faros.sh. Terminates the agent reverse tunnel (revdial) in-process, owns the connectable APIs + their APIExport, and exposes kubectl/SSH/MCP/host-local Services through the hub backend proxy. MacOSServer is Service-only and does not require SSH. Ships the provider Deployment (horizontally scalable — each agent dials one replica and a Lease registry + pod-to-pod relay route requests to the tunnel's owner), a ClusterIP Service, and the CatalogEntry that registers the provider with the faros hub.
 
 Helm chart for the faros **edges** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
@@ -71,4 +71,3 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
-

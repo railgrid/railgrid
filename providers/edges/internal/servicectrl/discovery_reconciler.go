@@ -33,26 +33,50 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
+	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
 )
 
 // discoveryResyncInterval is how often connected edges are re-scanned.
 const discoveryResyncInterval = 5 * time.Minute
 
-// DiscoveryReconciler pulls discovered services from each connected LinuxServer
-// agent and materializes a Service per service. It owns discovery-derived
-// fields only; user-set spec (port overrides, authSecretRef) is never clobbered.
+// DiscoveryReconciler pulls discovered services from each connected host agent
+// and materializes a Service per service. It owns discovery-derived fields
+// only; user-set spec (port overrides, authSecretRef) is never clobbered.
 type DiscoveryReconciler struct {
 	mgr         mcmanager.Manager
 	connManager ConnManager
+	resource    string
+	kind        string
+	newObj      func() edgeapi.Connectable
 }
 
-// SetupDiscoveryWithManager registers the discovery reconciler (For LinuxServer).
+// SetupDiscoveryWithManager registers one discovery reconciler for each host
+// edge kind whose agent exposes the common service-discovery endpoint.
 func SetupDiscoveryWithManager(mgr mcmanager.Manager, connManager ConnManager) error {
-	r := &DiscoveryReconciler{mgr: mgr, connManager: connManager}
-	return mcbuilder.ControllerManagedBy(mgr).
-		Named("service-discovery").
-		For(&edgesv1alpha1.LinuxServer{}).
-		Complete(r)
+	configs := []struct {
+		resource string
+		kind     string
+		newObj   func() edgeapi.Connectable
+	}{
+		{resource: edgesv1alpha1.LinuxServerResource, kind: "LinuxServer", newObj: edgesv1alpha1.NewLinuxServer},
+		{resource: edgesv1alpha1.MacOSServerResource, kind: "MacOSServer", newObj: edgesv1alpha1.NewMacOSServer},
+	}
+	for _, cfg := range configs {
+		r := &DiscoveryReconciler{
+			mgr:         mgr,
+			connManager: connManager,
+			resource:    cfg.resource,
+			kind:        cfg.kind,
+			newObj:      cfg.newObj,
+		}
+		if err := mcbuilder.ControllerManagedBy(mgr).
+			Named("service-discovery-" + cfg.resource).
+			For(cfg.newObj()).
+			Complete(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -64,7 +88,7 @@ func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 	c := cl.GetClient()
 
-	edge := &edgesv1alpha1.LinuxServer{}
+	edge := r.newObj()
 	if err := c.Get(ctx, req.NamespacedName, edge); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -73,10 +97,10 @@ func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	// Only scan connected edges with a live tunnel.
-	if !edge.Status.Connected {
+	if !edge.GetConnectionStatus().Connected {
 		return ctrl.Result{}, nil
 	}
-	key := connKey(edgesv1alpha1.LinuxServerResource, string(req.ClusterName), req.Name)
+	key := connKey(r.resource, string(req.ClusterName), req.Name)
 	dialer, ok := r.connManager.Load(key)
 	if !ok {
 		// Tunnel not (yet) live; retry shortly.
@@ -99,12 +123,21 @@ func (r *DiscoveryReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 	byName := make(map[string]*edgesv1alpha1.Service, len(existing.Items))
 	for i := range existing.Items {
+		// LinuxServer and MacOSServer are separate connectable resources, so
+		// the same metadata.name is valid for both. Only reconcile discovered
+		// Services whose edgeRef points at this controller's kind; otherwise a
+		// same-named edge in the other resource would be treated as missing and
+		// deleted or have its status refreshed by the wrong controller.
+		if existing.Items[i].Spec.EdgeRef.Kind != r.kind &&
+			(r.kind != linuxServerKind || existing.Items[i].Spec.EdgeRef.Kind != "") {
+			continue
+		}
 		byName[existing.Items[i].Name] = &existing.Items[i]
 	}
 
 	seen := make(map[string]bool, len(services))
 	for _, svc := range services {
-		name := discoveredName(req.Name, svc.Type)
+		name := discoveredName(r.resource, req.Name, svc.Type)
 		seen[name] = true
 		if err := r.upsert(ctx, c, req.Name, name, svc, byName[name]); err != nil {
 			logger.Error(err, "upserting service", "name", name)
@@ -138,7 +171,7 @@ func (r *DiscoveryReconciler) upsert(ctx context.Context, c client.Client, edgeN
 				},
 			},
 			Spec: edgesv1alpha1.ServiceSpec{
-				EdgeRef: edgesv1alpha1.ServiceEdgeRef{Kind: "LinuxServer", Name: edgeName},
+				EdgeRef: edgesv1alpha1.ServiceEdgeRef{Kind: r.kind, Name: edgeName},
 				Type:    edgesv1alpha1.ServiceType(svc.Type),
 				Scheme:  schemeOrDefault(svc.Scheme),
 				Port:    svc.Port,
@@ -182,8 +215,13 @@ func (r *DiscoveryReconciler) handleMissing(ctx context.Context, c client.Client
 	return c.Status().Update(ctx, es)
 }
 
-// discoveredName is the deterministic name of a discovery-created Service.
-func discoveredName(edge, svcType string) string {
+// discoveredName keeps the historical LinuxServer name while qualifying MacOSServer
+// names. This prevents same-named Linux and Mac edges from competing for one Service
+// object in a tenant workspace.
+func discoveredName(resource, edge, svcType string) string {
+	if resource == edgesv1alpha1.MacOSServerResource {
+		edge = "macos-edge-" + edge
+	}
 	return edge + "-" + strings.ToLower(svcType)
 }
 

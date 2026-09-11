@@ -24,6 +24,10 @@ describe('Edges provider routes', () => {
       page: 'services',
       create: { resource: 'service', edgeType: 'kubernetes', edgeName: 'prod/us' },
     })
+    expect(parseSubPath('create/service/macos/mac%2Dmini')).toEqual({
+      page: 'services',
+      create: { resource: 'service', edgeType: 'macos', edgeName: 'mac-mini' },
+    })
     expect(parseSubPath('deploy/workload/manual')).toEqual({
       page: 'workloads',
       deploy: { resource: 'workload', mode: 'manual' },
@@ -34,6 +38,9 @@ describe('Edges provider routes', () => {
     })
     expect(parseSubPath('edges/kubernetes/prod%2Fus')).toEqual({
       page: 'edges', edge: { type: 'kubernetes', name: 'prod/us' },
+    })
+    expect(parseSubPath('edges/macos/mac%2Fmini')).toEqual({
+      page: 'edges', edge: { type: 'macos', name: 'mac/mini' },
     })
     expect(parseSubPath('services/home%2Dassistant')).toEqual({ page: 'services', service: 'home-assistant' })
   })
@@ -48,8 +55,10 @@ describe('Edges provider routes', () => {
 
   it('builds collision-safe paths and preserves encoded names', () => {
     expect(edgeDetailPath('kubernetes', 'prod/us')).toBe('edges/kubernetes/prod%2Fus')
+    expect(edgeDetailPath('macos', 'mac/mini')).toBe('edges/macos/mac%2Fmini')
     expect(serviceDetailPath('home assistant')).toBe('services/home%20assistant')
     expect(serviceCreatePath('server', 'edge-a')).toBe('create/service/server/edge-a')
+    expect(serviceCreatePath('macos', 'mac-mini')).toBe('create/service/macos/mac-mini')
     expect(serviceCreatePath()).toBe('create/service')
     expect(workloadDeployPath('manual')).toBe('deploy/workload/manual')
     expect(workloadDeployPath('marketplace', 'grafana')).toBe('deploy/workload/marketplace/grafana')
@@ -124,5 +133,6 @@ describe('Edges provider routes', () => {
     expect(edgeConnectPath()).toBe('connect/edge')
     expect(edgeConnectionCancelPath()).toBe('')
     expect(edgeConnectionSuccessPath(undefined, 'server', 'edge/a')).toBe('edges/server/edge%2Fa')
+    expect(edgeConnectionSuccessPath(undefined, 'macos', 'mac/mini')).toBe('edges/macos/mac%2Fmini')
   })
 })

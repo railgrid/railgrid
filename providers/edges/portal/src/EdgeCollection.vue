@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, ref } from 'vue'
-import { Boxes, Plus, RefreshCw, Server } from 'lucide-vue-next'
+import { Boxes, Laptop, Plus, RefreshCw, Server } from 'lucide-vue-next'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
@@ -37,7 +37,7 @@ const edgeColumns = [
 const edgeRows = computed(() => props.edges.map(edge => ({
   ...edge,
   rowKey: `${edge.type}/${edge.name}`,
-  typeLabel: edge.type === 'server' ? 'Server' : 'Kubernetes',
+  typeLabel: edge.type === 'server' ? 'Server' : edge.type === 'macos' ? 'macOS host' : 'Kubernetes',
   status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
   agentVersion: edge.agentVersion || '—',
   lastHeartbeat: relativeTime(edge.lastHeartbeatTime),
@@ -54,7 +54,8 @@ const edgeJourney = [
 ]
 
 function edgeRowAriaLabel(row: Record<string, unknown>): string {
-  return `Open ${row.type === 'server' ? 'server' : 'Kubernetes'} edge ${String(row.name)}`
+  const type = row.type === 'server' ? 'Server' : row.type === 'macos' ? 'macOS host' : 'Kubernetes'
+  return `Open ${type} edge ${String(row.name)}`
 }
 
 function relativeTime(timestamp?: string): string {
@@ -79,7 +80,7 @@ onActivated(() => emit('activated'))
     <header class="edges-header">
       <div>
         <h1>Edges</h1>
-        <p>Kubernetes clusters and Linux/SSH servers connected to this workspace.</p>
+        <p>Kubernetes clusters, Linux/SSH servers, and macOS hosts connected to this workspace.</p>
       </div>
       <div v-if="!showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="props.foregroundLoading" @click="emit('refresh')">
@@ -94,7 +95,7 @@ onActivated(() => emit('activated'))
     <FirstRunGuide
       v-if="showFirstRun"
       title="Connect your first edge"
-      description="Connect a Kubernetes cluster or Linux server. The Faros agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
+      description="Connect a Kubernetes cluster, Linux server, or macOS host. The Faros agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
       primary-label="Connect edge"
       :steps="edgeJourney"
       journey-label="Edge connection path"
@@ -127,7 +128,7 @@ onActivated(() => emit('activated'))
       @row-click="emit('open', $event)"
     >
       <template #name="{ value, row }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="emit('open', row)">{{ value }}</button></template>
-      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
+      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : row.type === 'macos' ? Laptop : Boxes" :size="12" aria-hidden="true" />{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #lastHeartbeat="{ value }"><span class="muted">{{ value }}</span></template>

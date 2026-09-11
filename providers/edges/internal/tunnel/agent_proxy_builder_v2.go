@@ -114,7 +114,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		// resource matches the single kind this tunnel serves.
 		cluster, resource, name, ok := p.parseEdgeAgentPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/"+p.group+"/"+p.version+"/{kubernetesclusters|linuxservers}/{name}/proxy", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /{cluster}/apis/"+p.group+"/"+p.version+"/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy", http.StatusBadRequest)
 			return
 		}
 		gvr, _, _ := p.gvrForResource(resource)
@@ -172,7 +172,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		var upgradeHeaders http.Header
 		kubeconfigDelivered := false
 		if authenticatedByJoinToken {
-			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, name, token)
+			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, resource, name, token)
 			upgradeHeaders = http.Header{}
 			if kubeconfigHeader != "" {
 				upgradeHeaders.Set("X-Faros-Agent-Kubeconfig", kubeconfigHeader)
@@ -219,7 +219,12 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		// provisioned the SA secret yet, the agent won't have a durable credential
 		// and needs the join token to remain valid for the next reconnect attempt.
 		clearJoinToken := !authenticatedByJoinToken || kubeconfigDelivered
-		sshCreds := extractSSHCredsFromHeaders(r)
+		// MacOSServer is Service-only, so ignore SSH headers for it and preserve
+		// the existing LinuxServer/KubernetesCluster handling.
+		var sshCreds *sshCredsFromAgent
+		if resource != macOSServerResource {
+			sshCreds = extractSSHCredsFromHeaders(r)
+		}
 		go p.markEdgeConnected(context.Background(), gvr, cluster, name, sshCreds, clearJoinToken)
 
 		// Stamp status.lastHeartbeatTime from the dialer's LastPong while the
@@ -319,7 +324,7 @@ func edgeConnKey(resource, cluster, name string) string {
 // secret created by the RBAC controller, builds a minimal kubeconfig with it,
 // and returns the result base64-encoded for the X-Faros-Agent-Kubeconfig header.
 // Returns an empty string if the SA token is not yet available.
-func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string {
+func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ string) string {
 	if p.kcpConfig == nil {
 		p.logger.Info("Cannot build agent kubeconfig: no kcp config")
 		return ""
@@ -339,7 +344,7 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string 
 		return ""
 	}
 
-	secretName := "edge-" + edgeName + "-kubeconfig"
+	secretName := edgeCredentialName(resource, edgeName) + "-kubeconfig"
 	secret, err := dynClient.Resource(secretGVR).Namespace("faros-system").Get(
 		context.Background(), secretName, metav1.GetOptions{})
 	if err != nil {
@@ -371,6 +376,17 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string 
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// edgeCredentialName mirrors the RBAC reconciler's naming policy. Existing
+// KubernetesCluster/LinuxServer credentials retain the legacy edge-<name>
+// names; MacOSServer credentials use a disjoint kind-qualified prefix so a
+// same-named legacy edge cannot be mistaken for the macOS agent's credential.
+func edgeCredentialName(resource, edgeName string) string {
+	if resource == macOSServerResource {
+		return "macos-edge-" + edgeName
+	}
+	return "edge-" + edgeName
 }
 
 // buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use

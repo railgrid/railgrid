@@ -26,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	farosclient "github.com/faroshq/faros/pkg/client"
 	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
@@ -62,12 +63,12 @@ the binary.`,
 				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
-			edge, _, err := getEdgeByName(ctx, dynClient, edgeName)
+			edge, gvr, err := getEdgeByName(ctx, dynClient, edgeName)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", edgeName, err)
 			}
 
-			edgeType := getNestedString(*edge, "spec", "type")
+			edgeType := farosclient.EdgeTypeForGVR(gvr)
 			agentVersion := getNestedString(*edge, "status", "agentVersion")
 
 			if agentVersion == tag {
@@ -80,6 +81,8 @@ the binary.`,
 				return agentUpgradeKubernetes(ctx, edgeName, tag, wait)
 			case "server":
 				return agentUpgradeServer(edgeName)
+			case "macos":
+				return agentUpgradeMacOS(edgeName)
 			default:
 				return fmt.Errorf("unknown edge type %q", edgeType)
 			}
@@ -200,6 +203,19 @@ func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
 	fmt.Printf("  sudo systemctl restart faros-agent-%s\n\n", edgeName)
+	fmt.Printf("After upgrading, verify with:\n")
+	fmt.Printf("  faros edge list\n")
+	return nil
+}
+
+// agentUpgradeMacOS prints the operator-run replacement and launchd restart
+// steps. The worker remains non-root; root is only needed for the shared
+// /usr/local/bin binary and the system LaunchDaemon control operation.
+func agentUpgradeMacOS(edgeName string) error {
+	fmt.Printf("macOS agents are upgraded by replacing the binary on the worker host.\n\n")
+	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n\n")
+	fmt.Printf("  sudo launchctl kickstart -k system/com.faros.agent.%s\n\n", edgeName)
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  faros edge list\n")
 	return nil

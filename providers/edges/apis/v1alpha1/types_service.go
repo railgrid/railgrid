@@ -85,10 +85,10 @@ const (
 
 // ServiceEdgeRef points at the connectable a Service runs on.
 type ServiceEdgeRef struct {
-	// Kind is the connectable kind this service runs on. LinuxServer services
-	// are reached on the host loopback; KubernetesCluster services are reached
-	// through the cluster's DNS and require spec.targetRef.
-	// +kubebuilder:validation:Enum=LinuxServer;KubernetesCluster
+	// Kind is the connectable kind this service runs on. LinuxServer and
+	// MacOSServer services are reached on the host loopback; KubernetesCluster
+	// services are reached through the cluster's DNS and require spec.targetRef.
+	// +kubebuilder:validation:Enum=LinuxServer;MacOSServer;KubernetesCluster
 	// +kubebuilder:default=LinuxServer
 	// +optional
 	Kind string `json:"kind,omitempty"`
@@ -123,7 +123,7 @@ type KubeServiceRef struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Service is an HTTP service running on the host next to an edge agent
-// (e.g. Home Assistant on a LinuxServer). The edges provider proxies to it
+// (e.g. Home Assistant on a LinuxServer or MacOSServer). The edges provider proxies to it
 // through the reverse tunnel and, for known types, exposes MCP tools so AI
 // agents can drive it.
 //

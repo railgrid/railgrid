@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
+import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
+import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
@@ -101,13 +102,13 @@ async function refreshDetail() {
 async function onDelete() {
   const current = edge.value
   if (!current || deleting.value) return
-  if (!(await confirmDialog({ title: `Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  if (!(await confirmDialog({ title: `Delete ${edgeDeleteLabel.value} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   deleting.value = true
   mutationError.value = null
   try {
     await deleteEdge(current)
     if (stopped || props.name !== current.name) return
-    toast('info', `${props.type === 'server' ? 'Server' : 'Cluster'} deletion requested for ${current.name}.`)
+    toast('info', `${edgeMutationLabel.value} deletion requested for ${current.name}.`)
     emit('deleted')
   } catch (e) {
     mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
@@ -135,7 +136,18 @@ async function copy(text: string, field: string, label: string) {
   }
 }
 
-const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : 'Kubernetes cluster')
+const macosJoinDisplay = computed(() => macosJoinSnippet(props.name, props.cluster, MACOS_MASKED_JOIN_TOKEN))
+const macosJoinCommand = computed(() => macosJoinSnippet(props.name, props.cluster, edge.value?.joinToken ?? ''))
+const joinDisplay = computed(() => props.type === 'macos'
+  ? macosJoinDisplay.value
+  : `faros agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
+const joinCommand = computed(() => props.type === 'macos'
+  ? macosJoinCommand.value
+  : `faros agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
+
+const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : props.type === 'macos' ? 'macOS host' : 'Kubernetes cluster')
+const edgeDeleteLabel = computed(() => props.type === 'server' ? 'server' : props.type === 'macos' ? 'macOS host' : 'cluster')
+const edgeMutationLabel = computed(() => props.type === 'server' ? 'Server' : props.type === 'macos' ? 'macOS host' : 'Cluster')
 const edgeStatus = computed(() => {
   if (deleting.value) return 'Deleting'
   if (!edge.value) return loading.value ? 'Loading' : 'Unavailable'
@@ -156,7 +168,7 @@ const metadataRows = computed(() => {
   const value = edge.value
   return [
     { label: 'Resource name', value: value?.name || props.name, mono: true },
-    { label: 'Kind', value: value?.kind || (props.type === 'server' ? 'LinuxServer' : 'KubernetesCluster'), mono: false },
+    { label: 'Kind', value: value?.kind || (props.type === 'server' ? 'LinuxServer' : props.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster'), mono: false },
     { label: 'API version', value: value?.apiVersion || 'edges.faros.sh/v1alpha1', mono: true },
     { label: 'Workspace', value: value?.workspacePath || '—', mono: true },
     { label: 'Namespace', value: value?.namespace || '—', mono: true },
@@ -177,6 +189,14 @@ const configurationRows = computed(() => {
       { label: 'SSH port', value: value.spec.sshPort ?? 22, mono: true },
       { label: 'SSH user mapping', value: value.spec.sshUserMapping || 'Inherited', mono: false },
       { label: 'SSH credentials', value: value.spec.sshCredentialsRef?.name || 'Agent-managed', mono: true },
+    ]
+  }
+  if (props.type === 'macos') {
+    const readyServices = services.value.filter((service) => service.phase === 'Ready').length
+    return [
+      { label: 'Host access', value: value.connected ? 'Tunnel available' : 'Waiting for agent', mono: false },
+      { label: 'Service readiness', value: servicesLoaded.value ? `${readyServices}/${services.value.length} Ready` : 'Loading', mono: false },
+      { label: 'Execution', value: 'Service-only host', mono: false },
     ]
   }
   return [
@@ -254,8 +274,9 @@ sudo systemctl restart faros-agent-${props.name}`,
 )
 
 // ─── Services ────────────────────────────────────────────────────────
-// Server edges: discovered by the agent. Kube edges: declared here (a cluster
-// has far more services than a host, so we don't auto-scan).
+// Linux services are discovered by the agent. Kubernetes and macOS services are
+// declared explicitly; a cluster has far more services than a host, and a
+// macOS host must not be treated as a coding worker just because it connects.
 const services = ref<EdgeService[]>([])
 const servicesLoaded = ref(false)
 const svcError = ref<string | null>(null)
@@ -265,7 +286,7 @@ const tokenInput = ref('')
 const connecting = ref(false)
 const actionItems = computed<ActionMenuItem[]>(() => [{
   id: 'delete',
-  label: deleting.value ? `Deleting ${props.type === 'server' ? 'server' : 'cluster'}…` : `Delete ${props.type === 'server' ? 'server' : 'cluster'}`,
+  label: deleting.value ? `Deleting ${edgeDeleteLabel.value}…` : `Delete ${edgeDeleteLabel.value}`,
   tone: 'danger',
   disabled: !edge.value || detailRefreshing.value || deleting.value || connecting.value,
   busy: deleting.value,
@@ -299,7 +320,7 @@ const edgeStatCards = computed<ResourceStatCard[]>(() => [
     id: 'type',
     label: 'Type',
     value: edgeTypeLabel.value,
-    icon: props.type === 'server' ? Server : Boxes,
+    icon: props.type === 'server' ? Server : props.type === 'macos' ? Laptop : Boxes,
   },
   {
     id: 'hostname',
@@ -438,6 +459,7 @@ onUnmounted(() => {
     <div class="edge-detail__resource">
       <div class="edge-detail__provider-mark" role="img" :aria-label="`${edgeTypeLabel} icon`">
         <Server v-if="type === 'server'" :size="20" :stroke-width="1.75" aria-hidden="true" />
+        <Laptop v-else-if="type === 'macos'" :size="20" :stroke-width="1.75" aria-hidden="true" />
         <Boxes v-else :size="20" :stroke-width="1.75" aria-hidden="true" />
       </div>
 
@@ -560,7 +582,7 @@ onUnmounted(() => {
                       </div>
                     </template>
 
-                    <div v-else class="snippet">
+                    <div v-else-if="type === 'server'" class="snippet">
                       <div class="snippet-head"><span>Replace binary and restart</span>
                         <button
                           type="button"
@@ -574,6 +596,7 @@ onUnmounted(() => {
                       </div>
                       <pre>{{ upgradeServerSnippet }}</pre>
                     </div>
+                    <p v-else class="muted">Upgrade this macOS agent through the launchd installation on the host. The connection state will update after the agent reports its new version.</p>
 
                     <p class="muted">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
                   </div>
@@ -586,7 +609,7 @@ onUnmounted(() => {
                     <span class="edge-disclosure__hint">Show join command</span>
                   </summary>
                   <div class="edge-disclosure__body">
-                    <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
+                    <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : type === 'macos' ? 'Mac host' : 'cluster' }}:</p>
                     <div class="snippet">
                       <div class="snippet-head"><span>faros agent join</span>
                         <button
@@ -594,12 +617,12 @@ onUnmounted(() => {
                           class="k-icon-action snippet-copy"
                           :aria-label="copyControlLabel('join', 'agent join command')"
                           :data-k-tip="copyControlLabel('join', 'agent join command')"
-                          @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join', 'agent join command')"
+                          @click="copy(joinCommand, 'join', 'agent join command')"
                         >
                           <component :is="copied === 'join' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
-                      <pre>faros agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
+                      <pre>{{ joinDisplay }}</pre>
                     </div>
                   </div>
                 </details>
@@ -657,7 +680,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               </div>
             </ResourceSectionCard>
 
-            <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered running on this host. Attach a token to let AI agents control them.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
+            <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered running on this host. Attach a token to let AI agents control them.' : type === 'macos' ? 'Services declared on this host. Host connectivity and Service readiness are reported separately.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
               <template #actions>
                 <span class="edge-section-card__count"><strong>{{ servicesLoaded ? services.length : '—' }}</strong> {{ servicesLoaded ? (services.length === 1 ? 'service' : 'services') : 'services' }}</span>
                 <button
@@ -676,7 +699,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               <div v-if="edge && servicesExpanded" id="edges-services-content" class="edge-services-content">
                 <div v-if="svcError" class="banner error" role="alert">{{ svcError }}</div>
 
-                <div v-if="type === 'kubernetes'" class="edge-services-content__actions">
+                <div v-if="type === 'kubernetes' || type === 'macos'" class="edge-services-content__actions">
                   <button
                     type="button"
                     class="k-btn k-btn--ghost"
@@ -691,7 +714,9 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 <div v-else-if="servicesLoaded && services.length === 0" class="muted">
                   {{ type === 'server'
                     ? 'No services discovered yet. Discovery runs when the agent is connected.'
-                    : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
+                    : type === 'macos'
+                      ? 'No services declared yet. Add one to point at a host-local service.'
+                      : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
                 </div>
                 <div v-else-if="servicesLoaded && services.length" class="svc-cards">
                   <div v-for="es in services" :key="es.name" class="svc-card k-card">
@@ -704,7 +729,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                       <div class="row">
                         <StatusBadge :status="es.phase || 'Detected'" :tone="serviceTone(es)" />
                         <ResourceTableDeleteButton
-                          v-if="type === 'kubernetes'"
+                          v-if="type === 'kubernetes' || type === 'macos'"
                           :label="`Delete service ${es.name}`"
                           :busy-label="`Deleting service ${es.name}`"
                           :busy="deletingServiceName === es.name"

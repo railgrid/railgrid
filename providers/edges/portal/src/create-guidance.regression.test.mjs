@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos.ts'
 
 const readSource = file => readFileSync(resolve(process.cwd(), 'src', file), 'utf8')
 
@@ -52,9 +53,21 @@ describe('Edges create guidance', () => {
     expect(wizard).toMatch(/Waiting for \$\{trimmed\.value\} to connect/)
     expect(wizard).toMatch(/class="banner error" role="alert" aria-live="assertive"/)
     expect(wizard).toMatch(/class="banner warn" role="alert" aria-live="assertive"/)
-    expect(wizard).toMatch(/const masked = '••••••••••••••••'/)
+    expect(wizard).toMatch(/MACOS_MASKED_JOIN_TOKEN/)
     expect(wizard).toMatch(/navigator\.clipboard\.writeText\(build\(joinToken\.value\)\)/)
     expect(wizard).not.toMatch(/revealedCommand|revealForManualCopy|Reveal command for manual copy/)
     expect(wizard).toMatch(/onUnmounted\(\(\) => \{[\s\S]*clearSetupSecret\(\)/)
+
+    expect(MACOS_MASKED_JOIN_TOKEN).toBe('••••••••••••••••')
+    const masked = macosJoinSnippet('mac-mini', 'tenant-macos', MACOS_MASKED_JOIN_TOKEN, 'https://console.dev.kyrosos.com')
+    expect(masked).toContain('--hub-url https://console.dev.kyrosos.com/clusters/tenant-macos')
+    expect(masked).toContain('--worker-user "$(id -un)"')
+    expect(masked).toContain('--cluster tenant-macos')
+    expect(masked).toContain('--token ••••••••••••••••')
+    expect(masked).not.toContain('join-secret')
+
+    const copied = macosJoinSnippet('mac-mini', 'tenant-macos', 'join-secret', 'https://console.dev.kyrosos.com')
+    expect(copied).toContain('--token join-secret')
+    expect(copied).not.toContain(MACOS_MASKED_JOIN_TOKEN)
   })
 })

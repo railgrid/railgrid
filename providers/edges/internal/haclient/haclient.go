@@ -71,9 +71,10 @@ type Dialer interface {
 }
 
 // Target identifies the service to reach, plus its bearer token. Host is the
-// agent-side address: the loopback for LinuxServer edges (the default when
-// empty), cluster DNS ({name}.{namespace}.svc) for KubernetesCluster edges,
-// or a spec.host the agent's --svc-allow-cidr policy permits.
+// agent-side address: the loopback for LinuxServer or MacOSServer edges (the
+// default when empty), cluster DNS ({name}.{namespace}.svc) for
+// KubernetesCluster edges, or a spec.host the agent's --svc-allow-cidr policy
+// permits.
 type Target struct {
 	Scheme string // "http" | "https"
 	Host   string // defaults to 127.0.0.1

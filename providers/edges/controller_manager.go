@@ -132,9 +132,9 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		opts.LatestAgentVersion = edgectrl.NewHubVersionCache(hubExternalURL, hubCAData, 10*time.Minute).Get
 	}
 	// One set of token/RBAC/lifecycle controllers per kind, on the shared
-	// multicluster manager. Both kinds share the single tunnel ConnManager (keyed
+	// multicluster manager. All kinds share the single tunnel ConnManager (keyed
 	// by resource/cluster/name), so the lifecycle reconciler's tunnel-liveness
-	// cross-check works for either.
+	// cross-check works for each kind.
 	if err := edgectrl.SetupControllers(mgr,
 		edgesv1alpha1.KubernetesClusterGVR, "KubernetesCluster", edgesv1alpha1.NewKubernetesCluster,
 		connManager, opts,
@@ -146,6 +146,12 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		connManager, opts,
 	); err != nil {
 		return fmt.Errorf("LinuxServer controllers: %w", err)
+	}
+	if err := edgectrl.SetupControllers(mgr,
+		edgesv1alpha1.MacOSServerGVR, "MacOSServer", edgesv1alpha1.NewMacOSServer,
+		connManager, opts,
+	); err != nil {
+		return fmt.Errorf("MacOSServer controllers: %w", err)
 	}
 
 	// Workload scheduling (KubernetesCluster edges only): the scheduler fans a
@@ -173,8 +179,8 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 	eventsMgr := events.NewManager(ctx, eventStore, ctrl.Log.WithName("edge-events"))
 	tsrv.SetEventStore(eventStore)
 
-	// EdgeService controllers (LinuxServer edges): the discovery reconciler
-	// pulls host services from each connected agent and materializes an
+	// EdgeService controllers (LinuxServer and MacOSServer edges): the discovery
+	// reconciler pulls host services from each connected agent and materializes an
 	// EdgeService per service; the validation reconciler checks configured
 	// credentials against the service and stamps status. Both share the tunnel
 	// ConnManager for agent dials.

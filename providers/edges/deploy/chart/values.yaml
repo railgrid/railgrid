@@ -1,8 +1,8 @@
 ## faros-edges-provider values
 ## Single self-contained edge provider: terminates agent reverse tunnels
-## (revdial) for both KubernetesCluster + LinuxServer kinds, owns the API, runs
-## the token/RBAC/lifecycle controllers, and proxies kubectl/SSH/MCP down the
-## tunnel. It reads a kcp provider kubeconfig at runtime (token validation +
+## (revdial) for KubernetesCluster, LinuxServer, and MacOSServer kinds, owns the
+## API, runs the token/RBAC/lifecycle controllers, and proxies
+## kubectl/SSH/MCP/Services down the tunnel. MacOSServer is Service-only. It reads a kcp provider kubeconfig at runtime (token validation +
 ## cross-tenant controllers).
 
 # Container image. Build (context = REPO ROOT) with:

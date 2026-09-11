@@ -69,7 +69,7 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "hub-insecure-skip-tls-verify", false, "Skip TLS certificate verification for the hub connection (insecure, for development only)")
 	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local port of the SSH daemon to proxy connections to (default 22; set to a different port in test environments)")
 	cmd.Flags().StringVar((*string)(&opts.Type), "type", string(agent.AgentTypeKubernetes),
-		`Edge type: "kubernetes" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
+		`Edge type: "kubernetes" (Kubernetes cluster), "server" (Linux host with SSH), or "macos" (macOS service host)`)
 	cmd.Flags().StringVar(&opts.Cluster, "cluster", "",
 		"kcp logical cluster name (e.g. '1tww43gelbj45g0k'); required when using static token auth without a cluster-scoped hub kubeconfig")
 	cmd.Flags().StringVar(&opts.SSHUser, "ssh-user", "", "SSH username for server-type edges (default: current user)")
@@ -197,6 +197,9 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 				if opts.HubURL == "" && saved.HubURL != "" {
 					opts.HubURL = saved.HubURL
 				}
+				if opts.Cluster == "" && saved.Cluster != "" {
+					opts.Cluster = saved.Cluster
+				}
 			}
 		}
 	}
@@ -245,15 +248,22 @@ which installs the agent as a persistent systemd service.`,
 //   - kubernetes type: applies a Deployment + RBAC into the target cluster
 func newAgentJoinCommand() *cobra.Command {
 	opts := agent.NewOptions()
+	var workerUser, plistPath string
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "join",
-		Short: "Persistently join an edge to the hub (installs systemd service or Kubernetes Deployment)",
+		Short: "Persistently join an edge to the hub (installs systemd, launchd, or Kubernetes deployment)",
 		Long: `Join this edge to the hub as a persistent installation.
 
-For server-type edges (bare-metal / VM):
+For Linux server-type edges (bare-metal / VM):
   Installs a systemd service that runs "faros agent run" and survives reboots.
   Requires root. The service is named faros-agent-<edge-name>.service.
+
+For macOS service edges:
+  Installs a system LaunchDaemon that runs as the configured non-root worker
+  account and survives reboots. Requires root on macOS; use --dry-run on Linux
+  to inspect the plist without installing it.
 
 For kubernetes-type edges:
   Applies a Deployment and RBAC into the faros-agent namespace of the target
@@ -275,15 +285,20 @@ To run the agent as a foreground process (containers / dev / e2e) use:
 			switch opts.Type {
 			case agent.AgentTypeServer, "":
 				return agentJoinServer(opts)
+			case agent.AgentTypeMacOS:
+				return agentJoinMacOS(opts, workerUser, plistPath, dryRun)
 			case agent.AgentTypeKubernetes:
 				return agentJoinKubernetes(opts)
 			default:
-				return fmt.Errorf("unknown agent type %q; must be 'server' or 'kubernetes'", opts.Type)
+				return fmt.Errorf("unknown agent type %q; must be 'server', 'macos', or 'kubernetes'", opts.Type)
 			}
 		},
 	}
 
 	agentRunFlags(cmd, opts)
+	cmd.Flags().StringVar(&workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon (required when run as root)")
+	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.faros.agent.<edge>.plist)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
 	return cmd
 }
 
@@ -800,6 +815,8 @@ type systemdUnitData struct {
 func newAgentInstallCommand() *cobra.Command {
 	var (
 		hubKubeconfig   string
+		hubURL          string
+		token           string
 		edgeName        string
 		edgeType        string
 		sshProxyPort    int
@@ -808,14 +825,18 @@ func newAgentInstallCommand() *cobra.Command {
 		cluster         string
 		insecureSkipTLS bool
 		unitName        string
+		workerUser      string
+		plistPath       string
+		dryRun          bool
 		svcAllowCIDRs   []string
 		svcPolicy       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install faros agent as a systemd service",
-		Long: `Install the faros agent as a systemd service on the current host.
+		Short: "Install faros agent as a systemd or launchd service",
+		Long: `Install the faros agent as a systemd service on Linux or a launchd
+service on macOS.
 
 This creates a systemd unit file, reloads the daemon, enables and starts the
 service. The systemd unit runs "faros agent run" so you get both the agent
@@ -832,7 +853,7 @@ Example:
 			if edgeName == "" {
 				return fmt.Errorf("--edge-name is required")
 			}
-			if hubKubeconfig == "" {
+			if hubKubeconfig == "" && (edgeType != "macos" || token == "") {
 				return fmt.Errorf("--hub-kubeconfig is required")
 			}
 
@@ -844,6 +865,23 @@ Example:
 			binaryPath, err = filepath.EvalSymlinks(binaryPath)
 			if err != nil {
 				return fmt.Errorf("resolving symlinks: %w", err)
+			}
+			if edgeType == "macos" {
+				return installLaunchdAgent(launchdInstallOptions{
+					BinaryPath:      binaryPath,
+					HubKubeconfig:   hubKubeconfig,
+					HubURL:          normalizeHubURL(hubURL),
+					Token:           token,
+					EdgeName:        edgeName,
+					Type:            "macos",
+					Cluster:         cluster,
+					InsecureSkipTLS: insecureSkipTLS,
+					SvcAllowCIDRs:   svcAllowCIDRs,
+					SvcPolicy:       svcPolicy,
+					WorkerUser:      workerUser,
+					PlistPath:       plistPath,
+					DryRun:          dryRun,
+				})
 			}
 
 			// Resolve kubeconfig to absolute path.
@@ -916,15 +954,20 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVar(&hubKubeconfig, "hub-kubeconfig", "", "Path to hub kubeconfig file (required)")
+	cmd.Flags().StringVar(&hubKubeconfig, "hub-kubeconfig", "", "Path to hub kubeconfig file (required except macOS token bootstrap)")
+	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (required with --token for macOS)")
+	cmd.Flags().StringVar(&token, "token", "", "Bootstrap join token (macOS token bootstrap)")
 	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Name of this edge (required)")
-	cmd.Flags().StringVar(&edgeType, "type", "server", "Edge type: kubernetes or server")
+	cmd.Flags().StringVar(&edgeType, "type", "server", "Edge type: kubernetes, server, or macos")
 	cmd.Flags().IntVar(&sshProxyPort, "ssh-proxy-port", 22, "Local SSH daemon port")
 	cmd.Flags().StringVar(&sshUser, "ssh-user", "", "SSH username")
 	cmd.Flags().StringVar(&sshPrivateKey, "ssh-private-key", "", "Path to SSH private key file")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "kcp logical cluster path")
 	cmd.Flags().BoolVar(&insecureSkipTLS, "hub-insecure-skip-tls-verify", false, "Skip TLS verification")
 	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: faros-agent-<edge-name>)")
+	cmd.Flags().StringVar(&workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon")
+	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.faros.agent.<edge>.plist)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
 	cmd.Flags().StringSliceVar(&svcAllowCIDRs, "svc-allow-cidr", svcAllowCIDRDefault(), "CIDR the Service proxy may dial besides loopback, e.g. 192.168.1.0/24 (repeatable; rendered into the unit)")
 	cmd.Flags().StringVar(&svcPolicy, "svc-policy", svcPolicyDefault(), "Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default)")
 
@@ -934,11 +977,20 @@ Example:
 func newAgentUninstallCommand() *cobra.Command {
 	var unitName string
 	var edgeName string
+	var installType string
+	var plistPath string
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Uninstall faros agent systemd service",
+		Short: "Uninstall faros agent systemd or launchd service",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if installType == "macos" {
+				if edgeName == "" {
+					return fmt.Errorf("--edge-name is required for macOS launchd uninstall")
+				}
+				return uninstallLaunchdAgent(edgeName, plistPath, dryRun)
+			}
 			if unitName == "" {
 				if edgeName == "" {
 					return fmt.Errorf("--edge-name or --unit-name is required")
@@ -978,6 +1030,9 @@ func newAgentUninstallCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Edge name (used to derive unit name)")
 	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: faros-agent-<edge-name>)")
+	cmd.Flags().StringVar(&installType, "type", "server", "Installation type: server or macos")
+	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.faros.agent.<edge>.plist)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be removed without changing the host")
 
 	return cmd
 }

@@ -24,17 +24,19 @@ import (
 const (
 	KubernetesClusterResource = "kubernetesclusters"
 	LinuxServerResource       = "linuxservers"
+	MacOSServerResource       = "macosservers"
 	WorkloadResource          = "workloads"
 	PlacementResource         = "placements"
 	ServiceResource           = "services"
 )
 
-// GVRs of the group's kinds (all in edges.faros.sh). The two connectable
+// GVRs of the group's kinds (all in edges.faros.sh). The connectable
 // kinds terminate agent tunnels; Workload/Placement drive workload
 // scheduling across KubernetesCluster edges.
 var (
 	KubernetesClusterGVR = SchemeGroupVersion.WithResource(KubernetesClusterResource)
 	LinuxServerGVR       = SchemeGroupVersion.WithResource(LinuxServerResource)
+	MacOSServerGVR       = SchemeGroupVersion.WithResource(MacOSServerResource)
 	WorkloadGVR          = SchemeGroupVersion.WithResource(WorkloadResource)
 	PlacementGVR         = SchemeGroupVersion.WithResource(PlacementResource)
 	ServiceGVR           = SchemeGroupVersion.WithResource(ServiceResource)
@@ -66,7 +68,13 @@ func (s *LinuxServer) GetConnectionStatus() *edgeapi.ConnectionStatus {
 	return &s.Status.ConnectionStatus
 }
 
-// NewKubernetesCluster / NewLinuxServer yield fresh instances as
+// GetConnectionStatus makes MacOSServer satisfy edgeapi.Connectable.
+func (m *MacOSServer) GetConnectionStatus() *edgeapi.ConnectionStatus {
+	return &m.Status.ConnectionStatus
+}
+
+// NewKubernetesCluster / NewLinuxServer / NewMacOSServer yield fresh instances as
 // edgeapi.Connectable, for edgectrl.SetupControllers (called once per kind).
 func NewKubernetesCluster() edgeapi.Connectable { return &KubernetesCluster{} }
 func NewLinuxServer() edgeapi.Connectable       { return &LinuxServer{} }
+func NewMacOSServer() edgeapi.Connectable       { return &MacOSServer{} }

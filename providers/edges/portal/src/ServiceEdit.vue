@@ -77,9 +77,12 @@ seedForm(service.value)
 // locking, target hints, and credential fields.
 const entry = computed(() => props.catalog.find((c) => c.type === form.value.serviceType))
 const schemeLocked = computed(() => !!entry.value?.schemeLocked)
-const edgeIsServer = computed(() =>
+// Both host edge kinds use direct/loopback reachability. A Kubernetes edge is
+// the only kind allowed to edit a Kubernetes Service target.
+const edgeIsHost = computed(() =>
   service.value?.edgeKind === 'LinuxServer' ||
-  props.edges.find((e) => e.name === service.value?.edgeName)?.type === 'server',
+  service.value?.edgeKind === 'MacOSServer' ||
+  ['server', 'macos'].includes(props.edges.find((e) => e.name === service.value?.edgeName)?.type ?? ''),
 )
 
 function onTypeChange(): void {
@@ -451,7 +454,7 @@ onUnmounted(() => {
               <div class="service-detail__target-mode" role="group" aria-labelledby="service-edit-target-label">
                 <span id="service-edit-target-label" class="lbl">Target</span>
                 <label class="k-checkbox-hit"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
-                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsServer }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsServer" /> Kubernetes Service</label>
+                <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsHost }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsHost" /> Kubernetes Service</label>
               </div>
               <div v-if="targetMode === 'host'" class="service-detail__form-grid">
                 <label class="fld"><span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" class="muted service-detail__field-help">{{ entry.hostHelp }}</span></label>

@@ -167,6 +167,18 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// Always keep status.URL current.
 	es.Status.URL = r.statusURL(string(req.ClusterName), es.Name)
 
+	// The CRD enum rejects unknown edge kinds, but keep the reconciler fail
+	// closed for objects that predate that validation or arrive through a bypass.
+	// In particular, never let an unknown kind fall through to LinuxServer's
+	// ConnManager key and host-loopback policy.
+	if !supportedEdgeKind(es) {
+		es.Status.Phase = "Unreachable"
+		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "InvalidEdgeRef",
+			"spec.edgeRef.kind must be LinuxServer, MacOSServer, or KubernetesCluster")
+		setNotProbed(es, "the service references an unsupported edge kind")
+		return r.commit(ctx, c, orig, es, validationResyncInterval)
+	}
+
 	// No credentials → nothing to validate, unless the type is usable
 	// unauthenticated (e.g. Prometheus), in which case we still probe for
 	// reachability below with an empty token.

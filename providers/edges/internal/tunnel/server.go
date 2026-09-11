@@ -35,8 +35,8 @@ import (
 
 // KindConfig declares one connectable kind the tunnel serves. All kinds a
 // Server serves MUST share a group + version (they live in one APIExport); they
-// differ only by resource/kind (e.g. kubernetesclusters/KubernetesCluster and
-// linuxservers/LinuxServer under edges.faros.sh).
+// differ only by resource/kind (e.g. kubernetesclusters/KubernetesCluster,
+// linuxservers/LinuxServer, and macosservers/MacOSServer under edges.faros.sh).
 type KindConfig struct {
 	// GVR is the connectable kind's GroupVersionResource.
 	GVR schema.GroupVersionResource
@@ -66,8 +66,8 @@ type authorizeFnType func(ctx context.Context, tenantCfg, kcpConfig *rest.Config
 type TenantConfigGetter func(ctx context.Context, cluster string) (*rest.Config, error)
 
 // Server is the SDK's generic tunnel plane. The single `edges` provider
-// constructs one serving BOTH connectable kinds (KubernetesCluster + LinuxServer
-// under edges.faros.sh): it terminates their agent reverse tunnels
+// constructs one serving all connectable kinds (KubernetesCluster, LinuxServer,
+// and MacOSServer under edges.faros.sh): it terminates their agent reverse tunnels
 // (revdial + one in-process ConnManager, keyed by resource/cluster/name) and
 // serves the k8s / ssh data-plane subresources. Requests are dispatched to the
 // right kind by the resource segment in the URL path.
@@ -339,7 +339,7 @@ func (s *Server) ConnManager() *ConnManager { return s.edgeConnManager }
 
 // AgentIngressHandler terminates agent reverse tunnels. Mounted (behind the hub
 // backend proxy) at /services/providers/edges/agent/. Path after
-// StripPrefix: /{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy
+// StripPrefix: /{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy
 // and /proxy (revdial pickup).
 func (s *Server) AgentIngressHandler() http.Handler {
 	return s.buildEdgeAgentProxyHandler()
@@ -347,7 +347,7 @@ func (s *Server) AgentIngressHandler() http.Handler {
 
 // EdgeProxyHandler serves the consumer data-plane subresources. Mounted (behind
 // the hub backend proxy) at /services/providers/edges/edgeproxy/.
-// Path after StripPrefix: /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{k8s|ssh}.
+// Path after StripPrefix: /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/{k8s|ssh}.
 func (s *Server) EdgeProxyHandler() http.Handler {
 	return s.buildEdgesProxyHandler()
 }

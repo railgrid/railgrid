@@ -1066,7 +1066,7 @@ done
 local_resource(
     'edges',
     cmd='make build-edges-provider',
-    serve_cmd='make run-provider-edges',
+    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s make run-provider-edges' % faros_hub_external_url,
     deps=[
         'providers/edges/main.go',
         'providers/edges/controller_manager.go',
@@ -1251,7 +1251,7 @@ local_resource(
 
 local_resource(
     'edges-2',
-    serve_cmd='POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=18088 EDGES_INTERNAL_PORT=18090',
+    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=18088 EDGES_INTERNAL_PORT=18090' % faros_hub_external_url,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['edges'],

@@ -47,10 +47,10 @@ import (
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
 //
-// resourceType must be either "kubernetes" (Kubernetes cluster agent) or
-// "server" (bare-metal / systemd host agent). It selects which resource the
-// agent dials on the single `edges` provider (kubernetesclusters vs
-// linuxservers) via apiurl.ProviderAgentProxyURL.
+// resourceType is "kubernetes" (Kubernetes cluster agent), "server"
+// (Linux bare-metal / systemd host agent), or "macos" (service-only macOS
+// host agent). It selects which resource the agent dials on the single
+// `edges` provider via apiurl.ProviderAgentProxyURL.
 //
 // cluster is the kcp logical cluster path (e.g., "root:faros:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
@@ -154,8 +154,9 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 	}
 
 	// The agent dials the single `edges` provider's agent-ingress path, choosing
-	// the resource (kubernetesclusters vs linuxservers) by type, routed through
-	// the hub backend proxy. resourceType is the agent type ("kubernetes" | "server").
+	// the resource (kubernetesclusters, linuxservers, or macosservers) by type,
+	// routed through the hub backend proxy. resourceType is the agent type
+	// ("kubernetes" | "server" | "macos").
 	edgeProxyURL := apiurl.ProviderAgentProxyURL(baseHubURL, resourceType, clusterName, edgeName, "proxy")
 
 	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig, extraHeaders)

@@ -29,11 +29,14 @@ import (
 )
 
 type installOptions struct {
-	installType string // "server" or "kubernetes"
+	installType string // "server", "macos", or "kubernetes"
 	hubURL      string
 	edgeName    string
 	token       string
 	kubeconfig  string // for --type=kubernetes: kubectl context kubeconfig
+	cluster     string // explicit kcp cluster for host agents
+	workerUser  string // non-root account for --type=macos
+	plistPath   string // optional LaunchDaemon plist path
 	dryRun      bool
 }
 
@@ -72,22 +75,49 @@ Examples:
 			switch opts.installType {
 			case "server":
 				return installServer(opts)
+			case "macos":
+				return installMacOS(opts)
 			case "kubernetes":
 				return installKubernetes(opts)
 			default:
-				return fmt.Errorf("unknown --type %q: must be 'server' or 'kubernetes'", opts.installType)
+				return fmt.Errorf("unknown --type %q: must be 'server', 'macos', or 'kubernetes'", opts.installType)
 			}
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.installType, "type", "kubernetes", "Installation type: 'server' (systemd) or 'kubernetes' (kubectl apply)")
+	cmd.Flags().StringVar(&opts.installType, "type", "kubernetes", "Installation type: 'server' (systemd), 'macos' (launchd), or 'kubernetes' (kubectl apply)")
 	cmd.Flags().StringVar(&opts.hubURL, "hub-url", "", "Hub server URL")
 	cmd.Flags().StringVar(&opts.edgeName, "edge-name", "", "Name of this edge")
 	cmd.Flags().StringVar(&opts.token, "token", "", "Bootstrap join token")
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "Path to kubeconfig for --type=kubernetes (default: $KUBECONFIG or ~/.kube/config)")
+	cmd.Flags().StringVar(&opts.cluster, "cluster", "", "kcp logical cluster name for host agents")
+	cmd.Flags().StringVar(&opts.workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon")
+	cmd.Flags().StringVar(&opts.plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.faros.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print what would be done without applying it")
 
 	return cmd
+}
+
+func installMacOS(opts *installOptions) error {
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving binary path: %w", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		return fmt.Errorf("resolving binary symlinks: %w", err)
+	}
+	return installLaunchdAgent(launchdInstallOptions{
+		BinaryPath: binaryPath,
+		HubURL:     normalizeHubURL(opts.hubURL),
+		Token:      opts.token,
+		EdgeName:   opts.edgeName,
+		Type:       "macos",
+		Cluster:    opts.cluster,
+		WorkerUser: opts.workerUser,
+		PlistPath:  opts.plistPath,
+		DryRun:     opts.dryRun,
+	})
 }
 
 // installServer installs the faros agent as a systemd service on the current host.

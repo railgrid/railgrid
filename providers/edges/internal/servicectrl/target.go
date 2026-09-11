@@ -20,8 +20,13 @@ import (
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 )
 
-// kubernetesClusterKind is the edgeRef.kind value for a KubernetesCluster edge.
-const kubernetesClusterKind = "KubernetesCluster"
+// Connectable kinds accepted by Service.edgeRef. An empty kind is the Go-side
+// representation of the CRD's LinuxServer default.
+const (
+	linuxServerKind       = "LinuxServer"
+	macOSServerKind       = "MacOSServer"
+	kubernetesClusterKind = "KubernetesCluster"
+)
 
 // isKube reports whether a Service lives on a KubernetesCluster edge.
 func isKube(es *edgesv1alpha1.Service) bool {
@@ -31,10 +36,22 @@ func isKube(es *edgesv1alpha1.Service) bool {
 // connResource returns the tunnel ConnManager resource segment for the edge
 // kind a Service references. It must match the keys the tunnel package uses.
 func connResource(es *edgesv1alpha1.Service) string {
-	if isKube(es) {
+	switch es.Spec.EdgeRef.Kind {
+	case "", linuxServerKind:
+		return edgesv1alpha1.LinuxServerResource
+	case macOSServerKind:
+		return edgesv1alpha1.MacOSServerResource
+	case kubernetesClusterKind:
 		return edgesv1alpha1.KubernetesClusterResource
+	default:
+		// Admission enforces the enum, but controllers must also fail closed
+		// when handed an object written before the rule or through a bypass.
+		return ""
 	}
-	return edgesv1alpha1.LinuxServerResource
+}
+
+func supportedEdgeKind(es *edgesv1alpha1.Service) bool {
+	return connResource(es) != ""
 }
 
 // targetHost is the agent-side address of the service. It must stay in lockstep
@@ -44,7 +61,8 @@ func connResource(es *edgesv1alpha1.Service) string {
 //     or a device on the edge's LAN like a UniFi console at 192.168.1.1);
 //   - otherwise cluster DNS ({name}.{namespace}.svc) for a KubernetesCluster
 //     edge with a targetRef;
-//   - otherwise the host loopback (a LinuxServer edge's own agent host).
+//   - otherwise the host loopback (a LinuxServer or MacOSServer edge's own
+//     agent host).
 func targetHost(es *edgesv1alpha1.Service) string {
 	if es.Spec.Host != "" {
 		return es.Spec.Host

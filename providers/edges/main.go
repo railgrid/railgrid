@@ -7,8 +7,8 @@
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
 // edges is the single, privileged provider that owns the whole edge
-// connectivity plane for BOTH connectable kinds — KubernetesCluster and
-// LinuxServer, under one group edges.faros.sh. It terminates agent reverse
+// connectivity plane for KubernetesCluster, LinuxServer, and MacOSServer under
+// one group edges.faros.sh. It terminates agent reverse
 // tunnels (revdial) with one in-process ConnManager, runs the token/RBAC/
 // lifecycle controllers per kind, and serves the k8s/ssh/mcp data-plane
 // subresources. The tunnel Server dispatches by the resource segment in the URL
@@ -17,7 +17,7 @@
 // Routes (all behind the hub backend proxy at /services/providers/edges/*):
 //
 //   - /healthz                                          liveness/readiness gate
-//   - /agent/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy  agent control-tunnel ingress
+//   - /agent/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers|macosservers}/{name}/proxy  agent control-tunnel ingress
 //   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress (single-replica / legacy)
 //   - /agent/proxy/{replica}?revdial.dialer=<id>        replica-addressed pickup ingress
 //   - /edgeproxy/clusters/{cluster}/.../{name}/{k8s|ssh|mcp}  consumer egress
@@ -196,6 +196,7 @@ func runServe(opts serveOptions) error {
 		Kinds: []sdktunnel.KindConfig{
 			{GVR: edgesv1alpha1.KubernetesClusterGVR, Kind: "KubernetesCluster"},
 			{GVR: edgesv1alpha1.LinuxServerGVR, Kind: "LinuxServer"},
+			{GVR: edgesv1alpha1.MacOSServerGVR, Kind: "MacOSServer"},
 		},
 		AgentPickupPath:           agentPickupPath,
 		EdgeProxyPublicPath:       edgeProxyPublicPath,

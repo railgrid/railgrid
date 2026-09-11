@@ -21,14 +21,14 @@ import (
 )
 
 const (
-	apiExportName        = "edges.providers.faros.sh"
+	apiExportName = "edges.providers.faros.sh"
 )
 
 // runInitCmd bootstraps the provider's APIExport into its workspace: it applies
-// the KubernetesCluster + LinuxServer APIResourceSchemas from FAROS_SCHEMAS_DIR,
-// creates the edges.providers.faros.sh APIExport referencing them, the
-// endpoint slice, and the bind grant. Tenants that bind this export get both
-// edge kinds.
+// the KubernetesCluster + LinuxServer + MacOSServer APIResourceSchemas from
+// FAROS_SCHEMAS_DIR, creates the edges.providers.faros.sh APIExport referencing
+// them, the endpoint slice, and the bind grant. Tenants that bind this export get
+// all three edge kinds.
 func runInitCmd(ctx context.Context) error {
 	log := klog.Background().WithName("edges-init")
 
