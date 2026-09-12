@@ -61,14 +61,14 @@ class SelectionTests(unittest.TestCase):
         expected_portals = {
             "agents": (True, True), "app-studio": (True, True), "code": (False, False),
             "databricks": (True, True), "edges": (True, True), "infrastructure": (False, False),
-            "kuery": (True, True), "quickstart": (False, True),
+            "kuery": (True, True), "linear": (True, True), "quickstart": (False, True),
         }
         expected_images = [
             {"name": name, "image": f"faroshq/faros-{name}-provider"}
             for name in ["quickstart", "infrastructure", "code", "kuery"]
         ] + [{"name": "app-studio", "image": "faroshq/faros/app-studio-provider"}] + [
             {"name": name, "image": f"faroshq/faros-{name}-provider"}
-            for name in ["databricks", "agents", "edges"]
+            for name in ["databricks", "agents", "edges", "linear"]
         ] + [
             {"name": "infrastructure/dev-agent", "image": "faroshq/faros-dev-agent",
              "context": "./providers/infrastructure/dev-agent"},

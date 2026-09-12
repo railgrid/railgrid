@@ -1,0 +1,83 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: events.linear.providers.faros.sh
+spec:
+  group: linear.providers.faros.sh
+  names:
+    kind: Event
+    listKind: EventList
+    plural: events
+    singular: event
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Event is a Linear provider API resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: EventSpec contains bounded notifications, not a desired-state
+              mirror of Linear.
+            properties:
+              action:
+                type: string
+              connection:
+                type: string
+              connectionUID:
+                type: string
+              deliveryID:
+                type: string
+              entityID:
+                type: string
+              expiresAt:
+                format: date-time
+                type: string
+              issueID:
+                type: string
+              receivedAt:
+                format: date-time
+                type: string
+              teamID:
+                type: string
+              type:
+                type: string
+            required:
+            - action
+            - connection
+            - connectionUID
+            - deliveryID
+            - entityID
+            - expiresAt
+            - receivedAt
+            - teamID
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: event is immutable
+              rule: self == oldSelf
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true

@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "linear.fullname" . }}
+  labels:
+    {{- include "linear.labels" . | nindent 4 }}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "linear currently requires replicaCount=1 for bounded event ingestion" }}
+{{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "linear.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "linear.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: {{ include "linear.serviceAccountName" . }}
+      initContainers:
+        # Bootstrap the provider workspace (schemas, APIExport, slice, bind
+        # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
+        # /etc/faros/schemas (Dockerfile). Idempotent.
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: LINEAR_WORKSPACE_PATH
+              value: {{ .Values.workspacePath | quote }}
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
+            {{- if .Values.catalogEntry.enabled }}
+            # The CatalogEntry is a kcp resource, so the chart cannot apply it to
+            # the hosting cluster. It is rendered into a ConfigMap (mounted below)
+            # and init self-registers it into the provider workspace via the
+            # provider kubeconfig.
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
+            {{- end }}
+          volumeMounts:
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
+              readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/faros/catalogentry
+              readOnly: true
+            {{- end }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8092
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: "8092"
+            - name: FAROS_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: FAROS_PROVIDER_NAME
+              value: "linear"
+            {{- if .Values.hub.insecure }}
+            - name: FAROS_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: FAROS_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/linear-runtime/kubeconfig
+          volumeMounts:
+            - name: runtime-kubeconfig
+              mountPath: /var/run/linear-runtime
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: runtime-kubeconfig
+          secret:
+            secretName: {{ .Values.runtimeKubeconfig.secretName }}
+        # Required: the workspace-admin kubeconfig minted via /bonkers (admin
+        # onboarding), consumed by the init container.
+        - name: faros-provider-kubeconfig
+          secret:
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            items:
+              - key: kubeconfig
+                path: faros-provider-kubeconfig
+        {{- if .Values.catalogEntry.enabled }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "linear.fullname" . }}-catalogentry
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

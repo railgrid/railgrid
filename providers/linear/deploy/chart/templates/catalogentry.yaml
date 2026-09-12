@@ -1,0 +1,44 @@
+{{- if .Values.catalogEntry.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "linear.fullname" . }}-catalogentry
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: linear
+    spec:
+      displayName: Linear
+      description: "Workspace-scoped Linear issue operations and verified events."
+      vendor: faros
+      version: {{ .Chart.AppVersion | quote }}
+      category: Development
+      iconURL: /ui/providers/linear/icon.svg
+      ui:
+        url: http://{{ include "linear.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+        indexPath: /
+      backend:
+        url: http://{{ include "linear.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+        healthPath: /readyz
+      apiExport:
+        name: linear.providers.faros.sh
+        permissionClaims:
+          - resource: secrets
+            verbs: [get]
+            tenantScoped: true
+      selfHosting:
+        supported: true
+        chart:
+          repository: oci://ghcr.io/faroshq/charts
+          name: faros-linear-provider
+        namespace: faros-provider-linear
+        releaseName: linear
+        requiredValues:
+          - name: workspacePath
+            description: Fully qualified provider workspace path.
+            value: {{ "{{workspacePath}}" | quote }}
+        docsURL: https://github.com/faroshq/faros/blob/main/providers/linear/deploy/chart/README.md
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+{{- end }}

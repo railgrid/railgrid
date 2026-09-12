@@ -533,7 +533,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds codegen-code-provider codegen-app-studio-provider codegen-databricks-provider codegen-infrastructure-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
+codegen: crds codegen-linear-provider codegen-code-provider codegen-app-studio-provider codegen-databricks-provider codegen-infrastructure-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
@@ -2738,3 +2738,49 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 .PHONY: test-app-studio-portal
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
+
+.PHONY: codegen-linear-provider test-linear-provider lint-linear-provider fix-lint-linear-provider build-linear-provider build-linear-provider-portal
+codegen-linear-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN)
+	@mkdir -p providers/linear/config/crds providers/linear/config/kcp providers/linear/deploy/chart/files/schemas
+	cd providers/linear && $(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && $(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." output:crd:artifacts:config=$(CURDIR)/providers/linear/config/crds
+	./hack/apigen.sh --input-dir providers/linear/config/crds --output-dir providers/linear/config/kcp
+	cp providers/linear/config/kcp/apiresourceschema-*.yaml providers/linear/deploy/chart/files/schemas/
+test-linear-provider:
+	cd providers/linear && go test -race -count=1 ./...
+fix-lint-linear-provider: $(GOLANGCI_LINT)
+	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./...
+lint-linear-provider: $(GOLANGCI_LINT)
+	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run ./...
+build-linear-provider-portal:
+	cd providers/linear/portal && npm ci --no-audit --no-fund && npm run build
+build-linear-provider: build-linear-provider-portal
+	cd providers/linear && go build -o ../../bin/linear-provider .
+
+LINEAR_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+LINEAR_KCP_SERVER ?= https://localhost:6443
+LINEAR_WORKSPACE_PATH ?= root:faros:providers:linear
+LINEAR_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/linear-runtime.kubeconfig
+.PHONY: install-provider-linear init-provider-linear run-provider-linear uninstall-provider-linear verify-linear-provider
+install-provider-linear:
+	kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/root:faros:system:providers --insecure-skip-tls-verify apply -f providers/linear/provider.yaml
+init-provider-linear: build-linear-provider
+	@umask 077; TOKEN=$$(kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/$(LINEAR_WORKSPACE_PATH) --insecure-skip-tls-verify get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN"; \
+	printf 'apiVersion: v1\nkind: Config\ncurrent-context: linear\ncontexts:\n- name: linear\n  context: {cluster: linear, user: linear}\nclusters:\n- name: linear\n  cluster:\n    server: %s/clusters/%s\n    insecure-skip-tls-verify: true\nusers:\n- name: linear\n  user:\n    token: %s\n' "$(LINEAR_KCP_SERVER)" "$(LINEAR_WORKSPACE_PATH)" "$$TOKEN" > $(LINEAR_RUNTIME_KUBECONFIG)
+	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) LINEAR_WORKSPACE_PATH=$(LINEAR_WORKSPACE_PATH) FAROS_SCHEMAS_DIR=$(CURDIR)/providers/linear/deploy/chart/files/schemas FAROS_CATALOGENTRY_FILE=$(CURDIR)/providers/linear/manifest.yaml $(BINDIR)/linear-provider init
+run-provider-linear:
+	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) FAROS_HUB_URL=https://localhost:9443 FAROS_HUB_INSECURE=true PORT=8092 $(BINDIR)/linear-provider serve
+uninstall-provider-linear:
+	kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/root:faros:system:providers --insecure-skip-tls-verify delete -f providers/linear/provider.yaml
+verify-linear-provider: codegen-linear-provider build-linear-provider lint-linear-provider test-linear-provider
+	cd providers/linear/portal && npm run typecheck && npm test
+	helm lint --strict providers/linear/deploy/chart
+
+.PHONY: image-linear-provider verify-linear-release fix-lint-linear-release
+image-linear-provider:
+	docker build -f providers/linear/Dockerfile -t faros-linear-provider:stage4 .
+fix-lint-linear-release: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run --fix ./cmd/release
+verify-linear-release: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run ./cmd/release
+	go test -count=1 ./cmd/release

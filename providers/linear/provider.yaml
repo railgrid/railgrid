@@ -1,0 +1,13 @@
+# Provider — declarative provisioning record (admin.faros.sh, admin-only).
+# Applied into root:faros:system:providers. The hub's Provider controller creates the
+# provider sub-workspace (root:faros:providers:linear), its "provider"
+# ServiceAccount, and writes a kubeconfig Secret (linear-kubeconfig) into
+# root:faros:system:providers. Nothing else — the APIExport/schemas/bind-grant come
+# from the provider's own `init`, and routing/UI from the companion
+# CatalogEntry in manifest.yaml.
+apiVersion: admin.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: linear
+spec:
+  displayName: "Linear"

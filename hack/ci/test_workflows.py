@@ -128,7 +128,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(ci["govulncheck"]["strategy"]["matrix"]["module"], [
             ".", "provider-sdk", "providers/agents", "providers/app-studio", "providers/code",
             "providers/databricks", "providers/edges", "providers/infrastructure",
-            "providers/kuery", "providers/quickstart"])
+            "providers/kuery", "providers/linear", "providers/quickstart"])
         for mode in ("provider-ui", "full"):
             self.assertEqual(expected_jobs("ci", mode, "pull_request")["govulncheck"], "success")
         verification = ci["verify-ci-selection"]

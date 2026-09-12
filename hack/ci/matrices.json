@@ -36,6 +36,11 @@
       "typecheck": true
     },
     {
+      "provider": "linear",
+      "test": true,
+      "typecheck": true
+    },
+    {
       "provider": "quickstart",
       "test": false,
       "typecheck": true
@@ -73,6 +78,10 @@
     {
       "name": "edges",
       "image": "faros-edges-provider"
+    },
+    {
+      "name": "linear",
+      "image": "faros-linear-provider"
     },
     {
       "name": "infrastructure/dev-agent",

@@ -1,0 +1,4 @@
+/portal/node_modules/
+/portal/dist/
+/linear-provider
+*.kubeconfig

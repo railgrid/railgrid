@@ -1,0 +1,6 @@
+apiVersion: v2
+name: faros-linear-provider
+description: Tenant-scoped Linear issue operations and verified events.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

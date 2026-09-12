@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: linear-consumer
+  namespace: default
+rules:
+  - apiGroups: [linear.providers.faros.sh]
+    resources: [connections, events]
+    verbs: [get, list, watch]
+  - apiGroups: [linear.providers.faros.sh]
+    resources: [operations]
+    verbs: [get, list, watch, create]
+# Bind this role to the intended callers separately. Namespace administrators
+# manage Connection policy and Secrets. Do not grant consumers status writes.

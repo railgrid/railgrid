@@ -117,3 +117,19 @@ func TestMultipleComponentTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestLinearReleaseComponent(t *testing.T) {
+	component, ok := components["linear"]
+	if !ok || component.prefix != "providers/linear/v" {
+		t.Fatalf("linear release component: %+v exists=%v", component, ok)
+	}
+	found := false
+	for _, name := range componentOrder {
+		if name == "linear" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("linear absent from release component order")
+	}
+}

@@ -1,0 +1,66 @@
+image:
+  repository: ghcr.io/faroshq/faros-linear-provider
+  tag: ""  # empty → defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# One replica is required to serialize bounded event admission.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8092
+
+# Hub the provider POSTs heartbeats to. Must be reachable from the provider
+# pod (in-cluster Service DNS works). Empty url → heartbeats disabled, which
+# is fine for a UI-only demo install.
+hub:
+  url: https://faros-hub.faros.svc.cluster.local:9443
+  # Bearer token used in the heartbeat POST. Provided as a Secret because it
+  # MUST NOT land in values.yaml in plaintext for prod. Leave name empty to
+  # send unauthenticated heartbeats (dev only).
+  tokenSecretRef:
+    name: ""
+    key: token
+  # Skip TLS verification on heartbeat — dev only, defaults off.
+  insecure: false
+
+# Secret holding the workspace-admin kubeconfig minted by the platform admin
+# via /bonkers (admin onboarding). The init container uses it to apply the
+# provider's schemas/APIExport/slice/bind grant. Key must be "kubeconfig".
+providerKubeconfig:
+  secretName: faros-provider-kubeconfig
+
+# When true, the chart renders the CatalogEntry (which registers the provider
+# with the hub) into a ConfigMap that the init container applies into the
+# provider workspace via the provider kubeconfig. The CatalogEntry is a kcp
+# resource, so it is NOT applied to the hosting cluster this chart installs into.
+# Set to false to manage the CatalogEntry separately (e.g. GitOps with a
+# different rollout cadence).
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""   # empty → release-name
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 32Mi
+
+# Optional pod-level overrides.
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Runtime provider ServiceAccount kubeconfig, distinct from bootstrap identity.
+runtimeKubeconfig:
+  secretName: linear-runtime-kubeconfig
+
+# Fully qualified provider workspace; override for an org-owned deployment.
+workspacePath: root:faros:providers:linear

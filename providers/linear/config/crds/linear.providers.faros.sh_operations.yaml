@@ -1,0 +1,133 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: operations.linear.providers.faros.sh
+spec:
+  group: linear.providers.faros.sh
+  names:
+    kind: Operation
+    listKind: OperationList
+    plural: operations
+    singular: operation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Operation is a Linear provider API resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: OperationSpec is an immutable explicit command. Reusing its
+              Kubernetes name never authorizes another mutation.
+            properties:
+              action:
+                enum:
+                - teams
+                - states
+                - issues
+                - issue
+                - comments
+                - createIssue
+                - updateIssue
+                - addComment
+                - reconcile
+                type: string
+              after:
+                maxLength: 4096
+                type: string
+              body:
+                maxLength: 16000
+                type: string
+              connection:
+                minLength: 1
+                type: string
+              description:
+                maxLength: 16000
+                type: string
+              first:
+                default: 25
+                maximum: 50
+                minimum: 1
+                type: integer
+              issueID:
+                type: string
+              query:
+                maxLength: 1000
+                type: string
+              since:
+                description: RFC3339 lower bound for explicit paginated issue catch-up.
+                format: date-time
+                type: string
+              stateID:
+                type: string
+              teamID:
+                type: string
+              title:
+                maxLength: 255
+                type: string
+            required:
+            - action
+            - connection
+            type: object
+            x-kubernetes-validations:
+            - message: operation input is immutable
+              rule: self == oldSelf
+          status:
+            properties:
+              completedAt:
+                format: date-time
+                type: string
+              connectionUID:
+                description: Bound to the original Connection UID so replacement cannot
+                  redirect an uncertain write.
+                type: string
+              message:
+                type: string
+              phase:
+                enum:
+                - Running
+                - Succeeded
+                - Failed
+                - Uncertain
+                type: string
+              result:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              startedAt:
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

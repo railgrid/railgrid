@@ -1,0 +1,21 @@
+faros-provider-linear { display: block; color: var(--color-text-primary); }
+faros-provider-linear .linear-fields { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; }
+faros-provider-linear label { display: grid; gap: 6px; flex: 1 1 200px; }
+faros-provider-linear .linear-wide { flex-basis: 100%; }
+faros-provider-linear .linear-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+faros-provider-linear .linear-table { overflow-x: auto; }
+faros-provider-linear .linear-section { padding: 20px; margin-block: 16px; }
+faros-provider-linear summary { cursor: pointer; margin-block: 16px; }
+faros-provider-linear table { width: 100%; text-align: left; }
+faros-provider-linear th, faros-provider-linear td { padding: 12px; border-bottom: 1px solid var(--color-border-subtle); }
+faros-provider-linear [data-results], faros-provider-linear [data-history] { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+faros-provider-linear .linear-page { max-width: 1200px; margin-inline: auto; padding: 24px; }
+faros-provider-linear .linear-page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+faros-provider-linear .linear-page-title { font-size: 24px; font-weight: 600; margin: 0; }
+faros-provider-linear .linear-page-subtitle { color: var(--color-text-muted); margin-top: 4px; font-size: 13px; }
+faros-provider-linear .linear-section h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+faros-provider-linear .linear-section p { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 12px; }
+faros-provider-linear [data-message] { margin-block: 12px; font-size: 13px; }
+faros-provider-linear th { white-space: nowrap; }
+@media (max-width: 600px) { faros-provider-linear .linear-page { padding: 12px; } }

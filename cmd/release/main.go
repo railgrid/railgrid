@@ -71,9 +71,10 @@ type component struct {
 // provider-sdk is first: the providers depend on it, so when releasing `all`
 // the SDK tag is cut (and published to the mirror) before the providers that
 // will eventually `require` that published version.
-var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "edges", "databricks", "agents"}
+var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "edges", "databricks", "agents", "linear"}
 
 var components = map[string]component{
+	"linear":         {"providers/linear/v", "provider-release.yaml builds the Linear image and chart"},
 	"provider-sdk":   {"provider-sdk/v", "split → faroshq/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
 	"hub":            {"v", "goreleaser CLI release + hub/agent images + platform Helm charts (ghcr.io/faroshq)"},
 	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-quickstart"},

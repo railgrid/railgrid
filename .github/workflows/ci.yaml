@@ -77,6 +77,7 @@ jobs:
           - { module: providers/edges, race: "" }
           - { module: providers/infrastructure, race: -race }
           - { module: providers/kuery, race: -race }
+          - { module: providers/linear, race: -race }
           - { module: providers/quickstart, race: -race }
     steps:
     - uses: actions/checkout@v4
@@ -140,6 +141,7 @@ jobs:
           - providers/edges
           - providers/infrastructure
           - providers/kuery
+          - providers/linear
           - providers/quickstart
     steps:
     - uses: actions/checkout@v4

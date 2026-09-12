@@ -1,0 +1,35 @@
+apiVersion: providers.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: linear
+spec:
+  displayName: Linear
+  description: "Workspace-scoped Linear issue operations and verified events."
+  vendor: faros
+  version: "0.1.0"
+  category: Development
+  iconURL: /ui/providers/linear/icon.svg
+  ui:
+    url: http://localhost:8092
+    indexPath: /
+  backend:
+    url: http://localhost:8092
+    healthPath: /readyz
+  apiExport:
+    name: linear.providers.faros.sh
+    permissionClaims:
+      - resource: secrets
+        verbs: [get]
+        tenantScoped: true
+  selfHosting:
+    supported: true
+    chart:
+      repository: oci://ghcr.io/faroshq/charts
+      name: faros-linear-provider
+    namespace: faros-provider-linear
+    releaseName: linear
+    requiredValues:
+      - name: workspacePath
+        description: Fully qualified provider workspace path.
+        value: "{{workspacePath}}"
+    docsURL: https://github.com/faroshq/faros/blob/main/providers/linear/deploy/chart/README.md

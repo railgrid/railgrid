@@ -16,6 +16,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Vanilla-TS (string-building) portals + files.
 TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
+  "providers/linear/portal"
   "providers/quickstart/portal"
 )
 TS_FILES=(dashboardtile.ts faros-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
