@@ -147,10 +147,15 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		Architecture:    runtime.GOARCH,
 		Toolchains:      append([]string(nil), cfg.Toolchains...),
 		Environment:     append([]string(nil), cfg.Environment...),
-		Verification:    append([]string(nil), cfg.Verification...),
 		Capacity:        Capacity{Maximum: cfg.MaximumCapacity},
 		Ready:           probeErr == nil && info.Ready && len(info.Reasons) == 0,
 	}
+	verificationCapabilities := append([]string(nil), cfg.Verification...)
+	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
+	if hasFetchRemote(cfg.Repositories) {
+		verificationCapabilities = appendUnique(verificationCapabilities, gitFetchCapability)
+	}
+	capabilities.Verification = verificationCapabilities
 	harnessReasons := append([]string(nil), info.Reasons...)
 	if probeErr != nil {
 		reason := "harness probe failed: " + probeErr.Error()
@@ -672,29 +677,33 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 	})
 	gate.close()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	attempt, ok := r.state.Attempts[attemptID]
 	if !ok {
 		delete(r.shutdown, attemptID)
 		delete(r.running, attemptID)
+		r.mu.Unlock()
 		return
 	}
-	delete(r.running, attemptID)
 	_, shutdown := r.shutdown[attemptID]
-	delete(r.shutdown, attemptID)
 	if attempt.Receipt.LastError != nil {
 		blocker := attempt.Receipt.Blocker
 		if blocker == "" {
 			blocker = attempt.Receipt.LastError.Message
 		}
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, blocker, nil)
+		r.mu.Unlock()
 		return
 	}
 	if attempt.Receipt.SessionID == "" && result.SessionID != "" {
 		attempt.Receipt.SessionID = result.SessionID
 	}
 	if result.SessionID != "" && result.SessionID != attempt.Receipt.SessionID {
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, "harness returned a foreign session ID", errors.New("foreign session ID"))
+		r.mu.Unlock()
 		return
 	}
 	if attempt.LimitExceeded || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -702,11 +711,17 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		if blocker == "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			blocker = "harness exceeded the approved execution duration"
 		}
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, blocker, nil)
+		r.mu.Unlock()
 		return
 	}
 	if attempt.CancelPending {
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseCancelled, legacyShutdownCancellationBlocker, nil)
+		r.mu.Unlock()
 		return
 	}
 	// Close cancels the adapter context so the child process can be drained.
@@ -717,24 +732,98 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 	resultPhase := Phase(result.Phase)
 	shutdownInterrupted := (resultPhase == PhaseCancelled || resultPhase == PhaseNeedsInput || resultPhase == "") && (runErr == nil || errors.Is(runErr, context.Canceled))
 	if shutdown && errors.Is(ctx.Err(), context.Canceled) && shutdownInterrupted {
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseNeedsInput, shutdownBlocker, nil)
+		r.mu.Unlock()
 		return
 	}
 	if runErr != nil {
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, runErr.Error(), runErr)
+		r.mu.Unlock()
 		return
 	}
 	switch Phase(result.Phase) {
 	case PhaseCompleted:
-		r.finishLocked(attempt, PhaseCompleted, "", nil)
+		if !attempt.Start.ExportGitResult {
+			delete(r.running, attemptID)
+			delete(r.shutdown, attemptID)
+			r.finishLocked(attempt, PhaseCompleted, "", nil)
+			r.mu.Unlock()
+			return
+		}
+		request := cloneStartRequest(attempt.Start)
+		workdir := attempt.Receipt.Workdir
+		r.mu.Unlock()
+		gitResult, exportErr := exportGitResult(ctx, r.cfg, request, workdir)
+		r.mu.Lock()
+		attempt, ok = r.state.Attempts[attemptID]
+		if !ok {
+			cleanupGitResultArtifacts(gitResult)
+			delete(r.running, attemptID)
+			delete(r.shutdown, attemptID)
+			r.mu.Unlock()
+			return
+		}
+		_, shutdown = r.shutdown[attemptID]
+		if attempt.CancelPending {
+			cleanupGitResultArtifacts(gitResult)
+			delete(r.running, attemptID)
+			delete(r.shutdown, attemptID)
+			r.finishLocked(attempt, PhaseCancelled, legacyShutdownCancellationBlocker, nil)
+			r.mu.Unlock()
+			return
+		}
+		if shutdown && errors.Is(ctx.Err(), context.Canceled) {
+			cleanupGitResultArtifacts(gitResult)
+			delete(r.running, attemptID)
+			delete(r.shutdown, attemptID)
+			r.finishLocked(attempt, PhaseNeedsInput, shutdownBlocker, nil)
+			r.mu.Unlock()
+			return
+		}
+		if exportErr != nil {
+			cleanupGitResultArtifacts(gitResult)
+			delete(r.running, attemptID)
+			delete(r.shutdown, attemptID)
+			message := "git result export failed: " + exportErr.Error()
+			r.finishLocked(attempt, PhaseFailed, message, errors.New(message))
+			r.mu.Unlock()
+			return
+		}
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
+		if err := r.finishGitResultLocked(attempt, gitResult); err != nil {
+			cleanupGitResultArtifacts(gitResult)
+			// The durable state transaction failed before a completed receipt
+			// could be committed. Keep the attempt terminally failed so callers
+			// never observe completion without its immutable result artifacts.
+			message := "persist git result export: " + err.Error()
+			r.finishLocked(attempt, PhaseFailed, message, errors.New(message))
+		}
+		r.mu.Unlock()
 	case PhaseCancelled:
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseCancelled, "harness cancelled", nil)
+		r.mu.Unlock()
 	case PhaseNeedsInput:
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseNeedsInput, result.Blocker, nil)
+		r.mu.Unlock()
 	case PhaseFailed:
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, result.Blocker, nil)
+		r.mu.Unlock()
 	default:
+		delete(r.running, attemptID)
+		delete(r.shutdown, attemptID)
 		r.finishLocked(attempt, PhaseFailed, "harness returned no terminal phase", nil)
+		r.mu.Unlock()
 	}
 }
 
@@ -865,6 +954,9 @@ func (r *Runner) recordArtifactLocked(attempt *attemptRecord, data json.RawMessa
 	}
 	if len(data) == 0 || json.Unmarshal(data, &input) != nil {
 		return errors.New("artifact event requires a JSON name/path payload")
+	}
+	if attempt.Start.ExportGitResult && isGitResultArtifactName(input.Name) {
+		return errors.New("artifact name is reserved for the runner Git result export")
 	}
 	var spec *ArtifactSpec
 	for i := range attempt.ArtifactSpecs {
@@ -1110,6 +1202,9 @@ func validateStartRequest(request StartRequest) error {
 		if err := validateIdentifier("artifact name", artifact.Name); err != nil {
 			return err
 		}
+		if request.ExportGitResult && isGitResultArtifactName(artifact.Name) {
+			return errors.New("artifact name is reserved for the runner Git result export")
+		}
 		if _, ok := seen[artifact.Name]; ok {
 			return errors.New("artifact allowlist contains duplicate names")
 		}
@@ -1232,6 +1327,13 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func appendUnique(values []string, value string) []string {
+	if contains(values, value) {
+		return values
+	}
+	return append(values, value)
 }
 
 func resourceNames(requests []ResourceRequest) []string {

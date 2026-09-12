@@ -72,7 +72,8 @@ bootstrap endpoint for creating this credential.
 Use an absolute, private state directory and an absolute token-file path. A
 configuration can enroll several named local Git sources, but each source must
 be explicitly allowlisted. `baseCommit`, when set, further restricts that
-source to one commit.
+source to one commit. An optional operator-only `fetchRemoteURL` permits the
+runner to fetch a missing approved commit into the isolated task clone.
 
 ```json
 {
@@ -103,13 +104,55 @@ source to one commit.
 runner defaults `runnerID` to a platform-qualified value, `stateDir` to the
 user configuration directory followed by `faros-runner`, and `maximumCapacity`
 to one. It rejects a capacity greater than one. The source path is resolved at
-startup; the source directory must exist and contain the requested full commit.
+startup and the source directory must exist. Without `fetchRemoteURL`, the
+requested full commit must already exist in that source. With it, the runner
+keeps the source as the enrolled local checkout and may fetch the exact
+requested commit only into the task-owned clone; it never updates the source.
 
 The runner stores durable state as a protected file below `stateDir`, takes a
 single-process lock for that directory, and places task workspaces below
 `stateDir/worktrees/<taskID>/<attemptID>`. Keep this directory on durable
 storage on the same machine. Do not share one state directory between runner
 instances.
+
+### Allow an enrolled repository to fetch a missing commit
+
+Set `fetchRemoteURL` on the repository enrollment when the local `source` may
+not contain every approved commit. This field is operator configuration; a
+start request cannot supply or change it. The existing `baseCommit` pin is
+still enforced when it is set, and every start request must still name one
+full 40-character commit.
+
+The remote can be a local path, a `file://` URL, public `https://`, or an
+ordinary SSH URL (`ssh://...` or `user@host:path`). Embedded credentials,
+HTTPS query or fragment options, and interactive HTTPS authentication are not
+allowed. For example:
+
+```json
+{
+  "repositories": {
+    "app": {
+      "source": "/srv/repos/app",
+      "baseCommit": "<40-character-commit>",
+      "fetchRemoteURL": "ssh://git@example.com/acme/app.git"
+    }
+  }
+}
+```
+
+Before enrolling an SSH remote, the operator should test access and the
+expected host key with the same key and `known_hosts` configuration. Fetch
+uses strict host-key checking, batch mode, and disables agent forwarding and
+other forwarding. It may use an operator-provided SSH key or agent for this
+fetch operation only. The coding harness does not receive the SSH agent,
+GitHub tokens, API keys, or other Git credentials, and its execution remains
+network-disabled.
+
+The runner advertises `git-fetch-v1` in `verificationCapabilities` when any
+enrolled repository has a `fetchRemoteURL`. The capability is an availability
+signal; the per-repository opt-in and remote validation still apply. Git fetch
+command failures return fixed bounded messages (`git fetch failed`, `git fetch
+timed out`, or `git fetch canceled`) instead of remote command output.
 
 ## Start the runner
 
@@ -177,10 +220,13 @@ attempt epoch is stale and cannot mutate the newer attempt.
 A start request must include the enrolled `repositoryID`, the full 40-character
 `baseCommit`, non-empty instructions, and a non-empty JSON `approvedInput`
 object containing `provenance`, `manualAuthorization`, or `authorization`.
-The base commit must resolve exactly in the enrolled local source. The runner
-clones that source with fixed, non-interactive Git settings into the task-owned
-worktree and checks out the commit detached. It does not use `git worktree add`
-and does not modify the enrolled source checkout.
+The approved commit must resolve exactly in the enrolled source or, when that
+repository has opted in with `fetchRemoteURL`, be fetched exactly into the
+isolated task clone. The runner clones the local source with fixed,
+non-interactive Git settings into the task-owned worktree, performs that
+operator-configured fetch only if the clone lacks the approved commit, and
+checks out the commit detached. It does not use `git worktree add` and does
+not modify the enrolled source checkout.
 
 The request may additionally require configured capabilities, toolchains,
 environment entries, a named ready harness, verification names or commands,
@@ -267,6 +313,49 @@ Do not copy the state directory to another machine or assume raw Codex session
 files are portable. Cross-machine continuation, migration, scheduling, and
 publication are outside this runner contract.
 
+## Optional Git result export
+
+The runner advertises `git-result-v1` in `verificationCapabilities`. A caller
+must explicitly set `exportGitResult: true` in the approved Start request to
+request the export; ordinary completed attempts produce no Git result
+artifacts. The export is intended for a separate coordinator that owns
+publication. The runner itself never pushes Git or creates a pull request.
+
+Example request field:
+
+```json
+{
+  "exportGitResult": true
+}
+```
+
+After a successful harness completion, the runner snapshots tracked and
+nonignored files from the task worktree using a temporary index. It preserves
+the worktree's normal HEAD and index, and writes owner-only artifacts below the
+runner state directory:
+
+- `git-result.json` is a bounded `git-result/v1` document containing Task and
+  Attempt identity, the approved `baseCommit`, result commit/tree identity,
+  and `noChanges`.
+- `git-result.bundle` is present only when the snapshot differs from the base.
+  It contains one deterministic sanitized snapshot commit whose sole parent is
+  the approved base commit, with fixed runner identity, timestamp, and commit
+  message. The bundle advertises only the runner-result ref.
+
+The generated names are reserved. A harness cannot submit an artifact under
+either name when export is enabled. If export fails, the attempt is failed and
+does not report completion with a partial result. If the snapshot tree equals
+the approved base tree, `noChanges` is true and the result omits commit, tree,
+bundle digest, and bundle artifact. Unstaged deletions and file/directory
+transitions are included; symlink ancestors are rejected.
+
+The exporter includes the final tracked and nonignored worktree contents. A
+caller that uses this export should instruct the harness not to place private
+planning documents, transcripts, credentials, or verification logs in that
+tree, but the exporter is not a content secret scanner. Callers must treat the
+worktree and resulting bundle as private and apply their own publication
+policy.
+
 ## Limits and verification boundary
 
 The default bounds are 256 retained events per attempt, 64 KiB per event
@@ -276,10 +365,11 @@ callers should use the advertised protocol response and error code as the
 authority. The runner supports at most one harness turn per execution and one
 simultaneous execution by default.
 
-Focused runner tests, race and vet checks, native builds, Darwin arm64 and
-amd64 builds, and two no-model Codex `0.147.0` authentication probes have
-passed for the current implementation. These checks establish protocol,
-process, and harness contracts. They do not establish that a real Mac has
-successfully completed a coding task. A real-Mac acceptance still needs an
-actual enrolled host, approved local repository, start/observe path,
+Independent focused Git-fetch and race invocation tests passed. The full runner
+executor checks (runner tests, race, lint, vet, and build) also passed, along
+with Linux and Darwin arm64/amd64 builds. A local artifact-consumer fixture
+accepted the real runner artifacts. These checks establish protocol, process,
+harness, Git-fetch, and local artifact contracts. They do not establish live
+GitHub publication or provide live Mac stage6B proof. Live acceptance still
+needs an actual enrolled host, approved local repository, start/observe path,
 interruption, restart, and same-session resume evidence.

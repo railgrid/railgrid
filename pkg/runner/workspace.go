@@ -43,6 +43,14 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 	if repo.BaseCommit != "" && strings.ToLower(strings.TrimSpace(repo.BaseCommit)) != baseCommit {
 		return "", errors.New("base commit is not the exact commit enrolled for this repository")
 	}
+	fetchRemote := strings.TrimSpace(repo.FetchRemoteURL)
+	if fetchRemote != "" {
+		var err error
+		fetchRemote, err = validateFetchRemoteURL(fetchRemote)
+		if err != nil {
+			return "", fmt.Errorf("repository fetch remote URL is not allowed: %w", err)
+		}
+	}
 	source, err := filepath.Abs(repo.Source)
 	if err != nil {
 		return "", fmt.Errorf("resolve repository source: %w", err)
@@ -53,12 +61,10 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 		}
 		return "", fmt.Errorf("repository source unavailable: %w", err)
 	}
-	resolved, err := gitOutput(ctx, source, "rev-parse", "--verify", baseCommit+"^{commit}")
-	if err != nil {
-		return "", fmt.Errorf("base commit is not available: %w", err)
-	}
-	if strings.TrimSpace(resolved) != baseCommit {
-		return "", fmt.Errorf("base commit resolved to %q, want exact %q", strings.TrimSpace(resolved), baseCommit)
+	resolved, sourceErr := gitOutput(ctx, source, "rev-parse", "--verify", baseCommit+"^{commit}")
+	sourceHasCommit := sourceErr == nil && strings.TrimSpace(resolved) == baseCommit
+	if !sourceHasCommit && fetchRemote == "" {
+		return "", errors.New("base commit is not available in the enrolled source")
 	}
 	workdir := filepath.Join(cfg.StateDir, "worktrees", request.TaskID, request.AttemptID)
 	if info, err := os.Lstat(workdir); err == nil {
@@ -91,6 +97,27 @@ func prepareWorkspace(ctx context.Context, cfg Config, request StartRequest) (st
 	if _, err := gitOutput(ctx, "", "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--upload-pack=git-upload-pack", "--config", "core.hooksPath=/dev/null", source, workdir); err != nil {
 		_ = os.RemoveAll(workdir)
 		return "", fmt.Errorf("clone task worktree: %w", err)
+	}
+	resolved, cloneErr := gitOutput(ctx, workdir, "rev-parse", "--verify", baseCommit+"^{commit}")
+	cloneHasCommit := cloneErr == nil && strings.TrimSpace(resolved) == baseCommit
+	if !cloneHasCommit {
+		if fetchRemote == "" {
+			_ = os.RemoveAll(workdir)
+			return "", errors.New("base commit is not available in the cloned source")
+		}
+		if err := fetchExactCommit(ctx, workdir, fetchRemote, baseCommit); err != nil {
+			_ = os.RemoveAll(workdir)
+			return "", err
+		}
+		resolved, err := gitOutput(ctx, workdir, "rev-parse", "--verify", baseCommit+"^{commit}")
+		if err != nil {
+			_ = os.RemoveAll(workdir)
+			return "", errors.New("fetched base commit could not be resolved")
+		}
+		if strings.TrimSpace(resolved) != baseCommit {
+			_ = os.RemoveAll(workdir)
+			return "", errors.New("fetched base commit did not resolve to the requested commit")
+		}
 	}
 	if _, err := gitOutput(ctx, workdir, "checkout", "--detach", "--force", baseCommit); err != nil {
 		_ = os.RemoveAll(workdir)

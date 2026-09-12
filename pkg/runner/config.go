@@ -35,15 +35,20 @@ const (
 	defaultMaxEventBytes   = 64 << 10
 	defaultMaxBodyBytes    = 2 << 20
 	defaultMaxArtifactSize = 32 << 20
+	gitResultCapability    = "git-result-v1"
+	gitFetchCapability     = "git-fetch-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // RepositoryConfig enrolls one local Git source. The source is read-only from
 // the runner's point of view; attempts are cloned into task-owned worktrees.
+// FetchRemoteURL is operator-only enrollment data; it is never accepted from
+// a start request or exposed as a runner protocol field.
 type RepositoryConfig struct {
-	Source     string `json:"source"`
-	BaseCommit string `json:"baseCommit,omitempty"`
+	Source         string `json:"source"`
+	BaseCommit     string `json:"baseCommit,omitempty"`
+	FetchRemoteURL string `json:"fetchRemoteURL,omitempty"`
 }
 
 // ResourceConfig names a preconfigured shared resource. Capacity is a count
@@ -168,10 +173,17 @@ func (c *Config) applyDefaults() error {
 		}
 		if abs, err := filepath.Abs(repo.Source); err == nil {
 			repo.Source = abs
-			c.Repositories[id] = repo
 		} else {
 			return fmt.Errorf("resolve repository %q source: %w", id, err)
 		}
+		if strings.TrimSpace(repo.FetchRemoteURL) != "" {
+			remote, err := validateFetchRemoteURL(repo.FetchRemoteURL)
+			if err != nil {
+				return fmt.Errorf("repository %q fetch remote URL: %w", id, err)
+			}
+			repo.FetchRemoteURL = remote
+		}
+		c.Repositories[id] = repo
 	}
 	for name, resource := range c.Resources {
 		if !identifierPattern.MatchString(name) {
@@ -186,6 +198,15 @@ func (c *Config) applyDefaults() error {
 		}
 	}
 	return nil
+}
+
+func hasFetchRemote(repositories map[string]RepositoryConfig) bool {
+	for _, repository := range repositories {
+		if strings.TrimSpace(repository.FetchRemoteURL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopbackListenAddress(address string) bool {

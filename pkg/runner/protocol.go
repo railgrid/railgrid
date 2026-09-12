@@ -154,6 +154,7 @@ type StartRequest struct {
 	RequiredEnvironment    []string                 `json:"requiredEnvironment,omitempty"`
 	RequiredHarness        string                   `json:"requiredHarness,omitempty"`
 	RequiredHarnessVersion string                   `json:"requiredHarnessVersion,omitempty"`
+	ExportGitResult        bool                     `json:"exportGitResult,omitempty"`
 	Limits                 ExecutionLimits          `json:"limits,omitempty"`
 	Verification           VerificationRequirements `json:"verification,omitempty"`
 	Resources              []ResourceRequest        `json:"resources,omitempty"`
