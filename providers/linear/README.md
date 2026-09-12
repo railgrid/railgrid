@@ -141,3 +141,7 @@ other Faros providers; the repository no longer requires a `go.work` file.
 
 API behavior references: [Linear GraphQL](https://linear.app/developers/graphql)
 and [webhook verification](https://linear.app/developers/webhooks).
+
+## Brand asset
+
+`portal/public/icon.svg` is the unmodified `linear-icon.svg` from [Linear's official brand assets](https://linear.app/brand), downloaded 2026-09-12. It identifies the Linear integration; Linear owns the mark.
