@@ -17,6 +17,7 @@ limitations under the License.
 package restapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -158,6 +159,16 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	// An org admin is an implicit admin in every child workspace (O-15).
+	// The hub side of that is the UMI row above; the kcp side is a
+	// per-user binding in each child workspace, without which kcp 403s
+	// the moment they open one.
+	if role == tenancyv1alpha1.MembershipRoleAdmin {
+		if err := h.mgr.grantOrgAdminWorkspaceRBAC(r.Context(), orgUUID, target); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if isDelegated {
 		klog.FromContext(r.Context()).Info("Provider added organization member",
 			"provider", delegated.Provider, "providerOrg", delegated.ProviderOrgUUID,
@@ -203,6 +214,25 @@ func (h *Handler) patchOrgMembership(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		writeError(w, err)
 		return
+	}
+	// Keep kcp RBAC in the child workspaces in step with the role: a
+	// promotion binds the user everywhere (O-15), a demotion keeps only
+	// the workspaces they hold a workspace-scope row in.
+	target, err := h.mgr.userForRBAC(r.Context(), user)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if target != nil {
+		if req.Role == tenancyv1alpha1.MembershipRoleAdmin {
+			err = h.mgr.grantOrgAdminWorkspaceRBAC(r.Context(), orgUUID, target)
+		} else {
+			err = h.mgr.revokeOrgAdminWorkspaceRBAC(r.Context(), orgUUID, target)
+		}
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, MembershipView{User: user, Role: req.Role, OrgUUID: orgUUID})
 }
@@ -250,7 +280,23 @@ func (h *Handler) deleteOrgMembership(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Drop the kcp bindings the remaining rows no longer justify. With
+	// cascade every workspace row is gone, so every binding goes.
+	if err := h.mgr.revokeOrgWorkspaceRBAC(r.Context(), orgUUID, user); err != nil {
+		writeError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeOrgWorkspaceRBAC is revokeOrgAdminWorkspaceRBAC for a user named
+// in a route, tolerating a User CR that no longer exists.
+func (m *Manager) revokeOrgWorkspaceRBAC(ctx context.Context, orgUUID, userName string) error {
+	target, err := m.userForRBAC(ctx, userName)
+	if err != nil || target == nil {
+		return err
+	}
+	return m.revokeOrgAdminWorkspaceRBAC(ctx, orgUUID, target)
 }
 
 // selfLeaveOrg lets the caller remove themselves from an Org (O-12).
@@ -267,6 +313,10 @@ func (h *Handler) selfLeaveOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.mgr.removeUMIEntry(r.Context(), tc.User, orgUUID, ""); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := h.mgr.revokeOrgWorkspaceRBAC(r.Context(), orgUUID, tc.User); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -461,7 +511,21 @@ func (h *Handler) deleteWorkspaceMembership(w http.ResponseWriter, r *http.Reque
 		writeError(w, err)
 		return
 	}
+	if err := h.mgr.revokeMemberWorkspaceRBAC(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, user); err != nil {
+		writeError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeMemberWorkspaceRBAC is revokeWorkspaceRBAC for a user named in a
+// route, tolerating a User CR that no longer exists.
+func (m *Manager) revokeMemberWorkspaceRBAC(ctx context.Context, orgUUID, wsUUID, userName string) error {
+	target, err := m.userForRBAC(ctx, userName)
+	if err != nil || target == nil {
+		return err
+	}
+	return m.revokeWorkspaceRBAC(ctx, orgUUID, wsUUID, target)
 }
 
 // selfLeaveWorkspace lets the caller remove themselves.
@@ -471,6 +535,10 @@ func (h *Handler) selfLeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.mgr.removeUMIEntry(r.Context(), tc.User, tc.OrgUUID, tc.WorkspaceUUID); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := h.mgr.revokeMemberWorkspaceRBAC(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, tc.User); err != nil {
 		writeError(w, err)
 		return
 	}

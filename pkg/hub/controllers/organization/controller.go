@@ -125,6 +125,11 @@ type WorkspaceProvisioner interface {
 	// rbacIdentity. Idempotent.
 	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
 
+	// ListChildTeamWorkspaces lists the Org's team workspaces (no
+	// infrastructure children). Used by the RBAC backfill to bind an
+	// org-scope admin into every child workspace (O-15).
+	ListChildTeamWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
+
 	// EnsureChildWorkspaceDefaultMCPServer seeds the "default"
 	// MCPServer CR inside the child team Workspace so users have a
 	// working MCP endpoint out of the box. Idempotent.
@@ -832,20 +837,22 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 	}, true
 }
 
-// backfillWorkspaceAdmins walks the User's UMI workspace-scope entries
-// for the given org and ensures cluster-admin RBAC for the user's
-// rbacIdentity in each (excluding skipWsUUID, which the caller already
-// reconciled as Step H). Pre-PR fix the REST createWorkspace path
-// skipped EnsureChildWorkspaceAdmin entirely, leaving every
-// portal-created workspace without a faros-cluster-admin
-// ClusterRoleBinding — switching to one of them surfaced as a kcp
-// 403 once the workspace switcher actually retargeted the new cluster
-// in v0.0.63. This reconciler step self-heals that legacy state.
+// backfillWorkspaceAdmins walks the User's UMI and ensures cluster-admin
+// RBAC for the user's rbacIdentity wherever the rows say they belong:
+// every workspace-scope row, and every child team workspace of every org
+// where the user holds an org-scope admin row (O-15). The (orgUUID,
+// skipWsUUID) pair is excluded because the caller already reconciled it
+// as Step H.
+//
+// This is the self-healing path for legacy state (portal-created
+// workspaces once skipped the grant entirely; org-scope admin grants did
+// so until the REST handlers learned to bind them) and for users who were
+// granted membership before their first sign-in, when no rbacIdentity
+// existed to bind: the identity being set is what triggers this reconcile.
 //
 // Errors on individual workspaces are logged and skipped; one bad
-// workspace must not stall the whole Org reconcile. Idempotent —
-// EnsureChildWorkspaceAdmin handles the AlreadyExists / subject-rewrite
-// cases internally.
+// workspace must not stall the whole reconcile. Idempotent — the
+// bootstrapper keeps one binding per user, so re-granting is a no-op.
 func (r *Reconciler) backfillWorkspaceAdmins(ctx context.Context, user *tenancyv1alpha1.User, orgUUID, skipWsUUID string, logger logr.Logger) error {
 	var index tenancyv1alpha1.UserMembershipIndex
 	if err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index); err != nil {
@@ -854,17 +861,42 @@ func (r *Reconciler) backfillWorkspaceAdmins(ctx context.Context, user *tenancyv
 		}
 		return fmt.Errorf("loading UMI for workspace-admin backfill: %w", err)
 	}
-	for _, e := range index.Spec.Entries {
-		if e.OrgUUID != orgUUID || e.WorkspaceUUID == "" || e.WorkspaceUUID == skipWsUUID {
-			continue
+	done := map[string]map[string]bool{}
+	grant := func(org, ws string) {
+		if org == orgUUID && ws == skipWsUUID {
+			return
 		}
+		if done[org][ws] {
+			return
+		}
+		if done[org] == nil {
+			done[org] = map[string]bool{}
+		}
+		done[org][ws] = true
+		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, org, ws, user.Spec.RBACIdentity); err != nil {
+			logger.Error(err, "Granting workspace-admin failed; will retry on next reconcile",
+				"orgUUID", org, "workspaceUUID", ws)
+		}
+	}
+	for _, e := range index.Spec.Entries {
 		if e.SoftDeletedAt != nil {
 			continue
 		}
-		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, orgUUID, e.WorkspaceUUID, user.Spec.RBACIdentity); err != nil {
-			logger.Error(err, "Granting workspace-admin failed; will retry on next reconcile",
-				"workspaceUUID", e.WorkspaceUUID)
+		if e.WorkspaceUUID != "" {
+			grant(e.OrgUUID, e.WorkspaceUUID)
 			continue
+		}
+		if e.Role != tenancyv1alpha1.MembershipRoleAdmin {
+			continue
+		}
+		wss, err := r.provisioner.ListChildTeamWorkspaces(ctx, e.OrgUUID)
+		if err != nil {
+			logger.Error(err, "Listing child workspaces for org-admin backfill failed; will retry on next reconcile",
+				"orgUUID", e.OrgUUID)
+			continue
+		}
+		for _, ws := range wss {
+			grant(e.OrgUUID, ws)
 		}
 	}
 	return nil

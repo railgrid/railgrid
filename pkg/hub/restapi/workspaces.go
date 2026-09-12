@@ -183,6 +183,12 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Every org admin is an implicit admin here too (O-15); bind them now
+	// so the workspace is reachable for admins added before it existed.
+	if err := h.mgr.grantOrgAdminsWorkspaceRBAC(r.Context(), orgUUID, wsUUID); err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := h.mgr.bootstrapper.EnsureChildWorkspaceDefaultMCPServer(r.Context(), orgUUID, wsUUID); err != nil {
 		writeError(w, err)
 		return

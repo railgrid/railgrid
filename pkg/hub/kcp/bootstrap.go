@@ -19,6 +19,8 @@ package kcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"sort"
@@ -1152,6 +1154,35 @@ func (b *Bootstrapper) ListOrgMemberships(ctx context.Context, orgUUID string) (
 	return names, nil
 }
 
+// ListOrgMembershipRoles returns user name → role for every Membership in
+// the Organization workspace. Used to find the Org's admins when a child
+// workspace is created, so O-15 (org admin = implicit admin in every child
+// workspace) holds at the kcp RBAC layer too. Empty map if the Org
+// workspace has no Memberships or has been deleted.
+func (b *Bootstrapper) ListOrgMembershipRoles(ctx context.Context, orgUUID string) (map[string]string, error) {
+	if orgUUID == "" {
+		return nil, fmt.Errorf("ListOrgMembershipRoles: orgUUID is required")
+	}
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	list, err := orgClient.Resource(membershipGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("listing Memberships in org %s: %w", orgUUID, err)
+	}
+	roles := make(map[string]string, len(list.Items))
+	for i := range list.Items {
+		role, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "role")
+		roles[list.Items[i].GetName()] = role
+	}
+	return roles, nil
+}
+
 // mcpServerGVR is the tenant-workspace MCPServer resource (distributed via the
 // core.faros.sh APIExport). The in-core reconciler
 // (pkg/hub/controllers/mcpserver) provisions each server's identity.
@@ -1546,54 +1577,107 @@ func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rb
 	return ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity)
 }
 
+// RevokeWorkspaceAdmin removes the cluster-admin grant for rbacIdentity in
+// the workspace identified by clusterName. Idempotent on NotFound. Only the
+// caller's own per-user binding is touched; every other member keeps theirs.
+func (b *Bootstrapper) RevokeWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
+	if clusterName == "" || rbacIdentity == "" {
+		return nil
+	}
+	tenantConfig := configForPath(b.config, clusterName)
+	tenantClient, err := dynamic.NewForConfig(tenantConfig)
+	if err != nil {
+		return fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
+	}
+	return revokeWorkspaceAdmin(ctx, tenantClient, rbacIdentity)
+}
+
+// RevokeChildWorkspaceAdmin is RevokeWorkspaceAdmin with the canonical
+// child-workspace path. Idempotent.
+func (b *Bootstrapper) RevokeChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("RevokeChildWorkspaceAdmin: orgUUID and wsUUID are required")
+	}
+	return b.RevokeWorkspaceAdmin(ctx, childWorkspacePath(orgUUID, wsUUID), rbacIdentity)
+}
+
 var clusterRoleBindingGVR = schema.GroupVersionResource{
 	Group:    "rbac.authorization.k8s.io",
 	Version:  "v1",
 	Resource: "clusterrolebindings",
 }
 
-// ensureWorkspaceAdmin creates a cluster-admin ClusterRoleBinding for the given
-// rbacIdentity in the workspace targeted by tenantClient. Idempotent.
-// Uses the name "faros-user-admin" to avoid conflicting with the kcp-provisioned
-// "workspace-admin" binding.
-func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
-	wantSubjects := []interface{}{
-		map[string]interface{}{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "User",
-			"name":     rbacIdentity,
-		},
-	}
-	crb := &unstructured.Unstructured{
+// legacyWorkspaceAdminCRB is the single, shared cluster-admin binding the
+// hub used to keep per workspace. It held exactly one subject and every
+// grant overwrote it, so the last person granted was the only one with
+// kcp RBAC. ensureWorkspaceAdmin migrates it to per-user bindings on the
+// next grant or revoke in that workspace and then deletes it.
+const legacyWorkspaceAdminCRB = "faros-cluster-admin"
+
+// userAdminCRBPrefix prefixes the per-user cluster-admin bindings. The
+// suffix is a hash of the rbacIdentity: identities are emails, which are
+// not valid object names, and the hash keeps the name stable across the
+// identity's spelling while never colliding between users.
+const userAdminCRBPrefix = "faros-user-admin-"
+
+// userAdminCRBName returns the per-user cluster-admin binding name for an
+// rbacIdentity.
+func userAdminCRBName(rbacIdentity string) string {
+	sum := sha256.Sum256([]byte(rbacIdentity))
+	return userAdminCRBPrefix + hex.EncodeToString(sum[:])[:16]
+}
+
+func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "rbac.authorization.k8s.io/v1",
 			"kind":       "ClusterRoleBinding",
 			"metadata": map[string]interface{}{
-				"name": "faros-cluster-admin",
+				"name": userAdminCRBName(rbacIdentity),
+				"labels": map[string]interface{}{
+					"tenancy.faros.sh/managed-by": "hub",
+				},
+				"annotations": map[string]interface{}{
+					"tenancy.faros.sh/rbac-identity": rbacIdentity,
+				},
 			},
 			"roleRef": map[string]interface{}{
 				"apiGroup": "rbac.authorization.k8s.io",
 				"kind":     "ClusterRole",
 				"name":     "cluster-admin",
 			},
-			"subjects": wantSubjects,
+			"subjects": []interface{}{
+				map[string]interface{}{
+					"apiGroup": "rbac.authorization.k8s.io",
+					"kind":     "User",
+					"name":     rbacIdentity,
+				},
+			},
 		},
 	}
-	_, err := tenantClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
+}
+
+// ensureWorkspaceAdmin creates a per-user cluster-admin ClusterRoleBinding for
+// the given rbacIdentity in the workspace targeted by tenantClient. Grants are
+// additive: each member holds their own binding, so granting one user never
+// disturbs another's access. Idempotent.
+func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
+		return err
+	}
+	want := userAdminCRB(rbacIdentity)
+	_, err := tenantClient.Resource(clusterRoleBindingGVR).Create(ctx, want, metav1.CreateOptions{})
 	if err == nil {
 		return nil
 	}
 	if !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating workspace-admin ClusterRoleBinding: %w", err)
 	}
-
-	// Reconcile subjects so legacy bindings (e.g. left over from the sub→email
-	// RBAC switch) get their subject rewritten to the current rbacIdentity
-	// instead of being silently stale.
-	existing, getErr := tenantClient.Resource(clusterRoleBindingGVR).Get(ctx, "faros-cluster-admin", metav1.GetOptions{})
+	existing, getErr := tenantClient.Resource(clusterRoleBindingGVR).Get(ctx, want.GetName(), metav1.GetOptions{})
 	if getErr != nil {
 		return fmt.Errorf("getting existing workspace-admin ClusterRoleBinding: %w", getErr)
 	}
+	wantSubjects, _, _ := unstructured.NestedSlice(want.Object, "subjects")
 	gotSubjects, _, _ := unstructured.NestedSlice(existing.Object, "subjects")
 	if reflect.DeepEqual(gotSubjects, wantSubjects) {
 		return nil
@@ -1603,6 +1687,52 @@ func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, r
 	}
 	if _, err := tenantClient.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("updating workspace-admin ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
+// revokeWorkspaceAdmin deletes the per-user cluster-admin binding for
+// rbacIdentity. The legacy shared binding is migrated first so a user who
+// only ever held access through it is revoked too. Idempotent on NotFound.
+func revokeWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
+		return err
+	}
+	if err := tenantClient.Resource(clusterRoleBindingGVR).Delete(ctx, userAdminCRBName(rbacIdentity), metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting workspace-admin ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
+// migrateLegacyWorkspaceAdmin converts the shared faros-cluster-admin
+// binding, when present, into one per-user binding per subject and deletes
+// it. Whoever held access through the shared binding keeps it. No-op once
+// the workspace is on per-user bindings.
+func migrateLegacyWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface) error {
+	legacy, err := tenantClient.Resource(clusterRoleBindingGVR).Get(ctx, legacyWorkspaceAdminCRB, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("getting legacy workspace-admin ClusterRoleBinding: %w", err)
+	}
+	subjects, _, _ := unstructured.NestedSlice(legacy.Object, "subjects")
+	for _, s := range subjects {
+		m, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		kind, _ := m["kind"].(string)
+		name, _ := m["name"].(string)
+		if kind != "User" || name == "" {
+			continue
+		}
+		if _, err := tenantClient.Resource(clusterRoleBindingGVR).Create(ctx, userAdminCRB(name), metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("migrating legacy workspace-admin subject %q: %w", name, err)
+		}
+	}
+	if err := tenantClient.Resource(clusterRoleBindingGVR).Delete(ctx, legacyWorkspaceAdminCRB, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting legacy workspace-admin ClusterRoleBinding: %w", err)
 	}
 	return nil
 }

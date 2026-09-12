@@ -86,6 +86,14 @@ type WorkspaceOps interface {
 	// user's default workspace — every other workspace would 403 from
 	// the kcp proxy without this call.
 	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
+	// RevokeChildWorkspaceAdmin removes the rbacIdentity's cluster-admin
+	// binding from the child team Workspace. Grants are per user, so this
+	// never touches another member's access. Idempotent on NotFound.
+	RevokeChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
+	// ListOrgMembershipRoles returns user name → role for every org-scope
+	// Membership CR. Used to bind the Org's admins into a new child
+	// workspace (O-15).
+	ListOrgMembershipRoles(ctx context.Context, orgUUID string) (map[string]string, error)
 	// ListChildTeamWorkspaces lists the Org's team workspaces, excluding
 	// infrastructure children such as the `providers` container for org-owned
 	// providers. Tenant-facing views must use this rather than the unfiltered

@@ -357,6 +357,23 @@ func (f *fakeOps) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, 
 	return nil
 }
 
+func (f *fakeOps) RevokeChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.workspaceAdmins[wsKey{orgUUID, wsUUID}], rbacIdentity)
+	return nil
+}
+
+func (f *fakeOps) ListOrgMembershipRoles(_ context.Context, orgUUID string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]string{}
+	for u, r := range f.orgMemberships[orgUUID] {
+		out[u] = r
+	}
+	return out, nil
+}
+
 // ===== test fixtures =====
 
 func newTestScheme(t *testing.T) *runtime.Scheme {

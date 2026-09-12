@@ -57,6 +57,14 @@ type fakeProvisioner struct {
 	// clusterHash is the value returned by GetChildWorkspaceClusterName.
 	// Defaults to a fixed test hash; tests can override.
 	clusterHash string
+	// teamWorkspaces is what ListChildTeamWorkspaces answers per org.
+	teamWorkspaces map[string][]string
+}
+
+func (f *fakeProvisioner) ListChildTeamWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.teamWorkspaces[orgUUID]...), nil
 }
 
 type membershipCall struct {
@@ -747,5 +755,55 @@ func hasCondition(conds []metav1.Condition, t string, status metav1.ConditionSta
 func TestOrgWorkspaceParentConstant(t *testing.T) {
 	if !strings.HasPrefix(orgWorkspaceParent, "root:faros:") {
 		t.Errorf("orgWorkspaceParent should live under root:faros, got %q", orgWorkspaceParent)
+	}
+}
+
+// TestReconciler_BackfillBindsOrgAdminInForeignOrgWorkspaces: an org-scope
+// admin row for another org binds the user in every one of that org's team
+// workspaces (O-15), and a workspace-scope row in another org binds that
+// workspace, once the user has an rbacIdentity to bind.
+func TestReconciler_BackfillBindsOrgAdminInForeignOrgWorkspaces(t *testing.T) {
+	scheme := newTestScheme(t)
+	user := newUser("erin", "Erin")
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(user).
+		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
+		Build()
+	prov := &fakeProvisioner{teamWorkspaces: map[string][]string{"org-x": {"ws-x1", "ws-x2"}}}
+	r := &Reconciler{client: c, provisioner: prov}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "erin"}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	var idx tenancyv1alpha1.UserMembershipIndex
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "erin"}, &idx); err != nil {
+		t.Fatalf("get UMI: %v", err)
+	}
+	idx.Spec.Entries = append(idx.Spec.Entries,
+		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-x", Role: tenancyv1alpha1.MembershipRoleAdmin},
+		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-y", Role: tenancyv1alpha1.MembershipRoleMember},
+		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-y", WorkspaceUUID: "ws-y1", Role: tenancyv1alpha1.MembershipRoleMember},
+	)
+	if err := c.Update(context.Background(), &idx); err != nil {
+		t.Fatalf("update UMI: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, call := range prov.AdminCalls() {
+		got[call.OrgUUID+"/"+call.WSUUID] = call.RBACIdentity == "rbac-erin"
+	}
+	for _, want := range []string{"org-x/ws-x1", "org-x/ws-x2", "org-y/ws-y1"} {
+		if !got[want] {
+			t.Errorf("expected EnsureChildWorkspaceAdmin for %s with rbac-erin; calls=%v", want, prov.AdminCalls())
+		}
+	}
+	// A plain org member in org-y gets no implicit workspace binding.
+	if got["org-y/ws-y2"] {
+		t.Error("member row bound a workspace it has no row for")
 	}
 }
