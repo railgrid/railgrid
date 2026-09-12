@@ -2,6 +2,17 @@ import { STORAGE_KEYS } from '@/lib/constants'
 import type { StoredAuth } from './types'
 
 const EXPIRY_BUFFER_SECONDS = 30
+// Login/logout replace the browser session; ordinary bearer refresh does not.
+// Fence async work even when an account logs out and immediately logs back in.
+let sessionRevision = 0
+
+export function authSessionRevision(): number {
+  return sessionRevision
+}
+
+export function assertAuthSession(revision: number): void {
+  if (revision !== sessionRevision) throw new DOMException('The account has changed', 'AbortError')
+}
 
 export function loadAuth(): StoredAuth | null {
   try {
@@ -14,10 +25,12 @@ export function loadAuth(): StoredAuth | null {
 }
 
 export function saveAuth(auth: StoredAuth): void {
+  sessionRevision++
   localStorage.setItem(STORAGE_KEYS.auth, JSON.stringify(auth))
 }
 
 export function clearAuth(): void {
+  sessionRevision++
   localStorage.removeItem(STORAGE_KEYS.auth)
 }
 
@@ -28,6 +41,7 @@ export function isExpired(auth: StoredAuth): boolean {
 }
 
 export async function refreshToken(auth: StoredAuth): Promise<StoredAuth | null> {
+  const revision = sessionRevision
   if (!auth.refreshToken || !auth.issuerUrl || !auth.clientId) return null
 
   try {
@@ -35,6 +49,7 @@ export async function refreshToken(auth: StoredAuth): Promise<StoredAuth | null>
     const discoveryRes = await fetch(`${auth.issuerUrl}/.well-known/openid-configuration`)
     if (!discoveryRes.ok) return null
     const discovery = await discoveryRes.json()
+    assertAuthSession(revision)
     const tokenEndpoint = discovery.token_endpoint as string
 
     // Refresh using public client (no client_secret, matches PKCE pattern)
@@ -53,6 +68,7 @@ export async function refreshToken(auth: StoredAuth): Promise<StoredAuth | null>
     if (!res.ok) return null
 
     const data = await res.json()
+    assertAuthSession(revision)
     const idToken = data.id_token as string
     const refreshTokenNew = (data.refresh_token as string) || auth.refreshToken
     const expiresIn = data.expires_in as number
@@ -63,9 +79,10 @@ export async function refreshToken(auth: StoredAuth): Promise<StoredAuth | null>
       refreshToken: refreshTokenNew,
       expiresAt: Math.floor(Date.now() / 1000) + expiresIn,
     }
-    saveAuth(updated)
+    localStorage.setItem(STORAGE_KEYS.auth, JSON.stringify(updated))
     return updated
   } catch {
+    assertAuthSession(revision)
     return null
   }
 }

@@ -23,6 +23,16 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let dataDisposable: { dispose: () => void } | null = null
 let resizeDisposable: { dispose: () => void } | null = null
 let initialized = false
+let lifecycle = 0
+let disposed = false
+const owner = JSON.stringify(auth.user)
+
+// A terminal belongs to the identity that opened it. Disconnect immediately,
+// before the parent removes its session row on the next render.
+watch(() => JSON.stringify(auth.user), () => {
+  disposed = true
+  cleanup()
+}, { flush: 'sync' })
 
 const statusLabel = computed(() => {
   switch (connectionStatus.value) {
@@ -45,7 +55,8 @@ function buildWsUrl(token: string): string {
 }
 
 async function initialize() {
-  if (initialized || !termEl.value) return
+  if (disposed || !auth.token || JSON.stringify(auth.user) !== owner || initialized || !termEl.value) return
+  const attempt = ++lifecycle
   initialized = true
   connectionStatus.value = 'connecting'
 
@@ -82,7 +93,15 @@ async function initialize() {
   terminal.open(termEl.value)
   fitAddon.fit()
 
-  const token = await auth.getValidToken()
+  let token: string
+  try {
+    token = await auth.getValidToken()
+  } catch {
+    if (attempt === lifecycle) cleanup()
+    return
+  }
+  // Logout, unmount, or reconnect can occur while token refresh is pending.
+  if (attempt !== lifecycle || disposed || JSON.stringify(auth.user) !== owner) return
   ws = new WebSocket(buildWsUrl(token))
   ws.binaryType = 'arraybuffer'
 
@@ -155,13 +174,19 @@ async function reconnect() {
 }
 
 function cleanup() {
+  lifecycle++
+  connectionStatus.value = 'disconnected'
   stopHeartbeat()
   dataDisposable?.dispose()
   resizeDisposable?.dispose()
   dataDisposable = null
   resizeDisposable = null
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    ws.close()
+  if (ws) {
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onclose = null
+    ws.onerror = null
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
   }
   ws = null
   terminal?.dispose()
@@ -174,6 +199,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  disposed = true
   cleanup()
 })
 

@@ -2,7 +2,8 @@
 // /api/admin/* surface, which is gated server-side by --admin-users: a
 // non-admin caller gets 403, which this store surfaces as `forbidden`.
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import { useAuthStore } from './auth'
 
 import { authFetch } from '@/auth/session'
 
@@ -73,33 +74,63 @@ export const useAdminStore = defineStore('admin', () => {
   // present when the hub runs with --hub-internal-url, so the providers
   // table can offer the in-cluster download only where it would work.
   const kubeconfigServers = ref<KubeconfigServer[]>([])
+  const auth = useAuthStore()
+  let identityRevision = 0
+  let accessSequence = 0
+  let refreshSequence = 0
+
+  watch(() => JSON.stringify(auth.user), () => {
+    identityRevision++
+    accessSequence++
+    refreshSequence++
+    users.value = []
+    orgs.value = []
+    providers.value = []
+    identities.value = []
+    kubeconfigServers.value = []
+    isAdmin.value = null
+    loaded.value = false
+    loading.value = false
+    forbidden.value = false
+    error.value = null
+  }, { flush: 'sync' })
+
+  function assertIdentity(revision: number): void {
+    if (revision !== identityRevision) throw new DOMException('The account has changed', 'AbortError')
+  }
 
   // checkAccess probes /api/admin/access once. 200 → admin; 403/404/any other →
   // not admin. Never throws; failed requests are swallowed so non-admin
   // sessions stay quiet.
   async function checkAccess(): Promise<boolean> {
+    const sequence = ++accessSequence
+    const revision = identityRevision
+    const current = () => sequence === accessSequence && revision === identityRevision
     try {
       const resp = await authFetch('/api/admin/access')
+      if (!current()) return false
       isAdmin.value = resp.ok
       if (resp.ok) {
         // Older hubs answer with just {"admin":true}; treat a missing list as
         // "external only" so the download keeps working against them.
         const body = (await resp.json().catch(() => ({}))) as { kubeconfigServers?: string[] }
+        if (!current()) return false
         const servers = (body.kubeconfigServers ?? ['external']).filter(
           (s): s is KubeconfigServer => s === 'internal' || s === 'external',
         )
         kubeconfigServers.value = servers
       }
     } catch {
+      if (!current()) return false
       isAdmin.value = false
     }
     return isAdmin.value === true
   }
 
-  async function get<T>(path: string): Promise<T[]> {
+  async function get<T>(path: string, revision: number): Promise<T[]> {
     const resp = await authFetch(path)
+    assertIdentity(revision)
     if (resp.status === 403) {
-      forbidden.value = true
       throw new Error('forbidden')
     }
     if (!resp.ok) throw new Error(`${path}: ${resp.status} ${resp.statusText}`)
@@ -108,27 +139,33 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   async function refresh(): Promise<void> {
+    const revision = identityRevision
+    const sequence = ++refreshSequence
+    const current = () => revision === identityRevision && sequence === refreshSequence
     loading.value = true
     error.value = null
     forbidden.value = false
     try {
       const [u, o, p, i] = await Promise.all([
-        get<AdminUser>('/api/admin/users'),
-        get<AdminOrg>('/api/admin/organizations'),
-        get<AdminProvider>('/api/admin/providers'),
-        get<RootIdentity>('/api/admin/identities'),
+        get<AdminUser>('/api/admin/users', revision),
+        get<AdminOrg>('/api/admin/organizations', revision),
+        get<AdminProvider>('/api/admin/providers', revision),
+        get<RootIdentity>('/api/admin/identities', revision),
       ])
+      if (!current()) return
       users.value = u
       orgs.value = o
       providers.value = p
       identities.value = i
       loaded.value = true
     } catch (e) {
-      if ((e as Error).message !== 'forbidden') {
+      if (!current()) return
+      if ((e as Error).message === 'forbidden') forbidden.value = true
+      else {
         error.value = (e as Error).message
       }
     } finally {
-      loading.value = false
+      if (current()) loading.value = false
     }
   }
 
@@ -136,11 +173,13 @@ export const useAdminStore = defineStore('admin', () => {
   // The hub's Provider controller then provisions the sub-workspace +
   // ServiceAccount + kubeconfig Secret. Declarative — no imperative onboard.
   async function createProvider(name: string, displayName: string): Promise<void> {
+    const revision = identityRevision
     const resp = await authFetch('/api/admin/providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, displayName }),
     })
+    assertIdentity(revision)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
@@ -151,9 +190,11 @@ export const useAdminStore = defineStore('admin', () => {
   // deleteProvider removes the Provider object; the controller's finalizer
   // tears down the provisioned sub-workspace.
   async function deleteProvider(name: string): Promise<void> {
+    const revision = identityRevision
     const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     })
+    assertIdentity(revision)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
@@ -172,8 +213,10 @@ export const useAdminStore = defineStore('admin', () => {
   // in-cluster Service, so its traffic never leaves), 'external' for one running
   // anywhere else. Omitted downloads whatever the controller minted.
   async function downloadProviderKubeconfig(name: string, server?: KubeconfigServer): Promise<void> {
+    const revision = identityRevision
     const query = server ? `?server=${server}` : ''
     const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig${query}`)
+    assertIdentity(revision)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
@@ -183,9 +226,11 @@ export const useAdminStore = defineStore('admin', () => {
       // 400 carries an actionable message (e.g. the hub has no internal URL
       // configured); surface it instead of a bare status code.
       const body = (await resp.json().catch(() => ({}))) as { error?: string }
+      assertIdentity(revision)
       throw new Error(body.error ?? `download kubeconfig ${name}: ${resp.status} ${resp.statusText}`)
     }
     const text = await resp.text()
+    assertIdentity(revision)
     const url = URL.createObjectURL(new Blob([text], { type: 'application/yaml' }))
     const a = document.createElement('a')
     a.href = url

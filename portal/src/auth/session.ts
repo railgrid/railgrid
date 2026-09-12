@@ -16,7 +16,7 @@
 // `@/auth/token` (pure functions) and the DOM keeps this leaf-level and
 // cycle-free.
 import { readTenant } from '@/portalkit/tenant'
-import { loadAuth, isExpired, refreshToken } from '@/auth/token'
+import { loadAuth, isExpired, refreshToken, authSessionRevision, assertAuthSession } from '@/auth/token'
 
 // Window event the shell listens for to drop a dead session and redirect
 // to /login (see portal/src/App.vue). No-op inside provider
@@ -51,11 +51,13 @@ export function resetSessionExpired(): void {
 // themselves. This is the store-free core; useAuthStore.getValidToken()
 // wraps it to also sync the reactive token ref.
 export async function getBearerToken(): Promise<string | null> {
+  const revision = authSessionRevision()
   const stored = loadAuth()
   if (!stored) return null
   if (!isExpired(stored)) return stored.idToken
 
   const refreshed = await refreshToken(stored)
+  assertAuthSession(revision)
   if (refreshed) return refreshed.idToken
 
   // Expired and unrefreshable: the session is dead.
@@ -95,8 +97,10 @@ export async function authFetch(
   opts: RequestInit & AuthHeaderOptions = {},
 ): Promise<Response> {
   const { tenant, headers, ...init } = opts
+  const revision = authSessionRevision()
   const selectedHeaders = tenant ? tenantHeaders() : undefined
   const token = await getBearerToken()
+  assertAuthSession(revision)
 
   // Build via the Headers API so every HeadersInit shape a caller might
   // pass (plain object, [name,value][], or a Headers instance) is merged
@@ -113,6 +117,7 @@ export async function authFetch(
     headers: merged,
   })
 
+  assertAuthSession(revision)
   if (res.status === 401) notifySessionExpired()
   return res
 }

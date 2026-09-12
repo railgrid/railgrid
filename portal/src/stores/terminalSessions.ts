@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
+import { useAuthStore } from './auth'
 
 export interface TerminalSession {
   id: string
@@ -46,6 +47,9 @@ export const useTerminalSessionsStore = defineStore('terminalSessions', () => {
   const activeSessionId = ref<string | null>(null)
   const isVisible = ref(false)
   const panelState = ref<PanelState>(loadPanelState())
+
+  const auth = useAuthStore()
+  watch(() => JSON.stringify(auth.user), closeAllSessions, { flush: 'sync' })
 
   watch(
     panelState,
