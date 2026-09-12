@@ -124,13 +124,37 @@ type Issue struct {
 	Team        Team   `json:"team"`
 	State       State  `json:"state"`
 }
+type CommentUser struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+type CommentBotActor struct {
+	ID      *string `json:"id"`
+	Type    string  `json:"type"`
+	Name    *string `json:"name"`
+	SubType *string `json:"subType"`
+}
+type CommentExternalUser struct {
+	ID string `json:"id"`
+}
 type Comment struct {
-	ID    string `json:"id"`
-	Body  string `json:"body"`
-	Issue Issue  `json:"issue"`
+	ID           string               `json:"id"`
+	Body         string               `json:"body"`
+	IssueID      *string              `json:"issueId"`
+	ParentID     *string              `json:"parentId"`
+	CreatedAt    string               `json:"createdAt"`
+	UpdatedAt    string               `json:"updatedAt"`
+	EditedAt     *string              `json:"editedAt"`
+	URL          string               `json:"url"`
+	User         *CommentUser         `json:"user"`
+	BotActor     *CommentBotActor     `json:"botActor"`
+	ExternalUser *CommentExternalUser `json:"externalUser"`
+	Issue        Issue                `json:"issue"`
 }
 
 const issueFields = `id identifier title description url updatedAt team { id name key } state { id name }`
+const commentFields = `id body issueId parentId createdAt updatedAt editedAt url user{id name displayName} botActor{id type name subType} externalUser{id}`
 
 func pageVars(first int, after string) map[string]any {
 	if first < 1 || first > 50 {
@@ -197,8 +221,38 @@ func (c *Client) Comments(ctx context.Context, id string, first int, after strin
 	}
 	v := pageVars(first, after)
 	v["id"] = id
-	err := c.query(ctx, `query($id:String!,$first:Int!,$after:String){issue(id:$id){comments(first:$first,after:$after){nodes{id body} pageInfo{hasNextPage endCursor}}}}`, v, false, &d)
+	err := c.query(ctx, `query($id:String!,$first:Int!,$after:String){issue(id:$id){comments(first:$first,after:$after,orderBy:createdAt){nodes{`+commentFields+`} pageInfo{hasNextPage endCursor}}}}`, v, false, &d)
 	return d.Issue.Comments, err
+}
+func (c *Client) CommentIssueID(ctx context.Context, id string) (string, error) {
+	var d struct {
+		Comment *Comment `json:"comment"`
+	}
+	err := c.query(ctx, `query($id:String!){comment(id:$id){issueId}}`, map[string]any{"id": id}, false, &d)
+	if err != nil {
+		return "", err
+	}
+	if d.Comment == nil || d.Comment.IssueID == nil || *d.Comment.IssueID == "" {
+		return "", errors.New("linear comment unavailable")
+	}
+	return *d.Comment.IssueID, nil
+}
+func (c *Client) CommentReplies(ctx context.Context, id string, first int, after string) (Page[Comment], error) {
+	var d struct {
+		Comment *struct {
+			Children Page[Comment] `json:"children"`
+		} `json:"comment"`
+	}
+	v := pageVars(first, after)
+	v["id"] = id
+	err := c.query(ctx, `query($id:String!,$first:Int!,$after:String){comment(id:$id){children(first:$first,after:$after,orderBy:createdAt){nodes{`+commentFields+`} pageInfo{hasNextPage endCursor}}}}`, v, false, &d)
+	if err != nil {
+		return Page[Comment]{}, err
+	}
+	if d.Comment == nil {
+		return Page[Comment]{}, errors.New("linear comment unavailable")
+	}
+	return d.Comment.Children, nil
 }
 func (c *Client) CreateIssue(ctx context.Context, input map[string]any) (Issue, error) {
 	var d struct {
@@ -233,7 +287,7 @@ func (c *Client) AddComment(ctx context.Context, id, body string) (Comment, erro
 			Comment Comment `json:"comment"`
 		} `json:"commentCreate"`
 	}
-	err := c.query(ctx, `mutation($input:CommentCreateInput!){commentCreate(input:$input){success comment{id body}}}`, map[string]any{"input": map[string]any{"issueId": id, "body": body}}, true, &d)
+	err := c.query(ctx, `mutation($input:CommentCreateInput!){commentCreate(input:$input){success comment{`+commentFields+`}}}`, map[string]any{"input": map[string]any{"issueId": id, "body": body}}, true, &d)
 	if err == nil && (!d.Payload.Success || d.Payload.Comment.ID == "") {
 		err = &Error{Status: 200, Uncertain: true}
 	}

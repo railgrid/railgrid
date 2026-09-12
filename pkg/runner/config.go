@@ -31,12 +31,13 @@ import (
 )
 
 const (
-	defaultMaxEvents       = 256
-	defaultMaxEventBytes   = 64 << 10
-	defaultMaxBodyBytes    = 2 << 20
-	defaultMaxArtifactSize = 32 << 20
-	gitResultCapability    = "git-result-v1"
-	gitFetchCapability     = "git-fetch-v1"
+	defaultMaxEvents        = 256
+	defaultMaxEventBytes    = 64 << 10
+	defaultMaxBodyBytes     = 2 << 20
+	defaultMaxArtifactSize  = 32 << 20
+	gitResultCapability     = "git-result-v1"
+	gitFetchCapability      = "git-fetch-v1"
+	clarificationCapability = "clarification-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)

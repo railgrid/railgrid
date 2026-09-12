@@ -178,6 +178,7 @@ type ResumeRequest struct {
 	AttemptID       string          `json:"attemptID"`
 	AttemptEpoch    uint64          `json:"attemptEpoch"`
 	SessionID       string          `json:"sessionID,omitempty"`
+	ClarificationID string          `json:"clarificationID,omitempty"`
 	ApprovedInput   json.RawMessage `json:"approvedInput,omitempty"`
 	Resolution      string          `json:"resolution,omitempty"`
 	Instructions    string          `json:"instructions,omitempty"`
@@ -193,6 +194,14 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
+
+// Clarification is a bounded product question captured from a genuine
+// request-user-input harness interaction. Its ID is stable for one session,
+// turn, and interaction item and must be echoed by a matching resume.
+type Clarification struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
 
 // Event is an ordered, durable attempt event. Data is bounded by the runner
 // before the event is persisted.
@@ -217,20 +226,21 @@ type Artifact struct {
 
 // Receipt is the durable view of an attempt returned by start and inspect.
 type Receipt struct {
-	ProtocolVersion string     `json:"protocolVersion"`
-	TaskID          string     `json:"taskID"`
-	AttemptID       string     `json:"attemptID"`
-	AttemptEpoch    uint64     `json:"attemptEpoch"`
-	Phase           Phase      `json:"phase"`
-	SessionID       string     `json:"sessionID,omitempty"`
-	Workdir         string     `json:"workdir,omitempty"`
-	Cursor          uint64     `json:"cursor"`
-	Blocker         string     `json:"blocker,omitempty"`
-	Resources       []string   `json:"resources,omitempty"`
-	LastError       *Error     `json:"lastError,omitempty"`
-	Artifacts       []Artifact `json:"artifacts,omitempty"`
-	AcceptedAt      time.Time  `json:"acceptedAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	TaskID          string         `json:"taskID"`
+	AttemptID       string         `json:"attemptID"`
+	AttemptEpoch    uint64         `json:"attemptEpoch"`
+	Phase           Phase          `json:"phase"`
+	SessionID       string         `json:"sessionID,omitempty"`
+	Workdir         string         `json:"workdir,omitempty"`
+	Cursor          uint64         `json:"cursor"`
+	Blocker         string         `json:"blocker,omitempty"`
+	Clarification   *Clarification `json:"clarification,omitempty"`
+	Resources       []string       `json:"resources,omitempty"`
+	LastError       *Error         `json:"lastError,omitempty"`
+	Artifacts       []Artifact     `json:"artifacts,omitempty"`
+	AcceptedAt      time.Time      `json:"acceptedAt"`
+	UpdatedAt       time.Time      `json:"updatedAt"`
 }
 
 // ArtifactResponse contains immutable artifact metadata and bytes are served

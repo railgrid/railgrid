@@ -530,6 +530,7 @@ func (a *Adapter) startServer(ctx context.Context, workdir string) (*serverProce
 	// Keep extension execution policy independent of whether Codex has created
 	// its cache directories. Apply it to probes, new sessions, and resumed ones.
 	cmd := exec.Command(a.cfg.Binary, "app-server", "--listen", "stdio://",
+		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
 	cmd.Env = safeEnv(a.cfg.Home)
 	if workdir != "" {
@@ -714,9 +715,10 @@ func hasID(id json.RawMessage) bool {
 }
 
 type needsInputError struct {
-	method  string
-	data    json.RawMessage
-	message string
+	method        string
+	data          json.RawMessage
+	message       string
+	clarification *harness.Clarification
 }
 
 func (e *needsInputError) Error() string {
@@ -744,7 +746,35 @@ func (s *runState) handle(msg wireMessage) error {
 	if msg.Method == "" {
 		return nil
 	}
-	if isInteractiveRequest(msg.Method) {
+	if isRequestUserInput(msg.Method) {
+		clarification, clarificationErr := parseClarification(s.sessionID, s.turnID, msg.Params)
+		if clarificationErr != nil {
+			const message = "Codex request-user-input payload was rejected as an unbounded or malformed product question"
+			if err := s.emitEvent(harness.Event{
+				Type:      "needs_input",
+				SessionID: s.sessionID,
+				TurnID:    turnIDFromParams(msg.Params, s.turnID),
+				Message:   message,
+			}); err != nil {
+				return err
+			}
+			return &needsInputError{method: msg.Method, message: message}
+		}
+		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
+			return err
+		}
+		if err := s.emitEvent(harness.Event{
+			Type:          msg.Method,
+			SessionID:     s.sessionID,
+			TurnID:        turnIDFromParams(msg.Params, s.turnID),
+			Message:       clarification.Text,
+			Clarification: clarification,
+		}); err != nil {
+			return err
+		}
+		return &needsInputError{method: msg.Method, message: "Codex requires user input", clarification: clarification}
+	}
+	if isApprovalRequest(msg.Method) {
 		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
 			return err
 		}
@@ -768,11 +798,11 @@ func (s *runState) handle(msg wireMessage) error {
 			SessionID: s.sessionID,
 			TurnID:    turnIDFromParams(msg.Params, s.turnID),
 			Message:   "Codex authentication requires user input",
-			Data:      boundedData(msg.Params),
+			Data:      authEventData(msg.Params),
 		}); err != nil {
 			return err
 		}
-		return &needsInputError{method: msg.Method, data: boundedData(msg.Params), message: "Codex authentication requires user input"}
+		return &needsInputError{method: msg.Method, data: authEventData(msg.Params), message: "Codex authentication requires user input"}
 	}
 
 	switch msg.Method {
@@ -826,11 +856,11 @@ func (s *runState) handle(msg wireMessage) error {
 				SessionID: s.sessionID,
 				TurnID:    turnIDFromParams(msg.Params, s.turnID),
 				Message:   "Codex authentication requires user input",
-				Data:      boundedData(msg.Params),
+				Data:      authEventData(msg.Params),
 			}); err != nil {
 				return err
 			}
-			return &needsInputError{method: msg.Method, data: boundedData(msg.Params), message: "Codex authentication requires user input"}
+			return &needsInputError{method: msg.Method, data: authEventData(msg.Params), message: "Codex authentication requires user input"}
 		}
 		if err := s.emitEvent(harness.Event{
 			Type:      msg.Method,
@@ -860,22 +890,27 @@ func (s *runState) handle(msg wireMessage) error {
 			s.turnID = params.Turn.ID
 		}
 		s.phase = "completed"
+		authTurnError := authData(params.Turn.Error)
 		if params.Turn.Status == "failed" || len(bytes.TrimSpace(params.Turn.Error)) > 0 && !bytes.Equal(bytes.TrimSpace(params.Turn.Error), []byte("null")) {
 			s.phase = "failed"
 			s.blocker = "Codex turn failed"
-			if authData(params.Turn.Error) {
+			if authTurnError {
 				s.phase = "needs_input"
 				s.blocker = "Codex authentication requires user input"
 			}
 		} else if params.Turn.Status == "interrupted" {
 			s.phase = "cancelled"
 		}
+		data := boundedData(msg.Params)
+		if authTurnError {
+			data = authEventData(msg.Params)
+		}
 		if err := s.emitEvent(harness.Event{
 			Type:      "turn_completed",
 			SessionID: s.sessionID,
 			TurnID:    s.turnID,
 			Message:   s.phase,
-			Data:      boundedData(msg.Params),
+			Data:      data,
 		}); err != nil {
 			return err
 		}
@@ -937,9 +972,16 @@ func needsInputResult(state *runState, err error) harness.Result {
 	result := state.result()
 	result.Phase = "needs_input"
 	var target *needsInputError
-	if errors.As(err, &target) && target.message != "" {
-		result.Blocker = target.message
-	} else {
+	if errors.As(err, &target) {
+		if target.message != "" {
+			result.Blocker = target.message
+		}
+		if target.clarification != nil {
+			clarification := *target.clarification
+			result.Clarification = &clarification
+		}
+	}
+	if result.Blocker == "" {
 		result.Blocker = "Codex requires user input"
 	}
 	return result
@@ -949,7 +991,7 @@ func authResult(state *runState, err error, emit harness.Emit) harness.Result {
 	data := json.RawMessage(nil)
 	var target *rpcError
 	if errors.As(err, &target) {
-		data = boundedData(target.Data)
+		data = authEventData(target.Data)
 	}
 	if emit != nil {
 		_ = emit(harness.Event{
@@ -981,8 +1023,19 @@ func missingSessionResult(state *runState, err error, emit harness.Emit) harness
 }
 
 func isInteractiveRequest(method string) bool {
+	return isApprovalRequest(method) || isRequestUserInput(method)
+}
+
+func isRequestUserInput(method string) bool {
+	// This exact app-server method is the only interaction that represents a
+	// product question. Approval, auth, MCP elicitation, and compatibility
+	// aliases remain operator blockers and never become clarifications.
+	return method == "item/tool/requestUserInput"
+}
+
+func isApprovalRequest(method string) bool {
 	method = strings.ToLower(method)
-	return strings.Contains(method, "requestapproval") || strings.Contains(method, "requestuserinput") || strings.Contains(method, "request_user_input") || strings.Contains(method, "approval")
+	return strings.Contains(method, "requestapproval") || strings.Contains(method, "approval")
 }
 
 func isAuthNotification(method string) bool {
@@ -1034,6 +1087,66 @@ func boundedData(data json.RawMessage) json.RawMessage {
 		return append(json.RawMessage(nil), data...)
 	}
 	return json.RawMessage(fmt.Sprintf(`{"truncated":true,"bytes":%d}`, len(data)))
+}
+
+func authEventData(data json.RawMessage) json.RawMessage {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	if len(data) > maxEventData {
+		return boundedData(data)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+
+	for key, value := range payload {
+		if sensitiveAuthField(key) {
+			delete(payload, key)
+			continue
+		}
+		payload[key] = redactAuthValue(value)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	return boundedData(encoded)
+}
+
+func redactAuthValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if sensitiveAuthField(key) {
+				delete(typed, key)
+				continue
+			}
+			typed[key] = redactAuthValue(nested)
+		}
+	case []any:
+		for index, nested := range typed {
+			typed[index] = redactAuthValue(nested)
+		}
+	}
+	return value
+}
+
+func sensitiveAuthField(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+	return strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "authorization") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "credential")
 }
 
 func threadID(data json.RawMessage) string {

@@ -241,9 +241,12 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 		return page, err
 	}
 	team := s.TeamID
-	if s.Action == "issue" || s.Action == "comments" || s.Action == "updateIssue" || s.Action == "addComment" {
+	if s.Action == "issue" || s.Action == "comments" || s.Action == "replies" || s.Action == "updateIssue" || s.Action == "addComment" {
 		if s.IssueID == "" {
 			return nil, errors.New("issueID required")
+		}
+		if s.Action == "replies" && s.CommentID == "" {
+			return nil, errors.New("commentID required")
 		}
 		issue, err := c.Issue(ctx, s.IssueID)
 		if err != nil {
@@ -255,6 +258,15 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 		}
 		if s.Action == "issue" {
 			return issue, nil
+		}
+		if s.Action == "replies" {
+			parentIssueID, err := c.CommentIssueID(ctx, s.CommentID)
+			if err != nil {
+				return nil, err
+			}
+			if parentIssueID != issue.ID && parentIssueID != s.IssueID {
+				return nil, errors.New("comment is outside the requested issue")
+			}
 		}
 	}
 	if !Allowed(conn, team) {
@@ -296,6 +308,8 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 		return c.Issues(ctx, team, s.Query, since, s.First, s.After)
 	case "comments":
 		return c.Comments(ctx, s.IssueID, s.First, s.After)
+	case "replies":
+		return c.CommentReplies(ctx, s.CommentID, s.First, s.After)
 	case "createIssue", "updateIssue":
 		input := map[string]any{}
 		if s.Title != nil {

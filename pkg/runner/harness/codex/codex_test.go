@@ -55,6 +55,22 @@ func TestProbeUsesVersionAndAccountReadWithoutModelCall(t *testing.T) {
 	}
 }
 
+func TestProbeMarksConfiguredVersionMismatchNotReady(t *testing.T) {
+	binary := fakeCodexBinary(t, "probe")
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.153.4"})
+
+	info, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if info.Ready || len(info.Reasons) == 0 {
+		t.Fatalf("version mismatch reported ready: %+v", info)
+	}
+	if !strings.Contains(strings.Join(info.Reasons, " "), "expected Codex 0.153.4") {
+		t.Fatalf("version mismatch reason = %v", info.Reasons)
+	}
+}
+
 func TestProbeAccountReadAuthenticationState(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -168,6 +184,44 @@ func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T
 	}
 }
 
+func TestRunEnablesDefaultModeRequestUserInputForStartAndResume(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "start"},
+		{name: "resume", sessionID: "thread-existing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binary := fakeCodexBinary(t, "success")
+			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+			result, err := adapter.Run(context.Background(), harness.Launch{
+				Workdir:      t.TempDir(),
+				SessionID:    tc.sessionID,
+				Instructions: "continue the approved work",
+			}, nil)
+			if err != nil || result.Phase != "completed" {
+				t.Fatalf("Run = %+v, %v", result, err)
+			}
+			raw, readErr := os.ReadFile(filepath.Join(filepath.Dir(binary), "argv"))
+			if readErr != nil {
+				t.Fatalf("read app-server args: %v", readErr)
+			}
+			args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			found := false
+			for index := 0; index+1 < len(args); index++ {
+				if args[index] == "--enable" && args[index+1] == "default_mode_request_user_input" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("app-server args = %v, missing default-mode request-user-input enablement", args)
+			}
+		})
+	}
+}
+
 func TestRunResumeMissingThreadNeedsInputWithoutStartingNewThread(t *testing.T) {
 	binary := fakeCodexBinary(t, "missing-resume")
 	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
@@ -206,6 +260,9 @@ func TestRunApprovalRequestNeedsInputWithoutAutoApproval(t *testing.T) {
 	if result.Phase != "needs_input" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if result.Clarification != nil {
+		t.Fatalf("approval result became a product question: %+v", result.Clarification)
+	}
 	if len(events) != 2 || events[1].Type != "item/commandExecution/requestApproval" {
 		t.Fatalf("approval events = %+v", events)
 	}
@@ -239,12 +296,43 @@ func TestRunAuthRequestNeedsInputWithoutAnswering(t *testing.T) {
 	if result.Phase != "needs_input" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if result.Clarification != nil {
+		t.Fatalf("auth result became a product question: %+v", result.Clarification)
+	}
 	if len(events) != 2 || events[1].Type != "auth_failure" {
 		t.Fatalf("auth events = %+v", events)
 	}
 	var params map[string]any
 	if err := json.Unmarshal(events[1].Data, &params); err != nil || params["reason"] != "expired" {
 		t.Fatalf("auth data = %s", events[1].Data)
+	}
+}
+
+func TestRunRequestUserInputProducesBoundedStableClarification(t *testing.T) {
+	binary := fakeCodexBinary(t, "clarification")
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	var events []harness.Event
+	result, err := adapter.Run(context.Background(), harness.Launch{
+		Workdir:      t.TempDir(),
+		Instructions: "choose the approved option",
+	}, func(event harness.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Phase != "needs_input" || result.Clarification == nil {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Clarification.ID == "" || !strings.HasPrefix(result.Clarification.ID, "clarification-") {
+		t.Fatalf("clarification ID = %q", result.Clarification.ID)
+	}
+	if !strings.Contains(result.Clarification.Text, "Which environment?") || !strings.Contains(result.Clarification.Text, "Local: Use the local environment") || !strings.Contains(result.Clarification.Text, "Remote: Use the remote environment") {
+		t.Fatalf("clarification text lost question or options: %q", result.Clarification.Text)
+	}
+	if len(events) != 2 || events[1].Clarification == nil || events[1].Clarification.ID != result.Clarification.ID {
+		t.Fatalf("clarification events = %+v", events)
 	}
 }
 
@@ -434,6 +522,22 @@ func TestFakeAppServerProcess(t *testing.T) {
 			case "approval":
 				writeRequest("item/commandExecution/requestApproval", "approval-1", map[string]any{"itemId": "item-1", "threadId": "thread-1", "turnId": "turn-1", "command": "uname"})
 				approvalPending = true
+			case "clarification":
+				writeRequest("item/tool/requestUserInput", "input-1", map[string]any{
+					"itemId":     "item-clarification-1",
+					"threadId":   "thread-1",
+					"turnId":     "turn-1",
+					"isBlocking": true,
+					"questions": []map[string]any{{
+						"id":       "environment",
+						"header":   "Environment",
+						"question": "Which environment?",
+						"options": []map[string]string{
+							{"label": "Local", "description": "Use the local environment"},
+							{"label": "Remote", "description": "Use the remote environment"},
+						},
+					}},
+				})
 			case "auth-request":
 				writeRequest("account/chatgptAuthTokens/refresh", "auth-1", map[string]any{"reason": "expired"})
 			case "cancel":

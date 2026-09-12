@@ -72,10 +72,11 @@ type ConnectionList struct {
 type OperationSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Connection string `json:"connection"`
-	// +kubebuilder:validation:Enum=teams;states;issues;issue;comments;createIssue;updateIssue;addComment;reconcile
-	Action  string `json:"action"`
-	TeamID  string `json:"teamID,omitempty"`
-	IssueID string `json:"issueID,omitempty"`
+	// +kubebuilder:validation:Enum=teams;states;issues;issue;comments;replies;createIssue;updateIssue;addComment;reconcile
+	Action    string `json:"action"`
+	TeamID    string `json:"teamID,omitempty"`
+	IssueID   string `json:"issueID,omitempty"`
+	CommentID string `json:"commentID,omitempty"`
 	// +kubebuilder:validation:MaxLength=1000
 	Query string `json:"query,omitempty"`
 	// +kubebuilder:validation:MaxLength=4096

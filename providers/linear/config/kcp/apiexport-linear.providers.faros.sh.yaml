@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: linear.providers.faros.sh
     name: operations
-    schema: v260911-8ec7b4c3.operations.linear.providers.faros.sh
+    schema: v260912-55471e4f.operations.linear.providers.faros.sh
     storage:
       crd: {}
 status: {}

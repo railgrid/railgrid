@@ -290,6 +290,21 @@ resolution. It cannot amend the approved input or instructions. A missing or
 unrecoverable checkpoint is a blocker; the runner never silently starts a new
 session as a substitute.
 
+A genuine harness `request-user-input` interaction may additionally populate
+`receipt.clarification` with a bounded `{id,text}` value and emit a matching
+`needs_input` event. The Codex adapter derives a stable ID from the session,
+turn, and interaction item, preserves the bounded question and options, and
+rejects secret, malformed, empty, or oversized input. Authentication, approval,
+restart, and generic error blockers never acquire a clarification value.
+
+`clarification-v1` is advertised in the capabilities response when this
+support is available. A resume for such a receipt must include the same
+`clarificationID`; the runner rejects a missing, stale, or foreign ID. The
+resolution is explicit text passed to the existing session, while approved
+input and instructions remain immutable. The durable operation record makes a
+repeated identical resume return the newer receipt without launching another
+turn, including when the first response was lost.
+
 ## Restart and recovery
 
 The state journal, task worktree, and Codex home are same-machine state. On

@@ -54,6 +54,7 @@ spec:
                 - issues
                 - issue
                 - comments
+                - replies
                 - createIssue
                 - updateIssue
                 - addComment
@@ -64,6 +65,8 @@ spec:
                 type: string
               body:
                 maxLength: 16000
+                type: string
+              commentID:
                 type: string
               connection:
                 minLength: 1

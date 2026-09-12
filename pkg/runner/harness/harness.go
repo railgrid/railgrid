@@ -41,18 +41,27 @@ type Launch struct {
 
 // Event is a bounded adapter event forwarded to the runner state engine.
 type Event struct {
-	Type      string          `json:"type"`
-	SessionID string          `json:"sessionID,omitempty"`
-	TurnID    string          `json:"turnID,omitempty"`
-	Message   string          `json:"message,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
+	Type          string          `json:"type"`
+	SessionID     string          `json:"sessionID,omitempty"`
+	TurnID        string          `json:"turnID,omitempty"`
+	Message       string          `json:"message,omitempty"`
+	Data          json.RawMessage `json:"data,omitempty"`
+	Clarification *Clarification  `json:"clarification,omitempty"`
+}
+
+// Clarification is a bounded product question that can be answered by a
+// caller before resuming the existing harness session.
+type Clarification struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
 }
 
 // Result is the terminal state of one adapter launch.
 type Result struct {
-	Phase     string `json:"phase"`
-	SessionID string `json:"sessionID,omitempty"`
-	Blocker   string `json:"blocker,omitempty"`
+	Phase         string         `json:"phase"`
+	SessionID     string         `json:"sessionID,omitempty"`
+	Blocker       string         `json:"blocker,omitempty"`
+	Clarification *Clarification `json:"clarification,omitempty"`
 }
 
 // Emit receives adapter events. Implementations must treat an error as a

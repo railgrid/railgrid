@@ -113,6 +113,59 @@ func TestIssueAndStatePolicyBeforeMutation(t *testing.T) {
 		t.Fatal("foreign team list was sent")
 	}
 }
+func TestCommentRepliesBindParentToAuthorizedIssue(t *testing.T) {
+	newServer := func(t *testing.T, teamID, parentIssueID string) (*httptest.Server, *int) {
+		t.Helper()
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			var request struct {
+				Query string `json:"query"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			switch {
+			case strings.Contains(request.Query, "issue(id:$id)"):
+				_, _ = fmt.Fprintf(w, `{"data":{"issue":{"id":"issue-uuid","identifier":"ENG-1","url":"https://linear.app/acme/issue/ENG-1","team":{"id":%q,"name":"Team","key":"ENG"},"state":{"id":"state","name":"Open"}}}}`, teamID)
+			case strings.Contains(request.Query, "comment(id:$id){issueId}"):
+				_, _ = fmt.Fprintf(w, `{"data":{"comment":{"issueId":%q}}}`, parentIssueID)
+			case strings.Contains(request.Query, "children(first:$first"):
+				_, _ = w.Write([]byte(`{"data":{"comment":{"children":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}`))
+			default:
+				t.Errorf("unexpected query %q", request.Query)
+				http.Error(w, "unexpected query", http.StatusBadRequest)
+			}
+		}))
+		return srv, &calls
+	}
+	connection := api.Connection{Spec: api.ConnectionSpec{Teams: []api.TeamReference{{ID: "allowed"}}}}
+	t.Run("authorized parent", func(t *testing.T) {
+		srv, calls := newServer(t, "allowed", "issue-uuid")
+		defer srv.Close()
+		page, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1", First: 2, After: "cursor-1"})
+		if err != nil || calls == nil || *calls != 3 {
+			t.Fatalf("Execute() page=%+v calls=%d error=%v", page, *calls, err)
+		}
+	})
+	t.Run("parent mismatch", func(t *testing.T) {
+		srv, calls := newServer(t, "allowed", "other-issue")
+		defer srv.Close()
+		_, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
+		if err == nil || !strings.Contains(err.Error(), "outside the requested issue") || *calls != 2 {
+			t.Fatalf("error=%v calls=%d, want parent rejection before children", err, *calls)
+		}
+	})
+	t.Run("foreign issue team", func(t *testing.T) {
+		srv, calls := newServer(t, "forbidden", "issue-uuid")
+		defer srv.Close()
+		_, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
+		if err == nil || !strings.Contains(err.Error(), "outside connection policy") || *calls != 1 {
+			t.Fatalf("error=%v calls=%d, want team policy rejection", err, *calls)
+		}
+	})
+}
 func signature(raw []byte) string {
 	m := hmac.New(sha256.New, []byte("a-long-signing-secret"))
 	_, _ = m.Write(raw)

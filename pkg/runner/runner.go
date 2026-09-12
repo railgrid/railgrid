@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/faroshq/faros/pkg/runner/harness"
 )
@@ -152,6 +153,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	}
 	verificationCapabilities := append([]string(nil), cfg.Verification...)
 	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
+	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	if hasFetchRemote(cfg.Repositories) {
 		verificationCapabilities = appendUnique(verificationCapabilities, gitFetchCapability)
 	}
@@ -481,6 +483,18 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 	if request.SessionID == "" || request.SessionID != attempt.Receipt.SessionID {
 		return Receipt{}, protocolError(ErrorCheckpointUnavailable, false, "resume session does not match the attempt", &attempt.Receipt)
 	}
+	if request.ClarificationID != "" {
+		if !validClarificationID(request.ClarificationID) {
+			return Receipt{}, protocolError(ErrorInvalidRequest, false, "clarificationID is invalid", &attempt.Receipt)
+		}
+	}
+	if outstanding := attempt.Receipt.Clarification; outstanding != nil {
+		if request.ClarificationID == "" || request.ClarificationID != outstanding.ID {
+			return Receipt{}, protocolError(ErrorCheckpointUnavailable, false, "resume clarification does not match the outstanding question", &attempt.Receipt)
+		}
+	} else if request.ClarificationID != "" {
+		return Receipt{}, protocolError(ErrorCheckpointUnavailable, false, "attempt has no outstanding clarification", &attempt.Receipt)
+	}
 	if len(request.ApprovedInput) > 0 && !equivalentJSON(request.ApprovedInput, attempt.Start.ApprovedInput) {
 		return Receipt{}, protocolError(ErrorForbidden, false, "resume cannot amend approved input", &attempt.Receipt)
 	}
@@ -506,6 +520,7 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 	attempt.CancelPending = false
 	attempt.Receipt.Phase = PhaseAccepted
 	attempt.Receipt.Blocker = ""
+	attempt.Receipt.Clarification = nil
 	attempt.Receipt.LastError = nil
 	attempt.Receipt.UpdatedAt = eventNow()
 	if _, err := r.appendEventLocked(request.AttemptID, EventAccepted, "resume accepted", nil); err != nil {
@@ -706,6 +721,15 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		r.mu.Unlock()
 		return
 	}
+	if result.Clarification != nil {
+		if Phase(result.Phase) != PhaseNeedsInput || !validHarnessClarification(result.Clarification) {
+			// A clarification is meaningful only as the result of a genuine
+			// needs-input interaction. Invalid or misplaced adapter data must not
+			// turn an auth, approval, error, or terminal blocker into a product
+			// question.
+			result.Clarification = nil
+		}
+	}
 	if attempt.LimitExceeded || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		blocker := attempt.Receipt.Blocker
 		if blocker == "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -812,6 +836,9 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 	case PhaseNeedsInput:
 		delete(r.running, attemptID)
 		delete(r.shutdown, attemptID)
+		if result.Clarification != nil {
+			attempt.Receipt.Clarification = clarificationFromHarness(result.Clarification)
+		}
 		r.finishLocked(attempt, PhaseNeedsInput, result.Blocker, nil)
 		r.mu.Unlock()
 	case PhaseFailed:
@@ -904,6 +931,9 @@ func (r *Runner) handleHarnessEvent(attemptID string, event harness.Event) error
 		if err := r.recordArtifactLocked(attempt, event.Data); err != nil {
 			return fail(err)
 		}
+	}
+	if event.Clarification != nil && isClarificationEvent(event.Type) && validHarnessClarification(event.Clarification) {
+		attempt.Receipt.Clarification = clarificationFromHarness(event.Clarification)
 	}
 	if err := r.persistLocked(); err != nil {
 		return fail(err)
@@ -1052,6 +1082,9 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 	}
 	attempt.Receipt.Phase = phase
 	attempt.Receipt.Blocker = blocker
+	if phase != PhaseNeedsInput {
+		attempt.Receipt.Clarification = nil
+	}
 	attempt.Receipt.UpdatedAt = eventNow()
 	if lastErr != nil && attempt.Receipt.LastError == nil {
 		attempt.Receipt.LastError = &Error{Code: ErrorUnavailable, Retryable: false, Message: lastErr.Error()}
@@ -1299,11 +1332,42 @@ func cloneStartRequest(request StartRequest) StartRequest {
 func receiptForResponse(receipt Receipt) Receipt {
 	receipt.Artifacts = append([]Artifact(nil), receipt.Artifacts...)
 	receipt.Resources = append([]string(nil), receipt.Resources...)
+	receipt.Clarification = cloneClarification(receipt.Clarification)
 	if receipt.LastError != nil {
 		lastErr := *receipt.LastError
 		receipt.LastError = &lastErr
 	}
 	return receipt
+}
+
+func cloneClarification(value *Clarification) *Clarification {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func validHarnessClarification(value *harness.Clarification) bool {
+	if value == nil || !validClarificationID(value.ID) {
+		return false
+	}
+	return utf8.ValidString(value.Text) && strings.TrimSpace(value.Text) != "" && len(value.Text) <= maxMessageBytes
+}
+
+func validClarificationID(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && len(value) <= maxIdentifierBytes && utf8.ValidString(value) && !strings.ContainsAny(value, " \t\r\n")
+}
+
+func isClarificationEvent(eventType string) bool {
+	return eventType == EventNeedsInput || eventType == "item/tool/requestUserInput"
+}
+
+func clarificationFromHarness(value *harness.Clarification) *Clarification {
+	if value == nil {
+		return nil
+	}
+	return &Clarification{ID: value.ID, Text: value.Text}
 }
 
 func boundedMessage(value string) string {

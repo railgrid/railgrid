@@ -6,6 +6,16 @@ Human and machine callers author the same immutable Operation resources; the
 provider reconciles them against Linear and stores observed outcomes in status.
 Uncertain writes remain explicit and are never automatically replayed.
 
+The Operation API supports the read action `replies`. It takes an `issueID` and
+`commentID`, validates that the parent comment belongs to the requested issue
+and an allowed team, and returns the existing bounded comment `nodes` and
+`pageInfo` shape. The implementation reads Linear's native `Comment.children`
+connection, with stable comment IDs, parent IDs, issue IDs, author metadata,
+and timestamps. It does not treat an unfiltered issue comment list as a
+threaded-reply fallback. Read pagination remains explicit through `first` and
+`after`; operation results are durable and uncertain writes stay
+operator-reconcilable.
+
 The provider discovers tenant APIs through its APIExportEndpointSlice. It reads
 referenced Secrets through its declared Secret-get claim, with Connection team
 policy applied to issue operations and webhook events. Portal and MCP command
