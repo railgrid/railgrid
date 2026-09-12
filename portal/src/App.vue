@@ -132,9 +132,14 @@ watch(
   },
 )
 
-watch(() => [routeContext.state, route.params.orgID, route.params.workspaceID], () => {
-  if (routeContext.state === 'ready' && !scopeBlocked.value) void providers.load(tenant.orgUUID)
-})
+// Router navigation replaces params even within the same workspace. Compare
+// each source value so ordinary page changes do not reload the provider catalog.
+watch(
+  [() => routeContext.state, () => route.params.orgID, () => route.params.workspaceID],
+  () => {
+    if (routeContext.state === 'ready' && !scopeBlocked.value) void providers.load(tenant.orgUUID)
+  },
+)
 
 // Tenant → auth bridge: the shell's workspace switcher changes the active
 // workspace in the tenant store, but every provider request to

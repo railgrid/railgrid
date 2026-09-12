@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import ts from 'typescript'
+import { computed, nextTick, shallowReactive, watch } from 'vue'
 import { createServer } from 'vite'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
@@ -297,4 +301,70 @@ test('a later guard rejection restores the committed context', async () => {
   assert.equal(router.currentRoute.value.fullPath, resource)
   assert.equal(tenant.workspaceUUID, W)
   assert.equal(context.blocksRoute(router.currentRoute.value.path, false), false)
+})
+
+// Execute the shell's actual watcher so this test also catches regressions in
+// its watch-source shape without mounting unrelated terminal/toast components.
+function installShellProviderWatcher({ router, context, tenant }, loads) {
+  const source = readFileSync(new URL('../App.vue', import.meta.url), 'utf8')
+    .split('<script setup lang="ts">')[1].split('</script>')[0]
+  const script = ts.createSourceFile('App.ts', source, ts.ScriptTarget.Latest, true)
+  const statement = script.statements.find(node =>
+    ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) &&
+    node.expression.expression.getText(script) === 'watch' &&
+    node.expression.arguments[0].getText(script).includes('routeContext.state') &&
+    node.expression.arguments[0].getText(script).includes('route.params.orgID'))
+  assert.ok(statement, 'shell provider context watcher exists')
+  // useRoute exposes reactive getters into the router's current route.
+  const route = shallowReactive({
+    get params() { return router.currentRoute.value.params },
+  })
+  return runInNewContext(statement.getText(script), {
+    watch, route, routeContext: context, tenant,
+    scopeBlocked: computed(() => context.blocksRoute(router.currentRoute.value.path, false)),
+    providers: { load: org => { loads.push(org) } },
+  })
+}
+
+test('shell provider loading ignores same-scope navigation but follows authority changes', async () => {
+  const state = setup()
+  const { router, context } = state
+  const loads = []
+  const stop = installShellProviderWatcher(state, loads)
+  try {
+    await router.push(resource)
+    await nextTick()
+    assert.ok(loads.length > 0, 'initial scope loads providers')
+    loads.length = 0
+    const authorityReads = state.calls.length
+    for (const destination of [
+      `/${O}/${W}/providers/infrastructure/instances/another`,
+      `/${O}/${W}/providers/code/repositories`,
+      `/${O}/${W}/providers/code/repositories?tab=activity`,
+      `/${O}/${W}/providers/code/repositories?tab=activity#latest`,
+    ]) {
+      await router.push(destination)
+      await nextTick()
+      assert.deepEqual(loads, [], `no provider reload for ${destination}`)
+    }
+    for (const direction of [-1, 1]) {
+      await new Promise(resolve => {
+        const remove = router.afterEach(() => { remove(); resolve() })
+        router.go(direction)
+      })
+      await nextTick()
+      assert.deepEqual(loads, [], 'history navigation preserves provider state')
+    }
+    assert.equal(state.calls.length, authorityReads, 'same scope reuses verified authority')
+    await router.push(`/${O}/${B}/providers/code/repositories`)
+    await nextTick()
+    assert.ok(loads.length > 0, 'workspace switch loads providers')
+    loads.length = 0
+    context.invalidate()
+    await context.resolve({ orgUUID: O, workspaceUUID: B })
+    await nextTick()
+    assert.ok(loads.length > 0, 'revalidated authority loads providers')
+  } finally {
+    stop()
+  }
 })
