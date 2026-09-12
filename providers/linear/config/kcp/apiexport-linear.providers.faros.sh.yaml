@@ -6,17 +6,17 @@ spec:
   resources:
   - group: linear.providers.faros.sh
     name: connections
-    schema: v260911-8ec7b4c3.connections.linear.providers.faros.sh
+    schema: v260912-0c922d1f.connections.linear.providers.faros.sh
     storage:
       crd: {}
   - group: linear.providers.faros.sh
     name: events
-    schema: v260911-8ec7b4c3.events.linear.providers.faros.sh
+    schema: v260912-0c922d1f.events.linear.providers.faros.sh
     storage:
       crd: {}
   - group: linear.providers.faros.sh
     name: operations
-    schema: v260912-55471e4f.operations.linear.providers.faros.sh
+    schema: v260912-0c922d1f.operations.linear.providers.faros.sh
     storage:
       crd: {}
 status: {}

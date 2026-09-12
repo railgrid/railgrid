@@ -12,12 +12,12 @@ const facts = computed(() => {
   const r = resource.value; if (!r) return [];
   const spec = r.spec || {};
   if (props.kind === 'connections') return [
-    ['Namespace', session.namespace], ['Secret reference', (spec.apiKeySecretRef as { name?: string })?.name || '—'],
+    ['Secret namespace', (spec.apiKeySecretRef as { namespace?: string })?.namespace || 'default'], ['Secret reference', (spec.apiKeySecretRef as { name?: string })?.name || '—'],
     ['Allowed teams', (spec.teams as { id: string }[] | undefined)?.map(t => t.id).join(', ') || 'All accessible teams'],
     ['Checked at', r.status?.checkedAt || '—'], ['Message', r.status?.message || '—'],
   ];
   const keys = props.kind === 'operations' ? ['connection', 'action', 'teamID', 'issueID', 'query', 'after', 'first', 'title', 'description', 'stateID', 'body', 'since'] : ['connection', 'type', 'action', 'deliveryID', 'entityID', 'issueID', 'teamID', 'receivedAt', 'expiresAt'];
-  return [['Namespace', session.namespace], ...keys.filter(k => spec[k] !== undefined && spec[k] !== '').map(k => [k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()), String(spec[k])]), ['Message', r.status?.message || '—'], ...(props.kind === 'operations' ? [['Started', r.status?.startedAt || '—'], ['Completed', r.status?.completedAt || '—']] : [])];
+  return [...keys.filter(k => spec[k] !== undefined && spec[k] !== '').map(k => [k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()), String(spec[k])]), ['Message', r.status?.message || '—'], ...(props.kind === 'operations' ? [['Started', r.status?.startedAt || '—'], ['Completed', r.status?.completedAt || '—']] : [])];
 });
 function load() { void read.run(api => api.get(props.kind, props.name), result => { resource.value = result; }); }
 function browse() { session.selection.connection = props.name; session.selection.team = ''; session.navigate('issues'); }
@@ -30,7 +30,7 @@ onMounted(load);
     <div class="linear-detail-content">
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div v-for="[label, value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl></ResourceSectionCard>
     <ResourceSectionCard v-if="kind === 'connections' && resource" title="Team access"><ConnectionPolicy :key="resource.metadata.resourceVersion" :resource="resource" @saved="resource = $event" /></ResourceSectionCard>
-    <button v-if="kind === 'connections' && session.draft.returnToIssue" class="k-btn k-btn--primary" @click="session.navigate('create/issue')">Return to issue draft</button>
+    <button v-if="kind === 'connections' && session.draft.returnToIssue" class="k-btn k-btn--primary" @click="session.navigate('issues/create')">Return to issue draft</button>
     <ResourceSectionCard v-if="resource?.status?.result" title="Result"><pre class="linear-result">{{ JSON.stringify(resource.status.result, null, 2) }}</pre></ResourceSectionCard>
     </div>
   </ResourcePage>

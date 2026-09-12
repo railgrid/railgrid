@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260911-8ec7b4c3.connections.linear.providers.faros.sh
+  name: v260912-0c922d1f.connections.linear.providers.faros.sh
 spec:
   group: linear.providers.faros.sh
   names:
@@ -9,7 +9,7 @@ spec:
     listKind: ConnectionList
     plural: connections
     singular: connection
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.ready
@@ -46,6 +46,13 @@ spec:
                 name:
                   minLength: 1
                   type: string
+                namespace:
+                  default: default
+                  description: Namespace of the Secret in the same tenant workspace.
+                    Defaults to default.
+                  maxLength: 63
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                  type: string
               required:
               - name
               type: object
@@ -65,6 +72,13 @@ spec:
                     name:
                       minLength: 1
                       type: string
+                    namespace:
+                      default: default
+                      description: Namespace of the Secret in the same tenant workspace.
+                        Defaults to default.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
                   required:
                   - name
                   type: object
@@ -74,7 +88,7 @@ spec:
               - signingSecretRef
               type: object
             teams:
-              description: Empty allows every team accessible to the key. Namespace
+              description: Empty allows every team accessible to the key. Workspace
                 administrators own this policy.
               items:
                 properties:

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260911-8ec7b4c3.events.linear.providers.faros.sh
+  name: v260912-0c922d1f.events.linear.providers.faros.sh
 spec:
   group: linear.providers.faros.sh
   names:
@@ -9,7 +9,7 @@ spec:
     listKind: EventList
     plural: events
     singular: event
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

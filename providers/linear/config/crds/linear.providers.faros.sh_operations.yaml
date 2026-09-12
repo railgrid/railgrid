@@ -12,7 +12,7 @@ spec:
     listKind: OperationList
     plural: operations
     singular: operation
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.action

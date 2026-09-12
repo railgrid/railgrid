@@ -63,8 +63,8 @@ func object(t *testing.T, v any) *unstructured.Unstructured {
 func setup(t *testing.T) (Engine, *unstructured.Unstructured) {
 	t.Helper()
 	title := "approved"
-	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", Namespace: "default", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}, Teams: []api.TeamReference{{ID: "allowed"}}, Subscription: &api.Subscription{ID: "hook", OrganizationID: "organization", SigningSecretRef: api.SecretReference{Name: "key", Key: "signing"}}}}
-	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "default", UID: "op-one"}, Spec: api.OperationSpec{Connection: "linear", Action: "createIssue", TeamID: "allowed", Title: &title}}
+	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}, Teams: []api.TeamReference{{ID: "allowed"}}, Subscription: &api.Subscription{ID: "hook", OrganizationID: "organization", SigningSecretRef: api.SecretReference{Name: "key", Key: "signing"}}}}
+	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: "op-1", UID: "op-one"}, Spec: api.OperationSpec{Connection: "linear", Action: "createIssue", TeamID: "allowed", Title: &title}}
 	secret := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "key", "namespace": "default"}, "data": map[string]any{"apiKey": base64.StdEncoding.EncodeToString([]byte("api-key")), "signing": base64.StdEncoding.EncodeToString([]byte("a-long-signing-secret"))}}}
 	u := object(t, &op)
 	cl := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{Events: "EventList", Operations: "OperationList", Connections: "ConnectionList"}, object(t, &conn), u, secret)
@@ -177,18 +177,18 @@ func TestWebhookAuthenticityScopeDedupAndRetention(t *testing.T) {
 	now := time.Now().UTC()
 	e.Now = func() time.Time { return now }
 	raw := []byte(fmt.Sprintf(`{"action":"create","type":"Issue","organizationId":"organization","webhookId":"hook","webhookTimestamp":%d,"data":{"id":"issue","teamId":"allowed"}}`, now.UnixMilli()))
-	if err := e.Webhook(ctx, "default", "linear", signature(raw), "delivery", raw); err != nil {
+	if err := e.Webhook(ctx, "linear", signature(raw), "delivery", raw); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Webhook(ctx, "default", "linear", signature(raw), "different-header", raw); err != nil {
+	if err := e.Webhook(ctx, "linear", signature(raw), "different-header", raw); err != nil {
 		t.Fatal(err)
 	}
-	list, err := e.Client.Resource(Events).Namespace("default").List(ctx, metav1.ListOptions{})
+	list, err := e.Client.Resource(Events).List(ctx, metav1.ListOptions{})
 	if err != nil || len(list.Items) != 1 {
 		t.Fatalf("events=%v err=%v", list, err)
 	}
 	for _, bad := range [][]byte{[]byte(strings.Replace(string(raw), "allowed", "forbidden", 1)), []byte(strings.Replace(string(raw), "organization\"", "other\"", 1))} {
-		if err := e.Webhook(ctx, "default", "linear", signature(bad), "delivery", bad); err == nil {
+		if err := e.Webhook(ctx, "linear", signature(bad), "delivery", bad); err == nil {
 			t.Fatal("accepted foreign event")
 		}
 	}
@@ -202,12 +202,13 @@ func TestWebhookAuthenticityScopeDedupAndRetention(t *testing.T) {
 	if err = e.Prune(ctx, &list.Items[0]); err != nil {
 		t.Fatal(err)
 	}
-	list, err = e.Client.Resource(Events).Namespace("default").List(ctx, metav1.ListOptions{})
+	list, err = e.Client.Resource(Events).List(ctx, metav1.ListOptions{})
 	if err != nil || len(list.Items) != 0 {
 		t.Fatal("expired event retained")
 	}
-	if _, _, err := e.Connection(ctx, "other-namespace", "linear"); err == nil {
-		t.Fatal("cross namespace connection resolved")
+	otherWorkspace := Engine{Client: fake.NewSimpleDynamicClient(runtime.NewScheme())}
+	if _, _, err := otherWorkspace.Connection(ctx, "linear"); err == nil {
+		t.Fatal("connection resolved outside its workspace")
 	}
 }
 
@@ -239,5 +240,46 @@ func TestCompetingDispatchClaimsOnlyPermitOneWrite(t *testing.T) {
 	wg.Wait()
 	if writes.Load() != 1 {
 		t.Fatalf("writes=%d", writes.Load())
+	}
+}
+
+func TestCredentialNamespacesRemainExplicitWithinWorkspace(t *testing.T) {
+	ctx := context.Background()
+	e, _ := setup(t)
+	for _, namespace := range []string{"", "default"} {
+		key, err := e.Secret(ctx, api.SecretReference{Name: "key", Namespace: namespace})
+		if err != nil || key != "api-key" {
+			t.Fatalf("default credential: key present=%t err=%v", key != "", err)
+		}
+	}
+	secret := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "key", "namespace": "credentials"}, "data": map[string]any{"apiKey": base64.StdEncoding.EncodeToString([]byte("scoped-key"))}}}
+	if _, err := e.Client.Resource(secrets).Namespace("credentials").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	key, err := e.Secret(ctx, api.SecretReference{Name: "key", Namespace: "credentials"})
+	if err != nil || key != "scoped-key" {
+		t.Fatalf("explicit credential namespace not honored: %v", err)
+	}
+	if _, err := e.Secret(ctx, api.SecretReference{Name: "key", Namespace: "missing"}); err == nil {
+		t.Fatal("missing namespace fell back to another credential")
+	}
+	conn, err := e.Client.Resource(Connections).Get(ctx, "linear", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = unstructured.SetNestedField(conn.Object, "credentials", "spec", "apiKeySecretRef", "namespace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.Client.Resource(Connections).Update(ctx, conn, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, key, err = e.Connection(ctx, "linear")
+	if err != nil || key != "scoped-key" {
+		t.Fatalf("connection did not use referenced namespace: %v", err)
+	}
+	for _, action := range e.Client.(*fake.FakeDynamicClient).Actions() {
+		if action.GetResource().Group == api.GroupName && action.GetNamespace() != "" {
+			t.Fatalf("provider resource used namespace: %s", action.GetNamespace())
+		}
 	}
 }

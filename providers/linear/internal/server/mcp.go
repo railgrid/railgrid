@@ -25,15 +25,14 @@ func (s Server) MCP() http.Handler {
 			return nil, v, err
 		})
 		type Ref struct {
-			Namespace string `json:"namespace"`
-			Name      string `json:"name"`
+			Name string `json:"name"`
 		}
 		mcp.AddTool(srv, &mcp.Tool{Name: "linear_get_operation", Description: "Read the durable outcome of a submitted Linear command."}, func(ctx context.Context, _ *mcp.CallToolRequest, input Ref) (*mcp.CallToolResult, any, error) {
 			cl, err := s.Caller(r)
 			if err != nil {
 				return nil, nil, err
 			}
-			v, err := cl.Resource(engine.Operations).Namespace(input.Namespace).Get(ctx, input.Name, metav1.GetOptions{})
+			v, err := cl.Resource(engine.Operations).Get(ctx, input.Name, metav1.GetOptions{})
 			return nil, v, err
 		})
 		return srv

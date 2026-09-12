@@ -51,9 +51,13 @@ func (e Engine) API(key string) *linearapi.Client {
 func Decode(u *unstructured.Unstructured, out any) error {
 	return runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, out)
 }
-func (e Engine) Secret(ctx context.Context, ns string, ref api.SecretReference) (string, error) {
+func (e Engine) Secret(ctx context.Context, ref api.SecretReference) (string, error) {
 	if ref.Name == "" {
 		return "", errors.New("credential Secret reference required")
+	}
+	ns := ref.Namespace
+	if ns == "" {
+		ns = "default"
 	}
 	u, err := e.Client.Resource(secrets).Namespace(ns).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
@@ -70,9 +74,9 @@ func (e Engine) Secret(ctx context.Context, ns string, ref api.SecretReference) 
 	}
 	return string(b), nil
 }
-func (e Engine) Connection(ctx context.Context, ns, name string) (api.Connection, string, error) {
+func (e Engine) Connection(ctx context.Context, name string) (api.Connection, string, error) {
 	var conn api.Connection
-	u, err := e.Client.Resource(Connections).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	u, err := e.Client.Resource(Connections).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return conn, "", errors.New("connection unavailable")
 	}
@@ -82,7 +86,7 @@ func (e Engine) Connection(ctx context.Context, ns, name string) (api.Connection
 	if conn.DeletionTimestamp != nil {
 		return conn, "", errors.New("connection is deleting")
 	}
-	key, err := e.Secret(ctx, ns, conn.Spec.APIKeySecretRef)
+	key, err := e.Secret(ctx, conn.Spec.APIKeySecretRef)
 	return conn, key, err
 }
 func Allowed(c api.Connection, team string) bool {
@@ -107,7 +111,7 @@ func (e Engine) Probe(ctx context.Context, u *unstructured.Unstructured) error {
 	if c.Status.CheckedAt != nil && e.now().Sub(c.Status.CheckedAt.Time) < time.Minute && c.Generation == c.Status.ObservedGeneration {
 		return nil
 	}
-	key, err := e.Secret(ctx, c.Namespace, c.Spec.APIKeySecretRef)
+	key, err := e.Secret(ctx, c.Spec.APIKeySecretRef)
 	if err == nil {
 		_, err = e.API(key).Teams(ctx, 1, "")
 	}
@@ -121,7 +125,7 @@ func (e Engine) Probe(ctx context.Context, u *unstructured.Unstructured) error {
 		return err
 	}
 	u.Object["status"] = status
-	_, err = e.Client.Resource(Connections).Namespace(c.Namespace).UpdateStatus(ctx, u, metav1.UpdateOptions{})
+	_, err = e.Client.Resource(Connections).UpdateStatus(ctx, u, metav1.UpdateOptions{})
 	return err
 }
 func (e Engine) save(ctx context.Context, u *unstructured.Unstructured, s api.OperationStatus) error {
@@ -130,7 +134,7 @@ func (e Engine) save(ctx context.Context, u *unstructured.Unstructured, s api.Op
 		return err
 	}
 	u.Object["status"] = v
-	updated, err := e.Client.Resource(Operations).Namespace(u.GetNamespace()).UpdateStatus(ctx, u, metav1.UpdateOptions{})
+	updated, err := e.Client.Resource(Operations).UpdateStatus(ctx, u, metav1.UpdateOptions{})
 	if err == nil {
 		*u = *updated
 	}
@@ -156,7 +160,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 			}
 		}
 		u.SetFinalizers(finalizers)
-		_, err := e.Client.Resource(Operations).Namespace(op.Namespace).Update(ctx, u, metav1.UpdateOptions{})
+		_, err := e.Client.Resource(Operations).Update(ctx, u, metav1.UpdateOptions{})
 		return err
 	}
 	if op.Status.Phase == "Succeeded" || op.Status.Phase == "Failed" {
@@ -170,7 +174,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	}
 	if !found {
 		u.SetFinalizers(append(u.GetFinalizers(), finalizer))
-		updated, err := e.Client.Resource(Operations).Namespace(op.Namespace).Update(ctx, u, metav1.UpdateOptions{})
+		updated, err := e.Client.Resource(Operations).Update(ctx, u, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -184,7 +188,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 			return e.save(ctx, u, op.Status)
 		}
 	}
-	conn, key, err := e.Connection(ctx, op.Namespace, op.Spec.Connection)
+	conn, key, err := e.Connection(ctx, op.Spec.Connection)
 	if err != nil {
 		return e.finish(ctx, u, op.Status, nil, err, false)
 	}

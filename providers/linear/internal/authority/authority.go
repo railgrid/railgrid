@@ -62,7 +62,7 @@ func (a Authority) Client(endpoint, cluster string) (dynamic.Interface, error) {
 	cfg.Timeout = 20e9
 	return dynamic.NewForConfig(cfg)
 }
-func (a Authority) Tenant(ctx context.Context, cluster, namespace, connection string) (dynamic.Interface, error) {
+func (a Authority) Tenant(ctx context.Context, cluster, connection string) (dynamic.Interface, error) {
 	endpoints, err := a.Endpoints(ctx)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,7 @@ func (a Authority) Tenant(ctx context.Context, cluster, namespace, connection st
 		if err != nil {
 			return nil, err
 		}
-		_, err = c.Resource(schema.GroupVersionResource{Group: Export, Version: "v1alpha1", Resource: "connections"}).Namespace(namespace).Get(ctx, connection, metav1.GetOptions{})
+		_, err = c.Resource(schema.GroupVersionResource{Group: Export, Version: "v1alpha1", Resource: "connections"}).Get(ctx, connection, metav1.GetOptions{})
 		if err == nil {
 			return c, nil
 		}

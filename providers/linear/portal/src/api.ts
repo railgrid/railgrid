@@ -7,7 +7,7 @@ export type FarosContext = ProviderFetchContext & {
 export type Node = { id: string; name?: string; key?: string; identifier?: string; title?: string; description?: string; body?: string; createdAt?: string; editedAt?: string; parentId?: string; user?: { name?: string; displayName?: string }; botActor?: { name?: string; type?: string }; externalUser?: { id: string }; url?: string; updatedAt?: string; team?: Node; state?: Node };
 export type Result = Partial<Node> & { nodes?: Node[]; pageInfo?: { hasNextPage: boolean; endCursor: string } };
 export type Resource = {
-  metadata: { name: string; namespace?: string; resourceVersion?: string; creationTimestamp?: string };
+  metadata: { name: string; resourceVersion?: string; creationTimestamp?: string };
   spec?: Record<string, unknown>;
   status?: { ready?: boolean; phase?: string; message?: string; checkedAt?: string; startedAt?: string; completedAt?: string; result?: Result };
 };
@@ -24,7 +24,7 @@ export class OperationError extends Error {
   constructor(public operationName: string, message: string) { super(`${operationName}: ${message}`); }
 }
 export class API {
-  constructor(private context: FarosContext, private namespace: string, private signal: AbortSignal) {}
+  constructor(private context: FarosContext, private signal: AbortSignal) {}
   async request(path: string, body?: unknown, method = body ? 'POST' : 'GET') {
     this.signal.throwIfAborted();
     const response = await providerFetch(this.context)(path, { method, signal: this.signal, headers: body ? { 'Content-Type': method === 'PATCH' ? 'application/merge-patch+json' : 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
@@ -35,7 +35,7 @@ export class API {
     return value;
   }
   path(resource: string, name = '') {
-    return `/clusters/${encodeURIComponent(this.context.tenant || '')}/apis/linear.providers.faros.sh/v1alpha1/namespaces/${encodeURIComponent(this.namespace)}/${resource}${name ? '/' + encodeURIComponent(name) : ''}`;
+    return `/clusters/${encodeURIComponent(this.context.tenant || '')}/apis/linear.providers.faros.sh/v1alpha1/${resource}${name ? '/' + encodeURIComponent(name) : ''}`;
   }
   get(resource: string, name: string): Promise<Resource> { return this.request(this.path(resource, name)); }
   async list(resource: string): Promise<{ items: Resource[] }> {
@@ -56,19 +56,19 @@ export class API {
   updateTeams(name: string, teams: string[], resourceVersion: string): Promise<Resource> {
     return this.request(this.path('connections', name), { metadata: { resourceVersion }, spec: { teams: teams.map(id => ({ id })) } }, 'PATCH');
   }
-  async createConnection(name: string, secret: string, teams: string[]): Promise<Resource> {
-    const spec = { apiKeySecretRef: { name: secret, key: 'apiKey' }, teams: [...new Set(teams)].map(id => ({ id })) };
+  async createConnection(name: string, secret: string, teams: string[], secretNamespace = 'default'): Promise<Resource> {
+    const spec = { apiKeySecretRef: { name: secret, namespace: secretNamespace, key: 'apiKey' }, teams: [...new Set(teams)].map(id => ({ id })) };
     try {
-      return await this.request(this.path('connections'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Connection', metadata: { name, namespace: this.namespace }, spec });
+      return await this.request(this.path('connections'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Connection', metadata: { name }, spec });
     } catch (error) {
       this.signal.throwIfAborted();
       if (error instanceof RequestError && error.status < 500 && error.status !== 409) throw error;
       let existing: Resource;
       try { existing = await this.get('connections', name); }
       catch { this.signal.throwIfAborted(); throw new ConnectionError(name, 'Creation outcome unknown. Inspect this connection before submitting again.'); }
-      const ref = existing.spec?.apiKeySecretRef as { name?: string; key?: string } | undefined;
+      const ref = existing.spec?.apiKeySecretRef as { name?: string; key?: string; namespace?: string } | undefined;
       const ids = (existing.spec?.teams as { id: string }[] | undefined || []).map(t => t.id).sort();
-      if (ref?.name === secret && (ref.key || 'apiKey') === 'apiKey' && JSON.stringify(ids) === JSON.stringify(spec.teams.map(t => t.id).sort())) return existing;
+      if (ref?.name === secret && (ref.namespace || 'default') === secretNamespace && (ref.key || 'apiKey') === 'apiKey' && JSON.stringify(ids) === JSON.stringify(spec.teams.map(t => t.id).sort())) return existing;
       throw new ConnectionError(name, 'A connection with this name exists with different settings. Inspect it or choose another name.');
     }
   }
@@ -87,7 +87,7 @@ export class API {
   async operation(connection: string, fields: Record<string, unknown>): Promise<Result> {
     const name = 'op-' + crypto.randomUUID();
     try {
-      await this.request(this.path('operations'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Operation', metadata: { name, namespace: this.namespace }, spec: { connection, ...fields } });
+      await this.request(this.path('operations'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Operation', metadata: { name }, spec: { connection, ...fields } });
     } catch (error) {
       this.signal.throwIfAborted();
       throw new OperationError(name, `submission outcome unknown. Inspect Operations before repeating it. ${error instanceof Error ? error.message : ''}`);

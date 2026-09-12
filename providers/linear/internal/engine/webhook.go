@@ -69,11 +69,11 @@ func Verify(raw []byte, signature, key string, now time.Time) (Delivery, error) 
 	}
 	return d, nil
 }
-func (e Engine) Webhook(ctx context.Context, namespace, name, signature, deliveryID string, raw []byte) error {
+func (e Engine) Webhook(ctx context.Context, name, signature, deliveryID string, raw []byte) error {
 	if len(deliveryID) > 128 {
 		return errors.New("delivery identifier too long")
 	}
-	conn, key, err := e.Connection(ctx, namespace, name)
+	conn, key, err := e.Connection(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (e Engine) Webhook(ctx context.Context, namespace, name, signature, deliver
 	if sub == nil {
 		return errors.New("subscription not configured")
 	}
-	signing, err := e.Secret(ctx, namespace, sub.SigningSecretRef)
+	signing, err := e.Secret(ctx, sub.SigningSecretRef)
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func (e Engine) Webhook(ctx context.Context, namespace, name, signature, deliver
 	}
 	sum := sha256.Sum256(append([]byte(string(conn.UID)+"/"), canonical...))
 	eventName := "e-" + hex.EncodeToString(sum[:])[:48]
-	existing, err := e.Client.Resource(Events).Namespace(namespace).Get(ctx, eventName, metav1.GetOptions{})
+	existing, err := e.Client.Resource(Events).Get(ctx, eventName, metav1.GetOptions{})
 	if err == nil && existing != nil {
 		return nil
 	}
@@ -125,19 +125,19 @@ func (e Engine) Webhook(ctx context.Context, namespace, name, signature, deliver
 	}
 	// Fail closed at the retention cap. Linear retries on 503 and consumers can
 	// explicitly reconcile issue pages if a delivery window was missed.
-	list, err := e.Client.Resource(Events).Namespace(namespace).List(ctx, metav1.ListOptions{Limit: 1001})
+	list, err := e.Client.Resource(Events).List(ctx, metav1.ListOptions{Limit: 1001})
 	if err != nil {
 		return err
 	}
 	if len(list.Items) >= 1000 || list.GetContinue() != "" {
 		return errors.New("event retention capacity reached")
 	}
-	event := api.Event{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Event"}, ObjectMeta: metav1.ObjectMeta{Name: eventName, Namespace: namespace}, Spec: api.EventSpec{Connection: name, ConnectionUID: string(conn.UID), DeliveryID: deliveryID, Type: d.Type, Action: d.Action, EntityID: d.Data.ID, IssueID: d.Data.IssueID, TeamID: team, ReceivedAt: metav1.NewTime(e.now()), ExpiresAt: metav1.NewTime(e.now().Add(7 * 24 * time.Hour))}}
+	event := api.Event{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Event"}, ObjectMeta: metav1.ObjectMeta{Name: eventName}, Spec: api.EventSpec{Connection: name, ConnectionUID: string(conn.UID), DeliveryID: deliveryID, Type: d.Type, Action: d.Action, EntityID: d.Data.ID, IssueID: d.Data.IssueID, TeamID: team, ReceivedAt: metav1.NewTime(e.now()), ExpiresAt: metav1.NewTime(e.now().Add(7 * 24 * time.Hour))}}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&event)
 	if err != nil {
 		return err
 	}
-	_, err = e.Client.Resource(Events).Namespace(namespace).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
+	_, err = e.Client.Resource(Events).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		return nil
 	}
@@ -153,5 +153,5 @@ func (e Engine) Prune(ctx context.Context, u *unstructured.Unstructured) error {
 	}
 	uid := u.GetUID()
 	rv := u.GetResourceVersion()
-	return e.Client.Resource(Events).Namespace(u.GetNamespace()).Delete(ctx, u.GetName(), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
+	return e.Client.Resource(Events).Delete(ctx, u.GetName(), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
 }

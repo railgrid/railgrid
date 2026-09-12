@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { API, OperationError, type FarosContext } from './api';
 afterEach(() => vi.useRealTimers());
-function client(fetch: FarosContext['fetch'], signal = new AbortController().signal) { return new API({ tenant: 'workspace', fetch }, 'default', signal); }
+function client(fetch: FarosContext['fetch'], signal = new AbortController().signal) { return new API({ tenant: 'workspace', fetch }, signal); }
 it('follows resource continuation and discovery cursors without truncating inventories', async () => {
   const paths: string[] = [];
   const api = client(async input => { const path = String(input); paths.push(path); return Response.json(path.includes('continue=') ? { items: [{ metadata: { name: 'second' } }] } : { items: [{ metadata: { name: 'first' } }], metadata: { continue: 'next/a+b' } }); });
@@ -57,4 +57,12 @@ it('patches only team policy with a resource version concurrency fence', async (
   let sent: RequestInit | undefined; const api = client(async (_input, init) => { sent = init; return Response.json({}); });
   await api.updateTeams('linear', ['one'], '12'); expect(sent?.method).toBe('PATCH');
   expect(JSON.parse(String(sent?.body))).toEqual({ metadata: { resourceVersion: '12' }, spec: { teams: [{ id: 'one' }] } });
+});
+it('writes workspace resources while keeping credential namespace in the Secret reference', async () => {
+  const calls: { path: string; body: any }[] = [];
+  const api = client(async (input, init) => { const body = init?.body ? JSON.parse(String(init.body)) : {}; calls.push({ path: String(input), body }); return Response.json(body); });
+  await api.createConnection('linear', 'key', ['one'], 'credentials');
+  expect(calls[0].path).toBe('/clusters/workspace/apis/linear.providers.faros.sh/v1alpha1/connections');
+  expect(calls[0].body.metadata).toEqual({ name: 'linear' });
+  expect(calls[0].body.spec.apiKeySecretRef).toEqual({ name: 'key', namespace: 'credentials', key: 'apiKey' });
 });

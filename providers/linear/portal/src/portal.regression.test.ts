@@ -176,61 +176,49 @@ async function searchIssues(wrapper: VueWrapper, query = ''): Promise<void> {
 }
 
 describe('Linear canonical portal regressions', () => {
-  it('parses canonical routes and keeps reserved create/detail names addressable', () => {
-    expect(parseRoute('connections/namespaces/default')).toMatchObject({ page: 'connections', namespace: 'default' });
-    expect(parseRoute('connections/namespaces/default/detail/create')).toMatchObject({ page: 'connections', namespace: 'default', name: 'create' });
-    expect(parseRoute('connections/namespaces/default/detail/detail')).toMatchObject({ page: 'connections', namespace: 'default', name: 'detail' });
-    expect(parseRoute('connections/namespaces/default/detail/namespaces')).toMatchObject({ page: 'connections', namespace: 'default', name: 'namespaces' });
-    expect(parseRoute('issues/namespaces/default/detail/create/detail')).toMatchObject({ page: 'issues', namespace: 'default', connection: 'create', name: 'detail' });
-    expect(parseRoute('issues/namespaces/default/detail/namespaces/issue-1')).toMatchObject({ page: 'issues', namespace: 'default', connection: 'namespaces', name: 'issue-1' });
-    expect(parseRoute('connections/namespaces/default/create')).toMatchObject({ page: 'connections', namespace: 'default', create: 'connection' });
-    expect(parseRoute('issues/namespaces/default/create')).toMatchObject({ page: 'issues', namespace: 'default', create: 'issue' });
-    expect(parseRoute('connections/namespaces')).toMatchObject({ page: 'connections', name: 'namespaces' });
-    // The three-segment form reserves `namespaces/<namespace>` for the
-    // canonical collection route; legacy issue identities use issuePath's
-    // explicit detail marker when the connection is named "namespaces".
-    expect(parseRoute('issues/namespaces/issue-1')).toMatchObject({ page: 'issues', namespace: 'issue-1' });
-    expect(parseRoute('issues/namespaces/eng-1')).toMatchObject({ page: 'issues', namespace: 'eng-1' });
-    expect(parseRoute(issuePath('namespaces', 'issue-1'))).toMatchObject({ page: 'issues', connection: 'namespaces', name: 'issue-1' });
-    expect(parseRoute('namespaces/default/connections')).toMatchObject({ page: 'connections', namespace: 'default' });
-    expect(parseRoute('connections')).toMatchObject({ page: 'connections' });
-    expect(canonicalPath('default', resourcePath('connections', 'namespaces')))
-      .toBe('connections/namespaces/default/detail/namespaces');
-    expect(canonicalPath('default', issuePath('namespaces', 'default')))
-      .toBe('issues/namespaces/default/detail/namespaces/default');
+  it('uses workspace routes and treats reserved words as explicit resource identities', () => {
+    for (const name of ['create', 'detail', 'namespaces', 'conn/name']) {
+      expect(parseRoute(resourcePath('connections', name))).toEqual({ page: 'connections', name });
+      expect(parseRoute(issuePath(name, 'issue/id'))).toEqual({ page: 'issues', connection: name, name: 'issue/id' });
+    }
+    expect(parseRoute('connections/create')).toEqual({ page: 'connections', create: 'connection' });
+    expect(parseRoute('issues/create')).toEqual({ page: 'issues', create: 'issue' });
+    expect(parseRoute('connections/namespaces/default').invalid).toBe(true);
+    expect(parseRoute('namespaces/default/connections').invalid).toBe(true);
+    expect(canonicalPath(resourcePath('connections', 'namespaces'))).toBe('connections/detail/namespaces');
   });
 
   it('uses canonical host navigation for create, detail, issue detail, and Back', async () => {
     const f = fixture();
     const navigations: Navigation[] = [];
-    const wrapper = await render({ ...f.ctx, subPath: 'connections/namespaces/default' }, navigations);
+    const wrapper = await render({ ...f.ctx, subPath: 'connections' }, navigations);
 
     await clickText(wrapper, 'Add connection');
-    expect(navigations.at(-1)).toEqual({ path: 'connections/namespaces/default/create', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'connections/create', replace: false });
     await wrapper.get('a.k-back-action').trigger('click');
     await flushPromises();
-    expect(navigations.at(-1)).toEqual({ path: 'connections/namespaces/default', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'connections', replace: false });
 
     await clickText(wrapper, 'linear');
-    expect(navigations.at(-1)).toEqual({ path: 'connections/namespaces/default/detail/linear', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'connections/detail/linear', replace: false });
 
-    await wrapper.setProps({ ctx: { ...f.ctx, subPath: 'issues/namespaces/default' } });
+    await wrapper.setProps({ ctx: { ...f.ctx, subPath: 'issues' } });
     await flushPromises();
     await choose(wrapper, '#linear-connection', 'linear');
     await choose(wrapper, '#linear-team', 'Engineering');
     await searchIssues(wrapper);
     await clickText(wrapper, 'ENG-1');
-    expect(navigations.at(-1)).toEqual({ path: 'issues/namespaces/default/detail/linear/issue-1', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'issues/detail/linear/issue-1', replace: false });
 
     await wrapper.get('a.k-back-action').trigger('click');
     await flushPromises();
     await clickText(wrapper, 'Create issue');
-    expect(navigations.at(-1)).toEqual({ path: 'issues/namespaces/default/create', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'issues/create', replace: false });
   });
 
   it('refreshes the cached scope after creating a connection and browsing from its detail', async () => {
     const f = fixture([]);
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/namespaces/default' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues' });
 
     await clickText(wrapper, 'Add connection');
     await wrapper.get('#connection-name').setValue('new-connection');
@@ -249,7 +237,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('refreshes cached issues while preserving the query and page after a detail update', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/namespaces/default' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues' });
     await choose(wrapper, '#linear-connection', 'linear');
     await choose(wrapper, '#linear-team', 'Engineering');
     await searchIssues(wrapper, 'resource');
@@ -278,7 +266,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('refreshes cached issues after creation before returning from the new detail', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/namespaces/default' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues' });
     await choose(wrapper, '#linear-connection', 'linear');
     await choose(wrapper, '#linear-team', 'Engineering');
     await searchIssues(wrapper);
@@ -293,31 +281,18 @@ describe('Linear canonical portal regressions', () => {
     expect(wrapper.text()).toContain('New issue');
   });
 
-  it('restores the default namespace and scope when host history returns to bare connections', async () => {
-    const f = fixture();
-    const navigations: Navigation[] = [];
+  it('returns through host history without exposing a storage namespace selector', async () => {
+    const f = fixture(); const navigations: Navigation[] = [];
     const wrapper = await render({ ...f.ctx, subPath: 'connections' }, navigations);
-    expect((wrapper.get('#linear-namespace').element as HTMLInputElement).value).toBe('default');
-
-    await clickText(wrapper, 'Issues');
-    expect(navigations.at(-1)).toEqual({ path: 'issues/namespaces/default', replace: false });
-    await wrapper.get('#linear-namespace').setValue('team-a');
-    await wrapper.get('form.linear-namespace').trigger('submit');
-    await flushPromises();
-    expect(navigations.at(-1)).toEqual({ path: 'issues/namespaces/team-a', replace: true });
-
-    await wrapper.setProps({ ctx: { ...f.ctx, subPath: 'connections' } });
-    await flushPromises();
-    const connectionReads = f.calls.filter(call => call.path.includes('/connections?'));
-    expect({
-      namespace: (wrapper.get('#linear-namespace').element as HTMLInputElement).value,
-      path: connectionReads.at(-1)?.path,
-    }).toMatchObject({ namespace: 'default', path: expect.stringContaining('/namespaces/default/') });
+    expect(wrapper.find('#linear-namespace').exists()).toBe(false);
+    await clickText(wrapper, 'Issues'); expect(navigations.at(-1)?.path).toBe('issues');
+    await wrapper.setProps({ ctx: { ...f.ctx, subPath: 'connections' } }); await flushPromises();
+    expect(f.calls.filter(call => call.path.includes('/connections?')).at(-1)?.path).toBe('/clusters/workspace/apis/linear.providers.faros.sh/v1alpha1/connections?limit=100');
   });
 
   it('keeps the last issue page visible when activation refresh fails', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/namespaces/default' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues' });
     await choose(wrapper, '#linear-connection', 'linear');
     await choose(wrapper, '#linear-team', 'Engineering');
     await searchIssues(wrapper);
@@ -334,7 +309,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('does not expose a detail Retry action that cannot run during a delayed mutation', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/namespaces/default/detail/linear/issue-1' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1' });
     f.failNextIssueRead();
     await clickText(wrapper, 'Refresh');
     expect(wrapper.find('.k-resource-page__retry').exists()).toBe(true);

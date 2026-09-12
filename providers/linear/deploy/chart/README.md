@@ -38,7 +38,13 @@ reconciliation. Individual Connection readiness is separate and refreshed once
 per minute; operations fetch credentials afresh and do not trust cached readiness.
 
 For Linear deliveries, configure an external HTTPS ingress restricted to
-`/webhooks/`; supply the exact cluster/namespace/connection callback path in
+`/webhooks/`; supply the exact cluster/connection callback path in
 Linear. This chart does not create a public ingress or change Faros hub auth.
 Subscription/signing configuration belongs to the tenant Connection, not Helm
 values. API keys and signing secrets must never be committed or printed.
+
+Connections, Operations, and Events are cluster-scoped inside each bound tenant
+workspace. Only credential Secrets remain namespaced; API-key and webhook
+signing references each default their namespace to `default`. Event admission
+is limited to 1,000 retained events per tenant workspace. This experimental
+scope change has no backward-compatible API routes or resource migration.

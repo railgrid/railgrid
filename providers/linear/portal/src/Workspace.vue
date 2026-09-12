@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, provide, reactive, ref, watch } from 'vue';
+import { computed, nextTick, provide, reactive, ref, watch } from 'vue';
 import { Plug, ListTodo, Activity, Radio } from 'lucide-vue-next';
 import type { FarosContext } from './api';
 import { canonicalPath, type Route } from './routes';
@@ -19,55 +19,35 @@ watch(() => props.route, async () => {
   await nextTick();
   root.value?.dispatchEvent(new CustomEvent('faros-route-ready', { bubbles: true }));
 }, { flush: 'post', immediate: true });
-const namespace = ref(props.route.namespace || 'default');
-const namespaceDraft = ref(namespace.value);
-const epoch = ref(0);
-let controller = new AbortController();
 const draft = reactive({ title: '', description: '', stateID: '', returnToIssue: false });
 const selection = reactive({ connection: '', team: '', query: '' });
-function scopedPath(path: string) { return canonicalPath(namespace.value, path); }
+function scopedPath(path: string) { return canonicalPath(path); }
 function navigate(path: string, replace = false) { root.value?.dispatchEvent(new CustomEvent('faros-navigate', { bubbles: true, detail: { path: scopedPath(path), ...(replace ? { replace: true } : {}) } })); }
 function href(path: string) {
   const current = window.location.pathname;
   const prefix = current.match(/^(.*\/providers\/linear)(?:\/|$)/)?.[1] || '/ui/providers/linear';
   return `${prefix}/${scopedPath(path)}`;
 }
-watch(namespace, () => {
-  controller.abort(); controller = new AbortController(); epoch.value++;
-  Object.assign(draft, { title: '', description: '', stateID: '', returnToIssue: false });
-  Object.assign(selection, { connection: '', team: '', query: '' });
-}, { flush: 'sync' });
-watch(() => props.route.namespace, value => {
-  const nextNamespace = value || 'default';
-  if (nextNamespace !== namespace.value) namespace.value = nextNamespace;
-  namespaceDraft.value = nextNamespace;
-}, { flush: 'sync' });
-onBeforeUnmount(() => controller.abort());
-provide(sessionKey, { context: props.context, get namespace() { return namespace.value; }, get signal() { return AbortSignal.any([controller.signal, props.authoritySignal]); }, draft, selection, navigate, href });
+provide(sessionKey, { context: props.context, get signal() { return props.authoritySignal; }, draft, selection, navigate, href });
 const tabs = [{ id: 'connections', label: 'Connections', icon: Plug }, { id: 'issues', label: 'Issues', icon: ListTodo }, { id: 'operations', label: 'Operations', icon: Activity }, { id: 'events', label: 'Events', icon: Radio }];
 const collection = computed(() => !props.route.name && !props.route.create && !props.route.invalid);
-function changeNamespace() { namespace.value = namespaceDraft.value.trim() || 'default'; namespaceDraft.value = namespace.value; navigate(props.route.page, true); }
+
 </script>
 <template>
   <div ref="root" class="linear-app">
     <Tabs v-if="collection" :tabs="tabs" :active="route.page" aria-label="Linear provider sections" @select="navigate" />
-    <form v-if="collection" class="linear-namespace" @submit.prevent="changeNamespace">
-      <label for="linear-namespace">Namespace</label>
-      <input id="linear-namespace" v-model="namespaceDraft" class="k-input linear-namespace-input" required pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" maxlength="63">
-      <button class="k-btn k-btn--ghost" :disabled="namespaceDraft === namespace">Apply</button>
-    </form>
     <ResourceBackLink v-if="!collection" :href="href(route.page)" @back="navigate(route.page)">Back to {{ route.page }}</ResourceBackLink>
     <p v-if="route.invalid" role="alert">This Linear page was not found.</p>
     <template v-else>
-      <KeepAlive :key="epoch" :max="4">
+      <KeepAlive :max="4">
         <ConnectionsView v-if="collection && route.page === 'connections'" />
         <IssuesView v-else-if="collection && route.page === 'issues'" />
         <HistoryView v-else-if="collection" :key="route.page" :kind="route.page as 'operations' | 'events'" />
       </KeepAlive>
-      <ConnectionCreateView v-if="route.create === 'connection'" :key="`${epoch}:connection-create`" />
-      <IssueCreateView v-else-if="route.create === 'issue'" :key="`${epoch}:issue-create`" />
-      <IssueDetailView v-else-if="route.page === 'issues' && route.name" :key="`${epoch}:${route.connection}:${route.name}`" :connection="route.connection!" :id="route.name" />
-      <ResourceDetailView v-else-if="route.name" :key="`${epoch}:${route.page}:${route.name}`" :kind="route.page as 'connections' | 'operations' | 'events'" :name="route.name" />
+      <ConnectionCreateView v-if="route.create === 'connection'" :key="'connection-create'" />
+      <IssueCreateView v-else-if="route.create === 'issue'" :key="'issue-create'" />
+      <IssueDetailView v-else-if="route.page === 'issues' && route.name" :key="`${route.connection}:${route.name}`" :connection="route.connection!" :id="route.name" />
+      <ResourceDetailView v-else-if="route.name" :key="`${route.page}:${route.name}`" :kind="route.page as 'connections' | 'operations' | 'events'" :name="route.name" />
     </template>
   </div>
 </template>

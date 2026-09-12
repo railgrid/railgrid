@@ -1,8 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: linear-consumer
-  namespace: default
 rules:
   - apiGroups: [linear.providers.faros.sh]
     resources: [connections, events]
@@ -10,5 +9,6 @@ rules:
   - apiGroups: [linear.providers.faros.sh]
     resources: [operations]
     verbs: [get, list, watch, create]
-# Bind this role to the intended callers separately. Namespace administrators
-# manage Connection policy and Secrets. Do not grant consumers status writes.
+# Bind this ClusterRole with a ClusterRoleBinding in the tenant workspace.
+# Operation creators can use every Connection in that workspace. Workspace
+# administrators manage Connection policy and Secrets. Do not grant consumers status writes.

@@ -54,8 +54,8 @@ async function choose(w: VueWrapper, id: string, label: string) {
 describe('Linear resource journeys', () => {
   it('routes encoded resource identities and keeps authority stable through token rotation', () => {
     expect(parseRoute('')).toEqual({ page: 'connections' });
-    expect(parseRoute('namespaces/another/operations/op-1')).toEqual({ page: 'operations', name: 'op-1', namespace: 'another' });
-    expect(parseRoute('create/connection').create).toBe('connection');
+    expect(parseRoute('operations/detail/op-1')).toEqual({ page: 'operations', name: 'op-1' });
+    expect(parseRoute('connections/create').create).toBe('connection');
     expect(parseRoute(issuePath('conn/name', 'issue/id'))).toEqual({ page: 'issues', connection: 'conn/name', name: 'issue/id' });
     expect(parseRoute('issues/%oops/x').invalid).toBe(true);
     expect(authorityKey({ tenant: 'a', token: 'old' })).toBe(authorityKey({ tenant: 'a', token: 'new' }));
@@ -68,7 +68,7 @@ describe('Linear resource journeys', () => {
     await w.get('#connection-name').setValue('new-connection'); await w.get('#connection-secret').setValue('existing-secret'); await w.get('#connection-teams').setValue('team, other');
     await w.get('form').trigger('submit'); await flushPromises();
     const sent = f.calls.find(c => c.body?.kind === 'Connection')!.body;
-    expect(sent.spec).toEqual({ apiKeySecretRef: { name: 'existing-secret', key: 'apiKey' }, teams: [{ id: 'team' }, { id: 'other' }] });
+    expect(sent.spec).toEqual({ apiKeySecretRef: { name: 'existing-secret', namespace: 'default', key: 'apiKey' }, teams: [{ id: 'team' }, { id: 'other' }] });
     expect(w.text()).toContain('new-connection'); expect(w.text()).toContain('Secret reference');
     await w.get('a').trigger('click'); await flushPromises(); expect(w.find('nav').exists()).toBe(true);
   });
@@ -88,7 +88,7 @@ describe('Linear resource journeys', () => {
     await w.get('a').trigger('click'); await flushPromises(); expect(w.text()).toContain('ENG-2'); expect((w.get('#linear-query').element as HTMLInputElement).value).toBe('resource');
   });
   it('creates issues with discovered workflow states and links uncertain writes without replay', async () => {
-    const f = fixture(); const w = await render({ ...f.ctx, subPath: 'create/issue' });
+    const f = fixture(); const w = await render({ ...f.ctx, subPath: 'issues/create' });
     await choose(w, '#linear-connection', 'linear'); await choose(w, '#linear-team', 'Engineering'); await choose(w, '#issue-state', 'Done');
     await w.get('#issue-title').setValue('New issue'); f.setUncertain(); await w.get('form').trigger('submit'); await flushPromises();
     const creates = f.calls.filter(c => c.body?.spec.action === 'createIssue'); expect(creates).toHaveLength(1); expect(creates[0].body.spec.stateID).toBe('done');
@@ -97,11 +97,11 @@ describe('Linear resource journeys', () => {
     await link.trigger('click'); await flushPromises(); expect(w.text()).toContain('Uncertain');
     expect(f.calls.filter(c => c.body?.spec.action === 'createIssue')).toHaveLength(1);
   });
-  it('keeps stale rows on refresh failure and clears namespace and workspace data', async () => {
+  it('keeps stale rows on refresh failure and clears workspace data', async () => {
     const f = fixture(); const w = await render(f.ctx); f.setFail(); await click(w, 'Refresh');
     expect(w.text()).toContain('linear'); expect(w.text()).toContain('503');
-    await w.get('#linear-namespace').setValue('another'); await w.get('form').trigger('submit'); await flushPromises();
-    expect(w.findAll('button.k-table-resource-link')).toHaveLength(0); expect(f.calls.at(-1)!.path).toContain('/namespaces/another/');
+    await w.setProps({ ctx: { ...f.ctx, tenant: 'another' } }); await flushPromises();
+    expect(w.findAll('button.k-table-resource-link')).toHaveLength(0); expect(f.calls.at(-1)!.path).toContain('/clusters/another/');
     await w.setProps({ ctx: { ...f.ctx, tenant: '' } }); await flushPromises(); expect(w.text()).toBe('Select a workspace to use Linear.');
   });
   it('fences late responses from a previous user even if transport ignores cancellation', async () => {
@@ -123,19 +123,19 @@ it('edits populated values, explicitly clears descriptions, and presents comment
   await click(w, 'Read comments'); expect(w.text()).toContain('Reviewer'); expect(w.text()).toContain('Edited'); expect(w.text()).toContain('Reply to comment parent');
   expect(w.findAll('a').find(a => a.text() === 'View in Linear')!.attributes('rel')).toContain('noopener');
 });
-it('retains the issue draft across connection setup and fences it on namespace change', async () => {
-  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'create/issue' });
+it('retains the issue draft across connection setup and fences it on workspace change', async () => {
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'issues/create' });
   await w.get('#issue-title').setValue('Draft to keep'); await w.get('#issue-description').setValue('Details to keep');
-  await w.setProps({ ctx: { ...f.ctx, subPath: 'create/connection' } }); await flushPromises();
+  await w.setProps({ ctx: { ...f.ctx, subPath: 'connections/create' } }); await flushPromises();
   await click(w, 'Return to issue draft');
   expect((w.get('#issue-title').element as HTMLInputElement).value).toBe('Draft to keep');
   expect((w.get('#issue-description').element as HTMLTextAreaElement).value).toBe('Details to keep');
-  await w.setProps({ ctx: { ...f.ctx, subPath: 'issues/namespaces/other/create' } }); await flushPromises();
+  await w.setProps({ ctx: { ...f.ctx, tenant: 'other', subPath: 'issues/create' } }); await flushPromises();
   expect((w.get('#issue-title').element as HTMLInputElement).value).toBe('');
 });
 
 it('does not interpret empty comma-separated team IDs as permission to allow all teams', async () => {
-  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'create/connection' });
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'connections/create' });
   await w.get('#connection-name').setValue('scoped'); await w.get('#connection-secret').setValue('key'); await w.get('#connection-teams').setValue(' , , ');
   await w.get('form').trigger('submit'); await flushPromises();
   expect(f.calls.filter(c => c.body?.kind === 'Connection')).toHaveLength(0);

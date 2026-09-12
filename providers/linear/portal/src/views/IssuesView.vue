@@ -27,7 +27,7 @@ function open(row: Record<string, unknown>) { session.navigate(issuePath(session
 </script>
 <template>
   <section class="linear-page">
-    <header class="linear-page-head"><div><h2 class="linear-page-title">Issues</h2><p class="linear-page-meta">Browse and update issues in a connected Linear team.</p></div><button class="k-btn k-btn--primary" @click="session.navigate('create/issue')">Create issue</button></header>
+    <header class="linear-page-head"><div><h2 class="linear-page-title">Issues</h2><p class="linear-page-meta">Browse and update issues in a connected Linear team.</p></div><button class="k-btn k-btn--primary" @click="session.navigate('issues/create')">Create issue</button></header>
     <IssueScope />
     <form class="linear-fields" @submit.prevent="search()"><label for="linear-query">Title contains<input id="linear-query" v-model="session.selection.query" class="k-input" placeholder="Search issues…" maxlength="1000"></label><button class="k-btn k-btn--ghost" :disabled="read.state.loading || !session.selection.team || !session.selection.connection">{{ read.state.loading ? 'Searching…' : 'Search' }}</button></form>
     <TaskFeedback :task="read.state" />

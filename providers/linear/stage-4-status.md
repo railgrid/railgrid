@@ -1,5 +1,9 @@
 # Stage 4 status — 2026-09-11
 
+Historical evidence for the initial namespaced implementation. The current
+workspace-scoped API and callback contracts are documented in [README.md](README.md);
+these earlier runtime checks do not verify the subsequent scope change.
+
 Implemented locally on `codex/gru-stage-4`, stacked above the prior Gru branch.
 Nothing pushed, no PR, tag, registry publication, or source mirror created.
 Private Gru code remains unchanged. Its Stage 3 Mac acceptance gate stays pending.

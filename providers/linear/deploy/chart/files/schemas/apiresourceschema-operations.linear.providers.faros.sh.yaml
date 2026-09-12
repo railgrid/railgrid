@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260912-55471e4f.operations.linear.providers.faros.sh
+  name: v260912-0c922d1f.operations.linear.providers.faros.sh
 spec:
   group: linear.providers.faros.sh
   names:
@@ -9,7 +9,7 @@ spec:
     listKind: OperationList
     plural: operations
     singular: operation
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.action

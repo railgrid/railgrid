@@ -35,7 +35,7 @@ onActivated(() => {
     </div>
     <TaskFeedback :task="read.state" /><button v-if="read.state.error" class="k-btn k-btn--ghost" type="button" @click="load">Retry connections</button>
     <TaskFeedback :task="discovery.state" />
-    <p v-if="read.state.loaded && !connections.length" class="linear-notice">No connections in {{ session.namespace }}. <button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click="session.navigate('create/connection')">Add connection</button></p>
+    <p v-if="read.state.loaded && !connections.length" class="linear-notice">No connections in this workspace. <button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click="session.navigate('connections/create')">Add connection</button></p>
     <p v-if="discovery.state.loaded && !teams.length" class="linear-notice">No accessible teams were found for this connection.</p>
   </div>
 </template>

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -69,5 +70,47 @@ func TestChartClaimsAndIdentitySeparation(t *testing.T) {
 	}
 	if _, err = exec.Command("helm", "template", "linear", "deploy/chart", "--set", "replicaCount=2").CombinedOutput(); err == nil {
 		t.Fatal("multi-replica configuration accepted")
+	}
+}
+
+func TestGeneratedResourcesAreWorkspaceScoped(t *testing.T) {
+	for _, resource := range []string{"connections", "operations", "events"} {
+		var previousSpec any
+		for _, path := range []string{"config/crds/linear.providers.faros.sh_" + resource + ".yaml", "config/kcp/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml", "deploy/chart/files/schemas/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml"} {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var obj map[string]any
+			if err = yaml.Unmarshal(raw, &obj); err != nil {
+				t.Fatal(err)
+			}
+			spec := obj["spec"].(map[string]any)
+			if spec["scope"] != "Cluster" {
+				t.Fatalf("%s scope=%v", path, spec["scope"])
+			}
+			if strings.Contains(path, "config/kcp/") {
+				previousSpec = spec
+			}
+			if strings.Contains(path, "deploy/chart/") && !reflect.DeepEqual(previousSpec, spec) {
+				t.Fatalf("chart schema drift for %s", resource)
+			}
+			if resource == "connections" {
+				version := spec["versions"].([]any)[0].(map[string]any)
+				schema := version["schema"].(map[string]any)
+				if obj["kind"] == "CustomResourceDefinition" {
+					schema = schema["openAPIV3Schema"].(map[string]any)
+				}
+				properties := schema["properties"].(map[string]any)["spec"].(map[string]any)["properties"].(map[string]any)
+				apiKey := properties["apiKeySecretRef"].(map[string]any)
+				signing := properties["subscription"].(map[string]any)["properties"].(map[string]any)["signingSecretRef"].(map[string]any)
+				for _, ref := range []map[string]any{apiKey, signing} {
+					namespace := ref["properties"].(map[string]any)["namespace"].(map[string]any)
+					if namespace["default"] != "default" {
+						t.Fatalf("%s secret namespace default missing", path)
+					}
+				}
+			}
+		}
 	}
 }

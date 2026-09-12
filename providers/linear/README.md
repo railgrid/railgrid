@@ -11,7 +11,7 @@ requires credentials and is tracked in [stage-4-status.md](stage-4-status.md).
 
 ## APIs and authorization
 
-The `linear.providers.faros.sh` APIExport serves three namespaced resources:
+The `linear.providers.faros.sh` APIExport serves three cluster-scoped resources within each tenant workspace:
 
 | Resource | Purpose |
 | --- | --- |
@@ -19,11 +19,13 @@ The `linear.providers.faros.sh` APIExport serves three namespaced resources:
 | `Operation` | Immutable, explicit read/write intent with a durable result or uncertain outcome in status. |
 | `Event` | Deduplicated notification, with connection UID and retention deadline. |
 
-A Connection can only reference Secrets in its own namespace. The export claims
+A Connection references Secrets in the same tenant workspace. Each Secret reference
+contains a namespace, defaulting to `default`; Secrets remain namespaced. The export claims
 `get` on Secrets; no Secret listing or credential values are exposed in results.
 Creating Connections is an administrative capability: it selects credentials and
-team policy. Operation authors may use any Connection they can reference in their
-namespace. Separate namespaces or RBAC roles when users need different access.
+team policy. Permission to create Operations authorizes using any Connection in that workspace.
+Connection read permissions are not a separate invocation gate. Use separate Faros
+workspaces when groups need isolated credentials or Linear access.
 Consumers should receive read-only access to Events and Operation status; only
 the provider should author Events and status. See [consumer-rbac.yaml](examples/consumer-rbac.yaml).
 
@@ -39,8 +41,7 @@ KRM command path at `/mcp`; they require tenant bearer authentication and
 1. Install and initialize the provider using the [chart](deploy/chart/README.md)
    or the local Make targets. Enable its export in a Faros workspace and accept
    its Secret read claim.
-2. Create a Secret named `linear-api` with an `apiKey` entry in the chosen
-   namespace, using your credential manager. Never put actual keys in Git.
+2. Create a Secret named `linear-api` with an `apiKey` entry in the Secret reference namespace (`default` unless specified), using your credential manager. Never put actual keys in Git.
 3. Apply [connection.yaml](examples/connection.yaml), replacing the allowed team
    UUID. Use the portal's **Discover teams** command to find UUIDs accessible to
    the key; an empty team list allows every team the key can access.
@@ -64,7 +65,6 @@ apiVersion: linear.providers.faros.sh/v1alpha1
 kind: Operation
 metadata:
   name: inspect-issue-001
-  namespace: default
 spec:
   connection: linear
   action: issue
@@ -95,7 +95,7 @@ deletion from removing recovery evidence; do not remove it to retry a write.
 Configure a Linear webhook for Issue and Comment resources, restricted to the
 appropriate teams. Supply its ID, organization UUID and a separate signing
 Secret reference on the Connection. The receiver is
-`POST /webhooks/<logical-cluster>/<namespace>/<connection>` on this provider.
+`POST /webhooks/<logical-cluster>/<connection>` on this provider.
 Expose **only that path** through your HTTPS ingress. The authenticated hub
 provider proxy is not an anonymous webhook ingress; do not disable hub auth.
 
@@ -107,7 +107,7 @@ to the Connection UID; changing an unsigned delivery header cannot bypass it.
 Events contain identifiers, not copies of private issue/comment bodies.
 
 Events are retained for seven days, with admission backpressure at 1,000 records
-per namespace. Single-replica deployment is required. Watch/list the Event API
+per tenant workspace. Single-replica deployment is required. Watch/list the Event API
 using Kubernetes resourceVersion/continue cursors. Resume watches from your last
 resourceVersion, and relist after a `410 Gone`; retention is not an infinite log.
 Repeated watch/list reads permit replay during retention. Expired notifications
@@ -152,16 +152,24 @@ The Linear portal uses shared Vue PortalKit resource layouts with Connections,
 Issues, Operations, and Events sections. Connection and issue creation use
 dedicated routes; issue details expose updates and comments. Credentials remain
 Secret references, and pending or uncertain operations link to their detail page
-without replaying writes. Canonical collection routes use
-`<collection>/namespaces/<namespace>`; detail routes append `/detail/<name>`, or
-`/detail/<connection>/<id>` for issues. Creation uses
-`connections/namespaces/<namespace>/create` and
-`issues/namespaces/<namespace>/create`. Bare provider routes use the `default`
-namespace, while legacy namespace-first routes such as
-`namespaces/<namespace>/<collection>` remain supported. Returning from an issue
+without replaying writes. Collection routes are `connections`, `issues`, `operations`, and `events`.
+Resource details use `<collection>/detail/<name>`; issue details use
+`issues/detail/<connection>/<id>`. Creation routes are `connections/create` and
+`issues/create`. Namespace-scoped API and portal routes are not supported.
+Returning from an issue
 detail refreshes the cached collection while preserving its selected scope,
 query filter, and current page.
 
 Build with `make build-linear-provider-portal` and verify behavior and types with
 `make test-linear-portal`. The portal still registers `faros-provider-linear` and
-ships the classic-script `main.js` bundle. No backend API changes are required.
+ships the classic-script `main.js` bundle. Connections, Operations, and Events use workspace-wide API endpoints. Credential
+namespace selection is confined to connection setup and Secret-reference details.
+
+## Scope and breaking-change policy
+
+The workspace is the user-facing and authorization scope. Resource names are
+unique across that workspace. The experimental namespaced API is replaced
+without a compatibility layer or data migration. Development installations
+using the previous schemas must recreate their disposable bindings/resources;
+never resubmit old Operation records as fresh commands. Credential Secrets
+retain their namespace and are referenced explicitly by the new Connection.

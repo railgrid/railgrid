@@ -14,6 +14,11 @@ import (
 )
 
 type SecretReference struct {
+	// Namespace of the Secret in the same tenant workspace. Defaults to default.
+	// +kubebuilder:default=default
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Namespace string `json:"namespace,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 	// +kubebuilder:default=apiKey
@@ -33,7 +38,7 @@ type Subscription struct {
 }
 type ConnectionSpec struct {
 	APIKeySecretRef SecretReference `json:"apiKeySecretRef"`
-	// Empty allows every team accessible to the key. Namespace administrators own this policy.
+	// Empty allows every team accessible to the key. Workspace administrators own this policy.
 	// +kubebuilder:validation:MaxItems=100
 	Teams        []TeamReference `json:"teams,omitempty"`
 	Subscription *Subscription   `json:"subscription,omitempty"`
@@ -49,7 +54,7 @@ type ConnectionStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 type Connection struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -111,7 +116,7 @@ type OperationStatus struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Action",type=string,JSONPath=`.spec.action`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 type Operation struct {
@@ -148,7 +153,7 @@ type EventSpec struct {
 // Event is a Linear provider API resource.
 //
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Cluster
 type Event struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

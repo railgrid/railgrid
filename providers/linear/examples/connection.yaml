@@ -2,9 +2,9 @@ apiVersion: linear.providers.faros.sh/v1alpha1
 kind: Connection
 metadata:
   name: linear
-  namespace: default
 spec:
   apiKeySecretRef:
+    namespace: default
     name: linear-api
     key: apiKey
   teams:

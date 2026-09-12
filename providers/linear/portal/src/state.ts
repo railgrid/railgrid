@@ -2,7 +2,6 @@ import { inject, onActivated, onBeforeUnmount, onDeactivated, reactive, type Inj
 import { API, ConnectionError, OperationError, type FarosContext } from './api';
 export type Session = {
   context: () => FarosContext;
-  namespace: string;
   signal: AbortSignal;
   draft: { title: string; description: string; stateID: string; returnToIssue: boolean };
   selection: { connection: string; team: string; query: string };
@@ -27,7 +26,7 @@ export function useTask() {
     const signal = AbortSignal.any([active.signal, session.signal]);
     state.loading = true; state.error = ''; state.operationName = ''; state.connectionName = ''; state.message = '';
     try {
-      const result = await work(new API(session.context(), session.namespace, signal));
+      const result = await work(new API(session.context(), signal));
       signal.throwIfAborted();
       commit(result); state.loaded = true;
     } catch (error) {

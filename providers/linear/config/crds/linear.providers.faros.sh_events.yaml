@@ -12,7 +12,7 @@ spec:
     listKind: EventList
     plural: events
     singular: event
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:

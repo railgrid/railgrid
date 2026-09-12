@@ -36,9 +36,8 @@ type Server struct {
 	Insecure  bool
 }
 type Submit struct {
-	Namespace string            `json:"namespace"`
-	Name      string            `json:"name"`
-	Spec      api.OperationSpec `json:"spec"`
+	Name string            `json:"name"`
+	Spec api.OperationSpec `json:"spec"`
 }
 
 func (s Server) Caller(r *http.Request) (dynamic.Interface, error) {
@@ -50,19 +49,19 @@ func (s Server) Caller(r *http.Request) (dynamic.Interface, error) {
 	return tenantaccess.NewDynamicClient(s.HubURL, cluster, strings.TrimPrefix(auth, "Bearer "), s.Insecure)
 }
 func (s Server) Submit(ctx context.Context, r *http.Request, input Submit) (any, error) {
-	if !namePattern.MatchString(input.Namespace) || !namePattern.MatchString(input.Name) {
-		return nil, errors.New("namespace and stable operation name required")
+	if !namePattern.MatchString(input.Name) {
+		return nil, errors.New("stable operation name required")
 	}
 	client, err := s.Caller(r)
 	if err != nil {
 		return nil, err
 	}
-	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: input.Name, Namespace: input.Namespace}, Spec: input.Spec}
+	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: input.Name}, Spec: input.Spec}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&op)
 	if err != nil {
 		return nil, err
 	}
-	return client.Resource(engine.Operations).Namespace(input.Namespace).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
+	return client.Resource(engine.Operations).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
 }
 func (s Server) Routes(mux *http.ServeMux) {
 	var webhookMu sync.Mutex
@@ -75,16 +74,16 @@ func (s Server) Routes(mux *http.ServeMux) {
 		}
 		out, err := s.Submit(r.Context(), r, input)
 		if err != nil {
-			http.Error(w, "operation rejected; check namespace permissions and unique operation name", 400)
+			http.Error(w, "operation rejected; check workspace permissions and unique operation name", 400)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(202)
 		_ = json.NewEncoder(w).Encode(out)
 	})
-	mux.HandleFunc("POST /webhooks/{cluster}/{namespace}/{connection}", func(w http.ResponseWriter, r *http.Request) {
-		cluster, ns, conn := r.PathValue("cluster"), r.PathValue("namespace"), r.PathValue("connection")
-		if !namePattern.MatchString(cluster) || !namePattern.MatchString(ns) || !namePattern.MatchString(conn) {
+	mux.HandleFunc("POST /webhooks/{cluster}/{connection}", func(w http.ResponseWriter, r *http.Request) {
+		cluster, conn := r.PathValue("cluster"), r.PathValue("connection")
+		if !namePattern.MatchString(cluster) || !namePattern.MatchString(conn) {
 			http.Error(w, "invalid route", 400)
 			return
 		}
@@ -93,7 +92,7 @@ func (s Server) Routes(mux *http.ServeMux) {
 			http.Error(w, "invalid payload", http.StatusRequestEntityTooLarge)
 			return
 		}
-		client, err := s.Authority.Tenant(r.Context(), cluster, ns, conn)
+		client, err := s.Authority.Tenant(r.Context(), cluster, conn)
 		if err != nil {
 			http.Error(w, "subscription unavailable", http.StatusServiceUnavailable)
 			return
@@ -101,7 +100,7 @@ func (s Server) Routes(mux *http.ServeMux) {
 		e := engine.Engine{Client: client}
 		webhookMu.Lock()
 		defer webhookMu.Unlock()
-		if err = e.Webhook(r.Context(), ns, conn, r.Header.Get("Linear-Signature"), r.Header.Get("Linear-Delivery"), raw); err != nil {
+		if err = e.Webhook(r.Context(), conn, r.Header.Get("Linear-Signature"), r.Header.Get("Linear-Delivery"), raw); err != nil {
 			http.Error(w, "delivery not accepted", http.StatusServiceUnavailable)
 			return
 		}

@@ -12,7 +12,7 @@ spec:
     listKind: ConnectionList
     plural: connections
     singular: connection
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.ready
@@ -50,6 +50,13 @@ spec:
                   name:
                     minLength: 1
                     type: string
+                  namespace:
+                    default: default
+                    description: Namespace of the Secret in the same tenant workspace.
+                      Defaults to default.
+                    maxLength: 63
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
                 required:
                 - name
                 type: object
@@ -69,6 +76,13 @@ spec:
                       name:
                         minLength: 1
                         type: string
+                      namespace:
+                        default: default
+                        description: Namespace of the Secret in the same tenant workspace.
+                          Defaults to default.
+                        maxLength: 63
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                        type: string
                     required:
                     - name
                     type: object
@@ -78,7 +92,7 @@ spec:
                 - signingSecretRef
                 type: object
               teams:
-                description: Empty allows every team accessible to the key. Namespace
+                description: Empty allows every team accessible to the key. Workspace
                   administrators own this policy.
                 items:
                   properties:
