@@ -9,7 +9,7 @@ import ResourceTable from '../portalkit/ResourceTable.vue';
 const session = useSession(); const read = useTask(); const issues = ref<Node[]>([]);
 const cursor = ref(''); const hasNext = ref(false); const cursors = ref<string[]>(['']); const index = ref(0);
 const rows = computed(() => issues.value.map(i => ({ id: i.id, identifier: i.identifier || i.id, title: i.title, state: i.state?.name || '—', updated: i.updatedAt || '—' })));
-const columns = [{ key: 'identifier', label: 'Issue' }, { key: 'title', label: 'Title' }, { key: 'state', label: 'State' }, { key: 'updated', label: 'Updated' }];
+const columns = [{ key: 'identifier', label: 'Issue' }, { key: 'title', label: 'Title', primary: true }, { key: 'state', label: 'State' }, { key: 'updated', label: 'Updated' }];
 function search(page = 0) {
   if (!session.selection.connection || !session.selection.team) return;
   const after = page === 0 ? '' : cursors.value[page];

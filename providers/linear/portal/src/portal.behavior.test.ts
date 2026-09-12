@@ -7,7 +7,7 @@ import type { FarosContext } from './api';
 
 const wrappers: VueWrapper[] = [];
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); document.body.innerHTML = ''; });
-const connection = { metadata: { name: 'linear' }, spec: { apiKeySecretRef: { name: 'linear-key' }, teams: [{ id: 'team' }] }, status: { ready: true } };
+const connection = { metadata: { name: 'linear', resourceVersion: '1' }, spec: { apiKeySecretRef: { name: 'linear-key' }, teams: [{ id: 'team' }] }, status: { ready: true } };
 const issue = { id: 'issue', identifier: 'ENG-1', title: 'Ship resource pages', description: '<script>not executable</script>', team: { id: 'team', name: 'Engineering' }, state: { id: 'todo', name: 'Todo' } };
 function fixture() {
   const calls: { path: string; body?: any }[] = [];
@@ -26,8 +26,8 @@ function fixture() {
       const result = s.action === 'teams' ? { nodes: [{ id: 'team', name: 'Engineering', key: 'ENG' }] }
         : s.action === 'states' ? { nodes: [{ id: 'done', name: 'Done' }] }
         : s.action === 'issues' ? { nodes: [s.after ? { ...issue, id: 'second', identifier: 'ENG-2' } : issue], pageInfo: { hasNextPage: !s.after, endCursor: 'next' } }
-        : s.action === 'comments' ? { nodes: [{ id: 'comment', body: 'Reviewed' }] }
-        : { ...issue, ...(s.title ? { title: s.title } : {}) };
+        : s.action === 'comments' ? { nodes: [{ id: 'comment', body: 'Reviewed', user: { displayName: 'Reviewer' }, createdAt: '2026-09-12T12:00:00Z', editedAt: '2026-09-12T13:00:00Z', parentId: 'parent', url: 'https://linear.app/team/issue/ENG-1#comment' }] }
+        : { ...issue, ...(s.title ? { title: s.title } : {}), ...(s.description !== undefined ? { description: s.description } : {}) };
       return Response.json({ ...op, status: { phase: uncertain ? 'Uncertain' : 'Succeeded', result, message: uncertain ? 'Check Linear before repeating' : '' } });
     }
     if (path.includes('/connections/')) return Response.json(connection);
@@ -111,4 +111,44 @@ describe('Linear resource journeys', () => {
     resolve(Response.json({ items: [{ metadata: { name: 'private-old-resource' } }] })); await flushPromises();
     expect(w.text()).not.toContain('private-old-resource'); expect(w.text()).toContain('Connect Linear');
   });
+});
+
+it('edits populated values, explicitly clears descriptions, and presents comment context', async () => {
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: issuePath('linear', 'issue') });
+  expect((w.get('#issue-description').element as HTMLTextAreaElement).value).toBe(issue.description);
+  await w.get('#issue-description').setValue(''); await w.findAll('form')[0].trigger('submit'); await flushPromises();
+  const sent = f.calls.find(c => c.body?.spec.action === 'updateIssue')!.body.spec;
+  expect(sent.description).toBe(''); expect(sent).not.toHaveProperty('title');
+  expect(w.text()).toContain('No description.');
+  await click(w, 'Read comments'); expect(w.text()).toContain('Reviewer'); expect(w.text()).toContain('Edited'); expect(w.text()).toContain('Reply to comment parent');
+  expect(w.findAll('a').find(a => a.text() === 'View in Linear')!.attributes('rel')).toContain('noopener');
+});
+it('retains the issue draft across connection setup and fences it on namespace change', async () => {
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'create/issue' });
+  await w.get('#issue-title').setValue('Draft to keep'); await w.get('#issue-description').setValue('Details to keep');
+  await w.setProps({ ctx: { ...f.ctx, subPath: 'create/connection' } }); await flushPromises();
+  await click(w, 'Return to issue draft');
+  expect((w.get('#issue-title').element as HTMLInputElement).value).toBe('Draft to keep');
+  expect((w.get('#issue-description').element as HTMLTextAreaElement).value).toBe('Details to keep');
+  await w.setProps({ ctx: { ...f.ctx, subPath: 'issues/namespaces/other/create' } }); await flushPromises();
+  expect((w.get('#issue-title').element as HTMLInputElement).value).toBe('');
+});
+
+it('does not interpret empty comma-separated team IDs as permission to allow all teams', async () => {
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: 'create/connection' });
+  await w.get('#connection-name').setValue('scoped'); await w.get('#connection-secret').setValue('key'); await w.get('#connection-teams').setValue(' , , ');
+  await w.get('form').trigger('submit'); await flushPromises();
+  expect(f.calls.filter(c => c.body?.kind === 'Connection')).toHaveLength(0);
+});
+it('loads bounded history pages through shared navigation without eagerly following continuation', async () => {
+  const paths: string[] = [];
+  const w = await render({ tenant: 'workspace', subPath: 'operations', fetch: async input => {
+    const path = String(input); paths.push(path);
+    return Response.json({ items: [{ metadata: { name: path.includes('continue=') ? 'op-second' : 'op-first' }, status: { phase: 'Uncertain', message: 'Inspect before retrying' } }], metadata: { continue: path.includes('continue=') ? '' : 'next/cursor' } });
+  } });
+  expect(paths).toHaveLength(1); expect(paths[0]).toContain('limit=10'); expect(w.text()).toContain('op-first');
+  await w.get('button[aria-label="Next page"]').trigger('click'); await flushPromises();
+  expect(paths).toHaveLength(2); expect(paths[1]).toContain('continue=next%2Fcursor'); expect(w.text()).toContain('op-second');
+  await w.get('button[aria-label="Previous page"]').trigger('click'); await flushPromises();
+  expect(paths).toHaveLength(3); expect(paths[2]).not.toContain('continue='); expect(w.text()).toContain('op-first');
 });

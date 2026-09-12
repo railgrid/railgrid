@@ -64,6 +64,11 @@ The current shared implementations demonstrate the contract:
   and `ConfirmDialog.vue` own complete names/roles, keyboard handling, and focus
   return for their respective rich controls. Use them instead of recreating
   partial ARIA behavior.
+- Provider route focus is owned by the host through `providerRouteFocus.ts`.
+  Opt-in providers announce `faros-route-ready` after rendering a destination;
+  Linear uses this contract. The host focuses a destination heading or restores
+  a still-mounted cached source control. This does not establish adoption by
+  other providers or authenticated host acceptance.
 - `ResourcePage.vue` exposes `aria-busy`, polite loading/refresh announcements,
   and an assertive initial error with a retry control. Its read-state contract
   is detailed in [resource reads](../patterns/resource-reads.md).

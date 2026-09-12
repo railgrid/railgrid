@@ -15,10 +15,12 @@ import {
   invalidateProviderScript,
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
+import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
 import { createProviderContext } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 
+const routeFocus = createProviderRouteFocus()
 const routeContext = useRouteContextStore()
 const { scopePath } = useScopedNavigation()
 
@@ -230,7 +232,10 @@ watch(
 // can clear its fragment while leaving subPath unchanged.
 watch(
   () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath, router.currentRoute.value.hash] as const,
-  () => pushContext(),
+  () => {
+    if (elementRef.value) routeFocus.before(elementRef.value, props.subPath || '')
+    pushContext()
+  },
 )
 
 // Workspace/org switch: AppLayout keys its slot wrapper on auth.clusterName,
@@ -276,10 +281,12 @@ function isCurrentMount(generation: number, name: string): boolean {
 function bindMountEvents() {
   const mount = mountRef.value
   if (!mount || boundMount === mount) return
+  boundMount?.removeEventListener('faros-route-ready', onRouteReady)
   boundMount?.removeEventListener('faros-navigate', onNavigate)
   boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
   boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = mount
+  boundMount.addEventListener('faros-route-ready', onRouteReady)
   boundMount.addEventListener('faros-navigate', onNavigate)
   boundMount.addEventListener('faros-layout-change', onLayoutChange)
   boundMount.addEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
@@ -289,7 +296,9 @@ function bindMountEvents() {
 // The explicit cleanup matters when access is revoked while the route
 // component itself remains mounted (for example, during a workspace switch).
 function clearMountedElement() {
+  routeFocus.clear()
   mountGeneration++
+  boundMount?.removeEventListener('faros-route-ready', onRouteReady)
   boundMount?.removeEventListener('faros-navigate', onNavigate)
   boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
   boundMount?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
@@ -312,6 +321,7 @@ function mountElement(name: string, generation?: number): boolean {
   const el = document.createElement(tagFor(name)) as HTMLElement
   mountRef.value.appendChild(el)
   elementRef.value = el
+  routeFocus.before(el, props.subPath || '')
   bindMountEvents()
   pushContext()
   return true
@@ -411,6 +421,11 @@ function pushContext() {
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
     },
   )
+}
+
+function onRouteReady(e: Event) {
+  const element = elementRef.value
+  if (element && element.contains(e.target as Node)) routeFocus.ready(element)
 }
 
 // Bubble faros-navigate CustomEvents up into Vue Router.

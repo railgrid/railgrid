@@ -235,6 +235,7 @@ describe('Linear canonical portal regressions', () => {
     await clickText(wrapper, 'Add connection');
     await wrapper.get('#connection-name').setValue('new-connection');
     await wrapper.get('#connection-secret').setValue('new-secret');
+    await wrapper.get('#connection-teams').setValue('team');
     await wrapper.get('form').trigger('submit');
     await flushPromises();
     await clickText(wrapper, 'Browse issues');

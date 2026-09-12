@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { toRefs } from 'vue';
 import { useSession, useTask, updateFields } from '../state';
 import { issuePath } from '../routes';
 import IssueScope from '../components/IssueScope.vue';
@@ -7,10 +7,12 @@ import IssueFields from '../components/IssueFields.vue';
 import TaskFeedback from '../components/TaskFeedback.vue';
 import CreateGuidance from '../portalkit/CreateGuidance.vue';
 const session = useSession(); const task = useTask();
-const title = ref(''); const description = ref(''); const stateID = ref('');
+const { title, description, stateID } = toRefs(session.draft);
+session.draft.returnToIssue = true;
 function submit() {
   if (!session.selection.connection || !session.selection.team || !title.value.trim()) return;
   void task.run(api => api.operation(session.selection.connection, { action: 'createIssue', teamID: session.selection.team, ...updateFields(title.value, description.value, stateID.value) }), result => {
+    Object.assign(session.draft, { title: '', description: '', stateID: '', returnToIssue: false });
     if (result.id) session.navigate(issuePath(session.selection.connection, result.id), true);
     else { task.state.message = 'Issue creation succeeded. Search Issues to locate the result.'; title.value = ''; description.value = ''; }
   });

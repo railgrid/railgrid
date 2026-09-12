@@ -4,6 +4,7 @@ import type { Resource } from '../api';
 import { useSession, useTask } from '../state';
 import ResourcePage from '../portalkit/ResourcePage.vue';
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue';
+import ConnectionPolicy from '../components/ConnectionPolicy.vue';
 import StatusBadge from '../portalkit/StatusBadge.vue';
 const props = defineProps<{ kind: 'connections' | 'operations' | 'events'; name: string }>();
 const session = useSession(); const read = useTask(); const resource = ref<Resource>();
@@ -28,6 +29,8 @@ onMounted(load);
     <template #status><StatusBadge v-if="resource && kind !== 'events'" :status="kind === 'connections' ? resource.status?.ready ? 'Ready' : 'Not ready' : resource.status?.phase || 'Pending'" /></template>
     <div class="linear-detail-content">
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div v-for="[label, value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl></ResourceSectionCard>
+    <ResourceSectionCard v-if="kind === 'connections' && resource" title="Team access"><ConnectionPolicy :key="resource.metadata.resourceVersion" :resource="resource" @saved="resource = $event" /></ResourceSectionCard>
+    <button v-if="kind === 'connections' && session.draft.returnToIssue" class="k-btn k-btn--primary" @click="session.navigate('create/issue')">Return to issue draft</button>
     <ResourceSectionCard v-if="resource?.status?.result" title="Result"><pre class="linear-result">{{ JSON.stringify(resource.status.result, null, 2) }}</pre></ResourceSectionCard>
     </div>
   </ResourcePage>

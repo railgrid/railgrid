@@ -1,9 +1,10 @@
 import { inject, onActivated, onBeforeUnmount, onDeactivated, reactive, type InjectionKey } from 'vue';
-import { API, OperationError, type FarosContext } from './api';
+import { API, ConnectionError, OperationError, type FarosContext } from './api';
 export type Session = {
   context: () => FarosContext;
   namespace: string;
   signal: AbortSignal;
+  draft: { title: string; description: string; stateID: string; returnToIssue: boolean };
   selection: { connection: string; team: string; query: string };
   navigate: (path: string, replace?: boolean) => void;
   href: (path: string) => string;
@@ -13,7 +14,7 @@ export function useSession() { const session = inject(sessionKey); if (!session)
 /** Each view owns cancellation; the session also fences authority changes synchronously. */
 export function useTask() {
   const session = useSession();
-  const state = reactive({ loading: false, loaded: false, error: '', operationName: '', message: '' });
+  const state = reactive({ loading: false, loaded: false, error: '', operationName: '', connectionName: '', message: '' });
   let controller = new AbortController();
   let activeView = true;
   function cancel() { controller.abort(); controller = new AbortController(); state.loading = false; }
@@ -24,7 +25,7 @@ export function useTask() {
     if (!activeView || state.loading) return;
     const active = controller;
     const signal = AbortSignal.any([active.signal, session.signal]);
-    state.loading = true; state.error = ''; state.operationName = ''; state.message = '';
+    state.loading = true; state.error = ''; state.operationName = ''; state.connectionName = ''; state.message = '';
     try {
       const result = await work(new API(session.context(), session.namespace, signal));
       signal.throwIfAborted();
@@ -32,11 +33,12 @@ export function useTask() {
     } catch (error) {
       if (!signal.aborted) {
         state.error = error instanceof Error ? error.message : 'Request failed.';
+        if (error instanceof ConnectionError) state.connectionName = error.connectionName;
         if (error instanceof OperationError) state.operationName = error.operationName;
       }
     } finally { if (controller === active) state.loading = false; }
   }
-  function reset() { cancel(); state.loaded = false; state.error = ''; state.operationName = ''; state.message = ''; }
+  function reset() { cancel(); state.loaded = false; state.error = ''; state.operationName = ''; state.connectionName = ''; state.message = ''; }
   return { state, run, cancel, reset };
 }
 export function updateFields(title: string, description: string, stateID: string): Record<string, string> {

@@ -38,3 +38,23 @@ it('stops polling on abort without replaying a write', async () => {
   await vi.advanceTimersByTimeAsync(0); controller.abort(); await vi.runAllTimersAsync();
   expect((await result).name).toBe('AbortError'); expect(posts).toBe(1);
 });
+
+it('recovers a lost connection response only when the exact named intent matches', async () => {
+  let posts = 0; const paths: string[] = [];
+  const api = client(async (input, init) => {
+    paths.push(String(input)); if (init?.method === 'POST') { posts++; throw new Error('lost response'); }
+    return Response.json({ metadata: { name: 'linear' }, spec: { apiKeySecretRef: { name: 'key', key: 'apiKey' }, teams: [{ id: 'one' }] } });
+  });
+  expect((await api.createConnection('linear', 'key', ['one'])).metadata.name).toBe('linear');
+  expect(posts).toBe(1); expect(paths[1]).toMatch(/connections\/linear$/);
+  await expect(api.createConnection('linear', 'different', ['one'])).rejects.toThrow('different settings');
+});
+it('bounds history reads to one page and preserves opaque cursors', async () => {
+  const paths: string[] = []; const api = client(async input => { paths.push(String(input)); return Response.json({ items: [], metadata: { continue: 'next' } }); });
+  await api.listPage('operations', 10, 'a/b+c'); expect(paths).toHaveLength(1); expect(paths[0]).toContain('limit=10&continue=a%2Fb%2Bc');
+});
+it('patches only team policy with a resource version concurrency fence', async () => {
+  let sent: RequestInit | undefined; const api = client(async (_input, init) => { sent = init; return Response.json({}); });
+  await api.updateTeams('linear', ['one'], '12'); expect(sent?.method).toBe('PATCH');
+  expect(JSON.parse(String(sent?.body))).toEqual({ metadata: { resourceVersion: '12' }, spec: { teams: [{ id: 'one' }] } });
+});

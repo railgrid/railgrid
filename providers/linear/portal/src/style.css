@@ -32,3 +32,9 @@ faros-provider-linear .linear-sr-only { position: absolute; width: 1px; height: 
   faros-provider-linear .linear-page-head > .linear-actions { width: 100%; }
   faros-provider-linear .linear-fields > label { flex-basis: 100%; }
 }
+
+faros-provider-linear .linear-comment-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--color-text-secondary); }
+faros-provider-linear .linear-comment-meta a { color: var(--color-accent); }
+faros-provider-linear .linear-history-summary { min-inline-size: min(260px, 65vw); display: grid; justify-items: start; gap: 6px; white-space: normal; }
+faros-provider-linear .linear-history-message { white-space: normal; overflow-wrap: anywhere; }
+faros-provider-linear .linear-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, provide, reactive, ref, watch } from 'vue';
 import { Plug, ListTodo, Activity, Radio } from 'lucide-vue-next';
 import type { FarosContext } from './api';
 import { canonicalPath, type Route } from './routes';
@@ -15,10 +15,15 @@ import IssueDetailView from './views/IssueDetailView.vue';
 import HistoryView from './views/HistoryView.vue';
 const props = defineProps<{ context: () => FarosContext; authoritySignal: AbortSignal; route: Route }>();
 const root = ref<HTMLElement>();
+watch(() => props.route, async () => {
+  await nextTick();
+  root.value?.dispatchEvent(new CustomEvent('faros-route-ready', { bubbles: true }));
+}, { flush: 'post', immediate: true });
 const namespace = ref(props.route.namespace || 'default');
 const namespaceDraft = ref(namespace.value);
 const epoch = ref(0);
 let controller = new AbortController();
+const draft = reactive({ title: '', description: '', stateID: '', returnToIssue: false });
 const selection = reactive({ connection: '', team: '', query: '' });
 function scopedPath(path: string) { return canonicalPath(namespace.value, path); }
 function navigate(path: string, replace = false) { root.value?.dispatchEvent(new CustomEvent('faros-navigate', { bubbles: true, detail: { path: scopedPath(path), ...(replace ? { replace: true } : {}) } })); }
@@ -29,6 +34,7 @@ function href(path: string) {
 }
 watch(namespace, () => {
   controller.abort(); controller = new AbortController(); epoch.value++;
+  Object.assign(draft, { title: '', description: '', stateID: '', returnToIssue: false });
   Object.assign(selection, { connection: '', team: '', query: '' });
 }, { flush: 'sync' });
 watch(() => props.route.namespace, value => {
@@ -37,7 +43,7 @@ watch(() => props.route.namespace, value => {
   namespaceDraft.value = nextNamespace;
 }, { flush: 'sync' });
 onBeforeUnmount(() => controller.abort());
-provide(sessionKey, { context: props.context, get namespace() { return namespace.value; }, get signal() { return AbortSignal.any([controller.signal, props.authoritySignal]); }, selection, navigate, href });
+provide(sessionKey, { context: props.context, get namespace() { return namespace.value; }, get signal() { return AbortSignal.any([controller.signal, props.authoritySignal]); }, draft, selection, navigate, href });
 const tabs = [{ id: 'connections', label: 'Connections', icon: Plug }, { id: 'issues', label: 'Issues', icon: ListTodo }, { id: 'operations', label: 'Operations', icon: Activity }, { id: 'events', label: 'Events', icon: Radio }];
 const collection = computed(() => !props.route.name && !props.route.create && !props.route.invalid);
 function changeNamespace() { namespace.value = namespaceDraft.value.trim() || 'default'; namespaceDraft.value = namespace.value; navigate(props.route.page, true); }

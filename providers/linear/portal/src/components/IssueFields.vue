@@ -11,12 +11,12 @@ const stateID = defineModel<string>('stateID', { required: true });
 const task = useTask(); const states = ref<Node[]>([]);
 const options = computed(() => [{ value: '', label: props.updating ? 'Keep current state' : 'Default state' }, ...states.value.map(s => ({ value: s.id, label: s.name || s.id }))]);
 function load() { if (props.connection && props.team) void task.run(api => api.discover(props.connection, 'states', props.team), result => { states.value = result; }); }
-watch(() => [props.connection, props.team], () => { task.reset(); states.value = []; stateID.value = ''; load(); }, { immediate: true, flush: 'sync' });
+watch(() => [props.connection, props.team], (_, previous) => { task.reset(); states.value = []; if (previous) stateID.value = ''; load(); }, { immediate: true, flush: 'sync' });
 </script>
 <template>
   <label for="issue-title">Title<input id="issue-title" v-model="title" class="k-input" :required="!updating" maxlength="255" :disabled="disabled"></label>
   <label for="issue-description">Description<textarea id="issue-description" v-model="description" class="k-input" rows="5" maxlength="16000" :disabled="disabled" /></label>
-  <label for="issue-state">Workflow state<FormSelect id="issue-state" v-model="stateID" :options="options" :disabled="disabled || task.state.loading || !team" /></label>
+  <label id="issue-state-label" for="issue-state">Workflow state<FormSelect id="issue-state" labelledby="issue-state-label" v-model="stateID" :options="options" :disabled="disabled || task.state.loading || !team" /></label>
   <TaskFeedback :task="task.state" />
   <button v-if="task.state.error" class="k-btn k-btn--ghost" type="button" :disabled="disabled || task.state.loading" @click="load">Retry workflow states</button>
 </template>

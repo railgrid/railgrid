@@ -29,8 +29,8 @@ onActivated(() => {
 <template>
   <div class="linear-scope">
     <div class="linear-fields">
-      <label for="linear-connection">Connection<FormSelect id="linear-connection" v-model="session.selection.connection" :options="connectionOptions" placeholder="Select connection" :disabled="props.disabled || read.state.loading" /></label>
-      <label for="linear-team">Team<FormSelect id="linear-team" v-model="session.selection.team" :options="teamOptions" placeholder="Select team" :disabled="props.disabled || discovery.state.loading || !session.selection.connection" /></label>
+      <label id="linear-connection-label" for="linear-connection">Connection<FormSelect id="linear-connection" labelledby="linear-connection-label" v-model="session.selection.connection" :options="connectionOptions" placeholder="Select connection" :disabled="props.disabled || read.state.loading" /></label>
+      <label id="linear-team-label" for="linear-team">Team<FormSelect id="linear-team" labelledby="linear-team-label" v-model="session.selection.team" :options="teamOptions" placeholder="Select team" :disabled="props.disabled || discovery.state.loading || !session.selection.connection" /></label>
       <button class="k-btn k-btn--ghost" type="button" :disabled="props.disabled || discovery.state.loading || !session.selection.connection" @click="discover">{{ discovery.state.loading ? 'Discovering teams…' : 'Refresh teams' }}</button>
     </div>
     <TaskFeedback :task="read.state" /><button v-if="read.state.error" class="k-btn k-btn--ghost" type="button" @click="load">Retry connections</button>
