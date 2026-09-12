@@ -92,7 +92,10 @@ export function isProjectAPINotFoundError(err: unknown): err is ProjectAPIReques
 // tenantSelection reads the active org/workspace. Delegates to the shared,
 // security-critical portalkit/tenant helper so the storage key + shape stay in
 // lockstep with every other portal.
-function tenantSelection(): TenantSelection {
+function tenantSelection(ctx: FarosContext | null): TenantSelection {
+  if (ctx && ('orgUUID' in ctx || 'workspaceUUID' in ctx)) {
+    return { orgUUID: ctx.orgUUID ?? null, workspaceUUID: ctx.workspaceUUID ?? null }
+  }
   return readTenant()
 }
 
@@ -107,7 +110,7 @@ function providerBase(ctx: FarosContext | null): string {
 }
 
 function baseURL(ctx: FarosContext | null): string {
-  const t = tenantSelection()
+  const t = tenantSelection(ctx)
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }

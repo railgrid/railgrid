@@ -147,7 +147,7 @@ test('Faros brand links route home in every dock layout', () => {
 
   assert.equal(brandLinks.length, 4)
   for (const link of brandLinks) {
-    assert.match(link, /:to="\{ name: 'dashboard' \}"/)
+    assert.match(link, /:to="scopePath\('\/'\)"/)
     assert.match(link, /class="shell-brand-link /)
     assert.match(link, /focus-visible:ring-2 focus-visible:ring-accent/)
     assert.match(link, /<Hexagon\b/)
@@ -349,6 +349,6 @@ test('shell preferences tolerate SSR and unavailable browser storage', () => {
 })
 
 test('organization chooser marks the complete organizations route family active', () => {
-  assert.match(accountMenu, /route\.path === '\/organizations' \|\| route\.path\.startsWith\('\/organizations\/'\)/)
+  assert.match(accountMenu, /routePath\.value === '\/organizations' \|\| routePath\.value\.startsWith\('\/organizations\/'\)/)
   assert.match(accountMenu, /:aria-current="organizationsActive \? 'page' : undefined"/)
 })

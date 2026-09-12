@@ -15,6 +15,7 @@
 // entire portal SPA into each provider's IIFE. Depending only on
 // `@/auth/token` (pure functions) and the DOM keeps this leaf-level and
 // cycle-free.
+import { readTenant } from '@/portalkit/tenant'
 import { loadAuth, isExpired, refreshToken } from '@/auth/token'
 
 // Window event the shell listens for to drop a dead session and redirect
@@ -62,10 +63,6 @@ export async function getBearerToken(): Promise<string | null> {
   return null
 }
 
-// Tenant selection persisted by stores/tenant.ts. Kept as a literal (not
-// imported) for the same cycle-avoidance reason as the rest of this file.
-const TENANT_STORAGE_KEY = 'faros:portal:tenant'
-
 interface AuthHeaderOptions {
   // tenant: include X-Faros-Org / X-Faros-Workspace from the sidebar
   // selection so workspace-scoped hub endpoints (/api/orgs/.../providers)
@@ -76,16 +73,9 @@ interface AuthHeaderOptions {
 
 function tenantHeaders(): Record<string, string> {
   const h: Record<string, string> = {}
-  try {
-    const raw = localStorage.getItem(TENANT_STORAGE_KEY)
-    if (raw) {
-      const t = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-      if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
-      if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
-    }
-  } catch {
-    /* ignore parse errors — header is best-effort */
-  }
+  const t = readTenant()
+  if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
+  if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
   return h
 }
 
@@ -105,6 +95,7 @@ export async function authFetch(
   opts: RequestInit & AuthHeaderOptions = {},
 ): Promise<Response> {
   const { tenant, headers, ...init } = opts
+  const selectedHeaders = tenant ? tenantHeaders() : undefined
   const token = await getBearerToken()
 
   // Build via the Headers API so every HeadersInit shape a caller might
@@ -112,7 +103,7 @@ export async function authFetch(
   // correctly — a plain spread/cast would silently drop the latter two.
   // Order matters: tenant headers first, then caller headers (so a caller
   // can override them), then Authorization last so it always wins.
-  const merged = new Headers(tenant ? tenantHeaders() : undefined)
+  const merged = new Headers(selectedHeaders)
   if (headers) new Headers(headers).forEach((value, key) => merged.set(key, value))
   if (token) merged.set('Authorization', `Bearer ${token}`)
 

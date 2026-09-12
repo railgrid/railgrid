@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 const page = fs.readFileSync(new URL('./MCPPage.vue', import.meta.url), 'utf8')
-const router = fs.readFileSync(new URL('../router/index.ts', import.meta.url), 'utf8')
+const router = fs.readFileSync(new URL('../router/routes.ts', import.meta.url), 'utf8')
 
 test('MCP detail keeps the canonical borderless backlink before its resource page', () => {
   const css = fs.readFileSync(new URL('../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
@@ -18,7 +18,7 @@ test('MCP detail keeps the canonical borderless backlink before its resource pag
   assert.ok(detailStart >= 0)
   assert.ok(backStart >= 0 && backStart < resourceStart)
   assert.match(page.slice(backStart, resourceStart), /class="k-btn k-btn--ghost k-back-action"/)
-  assert.match(page.slice(backStart, resourceStart), /href="\/ui\/mcp"/)
+  assert.match(page.slice(backStart, resourceStart), /:href="'\/ui' \+ scopePath\('\/mcp'\)"/)
   assert.match(page.slice(backStart, resourceStart), />\s*[\s\S]*MCP Access\s*<\/a>/)
 
   assert.match(back, /min-height:\s*auto/)
@@ -45,13 +45,13 @@ test('MCP detail keeps the canonical borderless backlink before its resource pag
 })
 
 test('MCP detail keeps the shared resource composition and deep-link contract', () => {
-  assert.match(router, /path: '\/mcp'/)
+  assert.match(router, /path: WORKSPACE_ROUTE \+ '\/mcp'/)
   assert.match(router, /name: 'mcp'/)
-  assert.match(router, /path: '\/create\/mcp-server'/)
+  assert.match(router, /path: WORKSPACE_ROUTE \+ '\/create\/mcp-server'/)
   assert.match(router, /name: 'mcp-create'/)
-  assert.match(router, /path: '\/mcp\/:name'/)
+  assert.match(router, /path: WORKSPACE_ROUTE \+ '\/mcp\/:name'/)
   assert.match(router, /name: 'mcp-detail'/)
-  assert.match(page, /<a[\s\S]*href="\/ui\/mcp"/)
+  assert.match(page, /<a[\s\S]*:href="'\/ui' \+ scopePath\('\/mcp'\)"/)
   assert.match(page, /<ResourcePage/)
   assert.match(page, /kind="MCP server"/)
   assert.doesNotMatch(page, /<ResourcePage\b[^>]*\beyebrow=/)

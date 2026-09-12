@@ -25,6 +25,7 @@ export interface FarosContext {
   // tenant is the kcp cluster name of the active workspace (host-side id).
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
+  navigationBasePath?: string
   basePath?: string
   // subPath is what the host router parsed after /providers/agents/. This
   // element routes on its own hash, so it is informational only today.

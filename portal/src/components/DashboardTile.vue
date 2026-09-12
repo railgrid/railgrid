@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useRouteContextStore } from '@/stores/routeContext'
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -24,6 +26,9 @@ import {
   Puzzle,
   RefreshCw,
 } from 'lucide-vue-next'
+
+const routeContext = useRouteContextStore()
+const { scopePath } = useScopedNavigation()
 
 // DashboardTile is the portal-side mount point for one provider's
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
@@ -70,12 +75,12 @@ const tagFor = (name: string) => `faros-dashboard-tile-${name}`
 // the fallback body so a provider without its own tile element is still a
 // useful launcher rather than a blank card.
 const parentTo = computed(() =>
-  props.provider.builtinRoute ? `/${props.provider.builtinRoute}` : `/providers/${props.provider.name}`,
+  scopePath(props.provider.builtinRoute ? `/${props.provider.builtinRoute}` : `/providers/${props.provider.name}`),
 )
 const quickLinks = computed(() =>
   (props.provider.children ?? []).map((c) => ({
     label: c.displayName,
-    to: props.provider.builtinRoute ? `/${c.builtinRoute}` : `${parentTo.value}/${c.builtinRoute}`,
+    to: props.provider.builtinRoute ? scopePath(`/${c.builtinRoute}`) : `${parentTo.value}/${c.builtinRoute}`,
   })),
 )
 
@@ -200,6 +205,7 @@ function onProviderBootstrapRetry(event: Event) {
 }
 
 function pushContext() {
+  const contextGeneration = routeContext.generation
   const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el) return
   const providerName = props.provider.name
@@ -218,9 +224,11 @@ function pushContext() {
       // Resolved, not the raw mode — see ProviderFrame.pushContext.
       theme: theme.resolved,
       basePath: `/ui/providers/${providerName}`,
+      navigationBasePath: '/ui' + scopePath(`/providers/${providerName}`),
     },
     {
       providerName,
+      isCurrent: () => contextGeneration === routeContext.generation && routeContext.state === 'ready',
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
     },
   )
@@ -231,7 +239,7 @@ function onNavigate(e: Event) {
   const p = ce.detail?.path
   if (typeof p !== 'string') return
   e.preventDefault()
-  const target = `/providers/${props.provider.name}/${p.replace(/^\//, '')}`
+  const target = scopePath(`/providers/${props.provider.name}/${p.replace(/^\//, '')}`)
   if (ce.detail.replace === true) void router.replace(target)
   else void router.push(target)
 }

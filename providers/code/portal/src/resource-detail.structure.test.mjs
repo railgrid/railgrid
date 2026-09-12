@@ -34,7 +34,7 @@ function resourcePageSlot(source, name) {
 describe('Code repository resource detail cards', () => {
   it('hides provider tabs for repository detail and preserves the backlink', () => {
     expect(app).toMatch(/<template v-if="!route\.repo && !route\.connection">[\s\S]*<Tabs :tabs=/)
-    expect(detail).toMatch(/<ResourceBackLink class="repo-detail__back" href="\/ui\/providers\/code\/repositories" @back="emit\('back'\)">[\s\S]*Repositories[\s\S]*<\/ResourceBackLink>/)
+    expect(detail).toMatch(/<ResourceBackLink class="repo-detail__back" :href="portalHref\('\/ui\/providers\/code\/repositories'\)" @back="emit\('back'\)">[\s\S]*Repositories[\s\S]*<\/ResourceBackLink>/)
     expect(detail).toMatch(/import ResourceBackLink from '\.\.\/portalkit\/ResourceBackLink\.vue'/)
     expect(style).toMatch(/\.repo-detail__provider-mark\s*\{[^}]*inset-inline-start:\s*0;/s)
     expect(style).toMatch(/\.repo-detail__resource > section > header\s*\{[^}]*padding-inline-start:\s*52px;/s)
@@ -152,7 +152,7 @@ describe('Code connection resource detail cards', () => {
   it('preserves the connection route backlink outside ResourcePage', () => {
     expect(app).toMatch(/connections<.*ConnectionDetailView|ConnectionDetailView.*connections/)
     expect(app).toMatch(/<template v-if="!route\.repo && !route\.connection">[\s\S]*<Tabs :tabs=/)
-    expect(connectionDetail).toMatch(/<ResourceBackLink class="connection-detail__back" href="\/ui\/providers\/code\/connections" @back="emit\('back'\)">[\s\S]*Connections[\s\S]*<\/ResourceBackLink>/)
+    expect(connectionDetail).toMatch(/<ResourceBackLink class="connection-detail__back" :href="portalHref\('\/ui\/providers\/code\/connections'\)" @back="emit\('back'\)">[\s\S]*Connections[\s\S]*<\/ResourceBackLink>/)
     expect(connectionDetail).toMatch(/import ResourceBackLink from '\.\.\/portalkit\/ResourceBackLink\.vue'/)
     expect(style).toMatch(/\.connection-detail__provider-mark\s*\{[^}]*inset-inline-start:\s*0;/s)
     expect(style).toMatch(/\.connection-detail__resource > section > header\s*\{[^}]*padding-inline-start:\s*52px;/s)

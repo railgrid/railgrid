@@ -15,8 +15,8 @@
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 // ProviderFetchScope is what the host injects into every provider request.
-// Read lazily on each call so token rotation and a workspace switch apply to
-// in-flight providers without a context re-push.
+// Tokens refresh within a context; a workspace switch invalidates the old
+// transport and requires a newly issued provider context.
 export interface ProviderFetchScope {
   token: string | null
   orgUUID: string | null
@@ -26,6 +26,7 @@ export interface ProviderFetchScope {
 export interface ProviderFetchOptions {
   providerName: string
   scope: () => ProviderFetchScope
+  isCurrent?: () => boolean
   // Defaults to window.location.origin. Injectable for tests.
   origin?: string
   fetchImpl?: typeof fetch
@@ -144,11 +145,19 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
   const origin = options.origin ?? window.location.origin
   const fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
   const { providerName, scope } = options
+  const owner = { ...scope() }
+  const assertCurrent = () => {
+    const current = scope()
+    if (options.isCurrent?.() === false || current.orgUUID !== owner.orgUUID || current.workspaceUUID !== owner.workspaceUUID) {
+      throw new DOMException('The workspace context has changed', 'AbortError')
+    }
+    return current
+  }
 
   return async (input, init) => {
     const url = requestURL(input, origin)
     const method = requestMethod(input, init)
-    const current = scope()
+    const current = assertCurrent()
     if (!isProviderFetchAllowed(url, origin, providerName, current.orgUUID, method)) {
       throw new ProviderFetchDeniedError(providerName, url.toString())
     }
@@ -167,7 +176,10 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
     // Request-shaping fields (method, body, mode, redirect, signal, ...) stay
     // the caller's.
     const nextInit: RequestInit = { ...init, credentials: 'same-origin', headers }
-    if (isRequest) return fetchImpl(new Request(input as Request, nextInit))
-    return fetchImpl(url.toString(), nextInit)
+    const response = isRequest
+      ? await fetchImpl(new Request(input as Request, nextInit))
+      : await fetchImpl(url.toString(), nextInit)
+    assertCurrent()
+    return response
   }
 }

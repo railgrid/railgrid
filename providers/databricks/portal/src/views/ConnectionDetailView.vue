@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity, Database, KeyRound, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -320,7 +321,7 @@ onUnmounted(() => {
 <template>
   <section class="databricks-resource-detail">
     <ResourceBackLink
-      href="/ui/providers/databricks/connections"
+      :href="portalHref('/ui/providers/databricks/connections')"
       :disabled="deleting || (!!conn && operationLocked(conn.name))"
       @back="goBack"
     >

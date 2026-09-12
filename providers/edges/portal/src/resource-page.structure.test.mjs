@@ -58,7 +58,7 @@ describe('resource detail cards', () => {
 
   it('preserves the backlink, title, and fixed Edge action order', () => {
     expect(detail).toMatch(/<div class="edge-detail">/)
-    expect(detail).toMatch(/<ResourceBackLink class="edge-detail__back" href="\/ui\/providers\/edges" @back="emit\('back'\)">[\s\S]*Edges[\s\S]*<\/ResourceBackLink>/)
+    expect(detail).toMatch(/<ResourceBackLink class="edge-detail__back" :href="portalHref\('\/ui\/providers\/edges'\)" @back="emit\('back'\)">[\s\S]*Edges[\s\S]*<\/ResourceBackLink>/)
     expect(detail).toMatch(/import ResourceBackLink from '\.\/portalkit\/ResourceBackLink\.vue'/)
     expect(detail).toMatch(/class="edge-detail__provider-mark"/)
     expect(style).toMatch(/\.edge-detail__provider-mark\s*\{[\s\S]*inset-inline-start:\s*0;/)

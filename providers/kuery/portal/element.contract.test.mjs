@@ -55,8 +55,9 @@ test('impact drill-down preserves mounted tab state and falls back to the host r
   assert.doesNotMatch(app, /<template v-else>/u)
   assert.match(app, /:active="!impact && active === 'topology'"/u)
   assert.match(app, /:active="!impact && active === 'playground'"/u)
-  assert.match(impact, /<ResourceBackLink href="\/providers\/kuery"/u)
-  assert.doesNotMatch(impact, /href="\/ui\/providers\/kuery"/u)
+  assert.match(impact, /import \{ portalHref \} from '\.\.\/portalkit\/navigation'/u)
+  assert.match(impact, /<ResourceBackLink :href="portalHref\('\/providers\/kuery'\)"/u)
+  assert.doesNotMatch(impact, /href="\/(?:ui\/)?providers\/kuery"/u)
 })
 
 test('edge discovery fences late responses to the request and context that started them', () => {

@@ -662,8 +662,8 @@ Both become provider-aware.
 
 | Path | Edit |
 |---|---|
-| [portal/src/App.vue](../portal/src/App.vue) | After `auth.detectAuthMode()`, if authenticated, `await providersStore.load()` before rendering `<router-view />`. Show loading spinner during. This guarantees dynamic routes exist *before* Vue tries to match a deep link like `/providers/cost/foo`. |
-| [portal/src/router/index.ts](../portal/src/router/index.ts) | Add static catalog route `{ path: '/providers', name: 'providers', component: () => import('@/pages/ProvidersPage.vue') }` **before** the `:pathMatch(.*)*` not-found route at line 62. Provider sub-routes added dynamically by the store. |
+| [portal/src/App.vue](../portal/src/App.vue) | Mount scoped pages only after route-context resolution and URL commit. Register provider matchers in `main.ts` before the initial navigation; load the catalog for the verified context. |
+| [portal/src/router/routes.ts](../portal/src/router/routes.ts) | Declare global, organization, and workspace routes using the shared UUID-constrained prefixes. `contextGuard.ts` resolves their authority; `providers.ts` registers the common provider matcher. |
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
 | [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | Sets the portal `Content-Security-Policy`: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:`. `script-src 'self'` (no `'unsafe-inline'`) admits provider bundles because they are hub-proxied and therefore same-origin; the portal ships no inline script (the theme pre-paint bootstrap is `portal/public/theme-bootstrap.js`). `frame-src` is for the portal's own iframes (App Studio preview hosts), not for providers. |
@@ -688,30 +688,15 @@ sources:
 `enabledNavItems` becomes `enabled.filter(ready).map(...)`. The catalog
 page shows union with status badges (Available / Enabled / Pending).
 
-### Route registration (sketch)
+### Route registration
 
-```ts
-// portal/src/router/providers.ts
-import { router } from './index'
-
-const registered = new Set<string>()
-
-export function registerProviderRoutes(names: string[]) {
-  for (const name of names) {
-    if (registered.has(name)) continue
-    router.addRoute({
-      path: `/providers/${name}/:rest(.*)*`,
-      name: `provider-${name}`,
-      component: () => import('@/pages/ProviderFrame.vue'),
-      props: route => ({
-        providerName: name,
-        subPath: route.params.rest ?? '',
-      }),
-    })
-    registered.add(name)
-  }
-}
-```
+`portal/src/main.ts` registers the shared provider route shape before the initial
+navigation. `portal/src/router/providers.ts` installs one matcher per router:
+`WORKSPACE_ROUTE + '/providers/:name/:rest(.*)*'`, where `WORKSPACE_ROUTE` contains
+the UUID-constrained organization and workspace segments. Resource suffixes
+become `farosContext.subPath`; the host preserves query strings and fragments.
+Route registration does not wait for catalog discovery. The context guard and
+ProviderFrame's existing catalog/binding checks gate mounting and access.
 
 ### `ProviderFrame.vue` (custom-element host)
 
@@ -759,7 +744,8 @@ interface ProviderContext {
   orgUUID: string | null
   workspaceUUID: string | null
   theme: 'light' | 'dark' // RESOLVED, never 'system'
-  basePath: string        // /ui/providers/{name}
+  basePath: string        // /ui/providers/{name}; assets and serviceBase only
+  navigationBasePath?: string // /ui/{orgID}/{workspaceID}/providers/{name}
   fetch: ProviderFetch    // host-owned transport, see below
   /** @deprecated one release; read `fetch` instead */ token: string | null
 }
@@ -767,7 +753,24 @@ interface ProviderContext {
 
 4. **Navigate.** The element dispatches a bubbling
    `faros-navigate` CustomEvent (`{ path, replace? }`); the host translates it
-   into `router.push('/providers/{name}/' + path)`.
+   into a navigation under `/ui/{orgID}/{workspaceID}/providers/{name}/`.
+   Use `navigationBasePath` for native links within the provider, or the shared
+   `portalkit/navigation` `portalHref(path, context)` helper for links to another
+   provider. Keep `basePath` for assets and `serviceBase()`; it is not a page URL.
+
+The host resolves the organization and workspace IDs in the URL through the
+caller's authenticated APIs before mounting scoped content. Login preserves the
+complete path, query, and fragment. Organization settings use
+`/ui/{orgID}/settings/...`; global login, organization chooser, and admin pages
+have no workspace prefix. Old unscoped page URLs have no aliases or redirects.
+The `/ui/providers/{name}/...` asset proxy remains available for bundle assets.
+
+The URL owns each tab's context. Local storage remembers only a landing
+preference. Provider contexts expose the verified IDs and cluster target;
+workspace switches invalidate old host fetch transports, including late
+responses. Capture the context that starts an asynchronous operation and do not
+reacquire a newer context to finish an older operation. Opening or sharing a
+portal URL never grants resource access or enables a provider.
 
 **The host fetch.** `farosContext.fetch` is the only thing a bundle should use
 to reach the hub. It resolves relative URLs against the portal origin, injects

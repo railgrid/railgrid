@@ -1,3 +1,5 @@
+import { parsePortalScope } from './navigation.js'
+
 // CANONICAL SOURCE — provider-sdk/portalkit. Do not edit vendored copies under
 // providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`.
 //
@@ -27,6 +29,13 @@ export const TENANT_STORAGE_KEY = 'faros:portal:tenant'
 // readTenant returns the active org/workspace from localStorage, tolerating a
 // missing or malformed value (both null).
 export function readTenant(): Tenant {
+  // A hosted document is scoped by its own URL. Another tab may update the
+  // remembered landing preference without changing this document's authority.
+  if (typeof window !== 'undefined' && window.location?.pathname) {
+    const scope = parsePortalScope(window.location.pathname.replace(/^\/ui(?=\/|$)/, ''))
+    if (scope) return scope
+    if (/^\/ui(?:\/|$)/.test(window.location.pathname)) return { orgUUID: null, workspaceUUID: null }
+  }
   try {
     const raw = localStorage.getItem(TENANT_STORAGE_KEY)
     if (!raw) return { orgUUID: null, workspaceUUID: null }

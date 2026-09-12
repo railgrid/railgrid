@@ -47,3 +47,17 @@ Motion uses `.stagger-item` (`stagger-in`) for entry, `.live-dot` (`live-pulse`)
 for live state, component-owned feedback entry, and 120–200ms hover/focus or
 control-state eases. The `.k-progress__bar` width transition is a sanctioned
 300ms progress update; respect reduced-motion preferences.
+
+## Scoped destinations
+
+Workspace pages use `/ui/{orgID}/{workspaceID}/...`; organization settings use
+`/ui/{orgID}/settings/...`. IDs remain stable when display names change. The
+address bar is sufficient to share an existing resource with an authorized
+teammate; query parameters and fragments remain part of the destination.
+
+The host resolves explicit context before mounting scoped content and preserves
+it through sign-in. A workspace switch navigates to its dashboard; organization
+switching opens workspace management. Back/Forward restores the context encoded
+in each history entry. A failed destination retains its URL and offers Retry,
+Switch account, and Choose organization without substituting another workspace.
+Use shared navigation helpers for native links and keep asset URLs separate.

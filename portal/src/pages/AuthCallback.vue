@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { consumePortalNext } from '@/auth/portalNext'
 import { consumeAppAccessNext } from '@/auth/appAccessNext'
 import { parseClusterName } from '@/auth/token'
 import type { LoginResponse, StoredAuth } from '@/auth/types'
@@ -50,7 +51,7 @@ onMounted(() => {
       window.location.assign(next)
       return
     }
-    router.push('/')
+    router.replace(consumePortalNext() ?? '/')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to process auth callback'
   }

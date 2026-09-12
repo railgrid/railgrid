@@ -40,6 +40,8 @@ async function loadCaller(fileName) {
   // copying the caller's fencing logic into a second implementation.
   const sourceWithoutImports = script.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '')
   const harness = `
+const useScopedNavigation = () => ({ scopePath: (path) => path })
+
 const ref = (value) => ({ value })
 const computed = (getter) => ({ get value() { return getter() } })
 const watch = () => {}

@@ -15,6 +15,7 @@ limitations under the License.
 -->
 
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -35,6 +36,8 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
+
+const { scopePath, routePath } = useScopedNavigation()
 
 interface Props {
   expanded?: boolean
@@ -75,10 +78,10 @@ const panelId = useId()
 
 const email = computed(() => auth.user?.email?.trim() || 'Authenticated user')
 const identityLabel = computed(() => auth.user?.email?.trim() ? 'Email' : 'Account')
-const mcpActive = computed(() => route.path === '/mcp' || route.path.startsWith('/mcp/'))
-const settingsActive = computed(() => route.path === '/settings' || route.path.startsWith('/settings/'))
-const adminActive = computed(() => route.path === '/bonkers' || route.path.startsWith('/bonkers/'))
-const organizationsActive = computed(() => route.path === '/organizations' || route.path.startsWith('/organizations/'))
+const mcpActive = computed(() => routePath.value === '/mcp' || routePath.value.startsWith('/mcp/'))
+const settingsActive = computed(() => routePath.value === '/settings' || routePath.value.startsWith('/settings/'))
+const adminActive = computed(() => routePath.value === '/bonkers' || routePath.value.startsWith('/bonkers/'))
+const organizationsActive = computed(() => routePath.value === '/organizations' || routePath.value.startsWith('/organizations/'))
 const contextRouteActive = computed(() => mcpActive.value || settingsActive.value || adminActive.value || organizationsActive.value)
 const orgLabel = computed(() => {
   const displayName = tenant.activeOrg?.displayName?.trim()
@@ -454,7 +457,7 @@ onBeforeUnmount(() => {
       </button>
       <router-link
         v-if="developerAccessReady"
-        to="/mcp"
+        :to="scopePath('/mcp')"
         class="account-menu-item k-menu-item"
         :class="mcpActive ? 'is-selected' : ''"
         :aria-current="mcpActive ? 'page' : undefined"
@@ -499,7 +502,7 @@ onBeforeUnmount(() => {
       <div class="my-1 h-px bg-border-subtle" />
 
       <router-link
-        to="/settings/workspaces"
+        :to="scopePath('/settings/workspaces')"
         class="account-menu-item k-menu-item"
         :class="settingsActive ? 'is-selected' : ''"
         :aria-current="settingsActive ? 'page' : undefined"

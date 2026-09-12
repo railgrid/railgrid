@@ -29,6 +29,8 @@ enough for users to navigate.
 -->
 
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
+const router = useRouter()
 import { onMounted, watch } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
 
@@ -56,12 +58,12 @@ watch(
 
 function onOrgChange(e: Event) {
   const value = (e.target as HTMLSelectElement).value
-  if (value) tenant.selectOrg(value)
+  if (value) void router.push(`/${value}/settings/workspaces`)
 }
 
 function onWorkspaceChange(e: Event) {
   const value = (e.target as HTMLSelectElement).value
-  if (value) tenant.selectWorkspace(value)
+  if (value) void router.push({ name: 'dashboard', params: { orgID: tenant.orgUUID, workspaceID: value } })
 }
 </script>
 

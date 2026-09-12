@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from '../portalkit/navigation'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { FarosContext } from '../element'
@@ -104,7 +105,7 @@ onBeforeUnmount(() => { loadGeneration += 1; controller?.abort(); destroyGraph()
 
 <template>
   <div class="kuery-impact">
-    <ResourceBackLink href="/providers/kuery" @back="emit('back')">Back to Kuery</ResourceBackLink>
+    <ResourceBackLink :href="portalHref('/providers/kuery')" @back="emit('back')">Back to Kuery</ResourceBackLink>
     <ResourcePage :title="title" :kind="anchor.object?.kind" :subtitle="subtitle" :loaded="loaded" :loading="loading" :error="error" :stale="loaded && !!error" retryable @retry="load">
       <template #actions><div class="kuery-view-switch" role="group" aria-label="Impact representation"><button v-for="value in ['graph','list']" :key="value" type="button" class="k-btn k-btn--ghost kuery-view-btn" :aria-pressed="representation === value" @click="representation = value as 'graph' | 'list'">{{ value === 'graph' ? 'Graph' : 'List' }}</button></div></template>
       <template #body>

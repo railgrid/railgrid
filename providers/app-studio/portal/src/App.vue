@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from './portalkit/navigation'
 import MarkdownIt from 'markdown-it'
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import {
@@ -535,8 +536,8 @@ const appStudioSectionTabs = [
   { id: 'models', label: 'Models', icon: Cpu },
 ] as const
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
-const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
-const CODE_PROVIDER_CATALOG_URL = '/providers'
+const CODE_CONNECTIONS_URL = portalHref('/ui/providers/code/connections')
+const CODE_PROVIDER_CATALOG_URL = portalHref('/providers')
 const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
@@ -8122,7 +8123,7 @@ function openToolFull() {
   const tool = activeProviderTool.value
   if (!tool) return
   const path = tool.path ? `/${tool.path.replace(/^\/+/, '')}` : ''
-  window.location.assign(`/ui/providers/${tool.providerName}${path}`)
+  window.location.assign(portalHref(`/ui/providers/${tool.providerName}${path}`, props.ctx))
 }
 
 async function mountActiveProviderTool() {
@@ -8214,6 +8215,9 @@ function pushToolContext() {
     tenant: props.ctx?.tenant,
     theme: props.ctx?.theme,
     basePath: `/ui/providers/${tool.providerName}`,
+    navigationBasePath: portalHref(`/providers/${tool.providerName}`, props.ctx),
+    orgUUID: props.ctx?.orgUUID,
+    workspaceUUID: props.ctx?.workspaceUUID,
   }
 }
 
@@ -9210,7 +9214,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <ResourceBackLink
             class="k-ai-conversation-back"
             icon-only
-            :href="props.ctx?.basePath || '/ui/providers/app-studio'"
+            :href="props.ctx?.navigationBasePath || portalHref('/ui/providers/app-studio', props.ctx)"
             aria-label="Back to projects"
             title="Back to projects"
             @back="props.navigate('')"

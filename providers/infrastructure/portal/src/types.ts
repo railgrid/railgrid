@@ -136,6 +136,7 @@ export interface FarosContext {
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
+  navigationBasePath?: string
   basePath?: string
   // subPath is what the shell's router parsed from the URL after
   // /ui/providers/{name}/. Empty = root (defaults to templates),

@@ -1,3 +1,5 @@
+import { useTenantStore } from './tenant'
+import { scopedPath } from '@/portalkit/navigation'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authFetch } from '@/auth/session'
@@ -255,7 +257,7 @@ export const useProvidersStore = defineStore('providers', () => {
         // builtinRoute → in-tree SPA route (legacy).
         // builtin (no route) → ProviderFrame at /providers/{name}.
         // third-party → ProviderFrame at /providers/{name}.
-        const parentTo = p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`
+        const parentTo = scopedPath(p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`, useTenantStore())
         return {
           name: p.name,
           label: p.displayName,
@@ -271,7 +273,7 @@ export const useProvidersStore = defineStore('providers', () => {
           // (/workloads).
           children: (p.children ?? []).map((c) => ({
             label: c.displayName,
-            to: p.builtinRoute ? `/${c.builtinRoute}` : `${parentTo}/${c.builtinRoute}`,
+            to: p.builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
           })),
         }
       }),
@@ -482,7 +484,7 @@ export const useProvidersStore = defineStore('providers', () => {
 
   async function load(requestedOrgUUID?: string | null) {
     // App.vue passes the reactive tenant selection when an org switch is
-    // already in flight. Falling back to localStorage keeps existing callers
+    // already in flight. Reading the tab-local store keeps other callers
     // (including the initial auth bootstrap) compatible while ensuring a
     // same-tick switch cannot start a request under the previous org.
     const targetOrgUUID = requestedOrgUUID === undefined
@@ -498,7 +500,7 @@ export const useProvidersStore = defineStore('providers', () => {
       // The catalog is org-scoped, but this request may begin in the same
       // tick as the tenant store's persistence watcher. Pass the captured
       // org directly instead of asking authFetch to read potentially stale
-      // localStorage tenant headers.
+      // document-URL tenant headers before navigation commits.
       const res = await authFetch('/api/providers', {
         headers: targetOrgUUID ? { 'X-Faros-Org': targetOrgUUID } : undefined,
       })
@@ -516,10 +518,10 @@ export const useProvidersStore = defineStore('providers', () => {
       loaded.value = true
       // Best-effort: also refresh the user's enabled set. Failure here
       // doesn't block the catalog from rendering.
-      // During an org watcher flush, localStorage can still carry the old
-      // workspace selection. Do not issue a binding request under that stale
+      // During an org switch, a catalog read can finish after the active
+      // workspace selection changes. Do not issue a binding request under that stale
       // scope; the auth-cluster watcher will refresh once the new workspace
-      // selection is persisted.
+      // selection is resolved.
       const currentSelection = readTenantSelection()
       if (currentSelection.orgUUID === targetOrgUUID && currentSelection.workspaceMode !== 'organization') {
         await refreshBindings().catch(() => {
@@ -583,7 +585,7 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsLoadState.value = 'loading'
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/enabled`
     try {
-      const res = await authFetch(url, { tenant: true })
+      const res = await authFetch(url, { tenant: true, headers: { 'X-Faros-Org': t.orgUUID, 'X-Faros-Workspace': t.workspaceUUID } })
       if (requestSequence !== bindingRequestSequence) return
       if (!sameTenantSelection(t, readTenantSelection())) return
       if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
@@ -639,9 +641,7 @@ export const useProvidersStore = defineStore('providers', () => {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
 
-    // Pull the sidebar selection straight from localStorage so we don't
-    // take a dependency on @/stores/tenant (existing import-cycle
-    // avoidance pattern in this file).
+    // Capture this tab's resolved selection before starting the mutation.
     const t = readTenantSelection()
     if (!t.orgUUID || !t.workspaceUUID) {
       throw new Error('select an organization and workspace before enabling a provider')
@@ -701,37 +701,14 @@ export const useProvidersStore = defineStore('providers', () => {
     }
   }
 
-  // readTenantSelection mirrors the storage shape written by
-  // tenant.ts's savePersisted — kept inline to avoid an import cycle
-  // with @/stores/tenant. Used for the enable/disable request *body*;
-  // the org/workspace request *headers* come from authFetch({tenant:true}).
+  // Capture the host's resolved selection; localStorage is only a landing preference.
   function readTenantSelection(): {
     orgUUID: string | null
     workspaceUUID: string | null
     workspaceMode: 'workspace' | 'organization'
   } {
-    try {
-      const raw = localStorage.getItem('faros:portal:tenant')
-      if (!raw) return { orgUUID: null, workspaceUUID: null, workspaceMode: 'workspace' }
-      const parsed = JSON.parse(raw) as {
-        orgUUID?: string | null
-        workspaceUUID?: string | null
-        workspaceMode?: 'workspace' | 'organization'
-      }
-      const orgUUID = parsed.orgUUID ?? null
-      const storedWorkspaceUUID = parsed.workspaceUUID ?? null
-      const workspaceMode = parsed.workspaceMode === 'organization' ||
-        (parsed.workspaceMode === undefined && orgUUID !== null && storedWorkspaceUUID === null)
-        ? 'organization'
-        : 'workspace'
-      return {
-        orgUUID,
-        workspaceUUID: workspaceMode === 'organization' ? null : storedWorkspaceUUID,
-        workspaceMode,
-      }
-    } catch {
-      return { orgUUID: null, workspaceUUID: null, workspaceMode: 'workspace' }
-    }
+    const tenant = useTenantStore()
+    return { orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID, workspaceMode: tenant.workspaceMode }
   }
 
   function sameTenantSelection(

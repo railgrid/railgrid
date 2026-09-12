@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useRouteContextStore } from '@/stores/routeContext'
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
@@ -16,6 +18,9 @@ import {
 import { createProviderContext } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
+
+const routeContext = useRouteContextStore()
+const { scopePath } = useScopedNavigation()
 
 // Micro-frontend mount: instead of dropping an iframe, we load the
 // provider's /main.js (which defines a custom element faros-provider-{name})
@@ -368,6 +373,7 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
 }
 
 function pushContext() {
+  const contextGeneration = routeContext.generation
   const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
   const providerName = entry.value.name
@@ -395,11 +401,13 @@ function pushContext() {
       // provider handed it renders its light branch on a dark desktop.
       theme: theme.resolved,
       basePath: `/ui/providers/${providerName}`,
+      navigationBasePath: '/ui' + scopePath(`/providers/${providerName}`),
     },
     {
       providerName,
-      // Read lazily per request so token rotation and a workspace switch
-      // apply without waiting for the next context push.
+      isCurrent: () => contextGeneration === routeContext.generation && routeContext.state === 'ready',
+      // Read lazily for token rotation; a workspace switch invalidates this
+      // transport until the host issues a context for the new destination.
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
     },
   )
@@ -414,7 +422,7 @@ function onNavigate(e: Event) {
   // acknowledgement that the host router owns this history transition.
   // Providers can otherwise fall back to standalone hash routing.
   e.preventDefault()
-  const target = `/providers/${entry.value.name}/${p.replace(/^\//, '')}`
+  const target = scopePath(`/providers/${entry.value.name}/${p.replace(/^\//, '')}`)
   if (ce.detail.replace === true) void router.replace(target)
   else void router.push(target)
 }
@@ -554,8 +562,8 @@ onBeforeUnmount(() => {
           <div class="font-medium text-text-secondary">Select a workspace to use this provider</div>
           <div class="mt-1 text-xs">Provider access is enabled separately in each workspace.</div>
           <div class="mt-3 flex flex-wrap gap-2">
-            <router-link :to="{ name: 'dashboard' }" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
-            <router-link to="/providers" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
+            <router-link :to="scopePath('/')" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
+            <router-link :to="scopePath('/providers')" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
           </div>
         </div>
       </div>
@@ -577,8 +585,8 @@ onBeforeUnmount(() => {
           <div class="font-medium text-text-secondary">Provider not enabled in this workspace</div>
           <div class="mt-1 text-xs">Enable this provider from the catalog to use it here.</div>
           <div class="mt-3 flex flex-wrap gap-2">
-            <router-link :to="{ name: 'dashboard' }" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
-            <router-link to="/providers" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
+            <router-link :to="scopePath('/')" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
+            <router-link :to="scopePath('/providers')" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
           </div>
         </div>
       </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from '../portalkit/navigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
 import { api } from '../api'
@@ -253,7 +254,7 @@ onUnmounted(() => {
 
 <template>
   <div class="connection-detail">
-    <ResourceBackLink class="connection-detail__back" href="/ui/providers/code/connections" @back="emit('back')">
+    <ResourceBackLink class="connection-detail__back" :href="portalHref('/ui/providers/code/connections')" @back="emit('back')">
       Connections
     </ResourceBackLink>
 

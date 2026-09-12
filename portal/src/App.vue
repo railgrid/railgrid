@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import RouteContextState from '@/components/RouteContextState.vue'
+import { useRouteContextStore } from '@/stores/routeContext'
+import { rememberPortalNext } from '@/auth/portalNext'
+import { portalRoutePath } from '@/portalkit/navigation'
 import { computed, onMounted, onUnmounted, watch, watchEffect } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
@@ -15,12 +19,16 @@ import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
 import ToastHost from '@/portalkit/ToastHost.vue'
 
+const routeContext = useRouteContextStore()
+
 const auth = useAuthStore()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
 const terminal = useTerminalSessionsStore()
 const layoutInsets = useLayoutInsets()
 const route = useRoute()
+const scopeBlocked = computed(() => routeContext.blocksRoute(route.path, !!route.meta.public))
+const scopeKey = computed(() => `${route.params.orgID ?? ''}:${route.params.workspaceID ?? ''}`)
 const router = useRouter()
 
 // A portal bearer authenticates the caller; auth.clusterName is only the
@@ -53,7 +61,8 @@ const showProvisioning = computed(
 // fallback rather than turning store errors into duplicate toasts.
 const showTenantErrorInline = computed(() => {
   if (!hasPortalSession.value || !tenant.error) return false
-  return !route.path.startsWith('/settings') && !route.path.startsWith('/organizations')
+  const path = portalRoutePath(route.path)
+  return !path.startsWith('/settings') && !path.startsWith('/organizations')
 })
 
 // ToastHost teleports its visual stack to <body>, outside AppLayout's DOM
@@ -80,16 +89,18 @@ watchEffect(() => {
 // `replace`, not `push`, so Back doesn't return to the page that just
 // failed to authenticate.
 function onSessionExpired() {
+  const destination = routeContext.destination || route.fullPath
+  rememberPortalNext(destination)
+  routeContext.invalidate()
   auth.logout()
-  void router.replace({ name: 'login' })
+  void router.replace({ name: 'login', query: { returnTo: destination } })
 }
 
 onMounted(async () => {
   window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
   await auth.detectAuthMode()
   if (hasPortalSession.value) {
-    providers.load()
-    tenant.bootstrap()
+    if (routeContext.state === 'ready' && !scopeBlocked.value) providers.load(tenant.orgUUID)
   }
 })
 
@@ -117,10 +128,13 @@ watch(
   () => auth.token,
   (ok) => {
     if (!ok) return
-    if (!providers.loaded) providers.load()
-    tenant.bootstrap()
+    if (routeContext.state === 'ready' && !scopeBlocked.value && !providers.loaded) providers.load(tenant.orgUUID)
   },
 )
+
+watch(() => [routeContext.state, route.params.orgID, route.params.workspaceID], () => {
+  if (routeContext.state === 'ready' && !scopeBlocked.value) void providers.load(tenant.orgUUID)
+})
 
 // Tenant → auth bridge: the shell's workspace switcher changes the active
 // workspace in the tenant store, but every provider request to
@@ -165,7 +179,7 @@ watch(
   (org, previousOrg) => {
     if (org === previousOrg) return
     providers.resetForOrganization()
-    if (auth.token) void providers.load(org)
+    if (auth.token && !scopeBlocked.value) void providers.load(org)
   },
 )
 
@@ -184,7 +198,7 @@ watch(
 watch(
   () => [tenant.orgUUID, tenant.workspaceUUID, tenant.workspaceMode, auth.clusterName] as const,
   () => {
-    if (!providers.loaded) return
+    if (!providers.loaded || scopeBlocked.value) return
     providers.refreshBindings().catch(() => {
       /* failures already surface via missing Disable button / enable dialog */
     })
@@ -193,7 +207,8 @@ watch(
 </script>
 
 <template>
-  <router-view />
+  <RouteContextState v-if="scopeBlocked" />
+  <router-view v-else :key="scopeKey" />
   <InlineNotification
     v-if="tenant.error && showTenantErrorInline"
     class="pointer-events-auto fixed inset-x-4 top-4 z-[2147483001] mx-auto max-w-[720px] shadow-xl"
@@ -207,7 +222,7 @@ watch(
        between pages never unmounts the dock. AppLayout (which every page renders)
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
-  <TerminalDock v-show="!hideTerminalDock" />
+  <TerminalDock v-show="!hideTerminalDock && !scopeBlocked" />
   <PkConfirmDialog />
   <ToastHost owner="primary" />
 </template>

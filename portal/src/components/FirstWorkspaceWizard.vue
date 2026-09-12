@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 // Shown when the active org has zero workspaces. Replaces the would-be
 // page slot in AppLayout so the user gets a guided "create your first
 // workspace" affordance instead of a broken edges/dashboard/provider view
@@ -14,6 +16,9 @@
 import { computed, ref } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
 import { ArrowRight, FolderTree, Loader2, Sparkles, AlertCircle, Settings } from 'lucide-vue-next'
+
+const { scopePath } = useScopedNavigation()
+const router = useRouter()
 
 const tenant = useTenantStore()
 const name = ref('')
@@ -31,9 +36,10 @@ async function handleCreate() {
     const created = await tenant.createWorkspace(tenant.orgUUID, trimmed.value)
     if (!created) {
       error.value = tenant.error ?? 'Failed to create workspace'
+    } else {
+      await router.push({ name: 'dashboard', params: { orgID: created.orgUUID, workspaceID: created.uuid } })
     }
-    // On success the tenant store selects the new workspace, App.vue's
-    // watch on activeWorkspace.clusterName fires auth.setClusterName,
+    // The destination guard selects and verifies the new workspace,
     // AppLayout re-keys the slot, and the original page renders.
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to create workspace'
@@ -98,7 +104,7 @@ async function handleCreate() {
 
           <div class="flex items-center justify-between gap-3 pt-2">
             <router-link
-              to="/settings/workspaces"
+              :to="scopePath('/settings/workspaces')"
               class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
             >
               <Settings class="h-3 w-3" :stroke-width="2" />

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
@@ -10,6 +11,8 @@ import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
 import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
+
+const { scopePath } = useScopedNavigation()
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -306,7 +309,7 @@ function onGridSelectStart(event: Event) {
         <div>
           <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
           <div class="mt-1 text-xs">
-            Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary,
+            Enable a provider from the <router-link :to="scopePath('/providers')" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary,
             or walk through the <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="welcomeForced = true">getting started guide</button>.
             Each provider is enabled per workspace.
           </div>
@@ -389,7 +392,7 @@ function onGridSelectStart(event: Event) {
             <div class="font-medium text-text-secondary">No dashboard tiles here yet</div>
             <div class="mt-1 text-xs">
               The providers enabled in this workspace don't publish a dashboard tile. Enable another from the
-              <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link>,
+              <router-link :to="scopePath('/providers')" class="text-accent hover:text-accent-hover">catalog</router-link>,
               or open a provider from the side navigation.
             </div>
           </div>

@@ -108,13 +108,16 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
   assert.equal(headers.get('X-Faros-Org'), ORG)
   assert.equal(headers.get('X-Faros-Workspace'), 'ws-1')
 
-  // Scope is read per call: a rotated token and a cleared workspace apply to
-  // the next request without a context re-push.
+  // Token refresh is allowed within the same context; tenant changes require
+  // a new context and must never retarget an old caller's mutation.
   scope.token = 'id-token-2'
-  scope.workspaceUUID = null
-  await providerFetch(new URL('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', ORIGIN), { method: 'POST' })
+  await providerFetch('/services/providers/agents/api/agents')
   assert.equal(calls[1].init.headers.get('Authorization'), 'Bearer id-token-2')
-  assert.equal(calls[1].init.headers.has('X-Faros-Workspace'), false)
+  assert.equal(calls[1].init.headers.get('X-Faros-Workspace'), 'ws-1')
+  scope.workspaceUUID = null
+  await assert.rejects(providerFetch('/services/providers/agents/api/agents', { method: 'POST' }), { name: 'AbortError' })
+  assert.equal(calls.length, 2)
+
 })
 
 test('the host fetch keeps same-origin credentials whatever the provider passes', async () => {
@@ -213,4 +216,23 @@ test('the pushed context exposes fetch and warns once when the deprecated token 
   // A spread copy (providers commonly snapshot the context) still carries the
   // token during the deprecation window.
   assert.equal({ ...ctx }.token, 'id-token')
+})
+
+
+test('obsolete context responses and A-B-A context reuse are rejected', async () => {
+  let active = true
+  let complete
+  let calls = 0
+  const transport = createProviderFetch({
+    providerName: 'agents', origin: ORIGIN,
+    scope: () => ({ token: 't', orgUUID: ORG, workspaceUUID: 'ws' }),
+    isCurrent: () => active,
+    fetchImpl: () => { calls++; return new Promise((resolve) => { complete = resolve }) },
+  })
+  const response = transport('/services/providers/agents/api/agents')
+  active = false
+  complete(new Response('{}'))
+  await assert.rejects(response, { name: 'AbortError' })
+  await assert.rejects(transport('/services/providers/agents/api/agents', { method: 'POST' }), { name: 'AbortError' })
+  assert.equal(calls, 1)
 })

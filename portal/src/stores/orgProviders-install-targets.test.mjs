@@ -7,10 +7,16 @@ import ts from 'typescript'
 const root = path.resolve(new URL('../../../', import.meta.url).pathname)
 const storeSource = fs.readFileSync(path.join(root, 'portal', 'src', 'stores', 'orgProviders.ts'), 'utf8')
 const sourceWithoutImports = storeSource
+  .replace("import { useTenantStore } from './tenant'\n", '')
+  .replace("import { scopedPath } from '@/portalkit/navigation'\n", '')
   .replace("import { defineStore } from 'pinia'\n", '')
   .replace("import { computed, ref } from 'vue'\n", '')
   .replace("import { authFetch } from '@/auth/session'\n", '')
+const navigationSource = fs.readFileSync(path.join(root, 'portal/src/portalkit/navigation.ts'), 'utf8')
 const harness = `
+${navigationSource}
+const useTenantStore = () => globalThis.__tenantSelection
+
 const ref = (value) => ({ value })
 const computed = (getter) => ({ get value() { return getter() } })
 const defineStore = (_name, setup) => () => {
@@ -29,6 +35,7 @@ const { outputText } = ts.transpileModule(`${harness}\n${sourceWithoutImports}`,
 })
 const storeModule = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 
+globalThis.__tenantSelection = { orgUUID: 'org-a' }
 globalThis.localStorage = {
   getItem: () => JSON.stringify({ orgUUID: 'org-a' }),
 }

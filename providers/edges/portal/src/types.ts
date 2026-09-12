@@ -13,6 +13,7 @@ export interface FarosContext {
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
+  navigationBasePath?: string
   basePath?: string
   subPath?: string
 }

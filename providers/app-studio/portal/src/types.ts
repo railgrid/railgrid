@@ -14,6 +14,7 @@ export interface FarosContext {
   orgUUID?: string | null
   workspaceUUID?: string | null
   theme?: 'light' | 'dark' | 'system'
+  navigationBasePath?: string
   basePath?: string
   subPath?: string
 }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { portalHref } from './portalkit/navigation'
 import { computed } from 'vue'
 import { ExternalLink, GitBranch, Loader2, RefreshCw } from 'lucide-vue-next'
 import type { ProjectCreateReadiness } from './createReadiness'
 
-const props = withDefaults(defineProps<{ readiness: ProjectCreateReadiness | null; checking: boolean; error?: string; connectionUrl?: string; catalogUrl?: string }>(), {
-  connectionUrl: '/ui/providers/code/connections', catalogUrl: '/providers',
-})
+const props = defineProps<{ readiness: ProjectCreateReadiness | null; checking: boolean; error?: string; connectionUrl?: string; catalogUrl?: string }>()
+const connectionUrl = computed(() => props.connectionUrl ?? portalHref('/ui/providers/code/connections'))
+const catalogUrl = computed(() => props.catalogUrl ?? portalHref('/providers'))
 defineEmits<{ retry: [] }>()
 const missingProvider = computed(() => props.readiness?.gitConnection.status === 'provider-missing')
 const failed = computed(() => !!props.error || props.readiness?.gitConnection.status === 'failed')

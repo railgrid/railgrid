@@ -11,10 +11,16 @@ const storeSource = fs.readFileSync(path.join(root, 'portal', 'src', 'stores', '
 // three runtime dependencies replaced by tiny deterministic doubles so these
 // tests exercise refreshBindings/enable/disable rather than a copied model.
 const sourceWithoutImports = storeSource
+  .replace("import { useTenantStore } from './tenant'\n", '')
+  .replace("import { scopedPath } from '@/portalkit/navigation'\n", '')
   .replace("import { defineStore } from 'pinia'\n", '')
   .replace("import { computed, ref } from 'vue'\n", '')
   .replace("import { authFetch } from '@/auth/session'\n", '')
+const navigationSource = fs.readFileSync(path.join(root, 'portal/src/portalkit/navigation.ts'), 'utf8')
 const harness = `
+${navigationSource}
+const useTenantStore = () => globalThis.__tenantSelection
+
 const ref = (value) => ({ value })
 const computed = (getter) => ({ get value() { return getter() } })
 const defineStore = (_name, setup) => () => {
@@ -47,6 +53,7 @@ globalThis.localStorage = {
 }
 
 function setSelection(orgUUID, workspaceUUID, workspaceMode = 'workspace') {
+  globalThis.__tenantSelection = { orgUUID, workspaceUUID: workspaceMode === 'organization' ? null : workspaceUUID, workspaceMode }
   persistedSelection = JSON.stringify({ orgUUID, workspaceUUID, workspaceMode })
 }
 

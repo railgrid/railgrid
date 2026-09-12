@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
@@ -11,6 +12,8 @@ import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { providerBindingAction } from '@/lib/providerBindingAction'
 import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
+
+const { scopePath } = useScopedNavigation()
 
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
@@ -527,7 +530,7 @@ function dependencyNotice(p: ProviderDTO): string {
             </button>
             <router-link
               v-else-if="edgesSelfHostState === 'ready'"
-              to="/providers/edges"
+              :to="scopePath('/providers/edges')"
               class="mt-1 inline-flex items-center gap-1 text-[11px] font-medium underline"
             >
               Connect a Kubernetes cluster
@@ -969,7 +972,7 @@ function dependencyNotice(p: ProviderDTO): string {
                  ProviderFrame. -->
             <router-link
               v-if="p.hasUI && p.ready && (!p.apiExportName || providers.isEnabled(p.name))"
-              :to="p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`"
+              :to="scopePath(p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >
               Open

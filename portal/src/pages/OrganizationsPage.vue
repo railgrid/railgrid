@@ -48,23 +48,23 @@ let organizationsLoadGeneration = 0
 function validatedInternalPath(value: unknown): string {
   const candidate = Array.isArray(value) ? value[0] : value
   if (typeof candidate !== 'string' || !candidate.startsWith('/') || candidate.startsWith('//')) {
-    return '/settings/workspaces'
+    return '/'
   }
 
   try {
     const parsed = new URL(candidate, 'https://faros.internal')
-    if (parsed.origin !== 'https://faros.internal') return '/settings/workspaces'
+    if (parsed.origin !== 'https://faros.internal') return '/'
     if (
       parsed.pathname === '/organizations' ||
       parsed.pathname.startsWith('/organizations/') ||
       parsed.pathname === '/login' ||
       parsed.pathname === '/auth/callback'
     ) {
-      return '/settings/workspaces'
+      return '/'
     }
-    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/settings/workspaces'
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/'
   } catch {
-    return '/settings/workspaces'
+    return '/'
   }
 }
 
@@ -127,20 +127,8 @@ async function chooseOrganization(org: OrgRow) {
   switchingOrg.value = org.uuid
   localError.value = null
   try {
-    tenant.clearError()
-    // This action deliberately clears workspaceUUID and does not select a
-    // default. Workspace selection remains an explicit, separate decision.
-    await tenant.selectOrganization(org.uuid)
-    if (tenant.error) {
-      // selectOrganization reports workspace-list failures on the store and
-      // resolves so callers can decide how to recover. Do not navigate to
-      // settings while the new org's workspace state is unknown.
-      failedSwitchOrg.value = org.uuid
-      localError.value = tenant.error
-      return
-    }
     failedSwitchOrg.value = null
-    await router.replace('/settings/workspaces')
+    await router.push(`/${org.uuid}/settings/workspaces`)
   } catch (error: unknown) {
     failedSwitchOrg.value = org.uuid
     localError.value = error instanceof Error ? error.message : 'Failed to switch organization.'
@@ -162,7 +150,7 @@ async function retryFailedSwitch() {
       return
     }
     failedSwitchOrg.value = null
-    await router.replace('/settings/workspaces')
+    await router.push(`/${orgUUID}/settings/workspaces`)
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to load workspaces.'
   } finally {

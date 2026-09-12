@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from './portalkit/navigation'
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Globe2, Home, Laptop, Plug, Plus, RefreshCw, Server, TerminalSquare } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
@@ -452,7 +453,7 @@ onUnmounted(() => {
 
 <template>
   <div class="edge-detail">
-    <ResourceBackLink class="edge-detail__back" href="/ui/providers/edges" @back="emit('back')">
+    <ResourceBackLink class="edge-detail__back" :href="portalHref('/ui/providers/edges')" @back="emit('back')">
       Edges
     </ResourceBackLink>
 

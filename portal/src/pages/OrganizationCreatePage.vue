@@ -40,23 +40,23 @@ const localError = ref<string | null>(null)
 function validatedInternalPath(value: unknown): string {
   const candidate = Array.isArray(value) ? value[0] : value
   if (typeof candidate !== 'string' || !candidate.startsWith('/') || candidate.startsWith('//')) {
-    return '/settings/workspaces'
+    return '/'
   }
 
   try {
     const parsed = new URL(candidate, 'https://faros.internal')
-    if (parsed.origin !== 'https://faros.internal') return '/settings/workspaces'
+    if (parsed.origin !== 'https://faros.internal') return '/'
     if (
       parsed.pathname === '/organizations' ||
       parsed.pathname.startsWith('/organizations/') ||
       parsed.pathname === '/login' ||
       parsed.pathname === '/auth/callback'
     ) {
-      return '/settings/workspaces'
+      return '/'
     }
-    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/settings/workspaces'
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/'
   } catch {
-    return '/settings/workspaces'
+    return '/'
   }
 }
 
@@ -92,7 +92,7 @@ async function createOrganization() {
       route.name === submittingRoute.name &&
       route.fullPath === submittingRoute.fullPath
     ) {
-      await router.replace('/settings/workspaces')
+      await router.replace(`/${created.uuid}/settings/workspaces`)
     }
   } catch (error: unknown) {
     localError.value = error instanceof Error ? error.message : 'Failed to create organization.'

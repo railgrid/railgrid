@@ -27,6 +27,7 @@ the reconciler using that server's own identity).
 -->
 
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
@@ -45,6 +46,8 @@ import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '@/portalkit/ResourceStatCards.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
+
+const { scopePath } = useScopedNavigation()
 
 interface FederatedTool {
   name: string
@@ -360,6 +363,12 @@ function openDetail(row: Record<string, unknown>) {
   const name = (row._server as MCPServer).name
   void router.push({ name: 'mcp-detail', params: { name } })
 }
+function onBackClick(event: MouseEvent, navigate: () => void): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  navigate()
+}
+
 function closeDetail() {
   void router.push({ name: 'mcp' })
 }
@@ -576,8 +585,8 @@ function rel(ts?: string): string {
       <section v-show="isCreate" class="k-create-page" data-mcp-route-surface="create">
         <a
           class="k-btn k-btn--ghost k-back-action"
-          href="/ui/mcp"
-          @click.prevent="cancelCreate"
+          :href="'/ui' + scopePath('/mcp')"
+          @click="onBackClick($event, cancelCreate)"
         >
           <ArrowLeft :size="14" aria-hidden="true" />
           MCP Access
@@ -709,8 +718,8 @@ function rel(ts?: string): string {
       <template v-if="!isCreate && selected">
         <a
           class="k-btn k-btn--ghost k-back-action"
-          href="/ui/mcp"
-          @click.prevent="closeDetail"
+          :href="'/ui' + scopePath('/mcp')"
+          @click="onBackClick($event, closeDetail)"
         >
           <ArrowLeft :size="14" aria-hidden="true" />
           MCP Access

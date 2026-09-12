@@ -1,3 +1,4 @@
+import { useTenantStore } from './tenant'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authFetch } from '@/auth/session'
@@ -101,16 +102,7 @@ export interface EdgeInstallTargets {
 }
 
 function readTenantSelection(): { orgUUID: string | null } {
-  // Read the selection from localStorage rather than importing the tenant
-  // store, matching the import-cycle avoidance already used in stores/providers.
-  try {
-    const raw = localStorage.getItem('faros:portal:tenant')
-    if (!raw) return { orgUUID: null }
-    const parsed = JSON.parse(raw) as { orgUUID?: string | null }
-    return { orgUUID: parsed.orgUUID ?? null }
-  } catch {
-    return { orgUUID: null }
-  }
+  return { orgUUID: useTenantStore().orgUUID }
 }
 
 export const useOrgProvidersStore = defineStore('orgProviders', () => {

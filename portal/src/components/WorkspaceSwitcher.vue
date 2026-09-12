@@ -15,6 +15,7 @@ limitations under the License.
 -->
 
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -30,6 +31,8 @@ import {
 } from 'lucide-vue-next'
 import { useAnchoredPopover } from '@/composables/useAnchoredPopover'
 import { isWorkspaceAvailable, isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
+
+const { scopePath } = useScopedNavigation()
 
 const props = withDefaults(defineProps<{
   variant?: 'sidebar' | 'horizontal' | 'compact'
@@ -206,10 +209,10 @@ function workspaceName(workspace: WorkspaceRow | null): string {
 }
 
 async function ensureContextLoaded() {
-  if (tenant.orgs.length === 0 && orgLoadState.value === 'idle') await tenant.fetchOrgs()
-  if (orgLoadState.value === 'error' || !tenant.orgUUID || tenant.workspacesByOrg[tenant.orgUUID]) return
+  if (!tenant.orgListLoaded && orgLoadState.value !== 'loading') await tenant.fetchOrgs()
+  if (orgLoadState.value === 'error' || !tenant.orgUUID || tenant.workspaceListLoadedByOrg[tenant.orgUUID]) return
   const loadState = tenant.workspaceLoadStateByOrg[tenant.orgUUID] ?? 'idle'
-  if (loadState !== 'idle') return
+  if (loadState === 'loading' || loadState === 'error') return
   await tenant.fetchWorkspaces(tenant.orgUUID, {
     selectDefault: tenant.workspaceMode !== 'organization',
   })
@@ -264,16 +267,12 @@ async function chooseWorkspace(workspace: WorkspaceRow): Promise<void> {
   // serving. A pending row must not replace a usable cluster context.
   if (!isWorkspaceUsable(workspace)) return
   if (workspaceUnavailable(workspace)) return
-  const changed = tenant.selectWorkspace(workspace.uuid)
-  // A successful switch starts a new workspace-scoped session. Returning to
-  // the named dashboard route keeps provider/detail URLs from being replayed
-  // against the new workspace before their own data has been revalidated.
-  // Same/current selections return false and stay on the current route.
   close({ restoreFocus: true })
+  const changed = workspace.uuid !== tenant.workspaceUUID
   if (!changed) return
   const transitionToken = tenant.beginWorkspaceTransition()
   try {
-    await router.replace({ name: 'dashboard' })
+    await router.push({ name: 'dashboard', params: { orgID: workspace.orgUUID, workspaceID: workspace.uuid } })
   } finally {
     tenant.endWorkspaceTransition(transitionToken)
   }
@@ -281,7 +280,7 @@ async function chooseWorkspace(workspace: WorkspaceRow): Promise<void> {
 
 function manageWorkspaces() {
   close({ restoreFocus: true })
-  void router.push('/settings/workspaces')
+  void router.push(scopePath('/settings/workspaces'))
 }
 
 async function retryContext(): Promise<void> {

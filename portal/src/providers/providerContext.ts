@@ -12,6 +12,7 @@ export interface ProviderContext {
   orgUUID: string | null
   workspaceUUID: string | null
   theme: 'light' | 'dark'
+  navigationBasePath?: string
   basePath: string
   // fetch is the host-owned transport: it resolves relative URLs against the
   // portal origin, injects Authorization and the tenant headers, and refuses
@@ -32,12 +33,14 @@ export interface ProviderContextFields {
   orgUUID: string | null
   workspaceUUID: string | null
   theme: 'light' | 'dark'
+  navigationBasePath?: string
   basePath: string
 }
 
 interface ProviderContextOptions {
   providerName: string
   scope: () => ProviderFetchScope
+  isCurrent?: () => boolean
   fetchImpl?: typeof fetch
   origin?: string
   warn?: (message: string) => void
@@ -56,7 +59,7 @@ export function createProviderContext(fields: ProviderContextFields, options: Pr
   })
   const ctx = {
     ...fields,
-    fetch: createProviderFetch({ providerName, scope, fetchImpl: options.fetchImpl, origin: options.origin }),
+    fetch: createProviderFetch({ providerName, scope, isCurrent: options.isCurrent, fetchImpl: options.fetchImpl, origin: options.origin }),
   } as ProviderContext
   Object.defineProperty(ctx, 'token', {
     enumerable: true,

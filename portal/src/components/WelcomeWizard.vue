@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 // First-run onboarding for a workspace that has nothing enabled yet.
 //
 // A fresh account lands on the dashboard with an empty grid and an empty side
@@ -41,6 +42,8 @@ import { toast } from '@/portalkit/toast'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
+
+const { scopePath } = useScopedNavigation()
 
 const emit = defineEmits<{
   // Raised when the user skips or finishes. The dashboard swaps back to the
@@ -417,7 +420,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
             <li class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
               <Puzzle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
               <span>
-                <router-link to="/providers" class="font-medium text-accent hover:text-accent-hover">Providers</router-link>
+                <router-link :to="scopePath('/providers')" class="font-medium text-accent hover:text-accent-hover">Providers</router-link>
                 — the full catalog. Enable and disable anything, any time.
               </span>
             </li>
@@ -434,7 +437,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
             <li class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
               <Boxes class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
               <span>
-                <router-link to="/settings/workspaces" class="font-medium text-accent hover:text-accent-hover">Settings</router-link>
+                <router-link :to="scopePath('/settings/workspaces')" class="font-medium text-accent hover:text-accent-hover">Settings</router-link>
                 — add more workspaces, or invite people to the org.
               </span>
             </li>

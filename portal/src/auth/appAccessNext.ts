@@ -8,6 +8,7 @@ const AUTHORIZE_PATTERN = /^\/auth\/apps\/authorize\?/
 
 export function rememberAppAccessNext(next: string | null): void {
   if (next && AUTHORIZE_PATTERN.test(next)) {
+    sessionStorage.removeItem('faros.portal-next')
     sessionStorage.setItem(STORAGE_KEY, next)
   }
 }

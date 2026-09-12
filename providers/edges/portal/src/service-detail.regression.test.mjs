@@ -83,7 +83,7 @@ describe('Service detail narrow-screen regressions', () => {
   })
 
   it('uses the provider UI route as the service backlink fallback', () => {
-    expect(serviceEdit).toMatch(/<ResourceBackLink class="service-detail__back" href="\/ui\/providers\/edges\/services" @back="emit\('back'\)">[\s\S]*Services[\s\S]*<\/ResourceBackLink>/)
+    expect(serviceEdit).toMatch(/<ResourceBackLink class="service-detail__back" :href="portalHref\('\/ui\/providers\/edges\/services'\)" @back="emit\('back'\)">[\s\S]*Services[\s\S]*<\/ResourceBackLink>/)
     expect(serviceEdit).toMatch(/import ResourceBackLink from '\.\/portalkit\/ResourceBackLink\.vue'/)
   })
 })

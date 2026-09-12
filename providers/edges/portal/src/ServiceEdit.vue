@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from './portalkit/navigation'
 import { ref, computed, onUnmounted, watch } from 'vue'
 import { Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
 import { confirmDialog } from './portalkit/confirm'
@@ -373,7 +374,7 @@ onUnmounted(() => {
 
 <template>
   <div class="service-detail">
-    <ResourceBackLink class="service-detail__back" href="/ui/providers/edges/services" @back="emit('back')">
+    <ResourceBackLink class="service-detail__back" :href="portalHref('/ui/providers/edges/services')" @back="emit('back')">
       Services
     </ResourceBackLink>
     <div class="service-detail__resource">

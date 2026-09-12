@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { ref, onMounted, onUnmounted, computed, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -27,6 +28,8 @@ import {
   type ProviderRouteItem,
 } from '@/lib/shellNavigation'
 
+const { scopePath, routePath } = useScopedNavigation()
+
 const auth = useAuthStore()
 const terminalStore = useTerminalSessionsStore()
 const providersStore = useProvidersStore()
@@ -39,8 +42,8 @@ const adminStore = useAdminStore()
 onMounted(() => { void adminStore.checkAccess() })
 const layoutProps = defineProps<{ fullBleed?: boolean }>()
 
-const route = useRoute()
 const router = useRouter()
+const route = useRoute()
 
 // Empty-org guard: when the active org has zero workspaces (after fetch
 // completes), every workspace-scoped page would try to query a cluster
@@ -62,7 +65,7 @@ const showWorkspaceWizard = computed(() => {
   if (activeWorkspace?.clusterName) return false
   if (!tenantStore.workspaceSelectionHydrated) return false
   if (!list || list.some((workspace) => !workspace.deletionRequestedAt)) return false
-  const path = route.path
+  const path = routePath.value
   if (path === '/settings' || path.startsWith('/settings/')) return false
   if (path === '/providers') return false
   if (path === '/organizations' || path.startsWith('/organizations/')) return false
@@ -74,7 +77,7 @@ const showWorkspaceWizard = computed(() => {
 // list guard avoids a hard-refresh flash while the persisted workspace is
 // being hydrated; once the list arrives, readiness is authoritative.
 const showWorkspacePending = computed(() => {
-  const path = route.path
+  const path = routePath.value
   if (path === '/settings' || path.startsWith('/settings/')) return false
   if (path === '/providers') return false
   if (path === '/organizations' || path.startsWith('/organizations/')) return false
@@ -101,9 +104,9 @@ watchEffect(() => {
   if (!auth.token || !tenantStore.orgUUID || tenantStore.workspaceUUID) return
   const list = tenantStore.workspacesByOrg[tenantStore.orgUUID]
   if (!list || list.length === 0) return
-  const path = route.path
+  const path = routePath.value
   if (path === '/settings' || path.startsWith('/settings/') || path === '/providers' || path === '/organizations' || path.startsWith('/organizations/')) return
-  void router.replace('/settings/workspaces')
+  void router.replace(scopePath('/settings/workspaces'))
 })
 
 // Keep the routed slot suppressed for the whole navigation transition, but
@@ -176,13 +179,13 @@ const slotClass = computed(() => [
 // Settings lives in the account-and-access menu rather than competing
 // with providers as a primary destination. The same menu is shared by
 // vertical, horizontal, and floating chrome.
-const staticNavItems: NavItem[] = [
-  { label: 'Dashboard', to: '/', icon: LayoutDashboard },
-]
+const staticNavItems = computed<NavItem[]>(() => [
+  { label: 'Dashboard', to: scopePath('/'), icon: LayoutDashboard, exact: true },
+])
 
 // Catalog link sits immediately below Dashboard and routes to the full
 // provider catalog page when clicked.
-const providersHeaderItem: NavItem = { label: 'Providers', to: '/providers', icon: Puzzle, exact: true }
+const providersHeaderItem = computed<NavItem>(() => ({ label: 'Providers', to: scopePath('/providers'), icon: Puzzle, exact: true }))
 
 // Resolve a category's Lucide component from the icon-name registry.
 // Categories the hub doesn't know (third-party ad-hoc) get a fallback.
@@ -198,7 +201,7 @@ function categoryIcon(name: string | null): unknown {
 // x y | MCP: z | Other: w" instead of a flat icon parade.
 const horizontalNavSections = computed<HorizontalSection[]>(() => {
   const sections: HorizontalSection[] = []
-  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems, providersHeaderItem] })
+  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems.value, providersHeaderItem.value] })
   const cat = providersStore.categorizedNavItems
   for (const g of cat.groups) {
     sections.push({
@@ -429,7 +432,7 @@ const contextStatus = computed<ContextStatus>(() => {
             <GripVertical class="h-3 w-3" :stroke-width="2" />
           </button>
           <router-link
-            :to="{ name: 'dashboard' }"
+            :to="scopePath('/')"
             class="shell-brand-link group flex min-w-0 items-center gap-2 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             aria-label="Go to dashboard"
             title="Dashboard"
@@ -480,7 +483,7 @@ const contextStatus = computed<ContextStatus>(() => {
           <GripVertical class="h-3 w-3" :stroke-width="2" />
         </button>
         <router-link
-          :to="{ name: 'dashboard' }"
+          :to="scopePath('/')"
           class="shell-brand-link flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           aria-label="Go to dashboard"
           title="Dashboard"
@@ -830,7 +833,7 @@ const contextStatus = computed<ContextStatus>(() => {
       <!-- Logo -->
       <div class="shell-brand flex shrink-0 items-center gap-1.5 px-1">
         <router-link
-          :to="{ name: 'dashboard' }"
+          :to="scopePath('/')"
           class="shell-brand-link group flex items-center gap-1.5 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           aria-label="Go to dashboard"
           title="Dashboard"
@@ -991,7 +994,7 @@ const contextStatus = computed<ContextStatus>(() => {
               <button v-if="tenantStore.workspaceLoadState === 'error'" type="button" class="k-btn k-btn--ghost text-[11px]" @click="retryWorkspaceHydration">
                 Retry
               </button>
-              <router-link to="/settings/workspaces" class="k-btn k-btn--ghost text-[11px]">Manage workspaces</router-link>
+              <router-link :to="scopePath('/settings/workspaces')" class="k-btn k-btn--ghost text-[11px]">Manage workspaces</router-link>
             </div>
           </div>
         </div>
@@ -1029,7 +1032,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
         <div class="shell-brand flex shrink-0 items-center gap-1.5 px-1.5">
           <router-link
-            :to="{ name: 'dashboard' }"
+            :to="scopePath('/')"
             class="shell-brand-link group flex items-center gap-1.5 rounded-md transition-colors hover:bg-surface-overlay/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             aria-label="Go to dashboard"
             title="Dashboard"

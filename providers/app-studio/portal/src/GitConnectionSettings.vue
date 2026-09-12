@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from './portalkit/navigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ExternalLink, GitBranch, Loader2 } from 'lucide-vue-next'
 import { api } from './api'
@@ -26,10 +27,10 @@ const repositoryMessage = computed(() => {
 })
 const action = computed(() => {
   switch (connection.value?.status) {
-    case 'provider-missing': return { href: '/providers', label: 'Enable Code provider' }
-    case 'failed': return { href: '/ui/providers/code/connections', label: 'Fix Git connection' }
-    case 'validating': return { href: '/ui/providers/code/connections', label: 'View Git connection' }
-    default: return { href: '/ui/providers/code/connections', label: 'Connect GitHub' }
+    case 'provider-missing': return { href: portalHref('/providers'), label: 'Enable Code provider' }
+    case 'failed': return { href: portalHref('/ui/providers/code/connections'), label: 'Fix Git connection' }
+    case 'validating': return { href: portalHref('/ui/providers/code/connections'), label: 'View Git connection' }
+    default: return { href: portalHref('/ui/providers/code/connections'), label: 'Connect GitHub' }
   }
 })
 async function check() {
@@ -77,7 +78,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) 
     <template v-if="project.repository?.ref">
       <p class="text-[12px] text-text-primary">{{ project.repository.name || project.repository.ref }}</p>
       <p class="text-[12px] text-text-secondary" role="status">{{ repositoryMessage }}</p>
-      <a href="/ui/providers/code/connections" target="_blank" rel="noopener noreferrer" class="text-[12px] text-accent underline underline-offset-2">Manage Git connection</a>
+      <a :href="portalHref('/ui/providers/code/connections')" target="_blank" rel="noopener noreferrer" class="text-[12px] text-accent underline underline-offset-2">Manage Git connection</a>
     </template>
     <template v-else>
       <p class="text-[12px] text-text-secondary">Git adds backup, history, and builds. You can keep building without it.</p>

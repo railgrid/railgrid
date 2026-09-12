@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { consumePortalNext, rememberPortalNext } from '@/auth/portalNext'
 import { consumeAppAccessNext, rememberAppAccessNext } from '@/auth/appAccessNext'
 import { API_PATHS } from '@/lib/constants'
 import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor, Plus } from 'lucide-vue-next'
@@ -38,13 +39,14 @@ onMounted(async () => {
   // A private published app sent the browser here to establish the shared
   // hub session; remember the hub-relative continuation across the flow.
   rememberAppAccessNext(search.get('next'))
-  if (auth.isAuthenticated && !switching) {
+  rememberPortalNext(search.get('returnTo'))
+  if (auth.token && !switching) {
     const next = consumeAppAccessNext()
     if (next) {
       window.location.assign(next)
       return
     }
-    router.push('/')
+    router.replace(consumePortalNext() ?? '/')
     return
   }
   await auth.detectAuthMode()
@@ -66,7 +68,7 @@ async function handleTokenLogin() {
   try {
     await auth.loginStatic(tokenInput.value)
     if (resumeAfterLogin()) return
-    router.push('/')
+    router.replace(consumePortalNext() ?? '/')
   } catch (e) {
     loginError.value = e instanceof Error ? e.message : 'Login failed'
   }

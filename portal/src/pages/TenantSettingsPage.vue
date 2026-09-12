@@ -23,6 +23,7 @@ matching the rest of the portal.
 -->
 
 <script setup lang="ts">
+import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
@@ -62,6 +63,8 @@ import {
   X,
 } from 'lucide-vue-next'
 
+const { scopePath, routePath } = useScopedNavigation()
+
 const tenant = useTenantStore()
 const route = useRoute()
 const router = useRouter()
@@ -78,17 +81,17 @@ const activeSection = computed<SettingsSection>(() => {
   // keeps a hand-entered trailing slash on the same section when the router
   // preserves it in the normalized location.
   if (route.name === 'settings-organizations') return 'organizations'
-  if (route.path === '/settings/organizations') return 'organizations'
-  if (route.path.replace(/\/+$/, '') === '/settings/organizations') return 'organizations'
+  if (routePath.value === '/settings/organizations') return 'organizations'
+  if (routePath.value.replace(/\/+$/, '') === '/settings/organizations') return 'organizations'
   return 'workspaces'
 })
 
 function navigateSettings(section: string): void {
   if (section === 'organizations') {
-    void router.push('/settings/organizations')
+    void router.push(scopePath('/settings/organizations'))
     return
   }
-  void router.push('/settings/workspaces')
+  void router.push(scopePath('/settings/workspaces'))
 }
 
 const workspaceRouteUUID = computed<string | null>(() => {
@@ -97,7 +100,7 @@ const workspaceRouteUUID = computed<string | null>(() => {
 })
 
 function workspaceRoutePath(workspaceUUID: string): string {
-  return `/settings/workspaces/${encodeURIComponent(workspaceUUID)}`
+  return scopePath(`/settings/workspaces/${encodeURIComponent(workspaceUUID)}`)
 }
 
 // ===== Active organization and workspace selection =========================
@@ -522,7 +525,7 @@ async function normalizeWorkspaceSelection(orgUUID: string, loadedWorkspaces: Wo
     const routedWorkspace = loadedWorkspaces.find((workspace) => workspace.uuid === requestedWorkspaceUUID)
     if (!routedWorkspace) {
       selectedWorkspaceUUID.value = null
-      await router.replace('/settings/workspaces')
+      await router.replace(scopePath('/settings/workspaces'))
       return
     }
     if (!workspaceMatchesLifecycleFilter(routedWorkspace)) {
@@ -553,7 +556,7 @@ async function reloadScopedWorkspaces(orgUUID: string | null): Promise<void> {
     // watcher then sees the base path and stays quiet instead of replacing
     // the same route again.
     if (activeSection.value === 'workspaces' && workspaceRouteUUID.value) {
-      await router.replace('/settings/workspaces')
+      await router.replace(scopePath('/settings/workspaces'))
     }
     return
   }
@@ -663,7 +666,7 @@ function setWorkspaceLifecycleFilter(value: string): void {
   }
 
   selectedWorkspaceUUID.value = null
-  if (workspaceRouteUUID.value) void router.push('/settings/workspaces')
+  if (workspaceRouteUUID.value) void router.push(scopePath('/settings/workspaces'))
 }
 
 function clearWorkspaceFilters(): void {
@@ -705,7 +708,7 @@ watch(
     const orgUUID = tenant.orgUUID
     if (!orgUUID) {
       selectedWorkspaceUUID.value = null
-      if (workspaceRouteUUID.value) void router.replace('/settings/workspaces')
+      if (workspaceRouteUUID.value) void router.replace(scopePath('/settings/workspaces'))
       return
     }
     void normalizeWorkspaceSelection(orgUUID, workspaces.value)
@@ -787,12 +790,12 @@ const activateWorkspaceDisabledReason = computed<string | null>(() => {
 async function activateInspectedWorkspace(): Promise<void> {
   const workspace = selWs.value
   if (!workspace || activateWorkspaceDisabledReason.value) return
-  const changed = tenant.selectWorkspace(workspace.uuid)
-  if (!changed && !inspectedWorkspaceIsActive.value) return
   const transitionToken = tenant.beginWorkspaceTransition()
   try {
-    await router.push({ name: 'dashboard' })
-    toast('ok', `Switched operating context to "${workspace.displayName || workspace.uuid}".`)
+    const failure = await router.push({ name: 'dashboard', params: { orgID: workspace.orgUUID, workspaceID: workspace.uuid } })
+    if (!failure && tenant.orgUUID === workspace.orgUUID && tenant.workspaceUUID === workspace.uuid && tenant.activeWorkspaceUsable) {
+      toast('ok', `Switched operating context to "${workspace.displayName || workspace.uuid}".`)
+    }
   } finally {
     tenant.endWorkspaceTransition(transitionToken)
   }
@@ -1643,7 +1646,7 @@ function fmtDate(s?: string | null): string {
             announce="auto"
           />
           <router-link
-            :to="{ path: '/organizations', query: { from: activeSection === 'organizations' ? '/settings/organizations' : '/settings/workspaces' } }"
+            :to="{ path: '/organizations', query: { from: scopePath(activeSection === 'organizations' ? '/settings/organizations' : '/settings/workspaces') } }"
             class="k-btn k-btn--primary mt-4 text-[11px]"
           >
             Choose organization
@@ -2202,7 +2205,7 @@ function fmtDate(s?: string | null): string {
                     {{ organizationSettingsOrg.displayName }}
                   </h2>
                   <router-link
-                    :to="{ path: '/organizations', query: { from: '/settings/organizations' } }"
+                    :to="{ path: '/organizations', query: { from: scopePath('/settings/organizations') } }"
                     class="k-btn k-btn--ghost shrink-0"
                   >
                     <Building2 class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />

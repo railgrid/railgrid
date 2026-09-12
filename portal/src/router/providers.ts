@@ -4,16 +4,17 @@
 // per-provider components later, but for Phase 2 the ProviderFrame.vue
 // component handles every provider uniformly via the :name param.
 
+import { WORKSPACE_ROUTE } from '@/portalkit/navigation'
 import type { Router } from 'vue-router'
 
-let registered = false
+const registered = new WeakSet<Router>()
 
 // registerProviderRoutes installs the dynamic provider matcher exactly once.
 // Idempotent so multiple store refreshes are safe.
 export function registerProviderRoutes(router: Router) {
-  if (registered) return
+  if (registered.has(router)) return
   router.addRoute({
-    path: '/providers/:name/:rest(.*)*',
+    path: WORKSPACE_ROUTE + '/providers/:name/:rest(.*)*',
     name: 'provider-frame',
     component: () => import('@/pages/ProviderFrame.vue'),
     props: (route) => ({
@@ -23,5 +24,5 @@ export function registerProviderRoutes(router: Router) {
         : (route.params.rest as string) ?? '',
     }),
   })
-  registered = true
+  registered.add(router)
 }

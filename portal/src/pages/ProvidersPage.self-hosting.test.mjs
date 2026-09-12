@@ -27,7 +27,7 @@ test('self-hosting Edges prerequisite uses catalog-owned availability states', (
 test('only a ready Edges portal receives the provider deep link', () => {
   assert.match(
     source,
-    /<router-link\s+v-else-if="edgesSelfHostState === 'ready'"\s+to="\/providers\/edges"/,
+    /<router-link\s+v-else-if="edgesSelfHostState === 'ready'"\s+:to="scopePath\('\/providers\/edges'\)"/,
   )
   assert.match(source, /v-else-if="edgesSelfHostState === 'unready'"/)
   assert.match(source, /v-else-if="edgesSelfHostState === 'absent'"/)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { portalHref } from '../portalkit/navigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -268,7 +269,7 @@ onUnmounted(() => {
   <section class="instance-detail">
     <ResourceBackLink
       class="instance-detail__back"
-      href="/ui/providers/infrastructure/instances"
+      :href="portalHref('/ui/providers/infrastructure/instances')"
       :disabled="deleting || deletionInProgress"
       @back="goBack"
     >

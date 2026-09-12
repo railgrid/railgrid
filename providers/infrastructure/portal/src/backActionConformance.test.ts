@@ -23,7 +23,7 @@ describe('Infrastructure back-navigation conformance', () => {
     const instanceDetail = sources['./views/InstanceDetailPage.vue']
     expect(instanceDetail).toContain("import ResourceBackLink from '../portalkit/ResourceBackLink.vue'")
     expect(instanceDetail).toContain('<ResourceBackLink')
-    expect(instanceDetail).toContain('href="/ui/providers/infrastructure/instances"')
+    expect(instanceDetail).toContain(":href=\"portalHref('/ui/providers/infrastructure/instances')\"")
     expect(instanceDetail).toContain(':disabled="deleting || deletionInProgress"')
     expect(instanceDetail).toContain('@back="goBack"')
     expect(resourceBackLink).toContain(":class=\"['k-btn k-btn--ghost k-back-action', { 'k-back-action--icon-only': iconOnly }]\"")

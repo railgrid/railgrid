@@ -8,6 +8,7 @@ import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-first-time-setup', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
 const { default: FirstTimeSetup } = await vite.ssrLoadModule('/src/FirstTimeSetup.vue')
+const { default: GitRecommendationBanner } = await vite.ssrLoadModule('/src/GitRecommendationBanner.vue')
 test.after(async () => vite.close())
 
 const base = {
@@ -22,6 +23,27 @@ const base = {
   codeCatalogUrl: '/providers',
 }
 const render = (props = {}) => renderToString(createSSRApp(FirstTimeSetup, { ...base, ...props }))
+
+test('Git recovery links use the workspace of each mount, including after bundle reuse', async () => {
+  const previousWindow = globalThis.window
+  const org = '11111111-1111-4111-8111-111111111111'
+  try {
+    for (const workspace of ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333']) {
+      const prefix = `/ui/${org}/${workspace}`
+      globalThis.window = { location: { pathname: `${prefix}/providers/app-studio` } }
+      for (const status of ['provider-missing', 'connection-missing']) {
+        const html = await renderToString(createSSRApp(GitRecommendationBanner, {
+          readiness: { gitConnection: { status } }, checking: false,
+        }))
+        const path = status === 'provider-missing' ? '/providers' : '/providers/code/connections'
+        assert.ok(html.includes(`href="${prefix}${path}"`), html)
+      }
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+  }
+})
 
 test('keeps first-time setup separate from the project prompt', async () => {
   const html = await render()
