@@ -104,6 +104,12 @@ test('graph key actions and focus ownership are deterministic', () => {
   assert.equal(graphModule.graphOwnsFocus(graph, null), false)
 })
 
+// A discrete Cytoscape layout emits layoutstop synchronously inside run().
+const discreteLayoutStub = () => {
+  let onStop
+  return { one: (event, listener) => { if (event === 'layoutstop') onStop = listener }, run() { onStop?.() }, stop() {} }
+}
+
 test('mountGraph focuses the labeled container on pointer use and removes the listener on destroy', async () => {
   const previousWindow = globalThis.window
   let focusCount = 0
@@ -119,6 +125,8 @@ test('mountGraph focuses the labeled container on pointer use and removes the li
   const fakeCytoscape = () => ({
     on: () => {},
     destroy: () => { destroyed += 1 },
+    nodes: () => ({ length: 0 }),
+    layout: discreteLayoutStub,
   })
 
   try {
@@ -141,6 +149,7 @@ test('graph additions enforce a hard node limit while retaining parallel relatio
   const cy = {
     on: () => {},
     destroy: () => {},
+    layout: discreteLayoutStub,
     nodes: () => ({ length: [...stored.values()].filter(element => !element.data.source).length }),
     getElementById: id => ({ nonempty: () => stored.has(id), empty: () => !stored.has(id) }),
     add: elements => {
@@ -308,4 +317,126 @@ test('graph rendering provides theme contrast, relation labels, resize handling,
   assert.match(topologySource, /await new Promise<void>\(resolve => requestAnimationFrame/u)
   assert.match(topologySource, /\(rounds \+ 1\) % 3 === 0/u)
   assert.match(topologySource, /aria-live="polite" aria-atomic="true"/u)
+})
+
+test('force layout is sized to the graph and never runs a large graph synchronously', () => {
+  const small = graphModule.forceLayoutSizing(50)
+  assert.equal(small.animate, false, 'a small graph lays out synchronously for a stable, immediate result')
+  assert.equal(small.numIter, 1000)
+  assert.equal(small.refresh, 20)
+
+  const fleet = graphModule.forceLayoutSizing(2000)
+  assert.equal(fleet.animate, true, 'a fleet-sized graph must step across animation frames, not block the tab')
+  assert.ok(fleet.numIter >= 100 && fleet.numIter < small.numIter, `iterations shrink with size, got ${fleet.numIter}`)
+  assert.ok(fleet.refresh >= 1 && fleet.refresh <= 4, `few iterations per frame on 2,000 nodes, got ${fleet.refresh}`)
+
+  // Total work stays bounded: pair evaluations per run never exceed the budget
+  // by more than the iteration floor allows, and shrink monotonically.
+  let previous = Number.POSITIVE_INFINITY
+  for (const nodes of [100, 300, 500, 1000, 2000, 4000]) {
+    const sizing = graphModule.forceLayoutSizing(nodes)
+    assert.ok(sizing.numIter <= previous, `iterations must not grow with node count (${nodes})`)
+    assert.ok(sizing.refresh >= 1 && sizing.refresh <= 20)
+    // The cooling schedule reaches minTemp exactly at numIter, so a shortened
+    // run settles instead of being cut off hot.
+    const finalTemp = 1000 * Math.pow(sizing.coolingFactor, sizing.numIter)
+    assert.ok(Math.abs(finalTemp - 1) < 0.01, `cooling must reach minTemp at numIter (${nodes}: ${finalTemp})`)
+    previous = sizing.numIter
+  }
+  assert.equal(graphModule.forceLayoutSizing(graphModule.FORCE_SYNC_NODE_LIMIT + 1).animate, true)
+  assert.equal(graphModule.forceLayoutSizing(graphModule.FORCE_SYNC_NODE_LIMIT).animate, false)
+})
+
+test('force layout options randomize only a fresh graph and carry the sizing', () => {
+  const fresh = graphModule.forceLayoutOptions(800, { incremental: false })
+  assert.equal(fresh.name, 'cose')
+  assert.equal(fresh.randomize, true)
+  assert.equal(fresh.animate, true)
+  assert.equal(fresh.fit, true)
+  assert.equal(fresh.initialTemp, 1000)
+  assert.equal(fresh.minTemp, 1)
+  assert.deepEqual(
+    { numIter: fresh.numIter, refresh: fresh.refresh, coolingFactor: fresh.coolingFactor },
+    (({ numIter, refresh, coolingFactor }) => ({ numIter, refresh, coolingFactor }))(graphModule.forceLayoutSizing(800)),
+  )
+  assert.equal(graphModule.forceLayoutOptions(800).randomize, false, 'relayout keeps current positions as the start')
+})
+
+test('topology view keeps the force layout off the main thread and stoppable', () => {
+  const graphSource = readFileSync(new URL('./src/graph.ts', import.meta.url), 'utf8')
+  const topologySource = readFileSync(new URL('./src/components/TopologyView.vue', import.meta.url), 'utf8')
+
+  // The view never hands Cytoscape a synchronous cose config of its own.
+  assert.doesNotMatch(topologySource, /name: 'cose'/u)
+  assert.match(topologySource, /forceLayoutOptions\(/u)
+  assert.match(topologySource, /layoutConfig\(\{ incremental: false, nodeCount \}\)/u)
+  // Expand all runs the force layout once, over the final graph.
+  assert.match(topologySource, /\(rounds \+ 1\) % 3 === 0 && layoutDirty && layout\.value !== 'cose'/u)
+  // Users can stop a running layout and see that it is running.
+  assert.match(topologySource, /v-if="layoutRunning"[^>]*@click="stopLayout">Stop layout</u)
+  assert.match(topologySource, /Force layout is settling/u)
+  // The handle tracks one layout at a time, stops it before starting another
+  // or tearing down, and reports activity to the view.
+  assert.match(graphSource, /running\?\.stop\(\)\s+const next = cy\.layout\(/u)
+  assert.match(graphSource, /destroy: \(\) => \{\s+running\?\.stop\(\)/u)
+  assert.match(graphSource, /next\.one\('layoutstop'/u)
+  assert.match(graphSource, /layout: \{ name: 'preset' \}/u)
+  assert.match(graphSource, /hooks\?\.onLayout\?\.\(true, cy\.nodes\(\)\.length\)/u)
+})
+
+test('mountGraph runs one layout at a time, reports activity, and stops a running layout on relayout and destroy', async () => {
+  const previousWindow = globalThis.window
+  const layouts = []
+  // An animated layout: run() returns without emitting layoutstop; the test
+  // drives completion (or stop) by calling finish().
+  const animatedLayout = config => {
+    const layout = { config, runs: 0, stops: 0, onStop: undefined }
+    layout.one = (event, listener) => { if (event === 'layoutstop') layout.onStop = listener }
+    layout.run = () => { layout.runs += 1 }
+    layout.stop = () => { layout.stops += 1 }
+    layout.finish = () => layout.onStop?.()
+    layouts.push(layout)
+    return layout
+  }
+  const cy = { on: () => {}, destroy: () => {}, nodes: () => ({ length: 3 }), layout: animatedLayout }
+  const activity = []
+
+  try {
+    globalThis.window = { cytoscape: () => cy }
+    const handle = await graphModule.mountGraph(
+      { addEventListener: () => {}, removeEventListener: () => {} }, [], [], () => {}, '/cytoscape.min.js',
+      { name: 'cose', animate: true },
+      { onLayout: (running, nodes) => activity.push([running, nodes]) },
+    )
+    assert.equal(layouts.length, 1)
+    assert.equal(layouts[0].runs, 1)
+    assert.equal(handle.layoutRunning(), true)
+    assert.deepEqual(activity, [[true, 3]])
+
+    // A relayout while the first is still stepping stops the first; the
+    // first's late layoutstop must not be mistaken for the second finishing.
+    const second = handle.relayout({ name: 'cose', animate: true })
+    assert.equal(layouts[0].stops, 1)
+    assert.equal(layouts.length, 2)
+    layouts[0].finish()
+    assert.equal(handle.layoutRunning(), true, 'the superseded layout stopping does not end the current one')
+    assert.deepEqual(activity, [[true, 3], [true, 3]])
+
+    layouts[1].finish()
+    await second
+    assert.equal(handle.layoutRunning(), false)
+    assert.deepEqual(activity.at(-1), [false, 3])
+
+    // Stop halts the current layout where it is; teardown stops whatever runs.
+    void handle.relayout({ name: 'cose', animate: true })
+    handle.stopLayout()
+    assert.equal(layouts[2].stops, 1)
+    layouts[2].finish()
+    assert.equal(handle.layoutRunning(), false)
+    void handle.relayout({ name: 'cose', animate: true })
+    handle.destroy()
+    assert.equal(layouts[3].stops, 1)
+  } finally {
+    globalThis.window = previousWindow
+  }
 })

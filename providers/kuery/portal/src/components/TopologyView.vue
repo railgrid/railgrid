@@ -4,8 +4,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { FarosContext } from '../element'
 import type { ObjectResult, QuerySpec, QueryStatus } from '../api'
 import {
-  buildTopologyElements, deriveTopologyTree, graphKeyAction, IMPACT_RELATIONS, mountGraph, relationElements, themeStyle,
-  type GraphHandle,
+  buildTopologyElements, deriveTopologyTree, forceLayoutOptions, graphKeyAction, IMPACT_RELATIONS, mountGraph, relationElements, themeStyle,
+  type GraphHandle, type GraphHooks,
 } from '../graph'
 import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
 import FormSelect from '../portalkit/FormSelect.vue'
@@ -31,6 +31,10 @@ const expansionFailure = ref<{ id: string | null; message: string } | null>(null
 const full = ref(false)
 const expandingAll = ref(false)
 const expansionStatus = ref('')
+// Force (cose) layout activity: it runs across animation frames on larger
+// graphs so the page stays interactive; the toolbar offers Stop while it runs.
+const layoutRunning = ref(false)
+const layoutNodeCount = ref(0)
 const responseWarnings = ref<string[]>([])
 const relationResponseTruncated = ref(false)
 const relationLimitReached = ref(false)
@@ -99,12 +103,18 @@ async function load(): Promise<void> {
   }
 }
 
-function layoutConfig(): Record<string, unknown> {
+// layoutConfig builds the Cytoscape layout for the selected option. The
+// force layout is sized to the graph (see forceLayoutOptions): nodeCount is
+// the node total the layout will run over — the live graph's by default, or
+// the element count on first mount when there is no graph yet. incremental
+// (default) starts from the current positions; a fresh mount randomizes.
+function layoutConfig(options: { incremental?: boolean; nodeCount?: number } = {}): Record<string, unknown> {
   if (layout.value === 'concentric') return { name: 'concentric', concentric: (node: { data: (key: string) => unknown }) => node.data('tier') === 'cluster' ? 3 : node.data('tier') === 'namespace' ? 2 : 1, levelWidth: () => 1, minNodeSpacing: 30, padding: 20 }
   if (layout.value === 'circle') return { name: 'circle', padding: 20 }
-  if (layout.value === 'cose') return { name: 'cose', idealEdgeLength: 70, nodeRepulsion: 9000, padding: 20, animate: false }
+  if (layout.value === 'cose') return forceLayoutOptions(options.nodeCount ?? graph?.nodeCount() ?? 0, { incremental: options.incremental ?? true })
   return { name: 'breadthfirst', directed: true, spacingFactor: 1, padding: 20 }
 }
+function stopLayout(): void { graph?.stopLayout() }
 
 function destroyGraph(): void {
   graphGeneration += 1
@@ -121,6 +131,8 @@ function destroyGraph(): void {
   expansionBound.value = null
   expandingAll.value = false
   expansionStatus.value = ''
+  layoutRunning.value = false
+  layoutNodeCount.value = 0
 }
 
 async function mount(): Promise<void> {
@@ -130,8 +142,16 @@ async function mount(): Promise<void> {
   graphController = new AbortController()
   const built = buildTopologyElements(rows.value, { kind: kind.value, namespace: namespace.value })
   graphObjects = new Map(Object.entries(built.nodeIndex))
+  const nodeCount = built.elements.filter(element => !element.data?.source).length
+  const hooks: GraphHooks = {
+    onLayout: (running, nodes) => {
+      if (generation !== graphGeneration) return
+      layoutRunning.value = running
+      layoutNodeCount.value = nodes
+    },
+  }
   try {
-    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (generation === graphGeneration) void expand(id) }, `${(context.value?.basePath || '').replace(/\/?$/, '/')}cytoscape.min.js`, layoutConfig())
+    const handle = await mountGraph(graphHost.value, built.elements, themeStyle(graphHost.value), id => { if (generation === graphGeneration) void expand(id) }, `${(context.value?.basePath || '').replace(/\/?$/, '/')}cytoscape.min.js`, layoutConfig({ incremental: false, nodeCount }), hooks)
     if (generation !== graphGeneration) return handle.destroy()
     graph = handle
     requestAnimationFrame(() => { if (generation === graphGeneration && graph === handle) handle.fit() })
@@ -195,7 +215,7 @@ async function expand(id: string): Promise<void> {
     }
     const built = relationElements(id, result.object); handle.add(built.elements)
     for (const [key, object] of Object.entries(built.nodeIndex)) graphObjects.set(key, object)
-    handle.relayout(layoutConfig())
+    void handle.relayout(layoutConfig())
   } catch (reason) {
     if (!isCurrent()) return
     handle.markExpanded(id, false)
@@ -234,15 +254,18 @@ async function expandAll(): Promise<void> {
       ids.forEach(id => handle.markExpanded(id, true))
       layoutDirty ||= added > 0
       expansionStatus.value = `Expansion round ${rounds + 1}: ${handle.nodeCount().toLocaleString()} graph nodes.`
-      if ((rounds + 1) % 3 === 0 && layoutDirty) {
-        handle.relayout(layoutConfig())
+      // Intermediate relayouts keep the discrete layouts readable as the
+      // graph grows. The force layout is a full simulation over every node,
+      // so it runs once, over the final graph, after expansion.
+      if ((rounds + 1) % 3 === 0 && layoutDirty && layout.value !== 'cose') {
+        void handle.relayout(layoutConfig())
         layoutDirty = false
       }
       if (added === 0) break
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
     }
     if (isCurrent()) {
-      if (layoutDirty) handle.relayout(layoutConfig())
+      if (layoutDirty) void handle.relayout(layoutConfig())
       if (handle.nodeCount() >= 4000) expansionBound.value = 'nodes'
       else if (rounds >= 30) expansionBound.value = 'rounds'
       expansionStatus.value = `Expansion complete: ${handle.nodeCount().toLocaleString()} graph nodes.`
@@ -265,7 +288,7 @@ function cancelExpandAll(): void {
   expandAllController = null
   expandingAll.value = false
   expansionStatus.value = `Expansion cancelled. ${graph?.nodeCount().toLocaleString() ?? 0} graph nodes remain available.`
-  graph?.relayout(layoutConfig())
+  void graph?.relayout(layoutConfig())
 }
 function retryExpansion(): void {
   const failure = expansionFailure.value
@@ -300,7 +323,7 @@ function graphKeydown(event: KeyboardEvent): void {
 
 watch(edge, () => void load())
 watch([rows, kind, namespace, representation], () => nextTick(() => void mount()), { deep: false })
-watch(layout, () => graph ? graph.relayout(layoutConfig()) : nextTick(() => void mount()))
+watch(layout, () => graph ? void graph.relayout(layoutConfig()) : nextTick(() => void mount()))
 watch(() => context.value?.theme, () => { if (graph && graphHost.value) graph.restyle(themeStyle(graphHost.value)) })
 watch(() => props.active, active => { if (active) requestAnimationFrame(() => graph?.fit()) })
 watch([api, requestContext], ([ready, current], [wasReady, previous]) => {
@@ -322,6 +345,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
       <label><span id="topology-namespace-label">Namespace</span><FormSelect v-model="namespace" :options="namespaceOptions" labelledby="topology-namespace-label" /></label>
       <button type="button" class="k-btn k-btn--ghost" :disabled="!graph || expandingAll" @click="expandAll">{{ expandingAll ? 'Expanding…' : 'Expand all' }}</button>
       <button v-if="expandingAll" type="button" class="k-btn k-btn--ghost" @click="cancelExpandAll">Cancel expansion</button>
+      <button v-if="layoutRunning" type="button" class="k-btn k-btn--ghost" @click="stopLayout">Stop layout</button>
       <button type="button" class="k-btn k-btn--ghost" :disabled="!graph" @click="resetGraph">Reset graph</button>
       <button type="button" class="k-btn k-btn--ghost" @click="toggleFullscreen">{{ full ? 'Exit full screen' : 'Full screen' }}</button>
     </div>
@@ -341,6 +365,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
         <div v-if="graphError" class="kuery-inline-error" role="alert">{{ graphError }} <button type="button" class="k-btn k-btn--ghost" @click="mount">Retry graph</button></div>
         <div v-if="expansionFailure" class="kuery-inline-error" role="alert"><span>{{ expansionFailure.message }}</span><button type="button" class="k-btn k-btn--ghost" @click="retryExpansion">Retry expansion</button></div>
         <p class="kuery-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ expansionStatus }}</p>
+        <p v-if="layoutRunning" class="meta" role="status">Force layout is settling {{ layoutNodeCount.toLocaleString() }} nodes in the background; the graph stays interactive. Stop layout keeps the current positions.</p>
         <div ref="graphHost" class="kuery-graph" role="region" aria-label="Fleet topology visualization" aria-describedby="topology-help topology-bounds" tabindex="0" @keydown="graphKeydown" />
       </div>
     </div>

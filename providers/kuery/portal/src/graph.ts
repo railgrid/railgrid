@@ -459,6 +459,64 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
   return style
 }
 
+// Force layout (Cytoscape "cose") sizing. cose is a spring simulation that
+// costs O(nodes²) per iteration, and with animate:false Cytoscape runs every
+// iteration in one synchronous loop — on a 2,000-node fleet topology that
+// froze the tab for minutes (the portal looked "down"). With animate:true the
+// layout runs `refresh` iterations per animation frame, so the page stays
+// interactive and the layout can be stopped. forceLayoutOptions keeps the
+// total work bounded as the graph grows: fewer iterations on big graphs, a
+// cooling schedule that still converges within that budget, and few enough
+// iterations per frame to keep frames short.
+const FORCE_INITIAL_TEMP = 1000
+const FORCE_MIN_TEMP = 1
+// Pair evaluations (nodes² × iterations) the whole run may cost, and per
+// frame. 1.5e8 keeps a 500-node graph at 600 iterations and a 2,000-node one
+// at the 100-iteration floor; 1.6e7 per frame keeps a frame near the budget
+// of one 60 Hz tick on a laptop.
+const FORCE_RUN_BUDGET = 1.5e8
+const FORCE_FRAME_BUDGET = 1.6e7
+// Below this many nodes a synchronous run is cheap (well under 100 ms) and
+// gives a stable, jitter-free result immediately.
+export const FORCE_SYNC_NODE_LIMIT = 120
+
+export interface ForceLayoutSizing {
+  animate: boolean
+  numIter: number
+  refresh: number
+  coolingFactor: number
+}
+
+export function forceLayoutSizing(nodeCount: number): ForceLayoutSizing {
+  const n = Math.max(1, nodeCount)
+  const pairs = n * n
+  const numIter = Math.min(1000, Math.max(100, Math.round(FORCE_RUN_BUDGET / pairs)))
+  const refresh = Math.min(20, Math.max(1, Math.round(FORCE_FRAME_BUDGET / pairs)))
+  // Cool from initialTemp to minTemp over exactly numIter steps, so a
+  // shortened run still settles instead of being cut off while hot.
+  const coolingFactor = Math.pow(FORCE_MIN_TEMP / FORCE_INITIAL_TEMP, 1 / numIter)
+  return { animate: n > FORCE_SYNC_NODE_LIMIT, numIter, refresh, coolingFactor }
+}
+
+// forceLayoutOptions is the cose config for the topology "Force" layout.
+// incremental keeps existing positions as the starting point (relayout after
+// an expansion, or switching layouts); a fresh graph is randomized so the
+// simulation does not start with every node stacked at the origin.
+export function forceLayoutOptions(nodeCount: number, options: { incremental?: boolean } = {}): Record<string, unknown> {
+  const sizing = forceLayoutSizing(nodeCount)
+  return {
+    name: 'cose',
+    idealEdgeLength: 70,
+    nodeRepulsion: 9000,
+    padding: 20,
+    fit: true,
+    randomize: !(options.incremental ?? true),
+    initialTemp: FORCE_INITIAL_TEMP,
+    minTemp: FORCE_MIN_TEMP,
+    ...sizing,
+  }
+}
+
 export interface GraphHandle {
   destroy(): void
   // add merges new nodes/edges into the live graph, skipping ids already
@@ -472,8 +530,14 @@ export interface GraphHandle {
   markExpanded(id: string, expanded: boolean): void
   isExpanded(id: string): boolean
   collapseFrom(id: string): void
-  // relayout re-runs the layout after the graph grows/shrinks.
-  relayout(layout?: Record<string, unknown>): void
+  // relayout re-runs the layout after the graph grows/shrinks. A layout
+  // already running (an animated force layout) is stopped first. Resolves
+  // when the new layout has stopped — immediately for the discrete layouts.
+  relayout(layout?: Record<string, unknown>): Promise<void>
+  // stopLayout halts a running animated layout where it is; positions stay
+  // as last drawn.
+  stopLayout(): void
+  layoutRunning(): boolean
   // Viewport controls for keyboard nav / fullscreen.
   panBy(dx: number, dy: number): void
   zoomBy(factor: number): void
@@ -564,6 +628,13 @@ function loadCytoscape(libUrl: string): Promise<typeof cytoscape> {
 // into container. onNodeTap fires for non-anchor nodes (the anchor is already
 // centered) so the caller can re-anchor. Returns a handle whose destroy()
 // tears down the instance and its listeners.
+export interface GraphHooks {
+  // onLayout reports layout activity: true when a layout starts, false when
+  // it stops (finished or halted), with the node count it ran over. Discrete
+  // layouts report both within the same tick.
+  onLayout?: (running: boolean, nodeCount: number) => void
+}
+
 export async function mountGraph(
   container: HTMLElement,
   elements: cytoscape.ElementDefinition[],
@@ -573,22 +644,50 @@ export async function mountGraph(
   // Loose object so callers can pass any built-in layout config (tree, radial,
   // circle, force) without importing Cytoscape's layout union; cast below.
   layout?: Record<string, unknown>,
+  hooks?: GraphHooks,
 ): Promise<GraphHandle> {
   const cytoscape = await loadCytoscape(libUrl)
   const cy = cytoscape({
     container,
     elements,
     style,
-    layout: (layout ?? {
-      name: 'concentric',
-      concentric: (node: cytoscape.NodeSingular) => (node.data('anchor') === 'true' ? 2 : 1),
-      levelWidth: () => 1,
-      minNodeSpacing: 34,
-      padding: 16,
-    }) as unknown as cytoscape.LayoutOptions,
+    // No layout at construction: the initial layout goes through runLayout
+    // below so it is tracked (stoppable, reported) like every relayout.
+    layout: { name: 'preset' },
     // Allow zooming far out so a fully-expanded net still fits on screen.
     minZoom: 0.02,
     maxZoom: 3,
+  })
+
+  // One layout at a time. An animated cose layout keeps stepping in
+  // animation frames until it converges or is stopped; starting another on
+  // top of it would have two simulations fighting over the same positions.
+  let running: cytoscape.Layouts | null = null
+  const runLayout = (config: Record<string, unknown>): Promise<void> => {
+    running?.stop()
+    const next = cy.layout(config as unknown as cytoscape.LayoutOptions)
+    running = next
+    hooks?.onLayout?.(true, cy.nodes().length)
+    return new Promise<void>(resolve => {
+      // A stopped layout still emits layoutstop (on its next frame); the
+      // identity check keeps a superseded layout from reporting the new one
+      // as finished.
+      next.one('layoutstop', () => {
+        if (running === next) {
+          running = null
+          hooks?.onLayout?.(false, cy.nodes().length)
+        }
+        resolve()
+      })
+      next.run()
+    })
+  }
+  void runLayout(layout ?? {
+    name: 'concentric',
+    concentric: (node: cytoscape.NodeSingular) => (node.data('anchor') === 'true' ? 2 : 1),
+    levelWidth: () => 1,
+    minNodeSpacing: 34,
+    padding: 16,
   })
   // Every node is tappable; the caller decides what (if anything) to do — for
   // the explorer that's expand/collapse, for the impact view it re-anchors.
@@ -608,6 +707,8 @@ export async function mountGraph(
 
   return {
     destroy: () => {
+      running?.stop()
+      running = null
       resizeObserver?.disconnect()
       if (resizeObserver) cancelAnimationFrame(resizeFrame)
       container.removeEventListener('pointerdown', focusGraph)
@@ -671,9 +772,9 @@ export async function mountGraph(
       removeExclusiveChildren(id)
       root.data('expanded', 'false')
     },
-    relayout: (layout) => {
-      cy.layout((layout ?? { name: 'breadthfirst', directed: true, spacingFactor: 1.0, padding: 20 }) as unknown as cytoscape.LayoutOptions).run()
-    },
+    relayout: (layout) => runLayout(layout ?? { name: 'breadthfirst', directed: true, spacingFactor: 1.0, padding: 20 }),
+    stopLayout: () => { running?.stop() },
+    layoutRunning: () => running !== null,
     panBy: (dx, dy) => cy.panBy({ x: dx, y: dy }),
     zoomBy: (factor) => cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }),
     fit: () => {
