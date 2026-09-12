@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onActivated, ref, watch } from 'vue';
 import type { Node } from '../api';
 import { useSession, useTask } from '../state';
 import { issuePath } from '../routes';
@@ -20,6 +20,9 @@ function search(page = 0) {
 }
 function next() { cursors.value[index.value + 1] = cursor.value; search(index.value + 1); }
 watch(() => [session.selection.connection, session.selection.team, session.selection.query], () => { read.reset(); issues.value = []; cursor.value = ''; hasNext.value = false; index.value = 0; cursors.value = ['']; }, { flush: 'sync' });
+onActivated(() => {
+  if (read.state.loaded && session.selection.connection && session.selection.team) search(index.value);
+});
 function open(row: Record<string, unknown>) { session.navigate(issuePath(session.selection.connection, String(row.id))); }
 </script>
 <template>

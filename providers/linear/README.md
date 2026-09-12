@@ -152,9 +152,15 @@ The Linear portal uses shared Vue PortalKit resource layouts with Connections,
 Issues, Operations, and Events sections. Connection and issue creation use
 dedicated routes; issue details expose updates and comments. Credentials remain
 Secret references, and pending or uncertain operations link to their detail page
-without replaying writes. Namespace-qualified links use
-`namespaces/<namespace>/<resource-route>` so opening a detail in a new tab retains
-its namespace. On a fresh load, bare provider routes use the default namespace.
+without replaying writes. Canonical collection routes use
+`<collection>/namespaces/<namespace>`; detail routes append `/detail/<name>`, or
+`/detail/<connection>/<id>` for issues. Creation uses
+`connections/namespaces/<namespace>/create` and
+`issues/namespaces/<namespace>/create`. Bare provider routes use the `default`
+namespace, while legacy namespace-first routes such as
+`namespaces/<namespace>/<collection>` remain supported. Returning from an issue
+detail refreshes the cached collection while preserving its selected scope,
+query filter, and current page.
 
 Build with `make build-linear-provider-portal` and verify behavior and types with
 `make test-linear-portal`. The portal still registers `faros-provider-linear` and

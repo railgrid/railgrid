@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, provide, reactive, ref, watch } from 'vue';
 import { Plug, ListTodo, Activity, Radio } from 'lucide-vue-next';
 import type { FarosContext } from './api';
-import type { Route } from './routes';
+import { canonicalPath, type Route } from './routes';
 import { sessionKey } from './state';
 import Tabs from './portalkit/Tabs.vue';
 import ResourceBackLink from './portalkit/ResourceBackLink.vue';
@@ -20,7 +20,7 @@ const namespaceDraft = ref(namespace.value);
 const epoch = ref(0);
 let controller = new AbortController();
 const selection = reactive({ connection: '', team: '', query: '' });
-function scopedPath(path: string) { return `namespaces/${encodeURIComponent(namespace.value)}/${path}`; }
+function scopedPath(path: string) { return canonicalPath(namespace.value, path); }
 function navigate(path: string, replace = false) { root.value?.dispatchEvent(new CustomEvent('faros-navigate', { bubbles: true, detail: { path: scopedPath(path), ...(replace ? { replace: true } : {}) } })); }
 function href(path: string) {
   const current = window.location.pathname;
@@ -31,7 +31,11 @@ watch(namespace, () => {
   controller.abort(); controller = new AbortController(); epoch.value++;
   Object.assign(selection, { connection: '', team: '', query: '' });
 }, { flush: 'sync' });
-watch(() => props.route.namespace, value => { if (value) { namespace.value = value; namespaceDraft.value = value; } });
+watch(() => props.route.namespace, value => {
+  const nextNamespace = value || 'default';
+  if (nextNamespace !== namespace.value) namespace.value = nextNamespace;
+  namespaceDraft.value = nextNamespace;
+}, { flush: 'sync' });
 onBeforeUnmount(() => controller.abort());
 provide(sessionKey, { context: props.context, get namespace() { return namespace.value; }, get signal() { return AbortSignal.any([controller.signal, props.authoritySignal]); }, selection, navigate, href });
 const tabs = [{ id: 'connections', label: 'Connections', icon: Plug }, { id: 'issues', label: 'Issues', icon: ListTodo }, { id: 'operations', label: 'Operations', icon: Activity }, { id: 'events', label: 'Events', icon: Radio }];

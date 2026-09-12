@@ -20,7 +20,11 @@ watch(() => session.selection.connection, (_, previous) => {
   discover();
 }, { immediate: true, flush: 'sync' });
 onMounted(load);
-onActivated(() => { if (!read.state.loaded) load(); if (!discovery.state.loaded) discover(); });
+onActivated(() => {
+  // Keep the refresh after activation hooks have re-enabled useTask's view
+  // guard. This also covers nested scopes restored by a cached IssuesView.
+  queueMicrotask(() => { load(); if (!discovery.state.loaded) discover(); });
+});
 </script>
 <template>
   <div class="linear-scope">

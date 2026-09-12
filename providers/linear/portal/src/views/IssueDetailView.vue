@@ -34,7 +34,7 @@ function comment() {
 onMounted(load);
 </script>
 <template>
-  <ResourcePage :title="issue?.identifier || id" kind="Issue" :subtitle="issue?.title || ''" :loaded="read.state.loaded" :loading="read.state.loading" :error="read.state.error" :stale="read.state.loaded && !!read.state.error" retryable @retry="load">
+  <ResourcePage :title="issue?.identifier || id" kind="Issue" :subtitle="issue?.title || ''" :loaded="read.state.loaded" :loading="read.state.loading" :error="read.state.error" :stale="read.state.loaded && !!read.state.error" :retryable="!mutation.state.loading" @retry="load">
     <template #actions><button class="k-btn k-btn--ghost" :disabled="read.state.loading || mutation.state.loading" @click="load">Refresh</button></template>
     <template #status><StatusBadge v-if="issue?.state?.name" :status="issue.state.name" /></template>
     <div class="linear-detail-content">
