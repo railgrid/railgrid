@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"unicode/utf8"
@@ -148,4 +149,52 @@ func validClarificationText(value string) bool {
 func stableClarificationID(sessionID, turnID, itemID string) string {
 	digest := sha256.Sum256([]byte(sessionID + "\x00" + turnID + "\x00" + itemID))
 	return "clarification-" + hex.EncodeToString(digest[:])
+}
+
+// normalizeAsyncQuestion recognizes Codex's structured asynchronous question
+// notification. Ordinary agent prose is never interpreted as a question.
+// A recognized but invalid item normalizes to an invalid payload, so the common
+// parser holds it as operator input rather than publishing an unsafe question.
+func normalizeAsyncQuestion(data json.RawMessage) (json.RawMessage, bool) {
+	var envelope struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		Item     struct {
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			Delivery  string          `json:"delivery"`
+			Questions json.RawMessage `json:"questions"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(data, &envelope) != nil || envelope.Item.Type != "agentMessage" || envelope.Item.Delivery != "async" || len(envelope.Item.Questions) == 0 || string(envelope.Item.Questions) == "null" {
+		return nil, false
+	}
+	if len(data) > maxClarificationPayload || !utf8.Valid(data) {
+		return nil, true
+	}
+	var questions []struct {
+		Title   string   `json:"title"`
+		Options []string `json:"options"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(envelope.Item.Questions))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&questions) != nil || len(questions) == 0 || len(questions) > maxClarificationQuestions {
+		return nil, true
+	}
+	params := requestUserInputParams{ThreadID: envelope.ThreadID, TurnID: envelope.TurnID, ItemID: envelope.Item.ID}
+	for i, q := range questions {
+		question := requestUserInputQuestion{ID: fmt.Sprintf("question-%d", i+1), Header: "Product question", Question: q.Title}
+		if len(q.Options) > maxClarificationOptions {
+			return nil, true
+		}
+		for _, option := range q.Options {
+			question.Options = append(question.Options, requestUserInputOption{Label: option, Description: option})
+		}
+		params.Questions = append(params.Questions, question)
+	}
+	normalized, err := json.Marshal(params)
+	if err != nil {
+		return nil, true
+	}
+	return normalized, true
 }

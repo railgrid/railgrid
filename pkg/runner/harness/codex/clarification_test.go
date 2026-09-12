@@ -18,8 +18,11 @@ package codex
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/faroshq/faros/pkg/runner/harness"
 )
 
 func TestParseClarificationRejectsSecretMalformedAndOversizedQuestions(t *testing.T) {
@@ -145,4 +148,41 @@ func cloneMap(input map[string]any) map[string]any {
 		}
 	}
 	return result
+}
+
+func TestAsyncNativeQuestionProducesBoundClarification(t *testing.T) {
+	payload := json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"question-call","phase":"final_answer","delivery":"async","text":"Choose a greeting","questions":[{"title":"Which greeting?","options":null}]},"completedAtMs":123}`)
+	var events []harness.Event
+	state := runState{sessionID: "thread-1", turnID: "turn-1", emit: func(e harness.Event) error { events = append(events, e); return nil }}
+	err := state.handle(wireMessage{Method: "item/completed", Params: payload})
+	var input *needsInputError
+	if !errors.As(err, &input) || input.clarification == nil {
+		t.Fatalf("question not recognized: %v", err)
+	}
+	if input.clarification.ID != stableClarificationID("thread-1", "turn-1", "question-call") || !strings.Contains(input.clarification.Text, "Which greeting?") {
+		t.Fatalf("incorrect clarification: %+v", input.clarification)
+	}
+	if len(events) != 1 || events[0].Clarification == nil {
+		t.Fatalf("missing structured event: %+v", events)
+	}
+	for _, data := range []json.RawMessage{
+		json.RawMessage(strings.Replace(string(payload), `"threadId":"thread-1"`, `"threadId":"foreign"`, 1)),
+		json.RawMessage(strings.Replace(string(payload), `"options":null`, `"options":null,"isSecret":true`, 1)),
+		json.RawMessage(strings.Replace(string(payload), `"Which greeting?"`, `""`, 1)),
+	} {
+		err = state.handle(wireMessage{Method: "item/completed", Params: data})
+		input = nil
+		if !errors.As(err, &input) || input.clarification != nil {
+			t.Fatalf("unsafe question accepted: %v", err)
+		}
+	}
+	for _, data := range []json.RawMessage{
+		json.RawMessage(`{"item":{"type":"agentMessage","text":"Which greeting?","delivery":"async","questions":null}}`),
+		json.RawMessage(strings.Replace(string(payload), `"delivery":"async"`, `"delivery":null`, 1)),
+		json.RawMessage(strings.Replace(string(payload), `"type":"agentMessage"`, `"type":"commandExecution"`, 1)),
+	} {
+		if _, matched := normalizeAsyncQuestion(data); matched {
+			t.Fatal("ordinary output promoted to a question")
+		}
+	}
 }

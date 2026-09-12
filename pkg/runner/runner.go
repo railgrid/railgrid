@@ -154,6 +154,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities := append([]string(nil), cfg.Verification...)
 	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
+	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	if hasFetchRemote(cfg.Repositories) {
 		verificationCapabilities = appendUnique(verificationCapabilities, gitFetchCapability)
 	}
@@ -393,8 +394,9 @@ func (r *Runner) Inspect(_ context.Context, attemptID string) (Receipt, error) {
 	return receiptForResponse(attempt.Receipt), nil
 }
 
-// Cancel requests adapter cancellation. It returns while the attempt is in
-// cancelling; only adapter exit transitions it to cancelled.
+// Cancel requests adapter cancellation. Active attempts remain cancelling until
+// adapter exit. Unseen attempts receive a durable cancellation fence before
+// acknowledgement, so a delayed Start cannot launch them.
 func (r *Runner) Cancel(_ context.Context, request CancelRequest) (Receipt, error) {
 	if err := validateMutationIdentity(request.TaskID, request.AttemptID, request.AttemptEpoch, request.RequestID); err != nil {
 		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
@@ -415,6 +417,9 @@ func (r *Runner) Cancel(_ context.Context, request CancelRequest) (Receipt, erro
 			return Receipt{}, protocolError(ErrorIdempotencyConflict, false, "request ID was already used with different content", &priorReceipt)
 		}
 		return r.receiptForAttemptLocked(prior.AttemptID)
+	}
+	if _, exists := r.state.Attempts[request.AttemptID]; !exists {
+		return r.cancelUnseenLocked(request, opKey, fingerprint)
 	}
 	attempt, err := r.attemptForMutationLocked(request.TaskID, request.AttemptID, request.AttemptEpoch)
 	if err != nil {

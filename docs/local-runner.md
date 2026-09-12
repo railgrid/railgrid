@@ -275,13 +275,23 @@ receipt with `Inspect` and replayable server-sent events. Events have ordered
 cursors; a cursor gap or `cursor_expired` response requires inspecting the
 receipt before continuing. Progress is an observation, not proof of completion.
 
-Cancellation has two states. An explicit cancel request first returns
+For an active attempt, an explicit cancel request first returns
 `cancelling`; it is complete only after the harness exits and the receipt or
 event reports `cancelled`. That cancellation remains terminal across process
 shutdown. A graceful shutdown drains active child processes and persists a
 shutdown interruption as `needs_input`, retaining the recorded session and
 worktree for same-session recovery. Adapter failures and approved output or
 duration limits retain failure precedence when shutdown overlaps them.
+
+Runners advertising `cancel-unseen-v1` also accept cancellation for an attempt
+not present in their journal. They persist a terminal cancellation fence before
+returning `cancelled`; the record has no accepted execution, worktree, or session.
+A delayed start for that attempt ID is rejected, including after restart. The
+cancel identity must match the task and epoch on replay; stale or foreign
+identities remain errors. A persistence failure never acknowledges cancellation.
+Operators may use the authenticated cancellation endpoint to retire a dispatched
+request with an unknown outcome. Coordinators must validate the returned identity
+and persist the terminal receipt before releasing their own reservations.
 
 Interactive approval, authentication, a missing Codex session, or another
 operator decision moves an attempt to `needs_input`. Resume requires the same
@@ -296,6 +306,12 @@ A genuine harness `request-user-input` interaction may additionally populate
 turn, and interaction item, preserves the bounded question and options, and
 rejects secret, malformed, empty, or oversized input. Authentication, approval,
 restart, and generic error blockers never acquire a clarification value.
+
+Codex asynchronous questions are recognized from completed `agentMessage`
+items carrying `delivery: "async"` and a structured `questions` array. These
+use the same bounded, session-bound clarification flow as synchronous native
+requests. Ordinary prose and incomplete item notifications do not authorize a
+clarification; malformed structured questions remain operator-held.
 
 `clarification-v1` is advertised in the capabilities response when this
 support is available. A resume for such a receipt must include the same

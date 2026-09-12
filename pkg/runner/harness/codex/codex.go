@@ -746,6 +746,11 @@ func (s *runState) handle(msg wireMessage) error {
 	if msg.Method == "" {
 		return nil
 	}
+	if msg.Method == "item/completed" {
+		if payload, matched := normalizeAsyncQuestion(msg.Params); matched {
+			return s.handle(wireMessage{Method: "item/tool/requestUserInput", Params: payload})
+		}
+	}
 	if isRequestUserInput(msg.Method) {
 		clarification, clarificationErr := parseClarification(s.sessionID, s.turnID, msg.Params)
 		if clarificationErr != nil {
