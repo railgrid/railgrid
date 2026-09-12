@@ -1265,16 +1265,14 @@ local_resource(
     labels=['replicas'],
 )
 
-# Linear is opt-in while its external credential acceptance is pending.
+# Linear rebuilds automatically; registration and initialization remain opt-in.
 local_resource(
     'linear',
     cmd='make build-linear-provider',
     serve_cmd='make run-provider-linear',
-    deps=['providers/linear/main.go', 'providers/linear/init_cmd.go', 'providers/linear/assets.go',
-          'providers/linear/apis', 'providers/linear/internal', 'providers/linear/portal/src',
-          'providers/linear/portal/package.json', 'providers/linear/go.mod', 'providers/linear/go.sum'],
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
+    deps=['providers/linear'],
+    ignore=['providers/linear/portal/node_modules', 'providers/linear/portal/dist'],
+    trigger_mode=TRIGGER_MODE_AUTO,
     labels=['providers-linear'],
 )
 local_resource(
