@@ -57,11 +57,13 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 
-	// Org admins: list every child workspace. Their per-workspace role
-	// still comes from their own UMI rows — the middleware matches exact
-	// (org, ws) rows, so an org admin manages only workspaces they hold a
-	// workspace-admin row in, and the projected role must say so rather
-	// than let the portal render controls that 403.
+	// Org admins: list every child workspace. An org admin is implicitly
+	// admin in every child workspace (docs/organizations.md O-15, enforced
+	// by the tenant middleware's org-admin fallback), so a workspace the
+	// admin holds no row in is projected as admin rather than as "no
+	// role" — the portal keys its member-management controls on this
+	// field, and those controls now succeed. An explicit workspace row
+	// still wins when present (an org admin can hold a member row).
 	if tc.Role == tenancyv1alpha1.MembershipRoleAdmin {
 		roleByWS := map[string]string{}
 		if idx, err := h.mgr.client.UserMembershipIndices().Get(r.Context(), tc.User, metav1.GetOptions{}); err == nil {
@@ -83,6 +85,9 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			view.Role = roleByWS[wsUUID]
+			if view.Role == "" {
+				view.Role = tenancyv1alpha1.MembershipRoleAdmin
+			}
 			out = append(out, view)
 		}
 		writeJSON(w, http.StatusOK, ListResponse[WorkspaceView]{Items: out})
@@ -223,7 +228,8 @@ func (h *Handler) getWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "workspace not found")
 		return
 	}
-	// tc.Role is the middleware's exact (org, ws) row match for this caller.
+	// tc.Role is the middleware's (org, ws) resolution for this caller: the
+	// exact workspace row, or admin via the org-admin fallback.
 	view.Role = tc.Role
 	writeJSON(w, http.StatusOK, view)
 }

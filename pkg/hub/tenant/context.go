@@ -55,9 +55,11 @@ type TenantContext struct {
 
 	// Role is the granted role for the matching Membership: "admin" or
 	// "member". For Workspace-scoped requests this is the role from the
-	// workspace-scope Membership; for Org-scoped requests it is the
-	// role from the org-scope Membership. Validated against
-	// MembershipRole* constants in apis/tenancy/v1alpha1.
+	// workspace-scope Membership, or "admin" when the caller holds no
+	// workspace row but is an admin of the Org (Org admins are implicit
+	// admins in every child Workspace, docs/organizations.md O-15); for
+	// Org-scoped requests it is the role from the org-scope Membership.
+	// Validated against MembershipRole* constants in apis/tenancy/v1alpha1.
 	Role string
 
 	// OrgRole is the caller's ORG-scope role in OrgUUID, independent of any

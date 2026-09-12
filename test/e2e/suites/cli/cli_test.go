@@ -18,6 +18,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -281,7 +282,43 @@ func TestMembershipCommands(t *testing.T) {
 	if out := a.run("org", "members", "set-role", bLabel, "admin", "--org", team.UUID); !strings.Contains(out, "already admin") {
 		t.Fatalf("idempotent set-role: %s", out)
 	}
+
+	// An org admin is implicitly admin in every child workspace (O-15). B
+	// holds no Platform row, yet as org admin B sees Platform projected as
+	// admin and can read its roster; the same call is refused again once B
+	// is demoted back to org member.
+	platformURL := hubURL + "/api/orgs/" + team.UUID + "/workspaces/" + platform.UUID
+	platformHeaders := map[string]string{"X-Faros-Org": team.UUID, "X-Faros-Workspace": platform.UUID}
+	if !waitFor(t, time.Minute, func() (bool, string) {
+		code, body, err := framework.DoRESTRequest(context.Background(), "GET", platformURL+"/memberships", tokenB, platformHeaders, nil)
+		if err != nil {
+			return false, err.Error()
+		}
+		return code == 200, fmt.Sprintf("%d %s", code, body)
+	}) {
+		t.Fatal("org admin B could not list Platform members without a workspace row")
+	}
+	var bWss []workspaceRow
+	b.runJSON(&bWss, "workspace", "list", "--org", team.UUID)
+	var bPlatform workspaceRow
+	for _, ws := range bWss {
+		if ws.UUID == platform.UUID {
+			bPlatform = ws
+		}
+	}
+	if bPlatform.UUID == "" || bPlatform.Role != "admin" {
+		t.Fatalf("org admin B's view of Platform = %+v, want role admin", bPlatform)
+	}
 	a.run("org", "members", "set-role", bLabel, "member", "--org", team.UUID)
+	if !waitFor(t, time.Minute, func() (bool, string) {
+		code, body, err := framework.DoRESTRequest(context.Background(), "GET", platformURL+"/memberships", tokenB, platformHeaders, nil)
+		if err != nil {
+			return false, err.Error()
+		}
+		return code == 403, fmt.Sprintf("%d %s", code, body)
+	}) {
+		t.Fatal("org member B still reads Platform members without a workspace row")
+	}
 
 	// Workspace members: add B to Platform, B switches into it.
 	var wsMembers []memberRow

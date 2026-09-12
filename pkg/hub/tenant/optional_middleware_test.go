@@ -178,3 +178,30 @@ func TestOptionalOrgMiddleware_WorkspaceScopeAttaches(t *testing.T) {
 		t.Errorf("context = %+v, want org-1/ws-1", tc)
 	}
 }
+
+// The optional middleware applies the same O-15 rule as Middleware: an org
+// admin keeps the workspace context for a child workspace they hold no row
+// in, while an org member has it dropped.
+func TestOptionalOrgMiddleware_OrgAdminImplicitWorkspace(t *testing.T) {
+	admin := fakeIndex("alice", tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleAdmin,
+	})
+	_, tc, _ := serveOptional(t, okResolver("alice"), okLookup(admin), map[string]string{
+		HeaderFarosOrg:       "org-1",
+		HeaderFarosWorkspace: "ws-1",
+	})
+	if tc.OrgUUID != "org-1" || tc.WorkspaceUUID != "ws-1" || tc.Role != tenancyv1alpha1.MembershipRoleAdmin {
+		t.Errorf("org admin context = %+v, want org-1/ws-1/admin", tc)
+	}
+
+	member := fakeIndex("bob", tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleMember,
+	})
+	_, tc, _ = serveOptional(t, okResolver("bob"), okLookup(member), map[string]string{
+		HeaderFarosOrg:       "org-1",
+		HeaderFarosWorkspace: "ws-1",
+	})
+	if tc.OrgUUID != "" || tc.WorkspaceUUID != "" {
+		t.Errorf("org member context = %+v, want no org/workspace", tc)
+	}
+}

@@ -586,3 +586,163 @@ func assertStatusEnvelope(t *testing.T, rec *httptest.ResponseRecorder, wantReas
 		}
 	}
 }
+
+// An Org admin is implicitly admin in every child Workspace
+// (docs/organizations.md O-15): a workspace-scope request with no
+// workspace row still passes on the live org-scope admin row.
+func TestMiddleware_OrgAdminImplicitWorkspaceAdmin(t *testing.T) {
+	index := fakeIndex("alice", tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID: "org-uuid",
+		Role:    tenancyv1alpha1.MembershipRoleAdmin,
+	})
+	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
+	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+		return index, nil
+	})
+
+	var got TenantContext
+	reached := make(chan struct{}, 1)
+	h := Middleware(resolver, lookup)(captureNext(&got, reached))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
+	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-reached:
+	default:
+		t.Fatal("next handler was not invoked")
+	}
+	if got.OrgUUID != "org-uuid" || got.WorkspaceUUID != "ws-uuid" || got.Role != tenancyv1alpha1.MembershipRoleAdmin {
+		t.Errorf("TenantContext: got %#v, want org-uuid/ws-uuid/admin", got)
+	}
+}
+
+// An explicit workspace row still wins over the org-admin fallback: an org
+// admin holding a member row in a workspace is a member there.
+func TestMiddleware_OrgAdminExplicitWorkspaceRowWins(t *testing.T) {
+	index := fakeIndex("alice",
+		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin},
+		tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-uuid", WorkspaceUUID: "ws-uuid", Role: tenancyv1alpha1.MembershipRoleMember},
+	)
+	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
+	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+		return index, nil
+	})
+	var got TenantContext
+	reached := make(chan struct{}, 1)
+	h := Middleware(resolver, lookup)(captureNext(&got, reached))
+	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
+	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if got.Role != tenancyv1alpha1.MembershipRoleMember {
+		t.Errorf("Role: got %q, want member (explicit workspace row must win)", got.Role)
+	}
+}
+
+// Org members get no implicit workspace access: without a workspace row the
+// workspace-scope request is still refused.
+func TestMiddleware_OrgMemberNeedsWorkspaceRow(t *testing.T) {
+	index := fakeIndex("bob", tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID: "org-uuid",
+		Role:    tenancyv1alpha1.MembershipRoleMember,
+	})
+	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "bob", nil })
+	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+		return index, nil
+	})
+	nextCalled := false
+	h := Middleware(resolver, lookup)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
+	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status: got %d, want 403; body: %s", rec.Code, rec.Body.String())
+	}
+	if nextCalled {
+		t.Error("org member reached a workspace handler without a workspace row")
+	}
+	if !strings.Contains(rec.Body.String(), "no membership found") {
+		t.Errorf("body: %s", rec.Body.String())
+	}
+}
+
+// A soft-deleted org-scope admin row is not a live org grant, so it never
+// reaches a child workspace through the fallback.
+func TestMiddleware_SoftDeletedOrgAdminDoesNotReachWorkspace(t *testing.T) {
+	requestedAt := metav1.NewTime(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	index := fakeIndex("alice", tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID:       "org-uuid",
+		Role:          tenancyv1alpha1.MembershipRoleAdmin,
+		SoftDeletedAt: &requestedAt,
+	})
+	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
+	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+		return index, nil
+	})
+	h := Middleware(resolver, lookup)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("handler reached through a soft-deleted org grant")
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/orgs/org-uuid/workspaces/ws-uuid/memberships", nil)
+	req.Header.Set(HeaderFarosOrg, "org-uuid")
+	req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status: got %d, want 403; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMatchEntryOrOrgAdmin(t *testing.T) {
+	deleted := metav1.NewTime(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	orgAdmin := tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org", Role: tenancyv1alpha1.MembershipRoleAdmin}
+	orgMember := tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org", Role: tenancyv1alpha1.MembershipRoleMember}
+	wsMember := tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org", WorkspaceUUID: "ws", Role: tenancyv1alpha1.MembershipRoleMember}
+	deletedOrgAdmin := orgAdmin
+	deletedOrgAdmin.SoftDeletedAt = &deleted
+
+	cases := []struct {
+		name     string
+		entries  []tenancyv1alpha1.MembershipIndexEntry
+		org, ws  string
+		wantRole string
+		wantOK   bool
+	}{
+		{"org admin, no ws row, ws request", []tenancyv1alpha1.MembershipIndexEntry{orgAdmin}, "org", "ws", "admin", true},
+		{"org admin, ws member row wins", []tenancyv1alpha1.MembershipIndexEntry{orgAdmin, wsMember}, "org", "ws", "member", true},
+		{"org member, no ws row", []tenancyv1alpha1.MembershipIndexEntry{orgMember}, "org", "ws", "", false},
+		{"org admin, org-scope request unchanged", []tenancyv1alpha1.MembershipIndexEntry{orgAdmin}, "org", "", "admin", true},
+		{"no org row, org-scope request", []tenancyv1alpha1.MembershipIndexEntry{wsMember}, "org", "", "", false},
+		{"soft-deleted org admin", []tenancyv1alpha1.MembershipIndexEntry{deletedOrgAdmin}, "org", "ws", "", false},
+		{"org admin of another org", []tenancyv1alpha1.MembershipIndexEntry{orgAdmin}, "other-org", "ws", "", false},
+		{"nil index", nil, "org", "ws", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var idx *tenancyv1alpha1.UserMembershipIndex
+			if tc.entries != nil {
+				idx = fakeIndex("u", tc.entries...)
+			}
+			role, ok := matchEntryOrOrgAdmin(idx, tc.org, tc.ws)
+			if ok != tc.wantOK || role != tc.wantRole {
+				t.Errorf("got (%q, %v), want (%q, %v)", role, ok, tc.wantRole, tc.wantOK)
+			}
+		})
+	}
+}

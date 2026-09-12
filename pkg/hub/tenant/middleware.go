@@ -195,7 +195,7 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 		return tc, true
 	}
 	workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
-	role, ok := matchEntry(index, orgUUID, workspaceUUID)
+	role, ok := matchEntryOrOrgAdmin(index, orgUUID, workspaceUUID)
 	if !ok {
 		return tc, true
 	}
@@ -219,7 +219,11 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 //     "not found"; 500 on other errors.
 //  5. Walks index.spec.entries looking for a (OrgUUID, WorkspaceUUID)
 //     match where WorkspaceUUID can be empty (org-scope request) or
-//     equal to the header value (workspace-scope request).
+//     equal to the header value (workspace-scope request). A
+//     workspace-scope request with no workspace row still matches when
+//     the caller holds a live org-scope admin row: an Org admin is
+//     implicitly admin in every child Workspace (docs/organizations.md
+//     O-15). Org members get no such implicit grant.
 //  6. On match, attaches a TenantContext via WithContext and invokes
 //     next; on no match, returns 403.
 //
@@ -329,6 +333,30 @@ func matchEntry(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUU
 	return "", false
 }
 
+// matchEntryOrOrgAdmin is matchEntry plus the O-15 rule: an Org admin is
+// implicitly admin in every child Workspace of that Org. A workspace-scope
+// lookup that finds no live workspace row therefore falls back to the
+// caller's live org-scope row, and grants admin only when that row says
+// admin. Org members still need an explicit workspace row (the portal, the
+// kcp proxy authorizer and the provider tenant resolver all describe an
+// org-scope row as "the whole org"; this keeps the REST surface consistent
+// with them without widening the member role). The fallback is deliberately
+// keyed on a live org row: a soft-deleted org grant never reaches a
+// workspace, and a soft-deleted workspace row is irrelevant once the caller
+// is a current Org admin.
+func matchEntryOrOrgAdmin(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUUID string) (string, bool) {
+	if role, ok := matchEntry(index, orgUUID, workspaceUUID); ok {
+		return role, true
+	}
+	if workspaceUUID == "" {
+		return "", false
+	}
+	if orgRole, ok := matchEntry(index, orgUUID, ""); ok && orgRole == tenancyv1alpha1.MembershipRoleAdmin {
+		return tenancyv1alpha1.MembershipRoleAdmin, true
+	}
+	return "", false
+}
+
 // matchEntryForRequest applies the normal membership rule and the narrow
 // lifecycle exceptions needed to recover an Org or Workspace after the
 // reconciler has marked its UMI row SoftDeletedAt. The exceptions are
@@ -336,7 +364,7 @@ func matchEntry(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUU
 // must never authorize an ordinary Org or Workspace API just because the
 // caller was once an admin there.
 func matchEntryForRequest(r *http.Request, index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUUID string) (string, bool) {
-	if role, ok := matchEntry(index, orgUUID, workspaceUUID); ok {
+	if role, ok := matchEntryOrOrgAdmin(index, orgUUID, workspaceUUID); ok {
 		return role, true
 	}
 

@@ -78,10 +78,10 @@ export interface WorkspaceRow {
   // in the sidebar; omitted by the hub until the workspace reports Ready.
   clusterName?: string
   deletionRequestedAt?: string | null
-  // The CALLER's workspace-scope role; absent when they hold no
-  // workspace-scope membership here (possible for org admins, who can
-  // list all workspaces but manage only those they're workspace-admin
-  // in). Gates the workspace-admin controls in tenant settings.
+  // The CALLER's workspace-scope role. Org admins are implicitly admin in
+  // every child workspace, so the hub projects 'admin' for workspaces they
+  // hold no explicit row in; an explicit row (admin or member) wins when
+  // present. Gates the workspace-admin controls in tenant settings.
   role?: 'admin' | 'member'
 }
 
