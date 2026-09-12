@@ -83,7 +83,8 @@ build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/
 
 test-runner: ## Run focused generic runner and harness tests
-	go test -count=1 ./pkg/runner/...
+	go test -count=1 ./pkg/runner/... ./cmd/faros-runner/...
+	python3 -m unittest discover -s hack/runner-install -p 'test_*.py'
 
 lint-runner: $(GOLANGCI_LINT) ## Lint the standalone runner and adapters
 	$(GOLANGCI_LINT) run ./pkg/runner/... ./cmd/faros-runner/...
@@ -2798,3 +2799,7 @@ fix-lint-linear-release: $(GOLANGCI_LINT)
 verify-linear-release: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./cmd/release
 	go test -count=1 ./cmd/release
+
+.PHONY: package-runner-darwin
+package-runner-darwin: build-runner-darwin ## Package Mac runner binaries and the local upgrade manager
+	python3 hack/runner-install/package.py $(BINDIR)

@@ -404,3 +404,54 @@ harness, Git-fetch, and local artifact contracts. They do not establish live
 GitHub publication or provide live Mac stage6B proof. Live acceptance still
 needs an actual enrolled host, approved local repository, start/observe path,
 interruption, restart, and same-session resume evidence.
+
+## Managed local installation and upgrades
+
+`faros-runner --version` prints JSON build, protocol, and host metadata without
+loading enrollment, credentials, or Codex. The running capabilities response
+reports the executable's build version; enrollment cannot override it.
+
+`make package-runner-darwin` builds plain arm64/amd64 tar archives containing the binary,
+manager, and `install.sh`, plus archive SHA-256 files. Verify the archive digest
+from your trusted distribution before extracting and running `sh install.sh`.
+This installs locally; it does not start the runner or enroll a worker.
+
+The Python 3 helper `hack/runner-install/manage.py` installs a **raw binary**
+from a trusted distribution with its separately verified SHA-256. It uses no
+network, never changes runner configuration, and retains the previous binary.
+Run it as your worker account, using the same install root for every command:
+
+```sh
+python3 manage.py install --binary ./faros-runner --sha256 EXPECTED_BINARY_SHA256
+python3 manage.py run -- --config /absolute/path/runner.json \
+  --codex-home /absolute/path/codex-home --version-pin YOUR_TESTED_CODEX_VERSION
+```
+
+Before upgrading, drain the Worker in its coordinating provider and wait until
+its current attempt has stopped. Stop the runner process, install the new binary
+with the same command, then launch with the same configuration and Codex home.
+Managed runs hold the install lock for their lifetime. For the first transition
+from a manually launched runner, stop that old process yourself. Keep the Edge
+agent running. Do not run the disposable fixture setup script on an existing
+worker: it writes fixture enrollment.
+
+Confirm the running version, runner identity, readiness, exact harness version,
+and required capabilities through the coordinating provider's published Edges
+Service client before undraining. Installation success and `--version` are
+local checks, not proof of live worker readiness. `status` inspects the selected
+binary while the manager is stopped.
+
+For a failed upgrade, keep the Worker drained, stop the runner, then:
+
+```sh
+python3 manage.py rollback
+python3 manage.py run -- --config /absolute/path/runner.json \
+  --codex-home /absolute/path/codex-home --version-pin YOUR_TESTED_CODEX_VERSION
+```
+
+Rollback switches only the executable. It does not roll back journals, harness
+sessions, credentials, or configuration. Only roll back across versions whose
+state formats were verified compatible; matching wire protocols alone does not
+prove this. If the upgraded runner wrote an incompatible state format, keep it
+stopped and recover from a tested backup instead. This helper does not install a
+launchd service or automatically retry failed jobs.

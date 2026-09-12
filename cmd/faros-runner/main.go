@@ -19,12 +19,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/faroshq/faros/pkg/runner"
@@ -51,8 +53,10 @@ func main() {
 
 func run() (runErr error) {
 	var opts options
+	var showVersion bool
 	flags := flag.NewFlagSet("faros-runner", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
+	flags.BoolVar(&showVersion, "version", false, "print build and protocol metadata as JSON, then exit")
 	flags.StringVar(&opts.config, "config", "", "path to the JSON runner enrollment/configuration file")
 	flags.StringVar(&opts.stateDir, "state-dir", "", "durable runner state directory")
 	flags.StringVar(&opts.listen, "listen", "", "loopback listen address (default 127.0.0.1:8787)")
@@ -63,6 +67,12 @@ func run() (runErr error) {
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	if showVersion {
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{
+			"version": version.Get(), "commit": version.GitCommit, "buildDate": version.BuildDate,
+			"protocolVersion": runner.ProtocolVersion, "os": runtime.GOOS, "arch": runtime.GOARCH,
+		})
+	}
 	if os.Geteuid() == 0 {
 		return errors.New("faros-runner must run as a non-root user")
 	}
@@ -70,6 +80,8 @@ func run() (runErr error) {
 	if err != nil {
 		return err
 	}
+	// Build identity is executable-owned, not enrollment configuration.
+	cfg.Version = version.Get()
 	if opts.stateDir != "" {
 		cfg.StateDir = opts.stateDir
 	}
