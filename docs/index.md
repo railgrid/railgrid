@@ -25,7 +25,7 @@ faros is alpha software at v0.1.x. There is no hosted service; you run the hub y
 
 ## How it works
 
-{% include excalidraw.html file="architecture.excalidraw" alt="faros architecture: hub with workspaces, providers registering with it, and edge agents connecting outward" %}
+![faros architecture: hub with workspaces, providers registering with it, and edge agents connecting outward](assets/diagrams/architecture.svg)
 
 1. **Run a hub.** One Helm release runs everything; larger installs can split the control-plane store into shards.
 2. **Enable providers.** Each provider registers with the hub and serves its APIs, portal and MCP tools inside its own workspace. Tenants enable the ones they want.
