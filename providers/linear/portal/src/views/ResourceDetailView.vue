@@ -8,6 +8,8 @@ import ConnectionPolicy from '../components/ConnectionPolicy.vue';
 import StatusBadge from '../portalkit/StatusBadge.vue';
 const props = defineProps<{ kind: 'connections' | 'operations' | 'events'; name: string }>();
 const session = useSession(); const read = useTask(); const resource = ref<Resource>();
+const policyMessage = ref('');
+function policySaved(result: Resource) { resource.value = result; policyMessage.value = 'Team policy saved. Refresh the connection to check readiness.'; }
 const facts = computed(() => {
   const r = resource.value; if (!r) return [];
   const spec = r.spec || {};
@@ -29,7 +31,7 @@ onMounted(load);
     <template #status><StatusBadge v-if="resource && kind !== 'events'" :status="kind === 'connections' ? resource.status?.ready ? 'Ready' : 'Not ready' : resource.status?.phase || 'Pending'" /></template>
     <div class="linear-detail-content">
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div v-for="[label, value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl></ResourceSectionCard>
-    <ResourceSectionCard v-if="kind === 'connections' && resource" title="Team access"><ConnectionPolicy :key="resource.metadata.resourceVersion" :resource="resource" @saved="resource = $event" /></ResourceSectionCard>
+    <ResourceSectionCard v-if="kind === 'connections' && resource" title="Team access"><p v-if="policyMessage" class="linear-notice" role="status">{{ policyMessage }}</p><ConnectionPolicy :key="resource.metadata.resourceVersion" :resource="resource" @saved="policySaved" /></ResourceSectionCard>
     <button v-if="kind === 'connections' && session.draft.returnToIssue" class="k-btn k-btn--primary" @click="session.navigate('issues/create')">Return to issue draft</button>
     <ResourceSectionCard v-if="resource?.status?.result" title="Result"><pre class="linear-result">{{ JSON.stringify(resource.status.result, null, 2) }}</pre></ResourceSectionCard>
     </div>

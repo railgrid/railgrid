@@ -43,8 +43,11 @@ KRM command path at `/mcp`; they require tenant bearer authentication and
    its Secret read claim.
 2. Create a Secret named `linear-api` with an `apiKey` entry in the Secret reference namespace (`default` unless specified), using your credential manager. Never put actual keys in Git.
 3. Apply [connection.yaml](examples/connection.yaml), replacing the allowed team
-   UUID. Use the portal's **Discover teams** command to find UUIDs accessible to
-   the key; an empty team list allows every team the key can access.
+   UUID. On the connection detail, **Discover permitted teams** lists teams
+   allowed by the current policy and lets you select them without copying UUIDs.
+   Ask a Linear administrator for UUIDs outside that scope. An empty API team
+   list allows every team the key can access; the portal requires an explicit
+   **Allow all teams accessible to this credential** choice.
 4. Submit an Operation through the portal, MCP, or Kubernetes API. Inspect
    `status.phase` and `status.result`; creation alone does not prove completion.
 
@@ -159,6 +162,12 @@ Resource details use `<collection>/detail/<name>`; issue details use
 Returning from an issue
 detail refreshes the cached collection while preserving its selected scope,
 query filter, and current page.
+
+Editing a search keeps the last applied results visible until **Search** is
+submitted; **Clear search** returns to the first unfiltered page. Refreshing an
+issue preserves unsaved field edits, with **Discard changes** restoring the
+latest fetched values. Leaving the detail page discards those edits, as the
+form explains. Comment progress and recovery appear beside the comment form.
 
 Build with `make build-linear-provider-portal` and verify behavior and types with
 `make test-linear-portal`. The portal still registers `faros-provider-linear` and

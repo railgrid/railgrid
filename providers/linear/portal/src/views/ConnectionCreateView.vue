@@ -24,11 +24,13 @@ function submit() {
     <form class="k-create-surface k-create-surface--guided" @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields linear-form">
-        <label for="connection-name">Name<input id="connection-name" v-model="name" class="k-input" required maxlength="253" pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?" :disabled="task.state.loading"></label>
-        <label for="connection-secret">Secret name<input id="connection-secret" v-model="secret" class="k-input" required :disabled="task.state.loading"></label>
-        <details><summary>Credential location</summary><label for="connection-secret-namespace">Secret namespace<input id="connection-secret-namespace" v-model="secretNamespace" class="k-input" required maxlength="63" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" :disabled="task.state.loading"></label></details>
+        <label for="connection-name">Name<input id="connection-name" v-model="name" class="k-input" required maxlength="253" pattern="[a-z0-9]([a-z0-9.\x2d]*[a-z0-9])?" aria-describedby="connection-name-help" :disabled="task.state.loading"></label>
+        <p id="connection-name-help" class="linear-page-meta">Choose a unique name, such as engineering. Use lowercase letters, numbers, dots or hyphens; start and end with a letter or number.</p>
+        <label for="connection-secret">Secret name<input id="connection-secret" v-model="secret" class="k-input" required aria-describedby="connection-secret-help" :disabled="task.state.loading"></label>
+        <p id="connection-secret-help" class="linear-page-meta">Enter the name of an existing Secret, such as linear-api, rather than the API key.</p>
+        <details><summary>Credential location</summary><label for="connection-secret-namespace">Secret namespace<input id="connection-secret-namespace" v-model="secretNamespace" class="k-input" required maxlength="63" pattern="[a-z0-9]([a-z0-9\x2d]*[a-z0-9])?" aria-describedby="connection-namespace-help" :disabled="task.state.loading"></label><p id="connection-namespace-help" class="linear-page-meta">Use the namespace containing the Secret. Lowercase letters, numbers and hyphens; start and end with a letter or number.</p></details>
         <label for="connection-teams">Allowed team UUIDs<input id="connection-teams" v-model="teams" class="k-input" aria-describedby="teams-help" :required="!allowAllTeams" :disabled="task.state.loading || allowAllTeams"></label>
-        <label class="linear-checkbox"><input v-model="allowAllTeams" type="checkbox" :disabled="task.state.loading">Allow all teams accessible to this credential</label>
+        <label class="k-checkbox-hit linear-checkbox"><input v-model="allowAllTeams" class="k-checkbox" type="checkbox" :disabled="task.state.loading">Allow all teams accessible to this credential</label>
         <p id="teams-help" class="linear-page-meta">Separate UUIDs with commas. Ask your Linear administrator for team UUIDs, or explicitly allow all teams available to this credential.</p>
       </div>
       <CreateGuidance title="Before connecting" :description="`Reference a Secret in ${secretNamespace} with an apiKey entry. Ask your workspace administrator to provision it using your authorized credential tooling; enter only its name here.`" :next-steps="['Faros will check the connection. Creating the resource does not mean it is ready yet.']" />

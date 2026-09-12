@@ -35,4 +35,7 @@ faros-provider-linear .linear-comment-meta { display: flex; flex-wrap: wrap; ali
 faros-provider-linear .linear-comment-meta a { color: var(--color-accent); }
 faros-provider-linear .linear-history-summary { min-inline-size: min(260px, 65vw); display: grid; justify-items: start; gap: 6px; white-space: normal; }
 faros-provider-linear .linear-history-message { white-space: normal; overflow-wrap: anywhere; }
-faros-provider-linear .linear-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+faros-provider-linear .linear-checkbox { display: flex; align-items: center; gap: 8px; }
+faros-provider-linear .linear-team-options { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
+faros-provider-linear .linear-team-options legend { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+faros-provider-linear .linear-team-options span { overflow-wrap: anywhere; min-width: 0; }
