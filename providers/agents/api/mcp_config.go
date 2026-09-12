@@ -31,19 +31,23 @@ import (
 )
 
 // mcpIdentity reconstructs the caller identity for tools that touch
-// store-scoped data or mint cluster-scoped URLs. MCP federation forwards the
-// cluster ID in both X-Faros-Tenant and X-Faros-Cluster, so the org/workspace
-// UUIDs usually cannot be parsed from the header — they come from the
-// cluster→tenant mapping the portal records on every REST call (the same
-// mapping background execution uses).
+// store-scoped data or mint cluster-scoped URLs. The hub identifies the
+// tenant by cluster ID only (X-Faros-Tenant and X-Faros-Cluster carry the
+// same value), so the org/workspace UUIDs come from kcp — the workspace's
+// LogicalCluster read as the caller — with the cluster→tenant mapping the
+// portal records on every REST call (the same mapping background execution
+// uses) as the fallback when that lookup is unavailable.
 func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 	id := identity{
-		tenantPath: strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
-		clusterID:  strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
-		user:       strings.TrimSpace(r.Header.Get("X-Faros-User")),
-		token:      bearerToken(r),
+		tenant:    strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
+		clusterID: strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
+		user:      strings.TrimSpace(r.Header.Get("X-Faros-User")),
+		token:     bearerToken(r),
 	}
-	id.orgUUID, id.workspaceUUID = parseTenantPath(id.tenantPath)
+	if id.clusterID == "" {
+		id.clusterID = id.tenant
+	}
+	s.resolveWorkspace(ctx, &id)
 	if id.orgUUID == "" || id.workspaceUUID == "" {
 		if ref, ok, _ := s.store.GetTenantRef(ctx, id.clusterID); ok {
 			id.orgUUID, id.workspaceUUID = ref.OrgUUID, ref.WorkspaceUUID
@@ -64,6 +68,8 @@ type createAgentInput struct {
 	ModelFallbacks  []string       `json:"modelFallbacks,omitempty" jsonschema:"Ordered credential names tried when the primary model fails"`
 	BudgetTokens    int64          `json:"budgetTokens,omitempty" jsonschema:"Token cap per rolling month; 0 means unlimited"`
 	BudgetUSD       string         `json:"budgetUSD,omitempty" jsonschema:"USD spend cap per rolling month as a decimal string; empty means unlimited"`
+	MaxToolTurns    int32          `json:"maxToolTurns,omitempty" jsonschema:"Cap on tool-call iterations per run; 0 uses the provider default"`
+	TimeoutSeconds  int32          `json:"timeoutSeconds,omitempty" jsonschema:"Wall-clock budget for one run in seconds; 0 uses the provider default"`
 	Channels        []channelInput `json:"channels,omitempty" jsonschema:"Messaging channel bindings (name + connectionRef + primary)"`
 }
 
@@ -242,8 +248,8 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "create_agent",
 		Title: "Create an agent",
-		Description: "Create a new agent. Assign its model with modelCredential (from list_model_credentials) and bind messaging channels with channels. " +
-			"Tool grants, limits, and prompts can be set afterwards with update_agent.",
+		Description: "Create a new agent. Assign its model with modelCredential (from list_model_credentials), bind messaging channels with channels, and bound runs with maxToolTurns / timeoutSeconds. " +
+			"Tool grants and prompts can be set afterwards with update_agent.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createAgentInput) (*mcp.CallToolResult, agentSettings, error) {
 		c, err := s.mcpClient(r)
@@ -255,6 +261,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			SystemPrompt: in.SystemPrompt, Autonomy: in.Autonomy,
 			ModelCredential: in.ModelCredential, ModelFallbacks: in.ModelFallbacks,
 			BudgetTokens: in.BudgetTokens, BudgetUSD: in.BudgetUSD, Channels: in.Channels,
+			MaxToolTurns: in.MaxToolTurns, TimeoutSeconds: in.TimeoutSeconds,
 		}
 		a, err := s.applyAgentCreate(ctx, c, &req)
 		if err != nil {

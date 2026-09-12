@@ -64,7 +64,7 @@ func TestSeedProjectScaffoldPopulatesWorkspace(t *testing.T) {
 	defer srv.Close()
 
 	store := workspace.NewFileStore(t.TempDir())
-	s := &Server{workspaces: store}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1", user: "alice"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	info := projectTemplateInfo{
@@ -103,7 +103,7 @@ func TestSeedProjectScaffoldPopulatesWorkspace(t *testing.T) {
 }
 
 func TestSeedProjectScaffoldSkipsWhenNoScaffold(t *testing.T) {
-	s := &Server{workspaces: workspace.NewFileStore(t.TempDir())}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspace.NewFileStore(t.TempDir())}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	seeded, err := s.seedProjectScaffold(context.Background(), id, p, projectTemplateInfo{Name: "x"})
@@ -116,7 +116,7 @@ func TestSeedProjectScaffoldSkipsPopulatedWorkspace(t *testing.T) {
 	srv := giteaStyleArchive(t, map[string]string{"web/index.html": "x"})
 	defer srv.Close()
 	store := workspace.NewFileStore(t.TempDir())
-	s := &Server{workspaces: store}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
 	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
 	scope := projectWorkspaceScope(id, p)
@@ -127,5 +127,79 @@ func TestSeedProjectScaffoldSkipsPopulatedWorkspace(t *testing.T) {
 	seeded, err := s.seedProjectScaffold(context.Background(), id, p, info)
 	if err != nil || seeded != 0 {
 		t.Fatalf("populated workspace: seeded=%d err=%v, want 0 (no clobber)", seeded, err)
+	}
+}
+
+// A prompt-only project has no template at creation; by the time the assistant
+// selects one the reconciler has hydrated the git host's autoInit README into
+// the workspace. That boilerplate must not count as content, or the scaffold —
+// and with it the build workflow promotion depends on — is never seeded.
+func TestSeedProjectScaffoldSeedsOverRepositoryBoilerplate(t *testing.T) {
+	srv := giteaStyleArchive(t, map[string]string{
+		"web/index.html":               "<!doctype html>",
+		".github/workflows/build.yaml": "on: push",
+		".gitignore":                   "node_modules\n",
+		"README.md":                    "scaffold readme (skipped)",
+	})
+	defer srv.Close()
+	store := workspace.NewFileStore(t.TempDir())
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: store}
+	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+	scope := projectWorkspaceScope(id, p)
+	if err := store.ApplyFiles(context.Background(), scope, []workspace.File{
+		{Path: "README.md", Content: "Created by App Studio for Demo"},
+		{Path: "LICENSE", Content: "MIT"},
+		{Path: ".gitignore", Content: "generated\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info := projectTemplateInfo{Name: "simple-webapp", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"app": {WorkspacePath: "."}}}
+	seeded, err := s.seedProjectScaffold(context.Background(), id, p, info)
+	if err != nil {
+		t.Fatalf("seedProjectScaffold: %v", err)
+	}
+	if seeded != 3 {
+		t.Fatalf("seeded = %d, want 3 (index, workflow, .gitignore; scaffold README skipped)", seeded)
+	}
+	got, err := store.ListFiles(context.Background(), scope, workspace.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]bool{}
+	for _, f := range got.Files {
+		paths[f.Path] = true
+	}
+	for _, want := range []string{"README.md", "LICENSE", ".gitignore", "web/index.html", ".github/workflows/build.yaml"} {
+		if !paths[want] {
+			t.Errorf("workspace missing %s after seed: %v", want, paths)
+		}
+	}
+	readme, err := store.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "README.md"})
+	if err != nil || readme.Content != "Created by App Studio for Demo" {
+		t.Fatalf("README after seed = %#v, err=%v; the git host's README must survive", readme, err)
+	}
+	ignore, err := store.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: ".gitignore"})
+	if err != nil || ignore.Content != "node_modules\n" {
+		t.Fatalf(".gitignore after seed = %#v, err=%v; the scaffold's copy wins", ignore, err)
+	}
+}
+
+func TestWorkspaceHoldsOnlyRepositoryBoilerplate(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		files []workspace.FileInfo
+		want  bool
+	}{
+		{name: "empty", want: true},
+		{name: "readme only", files: []workspace.FileInfo{{Path: "README.md"}}, want: true},
+		{name: "all boilerplate", files: []workspace.FileInfo{{Path: "README.md"}, {Path: "LICENSE"}, {Path: ".gitignore"}}, want: true},
+		{name: "readme plus source", files: []workspace.FileInfo{{Path: "README.md"}, {Path: "server.js"}}, want: false},
+		{name: "nested readme is content", files: []workspace.FileInfo{{Path: "docs/README.md"}}, want: false},
+		{name: "workflow is content", files: []workspace.FileInfo{{Path: ".github/workflows/build.yaml"}}, want: false},
+	} {
+		if got := workspaceHoldsOnlyRepositoryBoilerplate(test.files); got != test.want {
+			t.Errorf("%s: workspaceHoldsOnlyRepositoryBoilerplate = %v, want %v", test.name, got, test.want)
+		}
 	}
 }

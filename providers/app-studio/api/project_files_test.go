@@ -51,6 +51,7 @@ func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 		project:    project,
 	}
 	fixture.server = &Server{
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
 		store:            store.NewMemoryStore(),
 		workspaces:       fixture.workspaces,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
@@ -68,7 +69,8 @@ func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 func (f *projectFilesFixture) request(method, target string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, body)
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	for key, value := range headers {
 		request.Header.Set(key, value)

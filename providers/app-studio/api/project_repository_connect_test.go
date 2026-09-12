@@ -46,7 +46,7 @@ func TestOptionalGitCreationEndpoints(t *testing.T) {
 					}
 					return false, nil, nil
 				})
-				server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return asclient.NewFromDynamic(dyn), nil }}
+				server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return asclient.NewFromDynamic(dyn), nil }}
 				req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{"displayName":"Demo","repositoryMode":"`+mode+`"}`))
 				setPublishingIdentity(req)
 				response := httptest.NewRecorder()
@@ -95,11 +95,11 @@ func TestOptionalGitSelectionAndValidation(t *testing.T) {
 	}
 	for _, status := range []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse} {
 		client := newProjectCreationTestClient(codeConnectionObjectWithValidated("github", status))
-		plan, err := (&Server{}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{DisplayName: "Demo"}, "demo")
+		plan, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{DisplayName: "Demo"}, "demo")
 		if err != nil || (plan.Ref != "") != (status == metav1.ConditionTrue) {
 			t.Fatalf("plan=%#v err=%v", plan, err)
 		}
-		_, err = (&Server{}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{DisplayName: "Demo", ConnectionRef: "github"}, "demo")
+		_, err = (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{DisplayName: "Demo", ConnectionRef: "github"}, "demo")
 		if (err == nil) != (status == metav1.ConditionTrue) {
 			t.Fatalf("explicit connection err=%v", err)
 		}
@@ -108,7 +108,7 @@ func TestOptionalGitSelectionAndValidation(t *testing.T) {
 	dyn.PrependReactor("list", "connections", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("discovery unavailable")
 	})
-	if _, err := (&Server{}).prepareOptionalProjectRepository(context.Background(), asclient.NewFromDynamic(dyn), CreateProjectRequest{}, "demo"); err == nil {
+	if _, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).prepareOptionalProjectRepository(context.Background(), asclient.NewFromDynamic(dyn), CreateProjectRequest{}, "demo"); err == nil {
 		t.Fatal("masked discovery failure")
 	}
 }
@@ -116,11 +116,11 @@ func TestOptionalGitSelectionAndValidation(t *testing.T) {
 func TestConnectRepositoryIsIdempotentAndPermissionScoped(t *testing.T) {
 	dyn := newProjectCreationTestDynamicClient(codeConnectionObjectWithValidated("github", metav1.ConditionTrue))
 	client := asclient.NewFromDynamic(dyn)
-	project, err := (&Server{}).createProjectFromRequest(context.Background(), client, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, CreateProjectRequest{DisplayName: "Demo", RepositoryMode: "none"}, nil, nil)
+	project, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).createProjectFromRequest(context.Background(), client, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, CreateProjectRequest{DisplayName: "Demo", RepositoryMode: "none"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{projectClientFor: func(id identity) (*asclient.Client, error) {
+	server := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "ws-1"), projectClientFor: func(id identity) (*asclient.Client, error) {
 		if id.orgUUID != "org-a" || id.workspaceUUID != "ws-1" || id.user != "alice" {
 			t.Fatalf("wrong identity %#v", id)
 		}
@@ -172,7 +172,7 @@ func TestOptionalGitUnservedProviderAPIIsAdvisory(t *testing.T) {
 	if err != nil || readiness.GitConnection.Status != projectCreateGitStatusProviderMissing {
 		t.Fatalf("readiness=%#v err=%v", readiness, err)
 	}
-	plan, err := (&Server{}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{}, "demo")
+	plan, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).prepareOptionalProjectRepository(context.Background(), client, CreateProjectRequest{}, "demo")
 	if err != nil || plan.projectBinding() != nil {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
@@ -186,7 +186,7 @@ func TestOptionalGitUnservedProviderAPIIsAdvisory(t *testing.T) {
 
 func TestConnectLaterReservesDifferentRepositories(t *testing.T) {
 	c := newProjectCreationTestClient(codeConnectionObjectWithValidated("github", metav1.ConditionTrue))
-	s := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
 	refs := []string{}
 	for _, name := range []string{"project-one", "project-two"} {
 		p, err := s.createProjectFromRequest(context.Background(), c, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, CreateProjectRequest{Name: name, DisplayName: "Demo", RepositoryMode: "none"}, nil, nil)

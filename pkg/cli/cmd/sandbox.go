@@ -141,6 +141,7 @@ Production instances answer 409.
   faros sandbox exec    shop-dev api -- node -e 'console.log(1)'
   faros sandbox logs    shop-dev api -f
   faros sandbox restart shop-dev api
+  faros sandbox env     shop-dev api PULSE_URL=https://… --restart
   faros sandbox status  shop-dev [api]`,
 	}
 	target.addFlags(cmd)
@@ -149,6 +150,7 @@ Production instances answer 409.
 		newSandboxExecCommand(&target),
 		newSandboxLogsCommand(&target),
 		newSandboxRestartCommand(&target),
+		newSandboxEnvCommand(&target),
 		newSandboxStatusCommand(&target),
 	)
 	return cmd
@@ -644,6 +646,72 @@ func newSandboxRestartCommand(target *hubTarget) *cobra.Command {
 			return err
 		},
 	}
+}
+
+// sandboxEnvResponse mirrors the data plane's env verb reply.
+type sandboxEnvResponse struct {
+	Phase     string   `json:"phase,omitempty"`
+	Applied   []string `json:"applied,omitempty"`
+	Restarted bool     `json:"restarted,omitempty"`
+}
+
+func newSandboxEnvCommand(target *hubTarget) *cobra.Command {
+	var restart bool
+	cmd := &cobra.Command{
+		Use:   "env <instance> <component> KEY=value [KEY=value...]",
+		Short: "Set environment variables on the component's running dev process",
+		Long: `Set environment variables on a development-mode component through the data
+plane's env verb. This changes the live process only: a running pod reads its
+env at start, so changing the Instance's values.env with kubectl is not seen
+until the pod is re-rendered, and 'faros sandbox restart' restarts the process
+with the env it already has. Pass --restart to restart right after applying so
+the new values take effect; keep the Instance's values.env in sync yourself if
+the change must survive a re-render.
+
+Secrets do not belong here: the values travel in the request body and land in
+the process environment in clear.`,
+		Args: cobra.MinimumNArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env := map[string]string{}
+			for _, kv := range args[2:] {
+				k, v, ok := strings.Cut(kv, "=")
+				if !ok || k == "" {
+					return fmt.Errorf("want KEY=value, got %q", kv)
+				}
+				env[k] = v
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			s, err := newHubSession(ctx, *target)
+			if err != nil {
+				return err
+			}
+			var resp sandboxEnvResponse
+			if err := s.do(ctx, http.MethodPost, componentURL(s, args[0], args[1], "env"), map[string]any{"env": env}, &resp); err != nil {
+				return err
+			}
+			applied := resp.Applied
+			if len(applied) == 0 {
+				for k := range env {
+					applied = append(applied, k)
+				}
+			}
+			sort.Strings(applied)
+			if restart {
+				if err := s.do(ctx, http.MethodPost, componentURL(s, args[0], args[1], "restart"), nil, nil); err != nil {
+					return fmt.Errorf("env applied (%s) but restart failed: %w", strings.Join(applied, ", "), err)
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "set %s on %s/%s and restarted the process\n", strings.Join(applied, ", "), args[0], args[1])
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "set %s on %s/%s (run 'faros sandbox restart %s %s' for the process to pick them up)\n", strings.Join(applied, ", "), args[0], args[1], args[0], args[1])
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&restart, "restart", false, "Restart the component's process after applying")
+	return cmd
 }
 
 func newSandboxStatusCommand(target *hubTarget) *cobra.Command {

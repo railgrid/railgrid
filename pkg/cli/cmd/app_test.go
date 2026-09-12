@@ -239,3 +239,42 @@ func TestAppCreateConflictShowsServerMessage(t *testing.T) {
 		t.Fatalf("err = %q, want %q", err, want)
 	}
 }
+
+func TestRepositoryStallHint(t *testing.T) {
+	now := time.Date(2026, 9, 11, 14, 10, 0, 0, time.UTC)
+	fresh := appProjectView{Name: "p", CreatedAt: now.Add(-30 * time.Second), Repository: &appRepositoryView{Ref: "p"}}
+	if hint := repositoryStallHint(fresh, now); hint != "" {
+		t.Fatalf("a 30 s old project is latency, got %q", hint)
+	}
+	stalled := appProjectView{Name: "p", CreatedAt: now.Add(-5 * time.Minute), Repository: &appRepositoryView{Ref: "p"}}
+	hint := repositoryStallHint(stalled, now)
+	for _, want := range []string{"not ready for 5m0s", "not reconciling", "repositories.code.faros.sh p", "don't recreate"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("hint %q lacks %q", hint, want)
+		}
+	}
+	// A repository that reports its own message, has a commit, or is ready
+	// is not a stall.
+	for name, r := range map[string]*appRepositoryView{
+		"message": {Ref: "p", Message: "Creating repository \"p\"."},
+		"commit":  {Ref: "p", Commits: []appRepositoryCommitView{{Name: "c", Phase: "Succeeded"}}},
+		"ready":   {Ref: "p", Ready: true},
+		"none":    nil,
+	} {
+		p := stalled
+		p.Repository = r
+		if hint := repositoryStallHint(p, now); hint != "" {
+			t.Fatalf("%s: unexpected hint %q", name, hint)
+		}
+	}
+
+	// And printAppStatus surfaces it under the Repository line.
+	st := appStatus{Project: json.RawMessage(`{"name":"p","createdAt":"2026-09-11T14:00:00Z","repository":{"ref":"p","status":"Provisioning"}}`)}
+	var buf bytes.Buffer
+	if err := printAppStatus(&buf, st, now); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "not reconciling") {
+		t.Fatalf("status lacks the stall hint:\n%s", buf.String())
+	}
+}

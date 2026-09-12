@@ -27,21 +27,50 @@ import (
 	devcmd "github.com/faroshq/faros/pkg/cli/cmd/dev/cmd"
 )
 
+// Command groups shown in `faros --help`. Order here is display order.
+const (
+	groupStart  = "start"
+	groupEdges  = "edges"
+	groupAccess = "access"
+	groupDev    = "dev"
+	groupOps    = "ops"
+)
+
 // NewRootCommand creates the root cobra command for the faros CLI.
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "faros",
 		Short: "faros: an open-source control plane for platform teams",
-		Long: `Faros is an OSS control plane that combines multi-tenant API serving
-with reverse-dialer connectivity mesh and OIDC identity.
+		Long: `faros connects Kubernetes clusters and Linux servers behind NAT to one
+hub, and gives every team an isolated workspace with its own APIs, RBAC and
+providers on top.
 
-Remote agents "faros" (pull) toward the hub via reverse tunnels,
-enabling secure workload deployment across distributed edges.`,
+Typical session:
+
+  faros login --hub-url https://hub.example.com   # OIDC in the browser
+  faros use                                        # pick an org and workspace
+  faros edge list                                  # what is connected
+  faros connect my-cluster                         # point kubectl at an edge
+  faros ssh my-server                              # shell on a Linux edge
+  faros whoami                                     # where am I, what can I do
+
+Every command talks to the hub as you, with your workspace RBAC. Run
+'faros <command> --help' for details and 'faros completion --help' for shell
+completion.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	cmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
+	cmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to the kubeconfig file (default: $KUBECONFIG, then ~/.kube/config)")
+	cmd.PersistentFlags().BoolVar(&globalInsecureTLS, "insecure-skip-tls-verify", false, "Skip TLS certificate verification when talking to the hub")
+
+	cmd.AddGroup(
+		&cobra.Group{ID: groupStart, Title: "Getting started:"},
+		&cobra.Group{ID: groupEdges, Title: "Edges (clusters and servers):"},
+		&cobra.Group{ID: groupAccess, Title: "Organizations and access:"},
+		&cobra.Group{ID: groupDev, Title: "Developer workflow:"},
+		&cobra.Group{ID: groupOps, Title: "Agents, hub and local development:"},
+	)
 
 	// Add dev command
 	devCmd, err := devcmd.New(genericclioptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
@@ -49,41 +78,68 @@ enabling secure workload deployment across distributed edges.`,
 		fmt.Fprintf(os.Stderr, "error: %v", err)
 		os.Exit(1)
 	}
+	devCmd.GroupID = groupOps
 
-	cmd.AddCommand(
-		newInitCommand(),
+	grouped := func(id string, cmds ...*cobra.Command) []*cobra.Command {
+		for _, c := range cmds {
+			c.GroupID = id
+		}
+		return cmds
+	}
+	cmd.AddCommand(grouped(groupStart,
 		newLoginCommand(),
-		newGetTokenCommand(),
-		newAgentCommand(),
-		newEdgeCommand(),
-		newListCommand(),
-		newInstallCommand(),
-		newApplyCommand(),
-		newGetCommand(),
-		newWorkspaceCommand(),
+		newLogoutCommand(),
 		newUseCommand(),
-		newKubeconfigCommand(),
-		newVersionCommand(),
+		newWhoamiCommand(),
+		newTokenCommand(),
+	)...)
+	cmd.AddCommand(grouped(groupEdges,
+		newEdgeCommand(),
+		newConnectCommand(),
+		newDisconnectCommand(),
 		newSSHCommand(),
-		newMCPCommand(),
-		newEnvCommand(),
+	)...)
+	cmd.AddCommand(grouped(groupAccess,
+		newOrgCommand(),
+		newWorkspaceCommand(),
+	)...)
+	cmd.AddCommand(grouped(groupDev,
+		newAppCommand(),
 		newCommitCommand(),
 		newSandboxCommand(),
-		newAppCommand(),
+		newEnvCommand(),
+		newMCPCommand(),
+	)...)
+	cmd.AddCommand(grouped(groupOps,
+		newAgentCommand(),
+		newInstallCommand(),
+		newInitCommand(),
 		devCmd,
+	)...)
+
+	// Hidden: kubectl's exec credential plugin, doc generation, and the
+	// pre-1.0 spellings kept so existing scripts and muscle memory work.
+	cmd.AddCommand(
+		newVersionCommand(),
+		newGetTokenCommand(),
+		newDocsCommand(),
+		newKubeconfigCommand(),
+		newKCPWorkspaceCommand(),
+		newListCommand(),
+		newGetCommand(),
+		newApplyCommand(),
 	)
 
 	return cmd
 }
 
-// newListCommand provides a shorthand 'faros list' → 'faros edge list'.
+// newListCommand keeps 'faros list' / 'faros ls' as a hidden shorthand for
+// 'faros edge list'.
 func newListCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:     "list",
-		Short:   "List edges (shorthand for 'faros edge list')",
-		Aliases: []string{"ls"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return newEdgeListCommand().RunE(cmd, args)
-		},
-	}
+	list := newEdgeListCommand()
+	list.Use = "list"
+	list.Aliases = []string{"ls"}
+	list.Short = "List edges (shorthand for 'faros edge list')"
+	list.Hidden = true
+	return list
 }

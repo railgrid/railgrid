@@ -21,14 +21,40 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 type projectRestoreRequest struct {
-	CommitSHA              string  `json:"commitSHA"`
-	ExpectedSourceRevision *uint64 `json:"expectedSourceRevision"`
+	CommitSHA              string        `json:"commitSHA"`
+	ExpectedSourceRevision *jsonRevision `json:"expectedSourceRevision"`
+}
+
+// jsonRevision is a workspace source revision that decodes from a JSON number
+// or from a numeric string. ProjectView reports sourceRevision as a number, but
+// clients that carry it through shell variables, jq output, or form fields
+// routinely quote it, and refusing the quoted spelling with a uint64 unmarshal
+// error cost REST callers real time. Both spellings mean the same revision;
+// anything that is not a non-negative integer is still rejected.
+type jsonRevision uint64
+
+func (r *jsonRevision) UnmarshalJSON(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	if strings.HasPrefix(text, `"`) {
+		var quoted string
+		if err := json.Unmarshal(data, &quoted); err != nil {
+			return err
+		}
+		text = strings.TrimSpace(quoted)
+	}
+	value, err := strconv.ParseUint(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("expectedSourceRevision must be a non-negative integer (as a number or a numeric string), got %s", strings.TrimSpace(string(data)))
+	}
+	*r = jsonRevision(value)
+	return nil
 }
 
 type projectRestoreResponse struct {
@@ -97,7 +123,8 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "read workspace source revision: "+err.Error())
 		return
 	}
-	if currentRevision != *req.ExpectedSourceRevision {
+	expectedRevision := uint64(*req.ExpectedSourceRevision)
+	if currentRevision != expectedRevision {
 		writeStatus(w, http.StatusConflict, "Conflict", "project files changed since History was loaded; refresh History and try again")
 		return
 	}
@@ -114,7 +141,7 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	preservePaths, skipListComplete := checkoutSkippedPaths(checkout.Skipped)
 	result, err := s.workspaces.ReplaceTree(r.Context(), scope, workspace.ReplaceTreeOptions{
 		Files:                  files,
-		ExpectedSourceRevision: req.ExpectedSourceRevision,
+		ExpectedSourceRevision: &expectedRevision,
 		PreservePaths:          preservePaths,
 		PreserveOmitted:        !skipListComplete,
 	})
@@ -144,7 +171,7 @@ func (s *Server) checkoutProjectRepository(r *http.Request, id identity, reposit
 		r.Context(),
 		s.mcpEndpoint(id.clusterID),
 		r,
-		id.tenantPath,
+		id.tenant,
 		s.mcpInsecureSkipTLSVerify,
 		projectToolCodeCheckoutRepository,
 		s.checkoutArgs(r.Context(), r, id, map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA}),

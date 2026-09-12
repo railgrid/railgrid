@@ -21,8 +21,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
@@ -44,7 +44,7 @@ func newGetTokenCommand() *cobra.Command {
 		Short:  "Get an OIDC token for kubectl exec credential plugin",
 		Hidden: true, // Called by kubectl, not directly by users.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGetToken(cmd.Context(), issuerURL, clientID, insecureSkipTLSVerify)
+			return runGetToken(cmd.Context(), cmd.OutOrStdout(), issuerURL, clientID, insecureSkipTLSVerify)
 		},
 	}
 
@@ -67,7 +67,7 @@ type execCredentialStatus struct {
 	ExpirationTimestamp string `json:"expirationTimestamp,omitempty"`
 }
 
-func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool) error {
+func runGetToken(ctx context.Context, out io.Writer, issuerURL, clientID string, insecure bool) error {
 	if issuerURL == "" || clientID == "" {
 		return fmt.Errorf("--oidc-issuer-url and --oidc-client-id are required")
 	}
@@ -84,7 +84,7 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 
 	cache, loadErr := cliauth.LoadTokenCache(issuerURL, clientID)
 	if loadErr == nil && !cache.IsExpired() {
-		return outputExecCredential(cache.IDToken, cache.ExpiresAt)
+		return outputExecCredential(out, cache.IDToken, cache.ExpiresAt)
 	}
 
 	// Token is missing or expired -- try to refresh.
@@ -109,7 +109,7 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 		return fmt.Errorf("saving rotated token cache (run 'faros login' to re-authenticate): %w", err)
 	}
 
-	return outputExecCredential(newIDToken, expiry.Unix())
+	return outputExecCredential(out, newIDToken, expiry.Unix())
 }
 
 func refreshToken(ctx context.Context, issuerURL, clientID, clientSecret, refreshToken string, insecure bool) (idToken, newRefreshToken string, expiry time.Time, err error) {
@@ -151,7 +151,7 @@ func refreshToken(ctx context.Context, issuerURL, clientID, clientSecret, refres
 	return rawIDToken, token.RefreshToken, token.Expiry, nil
 }
 
-func outputExecCredential(token string, expiresAtUnix int64) error {
+func outputExecCredential(out io.Writer, token string, expiresAtUnix int64) error {
 	cred := execCredential{
 		APIVersion: "client.authentication.k8s.io/v1beta1",
 		Kind:       "ExecCredential",
@@ -164,6 +164,6 @@ func outputExecCredential(token string, expiresAtUnix int64) error {
 	if err != nil {
 		return fmt.Errorf("marshaling exec credential: %w", err)
 	}
-	_, err = os.Stdout.Write(data)
+	_, err = out.Write(data)
 	return err
 }

@@ -245,7 +245,10 @@ Option A built on:
   logical-cluster ID
   ([pkg/hub/provider_cluster_resolver.go](../pkg/hub/provider_cluster_resolver.go),
   wired in [pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go)). The
-  same resolver is reusable for A-2.2.
+  same resolver is reusable for A-2.2. The ID has since become the tenant's
+  only identity towards providers: `X-Faros-Tenant` carries the same value,
+  and the workspace path is no longer forwarded on either the REST proxy or
+  the MCP aggregate's federation path.
 - It demonstrated, in production-shaped local runs, that a user token reaching a
   **non-default** workspace works end-to-end once the addressing is right — i.e.
   kcp authorizes it. That is the empirical basis for A-1.

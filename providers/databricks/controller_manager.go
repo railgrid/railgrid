@@ -31,9 +31,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/faroshq/provider-sdk/apiexportprovider"
 	sdkinstall "github.com/faroshq/provider-sdk/install"
 	"github.com/faroshq/provider-sdk/leaderelection"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -276,7 +276,7 @@ func runControllerManagerTerm(ctx context.Context, config *rest.Config, validato
 		return err
 	}
 
-	provider, err := apiexport.New(config, apiExportName, apiexport.Options{Scheme: scheme})
+	provider, err := apiexportprovider.New(config, apiExportName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}

@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/faroshq/provider-sdk/tenantaccess"
+
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/store"
 	"github.com/faroshq/provider-agents/tenant"
@@ -78,7 +80,11 @@ type Server struct {
 	// s2sAuth memoizes service-to-service authorization decisions so a long wait
 	// does not re-run TokenReview + SubjectAccessReview on every poll.
 	s2sAuth *s2sAuthCache
-	started time.Time
+	// workspaces maps the cluster ID the hub identifies a tenant by to the
+	// workspace's path / org / workspace UUIDs, read from kcp as the caller.
+	// Nil without a hub URL; identity then carries no org/workspace scope.
+	workspaces workspaceLookup
+	started    time.Time
 }
 
 // New constructs the server and opens the durable store: Postgres when a
@@ -105,8 +111,10 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	// The tenant client is nil without a hub URL; resource + chat
 	// endpoints then return a clear 501 rather than crashing (bare-hub dev).
 	var tenantClient *tenant.Client
+	var workspaces workspaceLookup
 	if cfg.HubURL != "" {
 		tenantClient = tenant.NewClient(cfg.HubURL, cfg.HubInsecure)
+		workspaces = tenantaccess.NewWorkspaceResolver(cfg.HubURL, cfg.HubInsecure, 0).Resolve
 	}
 
 	return &Server{
@@ -118,6 +126,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		liveRuns:     newRunRegistry(),
 		capabilities: newCapabilityCache(),
 		s2sAuth:      newS2SAuthCache(),
+		workspaces:   workspaces,
 		started:      time.Now().UTC(),
 	}, nil
 }
@@ -202,6 +211,7 @@ func (s *Server) Routes() http.Handler {
 	// Schedules (M3): cron / wakeup / heartbeat, plus synchronous "run now".
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
 	mux.HandleFunc("POST /api/schedules", s.createSchedule)
+	mux.HandleFunc("GET /api/schedules/{name}", s.getSchedule)
 	mux.HandleFunc("PUT /api/schedules/{name}", s.updateSchedule)
 	mux.HandleFunc("DELETE /api/schedules/{name}", s.deleteSchedule)
 	mux.HandleFunc("POST /api/schedules/{name}/run", s.runScheduleNow)
@@ -216,12 +226,14 @@ func (s *Server) Routes() http.Handler {
 	// Toolsets: workspace-shared bundles of tool grants that agents link.
 	mux.HandleFunc("GET /api/toolsets", s.listToolsets)
 	mux.HandleFunc("POST /api/toolsets", s.createToolset)
+	mux.HandleFunc("GET /api/toolsets/{name}", s.getToolset)
 	mux.HandleFunc("PUT /api/toolsets/{name}", s.updateToolset)
 	mux.HandleFunc("DELETE /api/toolsets/{name}", s.deleteToolset)
 
 	// Event triggers (M7): CRUD + synchronous "run now".
 	mux.HandleFunc("GET /api/triggers", s.listTriggers)
 	mux.HandleFunc("POST /api/triggers", s.createTrigger)
+	mux.HandleFunc("GET /api/triggers/{name}", s.getTrigger)
 	mux.HandleFunc("PUT /api/triggers/{name}", s.updateTrigger)
 	mux.HandleFunc("DELETE /api/triggers/{name}", s.deleteTrigger)
 	mux.HandleFunc("POST /api/triggers/{name}/run", s.runTriggerNow)
@@ -256,14 +268,20 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// whoami echoes the caller context. tenantPath is kept for existing clients
+// but carries the tenant's kcp logical-cluster ID (what the hub identifies a
+// tenant by), the same value as clusterID; workspacePath is the workspace's
+// kcp path as resolved from kcp, empty when the lookup was unavailable.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	id, ok := identityFromRequest(w, r)
+	id, ok := s.identityFromRequest(w, r)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tenantPath":    id.tenantPath,
+		"tenantPath":    id.tenant,
+		"tenant":        id.tenant,
 		"clusterID":     id.clusterID,
+		"workspacePath": id.workspacePath,
 		"orgUUID":       id.orgUUID,
 		"workspaceUUID": id.workspaceUUID,
 		"user":          id.user,
@@ -272,7 +290,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {
-	if _, ok := identityFromRequest(w, r); !ok {
+	if _, ok := s.identityFromRequest(w, r); !ok {
 		return
 	}
 	writeStatus(w, http.StatusNotImplemented, "NotImplemented",

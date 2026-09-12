@@ -12,11 +12,22 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -245,6 +256,7 @@ func TestProjectTemplateToolchain(t *testing.T) {
 // debugged source that was never deployed. Verification must lead with it.
 func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
@@ -301,6 +313,7 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 
 func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
@@ -349,5 +362,93 @@ func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("%s development sync did not complete", name)
 		}
+	}
+}
+
+// A workspace the sandbox cannot run is the caller's problem, not a gateway
+// failure: it must answer 4xx with the reason in the body. Reported as 502 the
+// message never reached anyone — the edge in front of the hub swaps origin 502
+// bodies for its own error page, which is how "no package.json" surfaced to
+// REST callers as a bare "error code: 502".
+func TestValidateProjectSyncToolchainsIsAPreconditionFailure(t *testing.T) {
+	components := map[string]projectTemplateComponent{
+		"app": {WorkspacePath: ".", Toolchain: "node", StartCommand: "npm run dev"},
+	}
+	routed := map[string][]projectSandboxSyncFile{
+		"app": {{Path: "main.go", Content: "package main"}, {Path: "go.mod", Content: "module app"}},
+	}
+	err := validateProjectSyncToolchains(routed, components)
+	var precondition *projectDevelopmentSyncPreconditionError
+	if !errors.As(err, &precondition) {
+		t.Fatalf("validateProjectSyncToolchains = %T %v, want a precondition error", err, err)
+	}
+	for _, want := range []string{`component "app" has no package.json`, "Node.js", "the workspace root", "skip the sandbox and promote"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	rec := httptest.NewRecorder()
+	writeDevelopmentSyncError(rec, err)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("precondition status = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	var status metav1.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil || status.Reason != "UnprocessableEntity" || !strings.Contains(status.Message, "package.json") {
+		t.Fatalf("precondition body = %s (decode err %v), want a Status naming package.json", rec.Body.String(), err)
+	}
+}
+
+func TestWriteDevelopmentSyncErrorMapsSandboxRejectionsAndFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "layout precondition", err: &projectDevelopmentSyncPreconditionError{msg: "nothing under a component directory"}, want: http.StatusUnprocessableEntity},
+		{name: "sandbox rejected payload", err: &projectDevelopmentSyncHTTPError{component: "app", status: http.StatusBadRequest, detail: "package.json missing"}, want: http.StatusUnprocessableEntity},
+		{name: "sandbox unprocessable", err: &projectDevelopmentSyncHTTPError{component: "app", status: http.StatusUnprocessableEntity, detail: "bad manifest"}, want: http.StatusUnprocessableEntity},
+		{name: "sandbox revision conflict", err: &projectDevelopmentSyncHTTPError{component: "app", status: http.StatusConflict, detail: "older than the applied revision"}, want: http.StatusConflict},
+		{name: "sandbox failed", err: &projectDevelopmentSyncHTTPError{component: "app", status: http.StatusInternalServerError, detail: "boom"}, want: http.StatusBadGateway},
+		{name: "sandbox unreachable", err: fmt.Errorf("component app: development data plane sync: dial tcp: connection refused"), want: http.StatusBadGateway},
+		{name: "wrapped precondition", err: fmt.Errorf("sync: %w", &projectDevelopmentSyncPreconditionError{msg: "x"}), want: http.StatusUnprocessableEntity},
+		{name: "instance missing", err: apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "instances"}, "demo-dev"), want: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writeDevelopmentSyncError(rec, test.err)
+			if rec.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, test.want, rec.Body.String())
+			}
+			var status metav1.Status
+			if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil || status.Message != test.err.Error() {
+				t.Fatalf("body %s does not carry the error %q (decode err %v)", rec.Body.String(), test.err, err)
+			}
+		})
+	}
+}
+
+// Files outside every component are a workspace-layout problem the caller
+// fixes, so the check must report through the same precondition path.
+func TestSyncProjectDevelopmentTargetRejectsUnroutedWorkspaceAsPrecondition(t *testing.T) {
+	workspaces := workspace.NewFileStore(t.TempDir())
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", clusterID: "cluster-a"}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+	scope := projectWorkspaceScope(id, p)
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "docs/notes.md", Content: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	dyn := publishingTestDynamic(publishingTestTarget("demo-dev", "uid", "private", ""))
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspaces}
+	target := projectDevelopmentSyncTargetInfo{
+		ResourceName: "demo-dev",
+		Components:   map[string]projectTemplateComponent{"api": {WorkspacePath: "api", Toolchain: "node"}},
+	}
+	target.APIVersion = publishingTestTargetGVR.GroupVersion().String()
+	target.Kind = "Instance"
+	target.Resource = "instances"
+	_, err := s.syncProjectDevelopmentTarget(context.Background(), asclient.NewFromDynamic(dyn), id, p, target)
+	var precondition *projectDevelopmentSyncPreconditionError
+	if !errors.As(err, &precondition) || !strings.Contains(err.Error(), "none of the 1 workspace files") {
+		t.Fatalf("sync error = %T %v, want the unrouted-workspace precondition", err, err)
 	}
 }

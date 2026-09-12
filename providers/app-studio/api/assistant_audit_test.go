@@ -806,6 +806,7 @@ func TestProjectAssistantPermissionAuditKeepsOnlyRecentDecisions(t *testing.T) {
 func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	started := time.Now().UTC().Add(-2 * time.Second)
 	run := store.AssistantRun{

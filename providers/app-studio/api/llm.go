@@ -1001,7 +1001,7 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if branch := projectToolString(args["branch"]); branch != "" {
 		commitArgs["branch"] = branch
 	}
-	resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
+	resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
 	if err != nil {
 		return "", err
 	}
@@ -1712,7 +1712,7 @@ func truncateProjectToolInfo(value string) string {
 }
 
 func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings projectLLMSettings) ([]chatTool, error) {
-	if id.tenantPath == "" {
+	if id.tenant == "" {
 		return nil, errors.New("tenant context missing")
 	}
 	registry := s.projectAssistantToolRegistry()
@@ -1743,14 +1743,14 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 }
 
 func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ projectLLMSettings) ([]projectAssistantTool, bool, error) {
-	if id.tenantPath == "" {
+	if id.tenant == "" {
 		return nil, false, errors.New("tenant context missing")
 	}
 	if id.clusterID == "" {
 		return nil, false, errors.New("no workspace cluster on request (X-Faros-Cluster missing) — cannot address the tenant MCP endpoint")
 	}
 	mcpEndpoint := s.mcpEndpoint(id.clusterID)
-	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
+	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1782,9 +1782,9 @@ func mcpServerURL(hubBase, cluster, mcpServerName string) string {
 		fmt.Sprintf("/services/mcpserver/%s/apis/faros.sh/v1alpha1/mcpservers/%s/mcp", cluster, mcpServerName)
 }
 
-func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request, tenantPath string, skipTLSVerify bool) ([]projectMCPTool, error) {
+func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request, tenantID string, skipTLSVerify bool) ([]projectMCPTool, error) {
 	params := []byte(`{}`)
-	body, err := projectMCPRequest(ctx, endpoint, "tools/list", params, r, tenantPath, skipTLSVerify)
+	body, err := projectMCPRequest(ctx, endpoint, "tools/list", params, r, tenantID, skipTLSVerify)
 	if err != nil {
 		return nil, err
 	}
@@ -1804,7 +1804,7 @@ func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request,
 	return envelope.Tools, nil
 }
 
-func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, tenantPath string, skipTLSVerify bool, name string, args map[string]any) (string, error) {
+func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, tenantID string, skipTLSVerify bool, name string, args map[string]any) (string, error) {
 	params, err := json.Marshal(map[string]any{
 		"name":      name,
 		"arguments": args,
@@ -1812,7 +1812,7 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 	if err != nil {
 		return "", fmt.Errorf("encode tool args: %w", err)
 	}
-	body, err := projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantPath, skipTLSVerify, projectAssistantMCPToolCallTimeout(name, args))
+	body, err := projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantID, skipTLSVerify, projectAssistantMCPToolCallTimeout(name, args))
 	if err != nil {
 		return "", err
 	}
@@ -1854,15 +1854,15 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 	return string(body), nil
 }
 
-func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantPath string, skipTLSVerify bool) (json.RawMessage, error) {
-	return projectMCPRequestWithTimeout(ctx, endpoint, method, paramsJSON, r, tenantPath, skipTLSVerify, projectMCPCallTimeout)
+func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantID string, skipTLSVerify bool) (json.RawMessage, error) {
+	return projectMCPRequestWithTimeout(ctx, endpoint, method, paramsJSON, r, tenantID, skipTLSVerify, projectMCPCallTimeout)
 }
 
 // projectMCPRequestWithTimeout exists for tool calls that legitimately block
 // longer than the default transport timeout — an agents__run_agent or
 // agents__get_run call holds the connection for its wait argument, so the
 // client deadline must be derived from that wait, not race it.
-func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantPath string, skipTLSVerify bool, timeout time.Duration) (json.RawMessage, error) {
+func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantID string, skipTLSVerify bool, timeout time.Duration) (json.RawMessage, error) {
 	env := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1890,8 +1890,8 @@ func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, 
 			req.Header.Set(header, value)
 		}
 	}
-	if tenantPath != "" {
-		req.Header.Set("X-Faros-Tenant", tenantPath)
+	if tenantID != "" {
+		req.Header.Set("X-Faros-Tenant", tenantID)
 	}
 
 	transport := projectMCPTransport(skipTLSVerify)
@@ -2540,7 +2540,7 @@ func projectAssistantMCPToolsForSpecs(tools []projectMCPTool, skipTLSVerify ...b
 				if req.HTTPRequest == nil {
 					return "", errors.New("HTTP request is required for aggregate MCP tools")
 				}
-				return callProjectMCPTool(ctx, req.MCPEndpoint, req.HTTPRequest, req.Identity.tenantPath, insecureSkipTLSVerify, toolSpec.Name, req.Arguments)
+				return callProjectMCPTool(ctx, req.MCPEndpoint, req.HTTPRequest, req.Identity.tenant, insecureSkipTLSVerify, toolSpec.Name, req.Arguments)
 			},
 		})
 	}

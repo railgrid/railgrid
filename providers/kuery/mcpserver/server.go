@@ -14,9 +14,10 @@
 // docs/kuery-provider-architecture.md in the faros repo).
 //
 // Mirrors the infrastructure provider's pattern: a stateless streamable
-// HTTP handler building a per-request server, so each caller's
-// X-Faros-Tenant is closed over in the tool handlers. All queries go
-// through queryapi.ScopeToTenant — the same choke point as the REST API.
+// HTTP handler building a per-request server, so each caller's identity
+// (the tenant's kcp logical-cluster ID from X-Faros-Cluster) is closed over
+// in the tool handlers. All queries go through queryapi.ScopeToTenant — the
+// same choke point as the REST API.
 package mcpserver
 
 import (
@@ -65,7 +66,7 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 			"Results come from a local index synced from connected " +
 			"edges; an edge that just connected may not be fully " +
 			"indexed yet. Tenant identity is taken from your bearer " +
-			"token — never ask the user for a tenant path.",
+			"token — never ask the user for a tenant or workspace.",
 	})
 
 	registerTools(srv, deps, r)

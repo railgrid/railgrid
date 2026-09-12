@@ -63,7 +63,7 @@ func TestDevelopmentAgentBase64CapabilityIsReadFromStatusAndCached(t *testing.T)
 		_ = json.NewEncoder(w).Encode(map[string]any{"running": true, "syncEncodings": encodings})
 	}))
 	defer hub.Close()
-	server := &Server{hubBase: hub.URL}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL}
 	id := identity{clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a"}
 	web := dataPlaneRef{Resource: "instances", Name: "demo-dev", Component: "web"}
 	if !server.developmentAgentSupportsBase64(context.Background(), id, web) {
@@ -110,7 +110,7 @@ func TestProjectWorkspaceSyncFilesReadsBinariesOnlyWhenAsked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	server := &Server{workspaces: workspaces}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspaces}
 	textOnly, err := server.projectWorkspaceSyncFiles(ctx, scope)
 	if err != nil {
 		t.Fatal(err)

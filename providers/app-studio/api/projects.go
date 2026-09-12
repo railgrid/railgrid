@@ -358,10 +358,17 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			req.DisplayName = plan.Name
 		}
 	}
+	// A display name the caller sent is theirs: the prompt preflight fills in
+	// naming only when the request left it blank. It used to overwrite it,
+	// so `{"displayName":"Brand Site","prompt":…}` came back titled by the
+	// prompt and needed a PATCH to undo.
+	callerDisplayName := req.DisplayName
 	repoBase := slugifyProjectName(req.DisplayName)
 	if preflight != nil {
-		req.DisplayName = preflight.Naming.DisplayName
-		repoBase = preflight.Naming.RepositoryName
+		if callerDisplayName == "" {
+			req.DisplayName = preflight.Naming.DisplayName
+			repoBase = preflight.Naming.RepositoryName
+		}
 	} else if req.Prompt != "" && !(req.DisplayName != "" && selectedTemplate != nil) {
 		// Skip inference when the caller already committed both a name and a
 		// template — the wizard's blueprint step (POST /api/projects/plan)
@@ -392,8 +399,10 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			return nil, err
 		}
 		preflight = &generated
-		req.DisplayName = generated.Naming.DisplayName
-		repoBase = generated.Naming.RepositoryName
+		if callerDisplayName == "" {
+			req.DisplayName = generated.Naming.DisplayName
+			repoBase = generated.Naming.RepositoryName
+		}
 	}
 	if req.Name != "" {
 		// An explicit project name is the caller's chosen identity: the
@@ -707,7 +716,14 @@ func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (b
 		changed = true
 	}
 	if req.Sharing != nil {
-		sharing, err := normalizeProjectSharingSpec(*req.Sharing)
+		requested := *req.Sharing
+		if requested.Publishing.Mode == "" {
+			// A patch that only carries the preview policy must not silently
+			// unpublish production: the publishing policy is written by
+			// POST/DELETE /publishing, and an omitted key keeps it.
+			requested.Publishing.Mode = p.Spec.Sharing.Publishing.Mode
+		}
+		sharing, err := normalizeProjectSharingSpec(requested)
 		if err != nil {
 			return false, err
 		}

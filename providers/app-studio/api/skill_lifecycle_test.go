@@ -87,6 +87,7 @@ func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 	files := workspace.NewFileStore(t.TempDir())
 	newRouter := func() *mux.Router {
 		server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
+		server.tenantWorkspaces = defaultTestWorkspaces.lookup
 		router := mux.NewRouter()
 		server.Register(router)
 		return router
@@ -96,7 +97,7 @@ func TestProjectSkillLifecycleHTTPRoutesAndReload(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer caller-token")
 		req.Header.Set("X-Faros-User", "alice")
-		req.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+		req.Header.Set("X-Faros-Tenant", "cluster-a")
 		req.Header.Set("X-Faros-Cluster", "cluster-a")
 		return req
 	}

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,8 +49,18 @@ import (
 	"github.com/faroshq/provider-edges/internal/svccatalog"
 )
 
-// validationResyncInterval bounds how often a Ready Service is re-validated.
-const validationResyncInterval = 10 * time.Minute
+const (
+	// validationResyncInterval bounds how often a Ready Service is re-validated,
+	// and caps the retry backoff of a failing one.
+	validationResyncInterval = 10 * time.Minute
+	// probeRetryInitial is the first retry delay after a probe that failed for
+	// a reason that clears on its own (the target pod not up yet, a 5xx, no
+	// tunnel). It doubles per consecutive failure up to
+	// validationResyncInterval, so a Service created before its backend is
+	// ready flips to Ready within seconds of the backend coming up instead of
+	// on the next 10-minute cycle.
+	probeRetryInitial = 5 * time.Second
+)
 
 // ValidationReconciler validates a Service's credentials against the
 // service (Home Assistant: GET /api/config) and stamps status.URL + conditions.
@@ -59,18 +70,68 @@ type ValidationReconciler struct {
 	edgeProxyPublicPath string
 	// events, when non-nil, runs a per-Service event subscriber (UniFi Protect).
 	events *events.Manager
+
+	// retryMu guards retry: the current backoff delay per Service, keyed by
+	// cluster + name. Absent means the last probe succeeded (or never ran).
+	retryMu sync.Mutex
+	retry   map[string]time.Duration
 }
 
 // SetupValidationWithManager registers the validation reconciler (For Service).
-// It also watches Secrets so an edited auth token is re-validated immediately,
-// rather than waiting up to validationResyncInterval for the next resync.
+// A create or spec update probes immediately (controller-runtime enqueues the
+// event); a failed probe is retried with exponential backoff (see
+// probeRetryInitial) and a Ready Service is re-validated every
+// validationResyncInterval. It also watches Secrets so an edited auth token is
+// re-validated immediately rather than on the next resync.
 func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string, eventsMgr *events.Manager) error {
-	r := &ValidationReconciler{mgr: mgr, connManager: connManager, edgeProxyPublicPath: edgeProxyPublicPath, events: eventsMgr}
+	r := newValidationReconciler(mgr, connManager, edgeProxyPublicPath, eventsMgr)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-validation").
 		For(&edgesv1alpha1.Service{}).
 		Watches(&corev1.Secret{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSecretToServices)).
 		Complete(r)
+}
+
+func newValidationReconciler(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string, eventsMgr *events.Manager) *ValidationReconciler {
+	return &ValidationReconciler{
+		mgr:                 mgr,
+		connManager:         connManager,
+		edgeProxyPublicPath: edgeProxyPublicPath,
+		events:              eventsMgr,
+		retry:               map[string]time.Duration{},
+	}
+}
+
+// retryKey scopes the backoff state to one Service in one workspace.
+func retryKey(req mcreconcile.Request) string {
+	return string(req.ClusterName) + "/" + req.NamespacedName.String()
+}
+
+// nextRetry returns the delay before re-probing a Service whose probe just
+// failed transiently, doubling per consecutive failure from probeRetryInitial
+// up to validationResyncInterval.
+func (r *ValidationReconciler) nextRetry(key string) time.Duration {
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	d, ok := r.retry[key]
+	if !ok || d <= 0 {
+		d = probeRetryInitial
+	} else {
+		d *= 2
+	}
+	if d > validationResyncInterval {
+		d = validationResyncInterval
+	}
+	r.retry[key] = d
+	return d
+}
+
+// resetRetry forgets the backoff after a successful probe (or when the
+// Service is gone) so the next failure starts from probeRetryInitial again.
+func (r *ValidationReconciler) resetRetry(key string) {
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	delete(r.retry, key)
 }
 
 // mapSecretToServices re-enqueues every Service in the same workspace whose
@@ -113,6 +174,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	}
 	c := cl.GetClient()
 
+	rkey := retryKey(req)
 	es := &edgesv1alpha1.Service{}
 	if err := c.Get(ctx, req.NamespacedName, es); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -120,6 +182,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 			if r.events != nil {
 				r.events.Stop(ctx, eventsKey(req))
 			}
+			r.resetRetry(rkey)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -207,7 +270,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	if !ok {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "EdgeDisconnected", "no live tunnel to the edge")
 		setNotProbed(es, "the edge is disconnected, so the service was never reached")
-		return r.commit(ctx, c, orig, es, 30*time.Second)
+		return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 	}
 
 	subDialer = dialer // captured for the subscriber defer
@@ -239,7 +302,10 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		es.Status.Phase = "Unreachable"
 		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized", err.Error())
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "Unauthorized", err.Error())
-		return r.commit(ctx, c, orig, es, validationResyncInterval)
+		// The login may have failed because the service is not up yet rather
+		// than because the credential is wrong; back off rather than wait a
+		// full cycle (a Secret edit re-enqueues immediately either way).
+		return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 	}
 
 	probePath := def.ProbePath
@@ -255,7 +321,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed", err.Error())
 		setNotProbed(es, "the service could not be reached, so the token was never checked")
 		es.Status.Phase = "Unreachable"
-		return r.commit(ctx, c, orig, es, validationResyncInterval)
+		return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -270,7 +336,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "HostNotAllowed",
 			"the edge agent refused to dial spec.host: "+reason)
 		setNotProbed(es, "the edge agent refused to dial spec.host, so the service was never reached")
-		return r.commit(ctx, c, orig, es, validationResyncInterval)
+		return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 	}
 	if resp.Header.Get(haclient.SvcPolicyHeader) == haclient.SvcPolicyWarn {
 		// Dialed under --svc-policy=warn: works today, refused once the agent
@@ -351,7 +417,15 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	}
 
 	logger.V(4).Info("validated service", "phase", es.Status.Phase, "type", es.Spec.Type)
-	return r.commit(ctx, c, orig, es, validationResyncInterval)
+	if es.Status.Phase == "Ready" {
+		// Healthy: forget the backoff and settle into the slow re-validation cycle.
+		r.resetRetry(rkey)
+		return r.commit(ctx, c, orig, es, validationResyncInterval)
+	}
+	// Not ready (5xx, unexpected status, rejected credentials): retry with
+	// backoff. The common case is a Service created seconds before its pod
+	// answers — a 502 from the agent's svc proxy — which must not wait a cycle.
+	return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
 }
 
 // eventsKey is the tenant+service scope events are stored and looked up under.

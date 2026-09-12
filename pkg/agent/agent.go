@@ -975,6 +975,12 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	} else if a.agentType == AgentTypeServer {
 		sshHeaders = a.sshHostKeyHeader()
 	}
+	// The host's name rides on every connect too: the provider records it in
+	// status.hostname (shown by `faros edge get` / `edge list -o wide`), and
+	// nothing else in the protocol carries it.
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		sshHeaders.Set(agentHostnameHeader, hostname)
+	}
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	a.setTunnelToken(a.hubConfig.BearerToken)
@@ -1196,6 +1202,11 @@ func (a *Agent) buildSSHHeaders() http.Header {
 	}
 	return h
 }
+
+// agentHostnameHeader carries os.Hostname() on the tunnel upgrade request;
+// the edges provider stores it as status.hostname. Keep in sync with
+// providers/edges/internal/tunnel.AgentHostnameHeader.
+const agentHostnameHeader = "X-Faros-Agent-Hostname"
 
 // sshHostKeyHeader probes the local sshd for its host public key and returns
 // it as the X-Faros-SSH-HostKey header so the provider can record it

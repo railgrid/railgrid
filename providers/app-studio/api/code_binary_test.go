@@ -88,12 +88,13 @@ func commitBinaryFixture(t *testing.T, advertise bool) (*Server, *codeBinaryHub,
 		t.Fatal(err)
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, upstream.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	return server, hub, upstream, scope, image
 }
 
 func TestCommitProjectFilesSendsBase64WhenProviderAdvertisesEncoding(t *testing.T) {
 	server, hub, upstream, scope, image := commitBinaryFixture(t, true)
-	result, err := server.commitProjectWorkspaceFiles(context.Background(), identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"}, scope, nil, "demo", upstream.URL,
+	result, err := server.commitProjectWorkspaceFiles(context.Background(), identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"}, scope, nil, "demo", upstream.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{"repositoryRef": "demo", "paths": []any{"public/logo.png", "src/app.ts"}})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +120,7 @@ func TestCommitProjectFilesSendsBase64WhenProviderAdvertisesEncoding(t *testing.
 
 func TestCommitProjectFilesSkipsBinariesForOlderProvider(t *testing.T) {
 	server, hub, upstream, scope, _ := commitBinaryFixture(t, false)
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"}
 	result, err := server.commitProjectWorkspaceFiles(context.Background(), id, scope, nil, "demo", upstream.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{"repositoryRef": "demo", "paths": []any{"public/logo.png", "src/app.ts"}})
 	if err != nil {

@@ -186,13 +186,15 @@ func enableInboundOn(t *testing.T, ws *tenanttest.Server) *httptest.ResponseReco
 	srv := httptest.NewServer(ws)
 	t.Cleanup(srv.Close)
 	s := &Server{
-		cfg:    Config{WebhookKey: "unit-test-webhook-key"},
-		store:  store.NewMemoryStore(),
-		tenant: tenant.NewClient(srv.URL, false),
+		cfg:        Config{WebhookKey: "unit-test-webhook-key"},
+		store:      store.NewMemoryStore(),
+		tenant:     tenant.NewClient(srv.URL, false),
+		workspaces: staticWorkspaces{"c1": {ClusterID: "c1", Path: "root:faros:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"}}.lookup,
 	}
 	r := httptest.NewRequest(http.MethodPost, "/connections/"+testSecretConn+"/inbound",
 		strings.NewReader(`{"publicBaseURL":"https://agents.example.test"}`))
-	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:org1:ws1")
+	// The hub identifies the tenant by cluster ID in both headers.
+	r.Header.Set("X-Faros-Tenant", "c1")
 	r.Header.Set("X-Faros-Cluster", "c1")
 	r.Header.Set("Authorization", "Bearer test-token")
 	r.SetPathValue("name", testSecretConn)

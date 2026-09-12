@@ -149,6 +149,7 @@ func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
 
 func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *testing.T) {
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	if !server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
 		Name:   projectToolEditFile,
 		Status: "succeeded",

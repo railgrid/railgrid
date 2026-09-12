@@ -80,9 +80,10 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 
 	var syncs atomic.Int32
 	server := &Server{
-		store:      store.NewMemoryStore(),
-		workspaces: workspaces,
-		hubBase:    upstream.URL,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		store:            store.NewMemoryStore(),
+		workspaces:       workspaces,
+		hubBase:          upstream.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -201,6 +202,7 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			}, nil)
 			defer upstream.Close()
 			server := &Server{
+				tenantWorkspaces:             staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
 				store:                        store.NewMemoryStore(),
 				workspaces:                   workspaces,
 				hubBase:                      upstream.URL,
@@ -258,9 +260,10 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	defer upstream.Close()
 
 	server := &Server{
-		store:      store.NewMemoryStore(),
-		workspaces: workspaces,
-		hubBase:    upstream.URL,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		store:            store.NewMemoryStore(),
+		workspaces:       workspaces,
+		hubBase:          upstream.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -292,8 +295,9 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 		t.Fatal(err)
 	}
 	server := &Server{
-		store:      store.NewMemoryStore(),
-		workspaces: workspaces,
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		store:            store.NewMemoryStore(),
+		workspaces:       workspaces,
 		// No hubBase is deliberate: a stale request must fail before checkout.
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 	}
@@ -311,7 +315,8 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 func restoreRequest(commitSHA string, expectedSourceRevision uint64) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(fmt.Sprintf(`{"commitSHA":%q,"expectedSourceRevision":%d}`, commitSHA, expectedSourceRevision)))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }
@@ -350,4 +355,100 @@ func restoreCheckoutServer(t *testing.T, checkout checkoutToolResult, beforeResp
 			},
 		})
 	}))
+}
+
+// ProjectView reports sourceRevision as a number, but REST callers that carry
+// it through shell variables or jq quote it; both spellings must decode.
+func TestJSONRevisionAcceptsNumberOrNumericString(t *testing.T) {
+	for _, test := range []struct {
+		body    string
+		want    uint64
+		wantErr bool
+	}{
+		{body: `{"expectedSourceRevision":14}`, want: 14},
+		{body: `{"expectedSourceRevision":"14"}`, want: 14},
+		{body: `{"expectedSourceRevision":" 14 "}`, want: 14},
+		{body: `{"expectedSourceRevision":"fourteen"}`, wantErr: true},
+		{body: `{"expectedSourceRevision":""}`, wantErr: true},
+		{body: `{"expectedSourceRevision":-1}`, wantErr: true},
+		{body: `{"expectedSourceRevision":1.5}`, wantErr: true},
+		{body: `{"expectedSourceRevision":true}`, wantErr: true},
+	} {
+		var req projectRestoreRequest
+		err := json.Unmarshal([]byte(test.body), &req)
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("%s: decoded to %v, want an error", test.body, req.ExpectedSourceRevision)
+			}
+			continue
+		}
+		if err != nil || req.ExpectedSourceRevision == nil || uint64(*req.ExpectedSourceRevision) != test.want {
+			t.Errorf("%s: revision = %v, err = %v; want %d", test.body, req.ExpectedSourceRevision, err, test.want)
+		}
+	}
+	// null keeps the "required" path: the pointer stays nil.
+	var req projectRestoreRequest
+	if err := json.Unmarshal([]byte(`{"expectedSourceRevision":null}`), &req); err != nil || req.ExpectedSourceRevision != nil {
+		t.Fatalf("null revision = %v, err = %v; want nil, nil", req.ExpectedSourceRevision, err)
+	}
+}
+
+func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
+	commitSHA := strings.Repeat("a", 40)
+	project := projectForPromoteWithRepository("shop", "repo-a")
+	project.UID = types.UID("project-uid")
+	commit := releaseCommitForTest("restore", "repo-a", "Succeeded", commitSHA, metav1.Now().Time)
+	client := newProjectBuildProvenanceClient(project, []*unstructured.Unstructured{commit}, nil)
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)}
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "stale.txt", Content: "remove\n"}); err != nil {
+		t.Fatal(err)
+	}
+	currentRevision, err := workspaces.SourceRevision(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := restoreCheckoutServer(t, checkoutToolResult{
+		CommitSHA: commitSHA,
+		Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
+	}, nil)
+	defer upstream.Close()
+	server := &Server{
+		tenantWorkspaces:             staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
+		store:                        store.NewMemoryStore(),
+		workspaces:                   workspaces,
+		hubBase:                      upstream.URL,
+		projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
+		developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },
+	}
+
+	// A quoted stale revision is decoded, then refused on the mismatch —
+	// the 409 semantics do not depend on the spelling.
+	response := httptest.NewRecorder()
+	server.restoreProjectWorkspace(response, restoreRequestWithBody(fmt.Sprintf(`{"commitSHA":%q,"expectedSourceRevision":"%d"}`, commitSHA, currentRevision-1)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stale quoted revision: response = %d %s, want 409", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	server.restoreProjectWorkspace(response, restoreRequestWithBody(fmt.Sprintf(`{"commitSHA":%q,"expectedSourceRevision":"%d"}`, commitSHA, currentRevision)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("quoted revision: response = %d %s, want 200", response.Code, response.Body.String())
+	}
+	var restored projectRestoreResponse
+	if err := json.NewDecoder(response.Body).Decode(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.SourceRevision != currentRevision+1 || len(restored.Written) != 1 || restored.Written[0] != "app.txt" {
+		t.Fatalf("restore response = %#v", restored)
+	}
+}
+
+func restoreRequestWithBody(body string) *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(body))
+	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	return request
 }

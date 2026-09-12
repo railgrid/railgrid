@@ -279,9 +279,10 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 	defer mcp.Close()
 
 	server := NewWithWorkspace(nil, nil, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	tools, err := server.loadProjectMCPTools(
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
 		projectLLMSettings{},
 	)
 	if err != nil {
@@ -333,10 +334,11 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
@@ -408,10 +410,11 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
@@ -992,6 +995,7 @@ func TestProjectLocalToolRunsCreateFile(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 
 	tool, ok := server.projectAssistantToolRegistry().Get(projectToolCreateFile)
 	if !ok {
@@ -1304,6 +1308,7 @@ func resumeRepositoryFlowAssistantForTest(server *Server, ctx context.Context, r
 func TestUpdateProjectAssistantPermissionMessageRemovesCompletedUnknownAction(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := testProjectMessageScope("org-a", "ws-1", "demo")
 	messageID := "msg-assistant"
 	runID := "run-1"
@@ -1353,6 +1358,7 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	var resumedModelInput []*einoschema.Message
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
@@ -1378,7 +1384,7 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "build an app"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
@@ -1504,6 +1510,7 @@ func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testi
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
 			ID:   "call-follow-up",
@@ -1518,7 +1525,7 @@ func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testi
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "build an app"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
@@ -1583,10 +1590,11 @@ func TestResumeProjectAssistantRunClearsStaleFollowUpInterruptWhenRunAlreadyClai
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
-	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	runID := "run-stale-follow-up"
 	requestID := "input-stale-follow-up"
@@ -1898,9 +1906,10 @@ func TestCommitProjectWorkspaceFilesReportsProviderFailure(t *testing.T) {
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		scope,
 		nil,
 		"demo-repo",
@@ -1958,9 +1967,10 @@ func TestCommitProjectWorkspaceFilesSendsDeletedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	if _, err := server.commitProjectWorkspaceFiles(
 		ctx,
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		scope,
 		nil,
 		"demo-repo",
@@ -2007,9 +2017,10 @@ func TestCommitProjectWorkspaceFilesRejectsRepositoryMismatch(t *testing.T) {
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		scope,
 		nil,
 		"demo-repo",
@@ -2150,6 +2161,7 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 		ProjectUID:    "test-project-uid-demo",
 	}, seedFiles)
 	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
@@ -2158,7 +2170,7 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 
 	reply, err := generateRepositoryFlowBuildAssistantForTest(t, server,
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"},
 		client,
 		project,
 		projectAssistantStreamCallbacks{},
@@ -2213,6 +2225,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 
 	tooManyPaths := make([]any, 0, projectCommitProjectFilesMax+1)
 	for i := 0; i < projectCommitProjectFilesMax+1; i++ {
@@ -2220,7 +2233,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 	}
 	if _, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
 		scope,
 		nil,
 		"demo",
@@ -2242,7 +2255,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, files)
 	if _, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
+		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
 		scope,
 		nil,
 		"demo",
@@ -2424,7 +2437,7 @@ func TestProjectRepositoryViewPreservesCommitListFailure(t *testing.T) {
 	if view.CommitsError == "" {
 		t.Fatal("commit-list failure is not exposed to the History UI")
 	}
-	cp := (&Server{}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.State != projectCheckpointStateError || cp.Reason != "Could not read repository commit history." {
 		t.Fatalf("checkpoint = %#v, want commit-history error", cp)
 	}
@@ -2434,7 +2447,7 @@ func TestCheckpointCIReportsOnlyVerifiedSourceState(t *testing.T) {
 	view := &ProjectRepositoryView{
 		Commits: []ProjectRepositoryCommitView{{Phase: "Succeeded", CommitSHA: "abc123"}},
 	}
-	cp := (&Server{}).checkpointCI(view, projectCheckpointStateDone)
+	cp := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.Key != projectCheckpointCI || cp.Label != "Source" || cp.State != projectCheckpointStateDone {
 		t.Fatalf("checkpoint = %#v, want compatible ci key with done Source label", cp)
 	}

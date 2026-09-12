@@ -165,12 +165,13 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	engine := &preemptProbeProjectAssistantEngine{
 		entered:    make(chan struct{}),
 		firstCause: make(chan error, 1),
 	}
 	server.assistantEngine = engine
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -227,6 +228,7 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	engine := &cancellationInsensitiveProjectAssistantEngine{
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
@@ -234,7 +236,7 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 	server.assistantEngine = engine
 	server.assistantRunManager = newProjectAssistantRunManager()
 	server.assistantRunManager.handoffTimeout = 10 * time.Millisecond
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
@@ -284,12 +286,13 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	baseStore := store.NewMemoryStore()
 	messages := cancelSensitiveAssistantRunStore{Store: baseStore}
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	engine := &preemptProbeResumeAssistantEngine{
 		resumeEntered: make(chan struct{}),
 		resumeCause:   make(chan error, 1),
 	}
 	server.assistantEngine = engine
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	id := identity{tenant: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"

@@ -142,7 +142,7 @@ type FederatedTool struct {
 // partial state. Providers are returned in enumeration order (deterministic).
 func DiscoverFederation(ctx context.Context, targets []ProviderTarget, bearerToken, cluster string) []FederatedProvider {
 	out := make([]FederatedProvider, len(targets))
-	cli := newProviderMCPClient(bearerToken, cluster, cluster)
+	cli := newProviderMCPClient(bearerToken, cluster)
 
 	var wg sync.WaitGroup
 	for i := range targets {
@@ -211,7 +211,7 @@ func DiscoverFederation(ctx context.Context, targets []ProviderTarget, bearerTok
 // endpoint. Providers with no instructions or an error contribute nothing.
 // Enumeration order is preserved for deterministic output.
 func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearerToken, cluster string) string {
-	cli := newProviderMCPClient(bearerToken, cluster, cluster)
+	cli := newProviderMCPClient(bearerToken, cluster)
 	parts := make([]string, len(targets))
 	var wg sync.WaitGroup
 	for i := range targets {
@@ -280,11 +280,11 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 	}
 
 	// cluster is the workspace's kcp logical-cluster ID parsed off the
-	// MCPServer URL. The federation client forwards it as BOTH X-Faros-Tenant
-	// and X-Faros-Cluster so the provider sees the same identity headers it
-	// would have received via the hub backend proxy (that proxy injects them
-	// on /services/providers/*, but this federation path POSTs directly).
-	cli := newProviderMCPClient(bearerToken, cluster, cluster)
+	// MCPServer URL. It is the tenant's identity towards providers: the
+	// federation client forwards it as BOTH X-Faros-Tenant and X-Faros-Cluster,
+	// the same pair the hub backend proxy injects on /services/providers/*
+	// (this federation path POSTs directly, so it sets them itself).
+	cli := newProviderMCPClient(bearerToken, cluster)
 
 	results := make([]*providerTools, len(targets))
 	var wg sync.WaitGroup
@@ -393,10 +393,12 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 // for tools/list + tools/call — federation only needs request/response, not
 // the SDK client's session/sampling lifecycle machinery.
 type providerMCPClient struct {
-	http             *http.Client
-	bearerToken      string
-	tenantPath       string // forwarded as X-Faros-Tenant
-	clusterID        string // forwarded as X-Faros-Cluster
+	http        *http.Client
+	bearerToken string
+	// clusterID is the tenant workspace's kcp logical-cluster ID, forwarded
+	// as both X-Faros-Tenant and X-Faros-Cluster. Workspace paths are never
+	// sent: the ID is the only tenant identity a provider receives.
+	clusterID        string
 	discoveryTimeout time.Duration
 	callTimeout      time.Duration
 	// maxResponseBytes bounds one response body; see
@@ -404,10 +406,9 @@ type providerMCPClient struct {
 	maxResponseBytes int64
 }
 
-func newProviderMCPClient(bearerToken, tenantPath, clusterID string) *providerMCPClient {
+func newProviderMCPClient(bearerToken, clusterID string) *providerMCPClient {
 	return newProviderMCPClientWithTimeouts(
 		bearerToken,
-		tenantPath,
 		clusterID,
 		providerMCPDiscoveryTimeout,
 		providerMCPCallTimeout,
@@ -418,11 +419,10 @@ func newProviderMCPClient(bearerToken, tenantPath, clusterID string) *providerMC
 // operation-specific bounds. Keeping the durations on the client makes the
 // timeout policy explicit and lets tests use short deterministic deadlines
 // without changing production defaults or global state.
-func newProviderMCPClientWithTimeouts(bearerToken, tenantPath, clusterID string, discoveryTimeout, callTimeout time.Duration) *providerMCPClient {
+func newProviderMCPClientWithTimeouts(bearerToken, clusterID string, discoveryTimeout, callTimeout time.Duration) *providerMCPClient {
 	return &providerMCPClient{
 		http:             &http.Client{},
 		bearerToken:      bearerToken,
-		tenantPath:       tenantPath,
 		clusterID:        clusterID,
 		discoveryTimeout: discoveryTimeout,
 		callTimeout:      callTimeout,
@@ -533,10 +533,8 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
-	if c.tenantPath != "" {
-		req.Header.Set("X-Faros-Tenant", c.tenantPath)
-	}
 	if c.clusterID != "" {
+		req.Header.Set("X-Faros-Tenant", c.clusterID)
 		req.Header.Set("X-Faros-Cluster", c.clusterID)
 	}
 	resp, err := c.http.Do(req)

@@ -101,6 +101,33 @@ func (s *Server) setProjectPreviewAccess(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, s.projectPreviewAccessResponse(r.Context(), c, updated))
 }
 
+// resetProjectPreviewAccess is DELETE /preview: the preview goes back to
+// private and every per-member preview grant is dropped — the same contract
+// DELETE /publishing applies to production. POST {mode:"restricted"} only
+// flips the mode; the grants it leaves behind would keep the invited people
+// in, which is not what "reset to private" promises.
+func (s *Server) resetProjectPreviewAccess(w http.ResponseWriter, r *http.Request) {
+	c, _, p, ok := s.requireProjectWithClient(w, r)
+	if !ok {
+		return
+	}
+	updated, err := s.setPreviewSharingMode(r.Context(), c, p, aiv1alpha1.ProjectSharingModePrivate)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// A project without a development environment has no grants to drop; the
+	// mode reset above is the whole story for it, so an unresolvable runtime
+	// is not an error here.
+	if runtime, err := s.previewRuntime(r.Context(), c, updated); err == nil {
+		if err := s.deleteAllAppAccessGrants(r.Context(), c, runtime.target.Name); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.projectPreviewAccessResponse(r.Context(), c, updated))
+}
+
 // requestedPreviewMode normalizes the portal vocabulary. An empty body
 // preserves the current mode, so a POST that only means "re-apply" cannot
 // silently widen access.

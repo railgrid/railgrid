@@ -76,7 +76,7 @@ func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testi
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)

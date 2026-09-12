@@ -10,10 +10,14 @@ package engagement
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -30,6 +34,7 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
 
+	kuerygc "github.com/faroshq/kuery/pkg/gc"
 	kuerystore "github.com/faroshq/kuery/pkg/store"
 	kuerysync "github.com/faroshq/kuery/pkg/sync"
 )
@@ -169,30 +174,32 @@ func TestTenantLabelIsBareIdentifier(t *testing.T) {
 	}
 }
 
-func TestTenantPathFromBindingUsesAuthoritativeWorkspaceMetadata(t *testing.T) {
+// tenantClusterFromBinding returns the tenant key: the consumer workspace's
+// kcp logical-cluster ID from the APIBinding's kcp.io/cluster annotation,
+// which must match the reconcile request. The kcp.io/path annotation is not
+// consulted — paths are never identity.
+func TestTenantClusterFromBindingUsesClusterAnnotation(t *testing.T) {
 	const cluster = "btykuuy2789iyolq"
-	for _, path := range []string{
-		"root:faros:tenants:org-1",
-		"root:faros:tenants:org-1:workspace-1",
-	} {
-		t.Run(path, func(t *testing.T) {
-			binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				"kcp.io/cluster":                        cluster,
-				kcpcore.LogicalClusterPathAnnotationKey: path,
-			}}}
+	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+		"kcp.io/cluster":                        cluster,
+		kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:workspace-1",
+	}}}
+	got, err := tenantClusterFromBinding(binding, cluster)
+	if err != nil {
+		t.Fatalf("tenantClusterFromBinding: %v", err)
+	}
+	if got != cluster {
+		t.Fatalf("tenantClusterFromBinding = %q, want the cluster ID %q", got, cluster)
+	}
 
-			got, err := tenantPathFromBinding(binding, cluster)
-			if err != nil {
-				t.Fatalf("tenantPathFromBinding: %v", err)
-			}
-			if got != path {
-				t.Fatalf("tenantPathFromBinding = %q, want %q", got, path)
-			}
-		})
+	// No path annotation at all is fine: the ID is the identity.
+	noPath := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"kcp.io/cluster": cluster}}}
+	if got, err := tenantClusterFromBinding(noPath, cluster); err != nil || got != cluster {
+		t.Fatalf("without kcp.io/path: %q, %v; want %q", got, err, cluster)
 	}
 }
 
-func TestTenantPathFromBindingFailsClosed(t *testing.T) {
+func TestTenantClusterFromBindingFailsClosed(t *testing.T) {
 	const cluster = "btykuuy2789iyolq"
 	tests := []struct {
 		name        string
@@ -201,12 +208,8 @@ func TestTenantPathFromBindingFailsClosed(t *testing.T) {
 	}{
 		{name: "nil binding", wantError: "APIBinding is required"},
 		{name: "missing cluster", annotations: map[string]string{kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "no kcp.io/cluster"},
+		{name: "blank cluster", annotations: map[string]string{"kcp.io/cluster": "  "}, wantError: "no kcp.io/cluster"},
 		{name: "cluster mismatch", annotations: map[string]string{"kcp.io/cluster": "other", kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1"}, wantError: "does not match"},
-		{name: "missing path", annotations: map[string]string{"kcp.io/cluster": cluster}, wantError: "no kcp.io/path"},
-		{name: "platform provider path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:providers:kuery"}, wantError: "not a tenant workspace"},
-		{name: "org provider path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:providers"}, wantError: "not a tenant workspace"},
-		{name: "org provider child path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:providers:kuery"}, wantError: "not a tenant workspace"},
-		{name: "nested internal path", annotations: map[string]string{"kcp.io/cluster": cluster, kcpcore.LogicalClusterPathAnnotationKey: "root:faros:tenants:org-1:workspace-1:edge-1"}, wantError: "not a tenant workspace"},
 	}
 
 	for _, tt := range tests {
@@ -215,21 +218,20 @@ func TestTenantPathFromBindingFailsClosed(t *testing.T) {
 			if tt.annotations != nil {
 				binding = &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: tt.annotations}}
 			}
-			_, err := tenantPathFromBinding(binding, cluster)
+			_, err := tenantClusterFromBinding(binding, cluster)
 			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-				t.Fatalf("tenantPathFromBinding error = %v, want containing %q", err, tt.wantError)
+				t.Fatalf("tenantClusterFromBinding error = %v, want containing %q", err, tt.wantError)
 			}
 		})
 	}
 }
 
-func TestResolveTenantPathDropsEngagementOnInvalidBinding(t *testing.T) {
+func TestVerifyTenantClusterDropsEngagementOnInvalidBinding(t *testing.T) {
 	ctx := context.Background()
 	const (
 		cluster   = "btykuuy2789iyolq"
-		tenant    = "root:faros:tenants:org-1:workspace-1"
 		edgeName  = "edge-1"
-		storeName = tenant + "/" + edgeName
+		storeName = cluster + "/" + edgeName
 	)
 
 	store := testStore(t)
@@ -239,7 +241,7 @@ func TestResolveTenantPathDropsEngagementOnInvalidBinding(t *testing.T) {
 		Status:   "active",
 		LastSeen: now,
 		TTL:      clusterTTLSeconds,
-		Labels:   tenantLabelsJSON(tenant),
+		Labels:   tenantLabelsJSON(cluster),
 	}); err != nil {
 		t.Fatalf("seed active cluster: %v", err)
 	}
@@ -259,20 +261,20 @@ func TestResolveTenantPathDropsEngagementOnInvalidBinding(t *testing.T) {
 		},
 		claims: claims,
 		engaged: map[string]engagedEdge{
-			cluster + "/" + edgeName: {
+			storeName: {
 				cancel:   func() { cancelled = true },
-				tenant:   tenant,
 				edgeName: edgeName,
 			},
 		},
 	}
 
+	// The binding claims to belong to a different cluster than the request.
 	binding := &apiskcpv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-		"kcp.io/cluster": cluster,
+		"kcp.io/cluster": "someoneelse0000",
 	}}}
-	_, err = c.resolveTenantPath(ctx, binding, cluster)
-	if err == nil || !strings.Contains(err.Error(), "no kcp.io/path") {
-		t.Fatalf("resolveTenantPath error = %v, want missing-path error", err)
+	err = c.verifyTenantCluster(ctx, binding, cluster)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("verifyTenantCluster error = %v, want cluster-mismatch error", err)
 	}
 	if !cancelled {
 		t.Fatal("invalid binding did not cancel the existing engagement")
@@ -308,19 +310,24 @@ func testStore(t *testing.T) kuerystore.Store {
 
 // TenantEdges answers from the shared store — the whole point of the sharded
 // design: any replica lists the full fleet, not just its own engagements.
+// Rows are keyed and labelled by the tenant's kcp logical-cluster ID.
 func TestTenantEdgesListsActiveStoreRowsForTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
 	c := &Controller{cfg: Config{Store: s}, engaged: map[string]engagedEdge{}}
 
+	const tenantA, tenantB = "1ngen6o0so3jwz2h", "2hx82dl9ncmepp5l"
 	now := time.Now()
 	seed := []struct {
 		name, tenant, status string
 	}{
-		{"tenant-a/edge-2", "tenant-a", "active"},
-		{"tenant-a/edge-1", "tenant-a", "active"},
-		{"tenant-b/edge-9", "tenant-b", "active"},
-		{"tenant-a/edge-3", "tenant-a", "stale"}, // disengaged: hidden
+		{tenantA + "/edge-2", tenantA, "active"},
+		{tenantA + "/edge-1", tenantA, "active"},
+		{tenantB + "/edge-9", tenantB, "active"},
+		{tenantA + "/edge-3", tenantA, "stale"}, // disengaged: hidden
+		// A legacy row from before the cluster-ID key: name and label carry the
+		// workspace path. Not this tenant's key, so never listed.
+		{"root:faros:tenants:org:ws/edge-1", "root:faros:tenants:org:ws", "active"},
 	}
 	for _, row := range seed {
 		if err := s.UpsertCluster(ctx, &kuerystore.ClusterModel{
@@ -334,14 +341,14 @@ func TestTenantEdgesListsActiveStoreRowsForTenant(t *testing.T) {
 		}
 	}
 
-	got, err := c.TenantEdges(ctx, "tenant-a")
+	got, err := c.TenantEdges(ctx, tenantA)
 	if err != nil {
 		t.Fatalf("TenantEdges: %v", err)
 	}
 	if len(got) != 2 || got[0] != "edge-1" || got[1] != "edge-2" {
 		t.Fatalf("TenantEdges = %v, want sorted [edge-1 edge-2]", got)
 	}
-	foreign, err := c.TenantEdges(ctx, "tenant-c")
+	foreign, err := c.TenantEdges(ctx, "zzzforeign000000")
 	if err != nil {
 		t.Fatalf("TenantEdges foreign: %v", err)
 	}
@@ -368,27 +375,27 @@ func TestEdgeClaimsShardsAndTakesOverExpired(t *testing.T) {
 	a := testClaims("replica-a", cs, clock)
 	b := testClaims("replica-b", cs, clock)
 
-	held, err := a.tryAcquire(ctx, "tenant-a/edge-1")
+	held, err := a.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1")
 	if err != nil || !held {
 		t.Fatalf("first acquire = %v/%v, want held", held, err)
 	}
-	held, err = b.tryAcquire(ctx, "tenant-a/edge-1")
+	held, err = b.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1")
 	if err != nil || held {
 		t.Fatalf("foreign fresh claim = %v/%v, want declined", held, err)
 	}
 	// The owner renews.
-	held, err = a.tryAcquire(ctx, "tenant-a/edge-1")
+	held, err = a.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1")
 	if err != nil || !held {
 		t.Fatalf("owner renew = %v/%v, want held", held, err)
 	}
 	// Owner dies: after the TTL the peer takes over.
 	current = current.Add(claimTTL + time.Second)
-	held, err = b.tryAcquire(ctx, "tenant-a/edge-1")
+	held, err = b.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1")
 	if err != nil || !held {
 		t.Fatalf("expired takeover = %v/%v, want held", held, err)
 	}
 	// The old owner comes back and must NOT reclaim a freshly held lease.
-	held, err = a.tryAcquire(ctx, "tenant-a/edge-1")
+	held, err = a.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1")
 	if err != nil || held {
 		t.Fatalf("stale owner reclaim = %v/%v, want declined", held, err)
 	}
@@ -402,35 +409,174 @@ func TestEdgeClaimsReleaseIsOwnerOnly(t *testing.T) {
 	a := testClaims("replica-a", cs, clock)
 	b := testClaims("replica-b", cs, clock)
 
-	if held, err := a.tryAcquire(ctx, "tenant-a/edge-1"); err != nil || !held {
+	if held, err := a.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1"); err != nil || !held {
 		t.Fatalf("acquire = %v/%v", held, err)
 	}
 	// Foreign release must not free the claim.
-	b.release(ctx, "tenant-a/edge-1")
-	if held, _ := b.tryAcquire(ctx, "tenant-a/edge-1"); held {
+	b.release(ctx, "1ngen6o0so3jwz2h/edge-1")
+	if held, _ := b.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1"); held {
 		t.Fatal("foreign release freed an owned claim")
 	}
 	// Owner release frees it for the peer without waiting out the TTL.
-	a.release(ctx, "tenant-a/edge-1")
-	if held, err := b.tryAcquire(ctx, "tenant-a/edge-1"); err != nil || !held {
+	a.release(ctx, "1ngen6o0so3jwz2h/edge-1")
+	if held, err := b.tryAcquire(ctx, "1ngen6o0so3jwz2h/edge-1"); err != nil || !held {
 		t.Fatalf("acquire after owner release = %v/%v, want held", held, err)
 	}
 }
 
 // Claim names must be valid object names regardless of the characters in the
-// workspace path, and distinct per edge.
+// "{clusterID}/{edge}" store name, and distinct per edge.
 func TestClaimNameIsStableAndDistinct(t *testing.T) {
-	a := claimName("root:org:team/edge-1")
-	b := claimName("root:org:team/edge-2")
+	a := claimName("1ngen6o0so3jwz2h/edge-1")
+	b := claimName("1ngen6o0so3jwz2h/edge-2")
 	if a == b {
 		t.Fatal("distinct edges produced the same claim name")
 	}
-	if a != claimName("root:org:team/edge-1") {
+	if a != claimName("1ngen6o0so3jwz2h/edge-1") {
 		t.Fatal("claim name is not stable")
 	}
 	for _, c := range a {
 		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
 			t.Fatalf("claim name %q contains invalid character %q", a, string(c))
 		}
+	}
+}
+
+// TestSweepOrphansConvergesLegacyRows is the store-convergence property for
+// the tenant-key change: rows kuery recorded under the old
+// "{workspacePath}/{edge}" name (with the path as tenant label) are never
+// re-asserted by this version. Kuery's GC only reaps "stale" rows, so the
+// sweep must flip them; it then reaps them (objects and resource types
+// included) once last_seen + ttl has passed — within the TTL of the last
+// heartbeat the old version wrote, with no manual cleanup. Live rows, which
+// their owner re-asserts every renewInterval, are untouched.
+func TestSweepOrphansConvergesLegacyRows(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	c := &Controller{cfg: Config{Store: s}, engaged: map[string]engagedEdge{}}
+
+	const (
+		cluster    = "1ngen6o0so3jwz2h"
+		edge       = "edge-1"
+		legacyName = "root:faros:tenants:org:ws/" + edge
+		liveName   = cluster + "/" + edge
+	)
+	now := time.Now()
+	// The legacy row's last heartbeat: older than orphanGrace, and also past
+	// its TTL, i.e. the old provider version stopped over an hour ago.
+	legacyLastSeen := now.Add(-clusterTTLSeconds*time.Second - time.Minute)
+	seed := []*kuerystore.ClusterModel{
+		{Name: legacyName, Status: "active", LastSeen: legacyLastSeen, TTL: clusterTTLSeconds, Labels: tenantLabelsJSON("root:faros:tenants:org:ws")},
+		{Name: liveName, Status: "active", LastSeen: now, TTL: clusterTTLSeconds, Labels: tenantLabelsJSON(cluster)},
+		// Recently orphaned but within grace (e.g. its owner just died and a
+		// peer is about to take over): must not be touched yet.
+		{Name: cluster + "/edge-2", Status: "active", LastSeen: now.Add(-orphanGrace / 2), TTL: clusterTTLSeconds, Labels: tenantLabelsJSON(cluster)},
+	}
+	for _, row := range seed {
+		if err := s.UpsertCluster(ctx, row); err != nil {
+			t.Fatalf("seed %s: %v", row.Name, err)
+		}
+	}
+	for _, name := range []string{legacyName, liveName} {
+		if err := s.UpsertObject(ctx, &kuerystore.ObjectModel{
+			ID: uuid.New(), UID: "uid-" + name, Cluster: name,
+			APIVersion: "v1", Kind: "ConfigMap", Resource: "configmaps",
+			Namespace: "default", Name: "cm", Object: datatypes.JSON("{}"),
+		}); err != nil {
+			t.Fatalf("seed object for %s: %v", name, err)
+		}
+	}
+
+	n, err := c.sweepOrphans(ctx, now)
+	if err != nil {
+		t.Fatalf("sweepOrphans: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("sweepOrphans marked %d rows, want exactly the legacy row", n)
+	}
+	legacy, err := s.GetCluster(ctx, legacyName)
+	if err != nil {
+		t.Fatalf("get legacy row: %v", err)
+	}
+	if legacy.Status != "stale" {
+		t.Fatalf("legacy row status = %q, want stale", legacy.Status)
+	}
+	if !legacy.LastSeen.Equal(legacyLastSeen) && legacy.LastSeen.Sub(legacyLastSeen).Abs() > time.Second {
+		t.Fatalf("legacy row last_seen moved to %v; must keep %v so it expires relative to its real last heartbeat", legacy.LastSeen, legacyLastSeen)
+	}
+	for _, name := range []string{liveName, cluster + "/edge-2"} {
+		row, err := s.GetCluster(ctx, name)
+		if err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		if row.Status != "active" {
+			t.Fatalf("%s status = %q, want active (still within grace / heartbeating)", name, row.Status)
+		}
+	}
+
+	// Kuery's own GC now reaps the legacy row and everything under it, and
+	// only it.
+	kuerygc.NewGarbageCollector(s, time.Minute).RunOnce(ctx)
+	if _, err := s.GetCluster(ctx, legacyName); err == nil {
+		t.Fatal("legacy cluster row survived GC")
+	}
+	var legacyObjects int64
+	if err := s.RawDB().Model(&kuerystore.ObjectModel{}).Where("cluster = ?", legacyName).Count(&legacyObjects).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacyObjects != 0 {
+		t.Fatalf("%d legacy objects survived GC", legacyObjects)
+	}
+	if _, err := s.GetCluster(ctx, liveName); err != nil {
+		t.Fatalf("live cluster row reaped: %v", err)
+	}
+	var liveObjects int64
+	if err := s.RawDB().Model(&kuerystore.ObjectModel{}).Where("cluster = ?", liveName).Count(&liveObjects).Error; err != nil {
+		t.Fatal(err)
+	}
+	if liveObjects != 1 {
+		t.Fatalf("live objects = %d, want 1", liveObjects)
+	}
+
+	// The portal's edge list sees exactly the live tenant-keyed edges.
+	edges, err := c.TenantEdges(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 2 || edges[0] != "edge-1" || edges[1] != "edge-2" {
+		t.Fatalf("TenantEdges = %v, want [edge-1 edge-2]", edges)
+	}
+
+	// A sweep-marked row that a replica re-engages (assertTenantLabel) is
+	// active again before GC looks: re-engagement re-asserts the label and
+	// takes the row out of the GC's view.
+	if _, err := c.sweepOrphans(ctx, now.Add(orphanGrace+time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.assertTenantLabel(ctx, liveName, cluster); err != nil {
+		t.Fatal(err)
+	}
+	row, err := s.GetCluster(ctx, liveName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(row.Labels, &labels); err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != "active" || labels[TenantLabel] != cluster {
+		t.Fatalf("re-asserted row = status %q labels %v, want active + tenant label %s", row.Status, labels, cluster)
+	}
+}
+
+// The sweep's grace must exceed the claim TTL by a comfortable margin: a live
+// edge whose owner dies is re-claimed and re-asserted by a peer within one
+// claimTTL, and only then does an unrefreshed row mean "nobody owns this".
+func TestOrphanGraceOutlastsClaimHandover(t *testing.T) {
+	if orphanGrace < 3*claimTTL {
+		t.Fatalf("orphanGrace %v must be well past claimTTL %v (handover = one TTL + engage)", orphanGrace, claimTTL)
+	}
+	if orphanGrace >= clusterTTLSeconds*time.Second {
+		t.Fatalf("orphanGrace %v must be shorter than the cluster TTL so orphans are reaped within it", orphanGrace)
 	}
 }

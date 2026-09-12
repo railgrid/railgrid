@@ -22,7 +22,7 @@ on the aggregate as `agents__*`.
 | `budget {window day\|month, usdLimit, tokenLimit}` | Breach suspends schedules and background runs; chat stays |
 | `channels[] {name, connectionRef, primary}` | Named channel roles |
 
-Status: `phase Ready|Suspended`, `lastRunAt`, `usage {windowStart, tokens, usd}`, `suspendedReason` — may stay `{}` on current builds even after successful runs; judge by `GET /api/runs?agent=<name>` instead.
+Status: `phase Ready|Suspended` (stamped on create and by the provider's background loop), `lastRunAt` and `usage {windowStart, tokens, usd}` (updated when a run finishes), `suspendedReason`.
 
 Tool families: `core` (always: memory, self-scheduling, notify, ask,
 delegate), `web` (`web_fetch`; `web_search` needs a `websearch` connection),
@@ -110,14 +110,14 @@ GET    /healthz  /api/whoami  /api/capabilities   (capabilities: which providers
 GET|POST /api/agents ; GET|PUT|DELETE /api/agents/{name}
 GET    /api/agents/{name}/sessions ; DELETE /api/agents/{name}/sessions/{session}
 GET    /api/agents/{name}/messages?session=&limit=&cursor=
-POST   /api/agents/{name}/chat                {message, sessionID?}  SSE: start, tool_start, tool_end, delta, done | approval_required | error
+POST   /api/agents/{name}/chat                {message, sessionID?}  SSE events: start {runID,sessionID}, run_started, assistant_message {content, phase commentary|final}, tool_start {name,args}, tool_end {name,result,durationMS,error}, unlabeled `data: {"text":…}` deltas, done {finalContent,status,usage} | approval_required | error. Interactive: edge tools appear as `edges__edges__<tool>` (verified, ~12 s for one pods_list)
 POST   /api/agents/{name}/runs                {task, sessionId?, idempotencyKey?, wait? (≤120), callback {url, secret}?} → 202 {runId, phase} or 200 {runId, phase, run}
 GET    /api/runs?agent=&phase=&trigger=&class=&session=&parent=&since=&until=&cursor=&limit=(≤200)
 GET    /api/runs/{id}                         {…summary, input, output, sources[], pending {inboxID, tool, args}, steps[{tool,args,result,outcome,error,durationMS}], children[]}
 GET    /api/runs/{id}/wait?timeoutSeconds=    long-poll (default 60, cap 300)
 POST   /api/runs/{id}/cancel                  → 202
 GET    /api/events                            SSE: run phase changes and inbox activity
-GET|POST /api/schedules ; PUT|DELETE /api/schedules/{name} (no GET by name: 405) ; POST /api/schedules/{name}/run → 202 {runID}
+GET|POST /api/schedules ; GET|PUT|DELETE /api/schedules/{name} ; POST /api/schedules/{name}/run → 202 {runID}
 GET|POST /api/triggers ; GET|PUT|DELETE /api/triggers/{name} ; POST /api/triggers/{name}/run
 GET|POST /api/toolsets ; GET|PUT|DELETE /api/toolsets/{name}
 GET|POST /api/connections ; GET|PUT|DELETE /api/connections/{name}
@@ -134,17 +134,16 @@ Create and update bodies use flat fields: `name`, `displayName`,
 `modelFallbacks`, `budgetTokens`, `budgetUSD`, `delegates`, `channels`,
 `interactiveFamilies`, `backgroundFamilies`, `interactiveToolsets`,
 `backgroundToolsets`, `interactiveConnections`, `backgroundConnections`.
-`maxToolTurns` and `timeoutSeconds` are accepted **only by `PUT`**
-(and `agents__update_agent`); on `POST /api/agents` they are dropped
-silently (`spec.limits` stays `{}`) — create, then `PUT` them. Only fields
-you send change; list fields replace wholesale.
+`maxToolTurns` and `timeoutSeconds` (≥ 0) set `spec.limits` on both create
+and update (and on `agents__create_agent`/`update_agent`). Only fields you
+send change; list fields replace wholesale.
 
 Schedules: `POST /api/schedules` takes
 `{name, agentRef, type cron|wakeup|heartbeat, schedule?, timeZone?, runAt?, task?, checklist?, suspend?, channelRef?}`
 (e.g. `{"name":"digest-hourly","agentRef":"digest","type":"cron","schedule":"0 * * * *","timeZone":"UTC","task":"…"}`);
 `POST …/schedules/{name}/run` → 202 `{"runID":…}`, then
-`GET /api/runs/{runID}/wait`. There is **no** `GET /api/schedules/{name}`
-(405): read one schedule from the list, or `kubectl get schedules.agents.faros.sh <name>`.
+`GET /api/runs/{runID}/wait`. `GET /api/schedules/{name}` (and
+`…/triggers/{name}`, `…/toolsets/{name}`) return one object in the list shape.
 
 ## 4. Invocation semantics
 

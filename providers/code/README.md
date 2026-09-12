@@ -48,7 +48,8 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/code/{mcp, mcp/sse, oauth/github/*}
-   │  proxy injects X-Faros-Tenant + X-Faros-User
+   │  proxy injects X-Faros-Tenant + X-Faros-Cluster (the workspace's
+   │  kcp logical-cluster ID, in both) + X-Faros-User
    ▼
 this provider pod
    │

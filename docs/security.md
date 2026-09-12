@@ -169,7 +169,10 @@ config:
   staticClients:
     - id: faros
       name: Faros
-      secret: "<generate-a-secret>"
+      # The hub is a PKCE public client: no secret. `public: true` is what
+      # lets dex exchange the code without one and issue refresh tokens
+      # that `faros get-token` rotates silently.
+      public: true
       redirectURIs:
         - https://hub.example.com/auth/callback
 

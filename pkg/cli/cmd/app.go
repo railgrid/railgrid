@@ -85,6 +85,7 @@ type appCreateRequest struct {
 	Prompt                   string `json:"prompt,omitempty"`
 	TemplateName             string `json:"templateName,omitempty"`
 	InferDevelopmentTemplate bool   `json:"inferDevelopmentTemplate,omitempty"`
+	ExistingRepositoryRef    string `json:"existingRepositoryRef,omitempty"`
 }
 
 type appPromotionView struct {
@@ -289,7 +290,10 @@ no repository, and one connected later gets a suffixed name, so read the
 repository ref from 'faros app status'. With --wait the command returns
 once the repository is ready and the scaffold commit has succeeded — the point
 from which cloning and 'faros commit' work. Without --template, --prompt lets
-App Studio infer the template.`,
+App Studio infer the template. --existing-repository adopts a code Repository
+you created first (one that names an existing GitHub repo): the project
+hydrates from its default branch instead of getting a scaffold, and nothing in
+that repository's history is promotable until the first 'faros commit'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(output); err != nil {
@@ -309,6 +313,7 @@ App Studio infer the template.`,
 	cmd.Flags().StringVar(&req.DisplayName, "display-name", "", "Display name")
 	cmd.Flags().StringVar(&req.Description, "description", "", "Description")
 	cmd.Flags().StringVar(&req.Prompt, "prompt", "", "What to build; does not start an assistant turn")
+	cmd.Flags().StringVar(&req.ExistingRepositoryRef, "existing-repository", "", "Adopt this code Repository instead of creating one")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for the repository and the scaffold commit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "How long --wait waits")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
@@ -450,6 +455,9 @@ func printAppStatus(w io.Writer, st appStatus, now time.Time) error {
 			line += "  (" + oneLine(r.Message, 80) + ")"
 		}
 		printRow(tw, "Repository:", line)
+		if hint := repositoryStallHint(p, now); hint != "" {
+			printRow(tw, "", hint)
+		}
 		for i, c := range latestCommits(r.Commits, 3) {
 			label := ""
 			if i == 0 {
@@ -533,6 +541,30 @@ func publishingSummary(pub appPublishingView) string {
 		line += fmt.Sprintf("  grants=%d", active)
 	}
 	return line
+}
+
+// repositoryStallThreshold is how long a fresh project's repository may stay
+// not-ready before `faros app status` stops calling it latency. Measured on a
+// dev hub the repository is ready in ~10 s and the scaffold commit lands
+// within 40 s; anything past two minutes with no status at all means the
+// code provider is not reconciling.
+const repositoryStallThreshold = 2 * time.Minute
+
+// repositoryStallHint names the one failure a newcomer cannot tell from
+// latency: a repository that has stayed not-ready, with no status message and
+// no commit, since the project was created. It returns "" when the repository
+// is ready, still young, or reports a message of its own.
+func repositoryStallHint(p appProjectView, now time.Time) string {
+	r := p.Repository
+	if r == nil || r.Ready || r.Message != "" || len(r.Commits) > 0 || p.CreatedAt.IsZero() {
+		return ""
+	}
+	age := now.Sub(p.CreatedAt)
+	if age < repositoryStallThreshold {
+		return ""
+	}
+	return fmt.Sprintf("not ready for %s with no status: the code provider is not reconciling (kubectl get repositories.code.faros.sh %s -o yaml has no status); wait for the operator, don't recreate the project",
+		age.Truncate(time.Minute), formatStringOrDash(r.Ref))
 }
 
 // latestCommits returns up to n commits, newest first.
@@ -778,8 +810,8 @@ func newAppPublishCommand(target *hubTarget) *cobra.Command {
 				}
 				return printJSON(cmd.OutOrStdout(), raw)
 			}
-			summary := "private"
-			if len(raw) > 0 {
+			summary := "private (unpublished; anonymous requests are redirected to sign-in, your own app tokens still work)"
+			if mode != "private" && len(raw) > 0 {
 				var pub appPublishingView
 				if err := json.Unmarshal(raw, &pub); err == nil {
 					summary = publishingSummary(pub)

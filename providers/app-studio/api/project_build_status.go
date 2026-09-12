@@ -165,7 +165,7 @@ func (s *Server) callProjectBuildWorkflow(ctx context.Context, id identity, http
 	endpoint := s.mcpEndpoint(id.clusterID)
 	errorsByCandidate := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		raw, err := callProjectMCPTool(ctx, endpoint, httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
+		raw, err := callProjectMCPTool(ctx, endpoint, httpReq, id.tenant, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
 		if err == nil {
 			return raw, nil
 		}
@@ -515,7 +515,7 @@ func (s *Server) observeProjectBuildRun(ctx context.Context, id identity, p *aiv
 	if err != nil {
 		return nil, "Build status temporarily unavailable."
 	}
-	key := strings.Join([]string{id.tenantPath, id.clusterID, id.user, repositoryRef, strings.Join(candidates, "\x1f"), commitSHA}, "\x00")
+	key := strings.Join([]string{id.tenant, id.clusterID, id.user, repositoryRef, strings.Join(candidates, "\x1f"), commitSHA}, "\x00")
 
 	for {
 		now := time.Now()

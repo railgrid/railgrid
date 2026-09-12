@@ -27,17 +27,21 @@ import (
 // every runtime action is gated by the caller's RBAC on the instance, so there
 // is no provider-wide identity. Mirrors mcpserver.identityFromRequest but kept
 // local to avoid a package dependency.
+//
+// tenant is the hub's tenant identity for the request (X-Faros-Tenant: the
+// workspace's kcp logical-cluster ID). The data plane addresses the workspace
+// by the cluster ID in the URL and treats this value as opaque.
 type identity struct {
-	tenantPath string
-	user       string
-	token      string
+	tenant string
+	user   string
+	token  string
 }
 
 func identityFromRequest(r *http.Request) identity {
 	id := identity{
-		tenantPath: r.Header.Get("X-Faros-Tenant"),
-		user:       r.Header.Get("X-Faros-User"),
-		token:      bearerToken(r),
+		tenant: r.Header.Get("X-Faros-Tenant"),
+		user:   r.Header.Get("X-Faros-User"),
+		token:  bearerToken(r),
 	}
 	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
 		id.token = r.URL.Query().Get("token")

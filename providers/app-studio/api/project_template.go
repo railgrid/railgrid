@@ -481,7 +481,7 @@ func projectHasProviderActionGrant(p *aiv1alpha1.Project) bool {
 
 func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identity) (projectTemplateBindingContext, error) {
 	context := projectTemplateBindingContext{
-		TenantPath:  id.tenantPath,
+		TenantPath:  id.workspacePath,
 		Org:         id.orgUUID,
 		Workspace:   id.workspaceUUID,
 		Project:     strings.TrimSpace(p.Name),

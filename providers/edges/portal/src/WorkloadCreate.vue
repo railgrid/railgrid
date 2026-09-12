@@ -28,6 +28,11 @@ const draft = ref({
   replicas: 1,
   strategy: 'Spread' as 'Spread' | 'Singleton',
   selector: 'env=dev',
+  // targetNamespace is shared by both modes: the edge-cluster namespace the
+  // rendered objects land in. Empty means the CRD default ("default").
+  targetNamespace: '',
+  // imagePullSecrets is the simple-mode list of Secret names, comma-separated.
+  imagePullSecrets: '',
 })
 const deployName = ref('')
 const deployEdge = ref('')
@@ -90,14 +95,65 @@ function parseSelector(value: string): SelectorResult {
   return { value: selector, error: null }
 }
 
+// DEFAULT_TARGET_NAMESPACE mirrors the Workload CRD default for
+// spec.targetNamespace (kept local so the api module mock in tests stays flat).
+const DEFAULT_TARGET_NAMESPACE = 'default'
+// Namespace names are RFC 1123 DNS labels — the rule the CRD enforces on
+// spec.targetNamespace. Secret names are DNS subdomains (labels joined by dots).
+const DNS_LABEL_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
+const DNS_LABEL_MAX = 63
+const DNS_SUBDOMAIN_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/
+const DNS_SUBDOMAIN_MAX = 253
+
+function validateTargetNamespace(value: string): string | null {
+  const ns = value.trim()
+  if (!ns) return null
+  if (ns.length > DNS_LABEL_MAX) return `Namespace names are at most ${DNS_LABEL_MAX} characters.`
+  if (!DNS_LABEL_RE.test(ns)) return 'Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.'
+  return null
+}
+
+type PullSecretsResult = {
+  value: string[]
+  error: string | null
+}
+
+function parseImagePullSecrets(value: string): PullSecretsResult {
+  const names: string[] = []
+  if (!value.trim()) return { value: names, error: null }
+
+  for (const rawName of value.split(',')) {
+    const name = rawName.trim()
+    if (!name) {
+      return { value: names, error: 'Secret names cannot be empty; separate them with commas.' }
+    }
+    if (name.length > DNS_SUBDOMAIN_MAX || !DNS_SUBDOMAIN_RE.test(name)) {
+      return { value: names, error: `"${name}" is not a valid Secret name (lowercase letters, digits, hyphens and dots).` }
+    }
+    if (names.includes(name)) {
+      return { value: names, error: `Secret "${name}" is listed more than once.` }
+    }
+    names.push(name)
+  }
+  return { value: names, error: null }
+}
+
 const selectorResult = computed(() => parseSelector(draft.value.selector))
 const selectorError = computed(() => selectorResult.value.error)
+const targetNamespaceError = computed(() => validateTargetNamespace(draft.value.targetNamespace))
+const targetNamespace = computed(() => draft.value.targetNamespace.trim() || DEFAULT_TARGET_NAMESPACE)
+const pullSecretsResult = computed(() => parseImagePullSecrets(draft.value.imagePullSecrets))
+const pullSecretsError = computed(() => pullSecretsResult.value.error)
+const pullSecretsSummary = computed(() => pullSecretsError.value
+  ? 'Fix the Secret names'
+  : pullSecretsResult.value.value.join(', ') || 'None (public image)')
 const canSubmit = computed(() => {
   if (!active || loading.value || busy.value || edgeLoadError.value || kubernetesEdges.value.length === 0) return false
+  if (targetNamespaceError.value) return false
   if (props.mode === 'marketplace') {
     return !!app.value && !!deployName.value.trim() && kubernetesEdges.value.some((edge) => edge.name === deployEdge.value)
   }
-  return !!draft.value.name.trim() && !!draft.value.image.trim() && !selectorError.value
+  return !!draft.value.name.trim() && !!draft.value.image.trim() && !selectorError.value && !pullSecretsError.value
 })
 const manualSelector = computed(() => selectorError.value ? {} : selectorResult.value.value)
 const matchingEdges = computed(() => kubernetesEdges.value.filter(edge => {
@@ -112,13 +168,15 @@ const placementSummary = computed(() => selectorError.value
 const workloadGuidanceValues = computed<CreateGuidanceValue[]>(() => app.value ? [
   { label: 'Workload name', value: deployName.value.trim() || 'Not entered yet', technical: true },
   { label: 'Kubernetes edge', value: deployEdge.value || 'Not selected', technical: true },
+  { label: 'Namespace', value: targetNamespaceError.value ? 'Fix the namespace' : targetNamespace.value, technical: true },
   { label: 'Chart', value: `${app.value.chart.chart}@${app.value.chart.version}`, technical: true },
   { label: 'Service port', value: String(app.value.port), technical: true },
   { label: 'Credentials', value: credentialHint[app.value.credential] || 'Review after creation' },
 ] : [
   { label: 'Workload name', value: draft.value.name.trim() || 'Not entered yet', technical: true },
-  { label: 'Namespace', value: 'default', technical: true },
+  { label: 'Namespace', value: targetNamespaceError.value ? 'Fix the namespace' : targetNamespace.value, technical: true },
   { label: 'Image', value: draft.value.image.trim() || 'Not entered yet', technical: true },
+  { label: 'Image pull secrets', value: pullSecretsSummary.value, technical: true },
   { label: 'Replicas', value: String(Number(draft.value.replicas) || 1), technical: true },
   { label: 'Strategy', value: draft.value.strategy },
   { label: 'Edge selector', value: draft.value.selector.trim() || 'All Kubernetes edges', technical: true },
@@ -130,16 +188,17 @@ const workloadPrerequisites = computed(() => app.value ? [
   'Any service credential listed below, added after deployment when required.',
 ] : [
   'At least one KubernetesCluster edge.',
-  'A container image the target clusters can pull.',
+  'A container image the target clusters can pull. For a private registry, a docker-registry Secret in the target namespace on every selected edge.',
   'Matching labels on target edges. Spread uses every match; Singleton uses one.',
 ])
 const workloadNextSteps = computed(() => app.value ? [
   'Faros creates a singleton Helm Workload pinned to the selected edge.',
+  'The edge agent creates the target namespace if it is missing; it is never deleted with the workload.',
   'Faros also declares an Edges Service for the chart endpoint.',
   'The edge agent applies the chart and reports workload readiness.',
   'Add the Service credential after deployment when the app requires one.',
 ] : [
-  'Faros creates the Workload in the default namespace.',
+  'Faros creates the Workload; the edge agent creates the target namespace if it is missing and never deletes it.',
   'The scheduler creates Placements for matching Kubernetes edges.',
   'Edge agents apply the derived Deployments and Workload status aggregates their readiness.',
 ])
@@ -180,6 +239,7 @@ async function submit(): Promise<void> {
         values: selected.values,
         serviceType: selected.type,
         port: selected.port,
+        targetNamespace: draft.value.targetNamespace.trim() || undefined,
       })
       if (!isCurrent(generation)) return
       emit('completed', `${selected.label} deployment started as ${deployName.value.trim()}.`)
@@ -192,6 +252,8 @@ async function submit(): Promise<void> {
       replicas: Number(draft.value.replicas) || 1,
       strategy: draft.value.strategy,
       selector: manualSelector.value,
+      targetNamespace: draft.value.targetNamespace.trim() || undefined,
+      imagePullSecrets: pullSecretsResult.value.value,
     }
     await createWorkload(workload)
     if (!isCurrent(generation)) return
@@ -296,6 +358,18 @@ onUnmounted(() => {
           <option v-for="edge in kubernetesEdges" :key="edge.name" :value="edge.name">{{ edge.name }} (KubernetesCluster)</option>
         </select>
       </label>
+      <label class="fld">
+        <span class="lbl">Target namespace</span>
+        <input
+          v-model="draft.targetNamespace"
+          class="k-input"
+          placeholder="default"
+          :aria-invalid="targetNamespaceError ? 'true' : undefined"
+          :aria-describedby="targetNamespaceError ? 'marketplace-namespace-error' : 'marketplace-namespace-help'"
+        />
+        <span v-if="targetNamespaceError" id="marketplace-namespace-error" class="field-error" role="alert">{{ targetNamespaceError }}</span>
+        <span v-else id="marketplace-namespace-help" class="field-help">Namespace on the edge cluster the chart renders into. It is created on each edge if missing and never deleted with the workload.</span>
+      </label>
       <p class="muted">Deploys <span class="mono">{{ app.chart.chart }}@{{ app.chart.version }}</span> onto <b>{{ deployEdge || '—' }}</b> and wires an Edges Service on port {{ app.port }}. Auth: {{ credentialHint[app.credential] }}.</p>
       </div>
       <CreateGuidance
@@ -327,6 +401,18 @@ onUnmounted(() => {
         <span class="lbl">Image</span>
         <input v-model="draft.image" class="k-input" placeholder="nginx:latest" />
       </label>
+      <label class="fld">
+        <span class="lbl">Image pull secrets (comma-separated)</span>
+        <input
+          v-model="draft.imagePullSecrets"
+          class="k-input"
+          placeholder="ghcr-pull"
+          :aria-invalid="pullSecretsError ? 'true' : undefined"
+          :aria-describedby="pullSecretsError ? 'workload-pull-secrets-error' : 'workload-pull-secrets-help'"
+        />
+        <span v-if="pullSecretsError" id="workload-pull-secrets-error" class="field-error" role="alert">{{ pullSecretsError }}</span>
+        <span v-else id="workload-pull-secrets-help" class="field-help">Names of docker-registry Secrets for a private image. Each Secret must already exist in the target namespace on every selected edge; the workload only references it and never carries the token.</span>
+      </label>
       <div class="workload-create-grid">
         <label class="fld">
           <span class="lbl">Replicas</span>
@@ -340,6 +426,18 @@ onUnmounted(() => {
           </select>
         </label>
       </div>
+      <label class="fld">
+        <span class="lbl">Target namespace</span>
+        <input
+          v-model="draft.targetNamespace"
+          class="k-input"
+          placeholder="default"
+          :aria-invalid="targetNamespaceError ? 'true' : undefined"
+          :aria-describedby="targetNamespaceError ? 'workload-namespace-error' : 'workload-namespace-help'"
+        />
+        <span v-if="targetNamespaceError" id="workload-namespace-error" class="field-error" role="alert">{{ targetNamespaceError }}</span>
+        <span v-else id="workload-namespace-help" class="field-help">Namespace on the edge cluster the Deployment and Service land in. It is created on each edge if missing and never deleted with the workload.</span>
+      </label>
       <label class="fld">
         <span class="lbl">Edge selector (key=value, comma-separated)</span>
         <input

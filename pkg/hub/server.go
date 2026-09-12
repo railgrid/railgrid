@@ -30,8 +30,8 @@ import (
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
+	"github.com/faroshq/provider-sdk/apiexportprovider"
 	"github.com/gorilla/mux"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -740,6 +740,13 @@ func (s *Server) Run(ctx context.Context) error {
 				tenant.OptionalOrgMiddleware(userResolver, membershipLookup),
 				catalogWorkloads.resolveWorkloadServiceAccount,
 			))
+			// A provider that received a delegated token in place of the
+			// caller's bearer (App Studio validating publishing grants and
+			// inviting a new email) may read the tenant's membership roster
+			// and add an org member with it, as the person the token stands
+			// for; everything else on /api/orgs keeps requiring the human's
+			// own credential.
+			membershipResolver := delegatedMembershipResolver(userResolver, catalogWorkloads.resolveWorkloadServiceAccount)
 			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys)
 			backendProxy.SetTenantResolver(providerTenantResolver)
 			// The UI proxy serves an org-owned bundle only against a grant the
@@ -800,7 +807,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 			// Full tenant-context routes (Org admin / member, optionally Workspace)
 			tenantSub := router.PathPrefix("/api/orgs").Subrouter()
-			tenantSub.Use(tenant.Middleware(userResolver, membershipLookup))
+			tenantSub.Use(tenant.Middleware(membershipResolver, membershipLookup))
 			apiHandler.RegisterTenantScoped(tenantSub)
 
 			// Step 9: ServiceAccount routes hang off the same
@@ -892,7 +899,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// hack/gen-core-apiexport) so tenants cannot see or create catalog
 		// entries. The hub binds it once in root:faros:providers (during
 		// kcp bootstrap, ensureProvidersSelfBinding) and reconciles there.
-		providersExportProvider, err := apiexport.New(providersConfig, "providers.faros.sh", apiexport.Options{Scheme: scheme})
+		providersExportProvider, err := apiexportprovider.New(providersConfig, "providers.faros.sh", apiexportprovider.Options{Scheme: scheme})
 		if err != nil {
 			return fmt.Errorf("creating providers.faros.sh multicluster provider: %w", err)
 		}
@@ -947,7 +954,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// a core.faros.sh multicluster manager (removed in the edge extraction)
 			// to run it. It provisions each server's identity across all tenant
 			// workspaces. The aggregate serving lives in pkg/hub/mcpaggregate.
-			coreExportProvider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
+			coreExportProvider, err := apiexportprovider.New(providersConfig, "core.faros.sh", apiexportprovider.Options{Scheme: scheme})
 			if err != nil {
 				logger.Error(err, "Creating core.faros.sh multicluster provider failed")
 				return
@@ -973,7 +980,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// (admin.faros.sh), bound ONLY in root:faros:providers (so
 			// a provider cannot create Provider objects from its own sub-workspace),
 			// hence a separate multicluster manager bound to the admin export.
-			adminExportProvider, err := apiexport.New(providersConfig, "admin.faros.sh", apiexport.Options{Scheme: scheme})
+			adminExportProvider, err := apiexportprovider.New(providersConfig, "admin.faros.sh", apiexportprovider.Options{Scheme: scheme})
 			if err != nil {
 				logger.Error(err, "Creating admin.faros.sh multicluster provider failed")
 				return

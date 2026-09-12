@@ -185,6 +185,7 @@ func TestProjectEinoAssistantStableToolInfoOrderIsIndependentOfDiscoveryOrder(t 
 
 func TestProjectEinoAssistantLifecycleRefreshesModelAndExecutableToolSnapshotTogether(t *testing.T) {
 	server := New(nil, store.NewMemoryStore(), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	defer server.Shutdown(context.Background())
 	runState := newProjectEinoAssistantRunState()
 	req := projectAssistantRunRequest{

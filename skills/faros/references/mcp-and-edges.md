@@ -119,10 +119,13 @@ its token Secret, and ClusterRole `faros:mcpserver:<name>`; federation
 status refreshes every 60 s. `status.federatedProviders` is
 enumerated as the server's own ServiceAccount: it reflects the Org's
 shadowing but lists no org-owned providers (a human bearer may see more).
-There is **no** edge label selector on the spec. Hub REST: `GET|POST /api/orgs/{org}/workspaces/{ws}/mcpservers`,
-`PATCH|DELETE …/{name}`, `GET …/{name}/connect`. To hand an agent narrower
-access, create a workspace service account and use its token, or a
-`readOnly` MCPServer.
+There is **no** edge label selector on the spec. Hub REST: `GET|POST /api/orgs/{org}/workspaces/{ws}/mcpservers`
+(`POST {"name","displayName","readOnly"}` → 201 `{name, displayName, readOnly, phase: Provisioning}`),
+`PATCH|DELETE …/{name}`, `GET …/{name}/connect` (token ready within seconds). To hand an agent narrower
+access, create a workspace service account and use its token
+([access.md](access.md) section 6), or a `readOnly` MCPServer: verified — its
+token lists the same tools as `default`, and a write tool fails with the kube
+RBAC text (`… is forbidden: User "system:serviceaccount:default:<name>-mcp" cannot create resource …`).
 
 ## 3. Per-edge MCP
 
@@ -130,8 +133,11 @@ access, create a workspace service account and use its token, or a
 https://<hub>/services/providers/edges/agent/{clusterName}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{edge}/mcp
 ```
 
-`faros mcp url --edge <name>`. Kubernetes edges only; server edges answer
-400. Same kube toolset as below without the `cluster` parameter.
+`faros mcp url --edge <name>`. Kubernetes edges only: for a server edge the
+URL is still printed and `tools/list` answers 200 with the kube tools, but
+every `tools/call` fails with `an error on the server ("upstream
+unavailable")` — use `faros ssh`. Same kube toolset as below without the
+`cluster` parameter.
 
 ## 4. Complete tool inventory
 
@@ -146,8 +152,14 @@ helm), with a `cluster` parameter selecting the edge on the fleet endpoint:
 `resources_delete`, `resources_scale`, `namespaces_list`, `events_list`,
 `nodes_log`, `nodes_stats_summary`, `nodes_top`, `configuration_view`,
 `configuration_contexts_list`, `cluster_list` (enumerates connected edges),
-`helm_install`, `helm_list`, `helm_uninstall`. `projects_list` exists but
-OpenShift detection is hardcoded off.
+`helm_install {chart (a `.tgz` URL or `oci://` ref — no repos are
+configured, so `stable/x` does not resolve), name?, namespace?, values?, cluster?}`
+(~1 s for a small chart), `helm_list {namespace?, all_namespaces?, cluster?}`,
+`helm_uninstall {name, namespace?, cluster?}`. `projects_list` exists but
+OpenShift detection is hardcoded off. All of these return kubectl-style
+plain text, not JSON. `pods_exec` runs argv in the container: scratch or
+distroless images (e.g. `traefik/whoami`) have no `sh`/`cat`/`wget` and fail
+with `executable file not found in $PATH`.
 
 Per-`Service` tools, one bundle per Ready `Service` with a live tunnel,
 named `<service>_<tool>`:
@@ -212,7 +224,10 @@ server edges are reached with `faros ssh`.
 | `kuery_impact` | `kind`, `name`, `edge?`, `group?`, `namespace?`, `maxDepth?` (5, max 20) | `{impactedBy, impacts, associated, summary}`; declared coupling only |
 
 REST: `POST $HUB/services/providers/kuery/api/query`, `GET …/api/query-schema`,
-`GET …/api/edges`. `GET …/api/status` reports `engagedEdges`.
+`GET …/api/edges` → `{tenant: <clusterID>, edges: [<edge>…], clusters: ["<clusterID>/<edge>"…]}`.
+`GET …/api/status` reports `engagedEdges` and your `tenant`. Every kuery
+route identifies you by `X-Faros-Cluster` (the hub sets it); a workspace path
+in `X-Faros-Tenant` is rejected with 400.
 
 - **Enable it first.** `kuery` appears in `GET /api/providers` and its tools
   are on `tools/list` whether or not the workspace enabled it, but nothing is
@@ -221,16 +236,24 @@ REST: `POST $HUB/services/providers/kuery/api/query`, `GET …/api/query-schema`
   Until then every query answers `{}` and `GET …/api/edges` is `{"edges":[]}`.
 - **Engagement is provider-side.** After enabling, the provider polls the
   workspace's `KubernetesCluster` edges and syncs each through the edges
-  proxy. `engagedEdges: 0` minutes later with connected edges means that sync
-  is failing in the provider (seen 2026-09-11: `discovery failed … Forbidden`),
-  which only the operator can fix.
-- **`kuery__kuery_query` is unusable on current builds.** Its schema declares
-  `spec` as an array of integers (a `json.RawMessage` reflected as bytes), so
-  an object spec fails validation and a byte array fails to unmarshal. Use the
-  REST route with the same QuerySpec body; `kuery__kuery_impact` is fine.
-- Example body (REST): `{"filter":{"objects":[{"groupKind":{"group":"","kind":"Pod"},"namespace":"kube-system"}]},"limit":10,"objects":{"object":{"metadata":{"name":true,"namespace":true}}}}`;
-  the response is a `QueryStatus` (`objects[]`, `cursor`), and a bare `{}`
-  means no engaged edge, not an empty fleet. Field list: `GET …/api/query-schema`.
+  proxy; connected Kubernetes edges show up in `GET …/api/edges` within a
+  minute. `engagedEdges: 0` minutes later with connected edges means that sync
+  is failing in the provider, which only the operator can fix. Server edges
+  are never engaged (no kube API).
+- `kuery__kuery_query {spec}` takes the QuerySpec as a JSON object (the same
+  body the REST route takes) and returns the `QueryStatus` as text.
+- Example body: `{"filter":{"objects":[{"groupKind":{"group":"","kind":"Pod"},"namespace":"kube-system"}]},"limit":10,"objects":{"cluster":true,"object":{"metadata":{"name":true,"namespace":true}}}}`.
+  The response is a `QueryStatus`: `objects[{cluster?, object}]` plus
+  `incomplete: true` when `limit` cut the result (page with `cursor`).
+  `objects.cluster: true` adds the edge as `<clusterID>/<edge>` (e.g.
+  `1ngen6o0so3jwz2h/minis`); without it you cannot tell which edge an object
+  came from. `{"root":"clusters"}` returns one
+  `kuery.io/v1 Cluster` per engaged edge. A bare `{}` means no engaged edge,
+  not an empty fleet. Field list: `GET …/api/query-schema`.
+- `kuery__kuery_impact` answers `found: false … not known to kuery yet` when
+  the provider has not reconciled your workspace since it started (a few
+  seconds after enable or a provider restart); retry, or query with
+  `objects.relations`.
 
 Relations: upstream `owners`, `references`, `selects`,
 `namespace`; downstream `descendants`, `selected-by`, `namespaced`, `members`;
@@ -269,26 +292,83 @@ faros agent join --hub-url <hub> --edge-name <name> --type kubernetes|server --t
 faros agent run  --hub-url <hub> --edge-name <name> --type kubernetes|server --token <token>   # foreground
 ```
 
-kubectl through the hub: `faros kubeconfig edge <name>` writes a kubeconfig
+kubectl through the hub: `faros edge kubeconfig <name>` writes a kubeconfig
 whose server is
 `<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{edge}/k8s`
 with your own credentials; the provider does a SubjectAccessReview for verb
-`proxy` and forwards as you. `faros connect <edge>` does the same by
-rewriting the current context; `faros connect :` returns to the hub.
+`proxy` and forwards as you (`-o <file>` writes it, `--merge` adds a
+`faros-<name>` context without switching). `faros connect <edge>` merges that
+context **and makes it current**, so plain `kubectl` hits the edge until
+`faros disconnect` (or `faros use`) points it back at the hub — remember that
+`faros env`, `faros app` and friends read the `faros` context, so scripts
+should prefer `kubectl --kubeconfig <file>` or `--context faros-<edge>`.
 
 SSH: `faros ssh <server> [-- cmd]` over a WebSocket to the `ssh` subresource.
 Host key policy on the `LinuxServer` spec: `sshHostKey`, `sshHostKeyPolicy strict|tofu`,
 `sshPort`, `sshUserMapping`, `sshKeySecretRef`, `sshCredentialsRef`.
 
 Services: discovered by the agent (`edges.faros.sh/discovered=true`, named
-`<edge>-<type>`) or declared with `spec.host`, `spec.port`, `spec.type`,
-`spec.authSecretRef`, `spec.targetRef` (Kubernetes edges dial
-`<name>.<namespace>.svc`). LAN hosts need the agent's `--svc-allow-cidr`.
-Data plane: `/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{proxy|mcp}`.
+`<edge>-<type>`) or declared. A declared one that worked (2026-09-11):
 
-Workloads on edges: `Workload` with `spec.placement.edgeSelector` and
-`strategy Spread|Singleton`, modes `simple`, `template`, `helm` (rendered
-provider-side), fanned into one `Placement` per edge applied by the agent
-with server-side apply and prune. `faros get workloads|placements` lists
-them. The marketplace flow (Workload plus Service card) is implemented but
-self-described as not live-tested.
+```yaml
+apiVersion: edges.faros.sh/v1alpha1
+kind: Service
+metadata: { name: kiosk-whoami }
+spec:
+  type: generic
+  edgeRef: { kind: KubernetesCluster, name: minis }     # required
+  targetRef: { name: kiosk-whoami, namespace: kiosk }   # in-cluster Service; namespace required
+  port: 80
+  scheme: http
+  auth: none                                            # none | passthrough | secret (default; expects authSecretRef)
+```
+
+`spec.host` instead of `targetRef` for LAN hosts (needs the agent's
+`--svc-allow-cidr`). `status.url` is a **path**: call
+`$HUB<status.url>/` (or a sub-path) with `Authorization: Bearer $TOKEN`
+(401 without). Reachability is probed on create/update and then with a
+backoff from 5 s up to 10 min while it fails (every 10 min once Ready), so a
+Service created before its pod is Ready flips to `Ready` within seconds of
+the backend answering. Data plane:
+`/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{proxy|mcp}`.
+
+Workloads on edges: `Workload` (namespaced on the hub) with
+`spec.placement.edgeSelector` and `strategy Spread|Singleton`, exactly one of
+`simple`, `template`, `helm` (rendered provider-side), fanned into one
+`Placement` per edge (`<workload>-<edge>`, `spec.manifests[]` is the rendered
+output — read it before trusting the edge) applied by the agent with
+server-side apply and prune. `kubectl get workloads,placements -A` lists them
+(`faros get workloads|placements` still works but is deprecated; its READY
+column prints total-ready/per-edge replicas, so `2/1` is healthy for two edges). Verified 2026-09-11, both edges Running in 8 s,
+pruned within ~5 s of deleting the Workload:
+
+```yaml
+apiVersion: edges.faros.sh/v1alpha1
+kind: Workload
+metadata: { name: kiosk-whoami, namespace: kiosk }   # hub namespace only
+spec:
+  placement:
+    strategy: Spread
+    edgeSelector:
+      matchExpressions:
+        - { key: edges.faros.sh/name, operator: In, values: [home, minis] }
+  replicas: 1                                        # per edge
+  simple:
+    image: traefik/whoami:v1.10
+    ports: [{ name: http, containerPort: 80 }]
+  access: { port: 80 }                               # renders a ClusterIP Service of the same name
+```
+
+- **Namespace on the edge:** `spec.targetNamespace` (DNS label, default
+  `default`); the hub namespace is *not* carried over. A non-default target
+  is created on the edge with the bundle and never pruned.
+- `edgeSelector` matches labels on the `KubernetesCluster` objects; the only
+  label every edge carries is `edges.faros.sh/name: <edge>` (add your own with
+  `faros edge create --labels` or by labelling the CR).
+- `spec.template.metadata` takes `labels` and `annotations` (merged onto the
+  pod template; `edges.faros.sh/workload` stays the selector).
+- **Private images:** `spec.simple.imagePullSecrets: [{name: ghcr-pull}]` (or
+  `spec.template.spec.imagePullSecrets`). A Workload ships no Secrets: create a
+  `docker-registry` Secret of that name in the target namespace on every
+  selected edge first (through `faros edge kubeconfig`); never put the token
+  in the Workload.

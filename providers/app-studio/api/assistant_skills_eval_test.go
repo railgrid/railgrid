@@ -54,7 +54,7 @@ func TestEvaluationSkillDisclosureAndAuthorityBoundaries(t *testing.T) {
 		t.Fatalf("prompt omitted the authority boundary: %q", prompt)
 	}
 
-	registry := projectAssistantLocalToolRegistry(&Server{})
+	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup})
 	loadSpec, ok := registry.Spec(projectToolLoadSkill)
 	if !ok || loadSpec.Risk != projectAssistantToolRiskRead || !loadSpec.ParallelSafe {
 		t.Fatalf("load_skill is not an ordinary parallel read tool: %#v, found=%v", loadSpec, ok)
@@ -248,6 +248,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
 	files := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	router := mux.NewRouter()
 	server.Register(router)
 	return router, files
@@ -258,7 +259,7 @@ var evaluationSkillRequest = func(method, target, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer caller-token")
 	req.Header.Set("X-Faros-User", "alice")
-	req.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	req.Header.Set("X-Faros-Tenant", "cluster-a")
 	req.Header.Set("X-Faros-Cluster", "cluster-a")
 	return req
 }

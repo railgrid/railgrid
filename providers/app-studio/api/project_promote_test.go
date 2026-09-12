@@ -582,7 +582,7 @@ func TestProjectBuildAndPromotionRequireExactReviewedCommitImages(t *testing.T) 
 			if err != nil {
 				t.Fatalf("get test project: %v", err)
 			}
-			check, err := (&Server{}).checkProjectBuild(context.Background(), client, identity{}, persisted)
+			check, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).checkProjectBuild(context.Background(), client, identity{}, persisted)
 			if err != nil {
 				t.Fatalf("checkProjectBuild: %v", err)
 			}
@@ -590,7 +590,7 @@ func TestProjectBuildAndPromotionRequireExactReviewedCommitImages(t *testing.T) 
 				t.Fatalf("build status = %q, want %q (check=%+v)", check.Status, tc.wantBuild, check)
 			}
 
-			_, _, promoteErr := (&Server{}).promoteProject(context.Background(), client, identity{}, persisted, nil, nil)
+			_, _, promoteErr := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).promoteProject(context.Background(), client, identity{}, persisted, nil, nil)
 			if tc.wantPromotErr {
 				if promoteErr == nil || !strings.Contains(promoteErr.Error(), "not ready to promote") {
 					t.Fatalf("promoteProject error = %v, want not-ready validation error", promoteErr)

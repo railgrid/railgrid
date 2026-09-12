@@ -66,7 +66,7 @@ spin up additional worker kind clusters when developing agents.
 The command outputs step-by-step instructions for:
 1. Setting up kubeconfig
 2. Logging into the hub
-3. Creating a site
+3. Creating an edge
 4. Deploying the agent
 
 ---
@@ -85,31 +85,35 @@ export KUBECONFIG=faros-hub.kubeconfig
 faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token=dev-token
 ```
 
-### Create a site in the hub
+### Create an edge in the hub
 
 ```bash
-faros site create my-site --labels env=dev
+faros edge create my-edge --labels env=dev
 ```
 
-### Wait for the site kubeconfig secret and extract it
+The command prints the join token and every way to connect the agent (Helm,
+`faros agent join`, `faros agent run`); `faros edge join-command my-edge`
+prints it again.
+
+### Wait for the edge kubeconfig secret and extract it
 
 ```bash
-kubectl get secret -n faros-system site-my-site-kubeconfig \
-  -o jsonpath='{.data.kubeconfig}' | base64 -d > site-kubeconfig
+kubectl get secret -n faros-system edge-my-edge-kubeconfig \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig
 ```
 
-The secret is created automatically after the site is registered.
+The secret is created automatically after the edge is registered.
 
 ### Deploy the agent into the agent cluster
 
-First, create a namespace and secret with the site kubeconfig:
+First, create a namespace and secret with the edge kubeconfig:
 
 ```bash
 kubectl --kubeconfig faros-agent.kubeconfig create namespace faros-system
 
-kubectl --kubeconfig faros-agent.kubeconfig create secret generic site-kubeconfig \
+kubectl --kubeconfig faros-agent.kubeconfig create secret generic edge-kubeconfig \
   -n faros-system \
-  --from-file=kubeconfig=site-kubeconfig
+  --from-file=kubeconfig=edge-kubeconfig
 ```
 
 Then install the agent Helm chart:
@@ -119,17 +123,18 @@ helm install faros-agent deploy/charts/faros-agent \
   --kubeconfig faros-agent.kubeconfig \
   -n faros-system \
   --set agent.edgeName=my-edge \
-  --set agent.hub.existingSecret=site-kubeconfig
+  --set agent.hub.existingSecret=edge-kubeconfig
 ```
 
 ### Verify the agent is connected
 
 ```bash
-faros site list
-faros site get my-site
+faros edge list
+faros edge get my-edge
+faros connect my-edge && kubectl get nodes   # kubectl through the hub
 ```
 
-The site should show `tunnelConnected: true` and have a recent heartbeat.
+The edge should show `Connected: true` and a recent heartbeat.
 
 ---
 
@@ -222,11 +227,11 @@ Both clusters are created on the `faros-dev` Docker network, allowing them to co
 ## Useful Commands
 
 ```bash
-# List all sites
-faros site list
+# List all edges
+faros edge list
 
-# Get site details
-faros site get my-site
+# Get edge details
+faros edge get my-edge
 
 # Check agent logs
 kubectl --kubeconfig faros-agent.kubeconfig logs \
@@ -276,9 +281,9 @@ faros dev init --chart-path deploy/charts/faros-hub
    kubectl --kubeconfig faros-hub.kubeconfig get pods -n faros-system
    ```
 
-2. Verify the site kubeconfig has the correct hub IP:
+2. Verify the edge kubeconfig has the correct hub IP:
    ```bash
-   cat site-kubeconfig | grep server
+   cat edge-kubeconfig | grep server
    ```
 
    The server URL should use the hub's Docker network IP, not `localhost`.
@@ -292,10 +297,10 @@ faros dev init --chart-path deploy/charts/faros-hub
 
 ### Site kubeconfig secret not created
 
-The secret is created by the hub's RBAC controller after the site is registered. Wait a few seconds and check:
+The secret is created by the hub's RBAC controller after the edge is registered. Wait a few seconds and check:
 
 ```bash
-kubectl get secret -n faros-system site-my-site-kubeconfig
+kubectl get secret -n faros-system edge-my-edge-kubeconfig
 ```
 
 If it doesn't appear, check hub logs for errors.

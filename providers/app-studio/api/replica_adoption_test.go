@@ -106,7 +106,7 @@ func TestProjectAdoptionPreservesRetainedSource(t *testing.T) {
 				scope = projectWorkspaceScope(id, p)
 			}
 			// Reopen the same volume, with a different pod identity and IP.
-			s := &Server{hubBase: hub.URL, workspaces: workspace.NewFileStore(root), projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL, workspaces: workspace.NewFileStore(root), projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
 			s.SetReplicaRouting("new-pod", "10.0.0.2:8091", "")
 			req := httptest.NewRequest(http.MethodGet, "/api/projects/demo/files", nil)
 			s.adoptProject(req, id, p.Name, store.ReplicaClaim{OwnerReplica: "old-pod", OwnerAddr: "10.0.0.1:8091"}, true, store.ReplicaClaim{Revision: int64(floor)})

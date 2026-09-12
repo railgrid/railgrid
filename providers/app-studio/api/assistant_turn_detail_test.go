@@ -146,7 +146,7 @@ func assistantTurnDetailHTTPTestRequest(method, path, user string) *http.Request
 	request := httptest.NewRequest(method, path, nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", user)
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }
@@ -163,6 +163,7 @@ func newAssistantTurnDetailServer(messages store.Store) *Server {
 	}}
 	dynamicClient := dynamicfake.NewSimpleDynamicClient(scheme, project)
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.projectClientFor = func(identity) (*asclient.Client, error) {
 		return asclient.NewFromDynamic(dynamicClient), nil
 	}

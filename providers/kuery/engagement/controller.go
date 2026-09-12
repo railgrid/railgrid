@@ -77,10 +77,9 @@ import (
 
 	"github.com/faroshq/provider-sdk/tenantaccess"
 
-	"github.com/kcp-dev/multicluster-provider/apiexport"
+	"github.com/faroshq/provider-sdk/apiexportprovider"
 	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	kcpcore "github.com/kcp-dev/sdk/apis/core"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -90,10 +89,12 @@ import (
 	kuerysync "github.com/faroshq/kuery/pkg/sync"
 )
 
-// TenantLabel is the cluster label kuery rows are scoped by. The query API
-// forces every query's cluster filter to {TenantLabel: <caller's tenant>},
-// so it MUST be (re-)asserted on every engage (kuery's own cluster upserts
-// overwrite the labels column).
+// TenantLabel is the cluster label kuery rows are scoped by. Its value is the
+// tenant workspace's kcp logical-cluster ID — the only tenant key kuery uses
+// (workspace paths are never identity). The query API forces every query's
+// cluster filter to {TenantLabel: <caller's cluster ID>}, so it MUST be
+// (re-)asserted on every engage (kuery's own cluster upserts overwrite the
+// labels column).
 //
 // Deliberately a bare identifier: kuery's SQLite dialect compiles label
 // filters to json_extract(cl.labels, '$.{key}'), where dots/slashes in the
@@ -108,6 +109,20 @@ var edgeGVK = schema.GroupVersionKind{Group: "edges.faros.sh", Version: "v1alpha
 // clusterTTLSeconds is how long a disengaged cluster's rows survive before
 // kuery's GC reaps them (matches kuery's default).
 const clusterTTLSeconds = 3600
+
+// orphanGrace is how long an "active" cluster row may go without an owner
+// heartbeat (assertTenantLabel, every renewInterval) before it is treated as
+// orphaned and marked stale for kuery's GC. Kuery's GC only reaps rows whose
+// status is "stale", and rows a replica leaves behind without a Disengage
+// (a SIGKILLed pod, or a key format change such as the move from
+// "{workspacePath}/{edge}" to "{clusterID}/{edge}") stay "active" forever
+// otherwise. Well past claimTTL: a live edge whose owner dies is re-claimed
+// and re-asserted by a peer within one claimTTL, so only rows nobody will
+// ever own again cross this line.
+const orphanGrace = 5 * time.Minute
+
+// orphanSweepInterval is how often each replica scans for orphaned rows.
+const orphanSweepInterval = time.Minute
 
 // Config wires the engagement controller.
 type Config struct {
@@ -149,17 +164,23 @@ type Controller struct {
 	// engagement ServiceAccount.
 	tenantClientFor func(clusterName, token string) (client.Client, error)
 
+	// started is when Start ran; the orphan sweep holds off for orphanGrace
+	// after it so every enabled workspace has been reconciled (and its live
+	// edges re-asserted) before any row is judged orphaned.
+	started time.Time
+
 	mu      sync.Mutex
 	engaged map[string]engagedEdge // "{tenantCluster}/{edgeName}" → engagement handle
 }
 
-// engagedEdge tracks one locally engaged edge. The map key stays
-// cluster-based ("{tenantCluster}/{edgeName}") so it's computable on delete.
-// Tenant identity comes from the reconciled kuery APIBinding's kcp-owned
-// workspace metadata, never from an Edge status field.
+// engagedEdge tracks one locally engaged edge. The map key
+// ("{tenantCluster}/{edgeName}") is also the name kuery records the cluster
+// under — the tenant's kcp logical-cluster ID is the tenant key everywhere —
+// and stays computable on delete from the reconcile request alone. Tenant
+// identity comes from the reconciled kuery APIBinding's kcp-owned cluster
+// annotation, never from an Edge status field or a workspace path.
 type engagedEdge struct {
 	cancel   context.CancelFunc
-	tenant   string // workspace path, used as the kuery cluster label
 	edgeName string
 }
 
@@ -203,7 +224,7 @@ func New(cfg Config) (*Controller, error) {
 	utilruntime.Must(corev1.AddToScheme(scheme))
 	utilruntime.Must(rbacv1.AddToScheme(scheme))
 
-	provider, err := apiexport.New(cfg.ProviderConfig, cfg.APIExportName, apiexport.Options{Scheme: scheme})
+	provider, err := apiexportprovider.New(cfg.ProviderConfig, cfg.APIExportName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
@@ -232,9 +253,58 @@ func New(cfg Config) (*Controller, error) {
 	return c, nil
 }
 
-// Start runs the multicluster manager (blocking).
+// Start runs the multicluster manager (blocking) and, alongside it, the
+// periodic orphan sweep.
 func (c *Controller) Start(ctx context.Context) error {
+	c.started = time.Now()
+	go c.runOrphanSweep(ctx)
 	return c.mgr.Start(ctx)
+}
+
+// runOrphanSweep periodically marks orphaned cluster rows stale until ctx is
+// done. The first sweep waits out orphanGrace from Start.
+func (c *Controller) runOrphanSweep(ctx context.Context) {
+	ticker := time.NewTicker(orphanSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if time.Since(c.started) < orphanGrace {
+				continue
+			}
+			if n, err := c.sweepOrphans(ctx, time.Now()); err != nil {
+				klog.FromContext(ctx).Error(err, "sweeping orphaned cluster rows")
+			} else if n > 0 {
+				klog.FromContext(ctx).Info("marked orphaned cluster rows stale", "count", n)
+			}
+		}
+	}
+}
+
+// sweepOrphans marks every "active" cluster row whose last owner heartbeat
+// is older than orphanGrace as "stale", so kuery's GC reaps it (with its
+// objects and resource types) once last_seen + ttl has passed. last_seen is
+// deliberately left untouched: the row expires relative to the heartbeat it
+// actually last received, so a row abandoned an hour ago goes on the GC's
+// next tick rather than a further TTL from now. A re-engage in the meantime
+// re-asserts the row active (assertTenantLabel), which takes it back out of
+// the GC's view. Returns the number of rows marked.
+//
+// This is what converges a running store across the tenant-key change:
+// rows written under the old "{workspacePath}/{edge}" name are never
+// re-asserted by this version, cross orphanGrace, and are reaped within
+// their TTL of the last heartbeat the old version wrote — no manual cleanup.
+func (c *Controller) sweepOrphans(ctx context.Context, now time.Time) (int64, error) {
+	res := c.cfg.Store.RawDB().WithContext(ctx).
+		Model(&kuerystore.ClusterModel{}).
+		Where("status = ? AND last_seen < ?", "active", now.Add(-orphanGrace)).
+		Update("status", "stale")
+	if res.Error != nil {
+		return 0, fmt.Errorf("marking orphaned clusters stale: %w", res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // EngagedCount reports how many edges THIS replica currently syncs — a
@@ -249,8 +319,9 @@ func (c *Controller) EngagedCount() int {
 // TenantEdges lists the queryable edge names for one tenant — the portal's
 // edge selector. Answered from the shared store (active cluster rows carrying
 // the tenant label), so any replica serves the full fleet regardless of which
-// replica syncs each edge. The tenant key is the workspace PATH (matching the
-// X-Faros-Tenant the hub injects).
+// replica syncs each edge. The tenant key is the workspace's kcp
+// logical-cluster ID (the X-Faros-Cluster the hub injects); rows are named
+// "{tenant}/{edge}".
 func (c *Controller) TenantEdges(ctx context.Context, tenant string) ([]string, error) {
 	var rows []kuerystore.ClusterModel
 	if err := c.cfg.Store.RawDB().WithContext(ctx).
@@ -306,8 +377,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		c.dropCluster(ctx, tenantCluster)
 		return ctrl.Result{}, nil
 	}
-	tenantPath, err := c.resolveTenantPath(ctx, binding, tenantCluster)
-	if err != nil {
+	if err := c.verifyTenantCluster(ctx, binding, tenantCluster); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -335,7 +405,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	for i := range list.Items {
 		edge := &list.Items[i]
 		seen[edge.GetName()] = true
-		if d := c.reconcileEdge(ctx, tenantCluster, tenantPath, token, edge); d > 0 && d < requeueAfter {
+		if d := c.reconcileEdge(ctx, tenantCluster, token, edge); d > 0 && d < requeueAfter {
 			requeueAfter = d
 		}
 	}
@@ -346,74 +416,47 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// resolveTenantPath applies the binding identity guard for a reconcile and
+// verifyTenantCluster applies the binding identity guard for a reconcile and
 // tears down any prior engagement when the authoritative identity is no longer
 // usable. Keeping the cleanup on this fail-closed path prevents an old stream
 // from continuing to populate tenant-labelled rows after metadata corruption.
-func (c *Controller) resolveTenantPath(ctx context.Context, binding *apiskcpv1alpha2.APIBinding, tenantCluster string) (string, error) {
-	tenantPath, err := tenantPathFromBinding(binding, tenantCluster)
-	if err != nil {
+func (c *Controller) verifyTenantCluster(ctx context.Context, binding *apiskcpv1alpha2.APIBinding, tenantCluster string) error {
+	if _, err := tenantClusterFromBinding(binding, tenantCluster); err != nil {
 		c.dropCluster(ctx, tenantCluster)
-		return "", fmt.Errorf("resolving tenant path in %s: %w", tenantCluster, err)
+		return fmt.Errorf("resolving tenant cluster in %s: %w", tenantCluster, err)
 	}
-	return tenantPath, nil
+	return nil
 }
 
-// tenantPathFromBinding returns the authoritative workspace path for one
-// consumer of kuery's APIExport. The APIExport virtual workspace decorates the
-// consumer APIBinding with both its logical-cluster ID and canonical kcp path.
-// The cluster match prevents accidentally attributing one workspace's path to
-// another reconcile request; the topology check keeps non-tenant workspaces
-// out of the tenant-labelled query store.
-func tenantPathFromBinding(binding *apiskcpv1alpha2.APIBinding, expectedCluster string) (string, error) {
+// tenantClusterFromBinding returns the authoritative tenant key for one
+// consumer of kuery's APIExport: the consumer workspace's kcp logical-cluster
+// ID, which the APIExport virtual workspace stamps on the APIBinding as the
+// kcp.io/cluster annotation. It must match the reconcile request's cluster —
+// that guard prevents attributing one workspace's edges to another. The
+// workspace path (kcp.io/path) is deliberately not read: paths are display
+// names, not identity.
+func tenantClusterFromBinding(binding *apiskcpv1alpha2.APIBinding, expectedCluster string) (string, error) {
 	if binding == nil {
 		return "", fmt.Errorf("APIBinding is required")
 	}
-	annotations := binding.GetAnnotations()
-	cluster := strings.TrimSpace(annotations["kcp.io/cluster"])
+	cluster := strings.TrimSpace(binding.GetAnnotations()["kcp.io/cluster"])
 	if cluster == "" {
 		return "", fmt.Errorf("APIBinding has no kcp.io/cluster annotation")
 	}
 	if cluster != expectedCluster {
 		return "", fmt.Errorf("APIBinding cluster %q does not match request cluster %q", cluster, expectedCluster)
 	}
-	path := strings.TrimSpace(annotations[kcpcore.LogicalClusterPathAnnotationKey])
-	if path == "" {
-		return "", fmt.Errorf("APIBinding has no %s annotation", kcpcore.LogicalClusterPathAnnotationKey)
-	}
-	if !isTenantWorkspacePath(path) {
-		return "", fmt.Errorf("APIBinding path %q is not a tenant workspace", path)
-	}
-	return path, nil
-}
-
-// isTenantWorkspacePath accepts the two consumer workspace shapes the hub can
-// put in X-Faros-Tenant: an organization workspace or one direct child team
-// workspace. Provider and deeper internal workspaces must never enter Kuery's
-// tenant-labelled store.
-func isTenantWorkspacePath(path string) bool {
-	parts := strings.Split(path, ":")
-	if len(parts) != 4 && len(parts) != 5 {
-		return false
-	}
-	if parts[0] != "root" || parts[1] != "faros" || parts[2] != "tenants" {
-		return false
-	}
-	for _, part := range parts[3:] {
-		if part == "" {
-			return false
-		}
-	}
-	return len(parts) != 5 || parts[4] != "providers"
+	return cluster, nil
 }
 
 // reconcileEdge maps one edge's state to Engage/Disengage, returning a
 // shorter requeue when this edge needs a faster re-check than the standard
 // renewal poll (0 means no preference). token is the workspace's engagement
 // identity, which the edgeproxy data path authenticates as.
-func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPath, token string, edge *unstructured.Unstructured) time.Duration {
+func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, token string, edge *unstructured.Unstructured) time.Duration {
 	edgeName := edge.GetName()
 	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edgeName)
+	// The engaged-map key doubles as the kuery cluster name: "{clusterID}/{edge}".
 	key := tenantCluster + "/" + edgeName
 
 	connected, _, _ := unstructured.NestedBool(edge.Object, "status", "connected")
@@ -424,13 +467,12 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPat
 		return 0
 	}
 
-	// Both the kuery cluster row's name and tenant label use the authoritative
-	// workspace path from kuery's APIBinding. Edge status is deliberately not a
-	// tenant-identity input: it is owned by another provider and may be absent,
-	// stale, or inconsistent with the workspace being reconciled.
-	storeName := tenantPath + "/" + edgeName
-
-	held, err := c.claims.tryAcquire(ctx, storeName)
+	// Both the kuery cluster row's name and tenant label use the workspace's
+	// kcp logical-cluster ID, verified against kuery's APIBinding. Edge status
+	// is deliberately not a tenant-identity input: it is owned by another
+	// provider and may be absent, stale, or inconsistent with the workspace
+	// being reconciled.
+	held, err := c.claims.tryAcquire(ctx, key)
 	if err != nil {
 		logger.Error(err, "claiming edge")
 		return 15 * time.Second
@@ -444,7 +486,7 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPat
 		return 0
 	}
 
-	if err := c.engage(ctx, key, tenantCluster, edgeName, tenantPath, token); err != nil {
+	if err := c.engage(ctx, tenantCluster, edgeName, token); err != nil {
 		logger.Error(err, "engaging edge")
 		return 30 * time.Second
 	}
@@ -454,7 +496,7 @@ func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster, tenantPat
 	// previous owner's context ended, and its own upserts wipe the labels
 	// column, so the row must be continuously re-claimed by the syncing
 	// replica or tenant-scoped queries lose the edge.
-	if err := c.assertTenantLabel(ctx, storeName, tenantPath); err != nil {
+	if err := c.assertTenantLabel(ctx, key, tenantCluster); err != nil {
 		logger.Error(err, "re-asserting cluster row")
 	}
 	return 0
@@ -545,26 +587,24 @@ func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
 }
 
 // engage builds the edgeproxy cluster client and hands it to kuery. Idempotent
-// for an already-engaged edge. tenant is the workspace path; token is the
-// workspace's engagement ServiceAccount token the proxy authenticates.
+// for an already-engaged edge. tenantCluster is the workspace's kcp
+// logical-cluster ID; token is the workspace's engagement ServiceAccount
+// token the proxy authenticates.
 //
-// Two distinct identifiers are at play:
-//   - key ("{logicalCluster}/{edge}") is the internal engaged-map key. It's
-//     derived purely from the reconcile request so it stays computable on
-//     delete, when the edge object is already gone.
-//   - storeName ("{workspacePath}/{edge}") is the name kuery records the
-//     cluster under. queryapi.ScopeToTenant rebuilds exactly this form from
-//     the caller's tenant + edge for impact queries, so the store name MUST
-//     be path-based or those lookups miss.
-func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, tenant, token string) error {
+// One identifier serves both as the engaged-map key and as the name kuery
+// records the cluster under: "{clusterID}/{edge}". It is derived purely from
+// the reconcile request, so it stays computable on delete (when the edge
+// object is already gone), and queryapi.ScopeToTenant rebuilds exactly this
+// form from the caller's cluster ID + edge, so pinned lookups hit.
+func (c *Controller) engage(ctx context.Context, tenantCluster, edgeName, token string) error {
+	storeName := tenantCluster + "/" + edgeName
 	c.mu.Lock()
-	if _, ok := c.engaged[key]; ok {
+	if _, ok := c.engaged[storeName]; ok {
 		c.mu.Unlock()
 		return nil // already engaged; reconnects surface as connected=false first
 	}
 	c.mu.Unlock()
 
-	storeName := tenant + "/" + edgeName
 	logger := klog.FromContext(ctx).WithValues("edge", storeName)
 	logger.Info("engaging edge into kuery")
 
@@ -595,23 +635,24 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, t
 
 	// Engage upserted the cluster row with empty labels — re-assert the
 	// tenant label synchronously so queries scope correctly.
-	if err := c.assertTenantLabel(ctx, storeName, tenant); err != nil {
+	if err := c.assertTenantLabel(ctx, storeName, tenantCluster); err != nil {
 		_ = c.cfg.Sync.Disengage(ctx, storeName)
 		cancel()
 		return fmt.Errorf("labelling cluster: %w", err)
 	}
 
 	c.mu.Lock()
-	c.engaged[key] = engagedEdge{cancel: cancel, tenant: tenant, edgeName: edgeName}
+	c.engaged[storeName] = engagedEdge{cancel: cancel, edgeName: edgeName}
 	c.mu.Unlock()
-	logger.Info("edge engaged", "tenant", tenant)
+	logger.Info("edge engaged", "tenant", tenantCluster)
 	return nil
 }
 
 // assertTenantLabel (re-)writes the kuery cluster row's tenant label. kuery's
 // own Engage upserts the row with empty labels, and the query API scopes by
-// this label, so it MUST carry the workspace path. storeName is the path-based
-// cluster name (see engage). Same TTL/status as Engage.
+// this label, so it MUST carry the tenant's kcp logical-cluster ID. storeName
+// is the "{clusterID}/{edge}" cluster name (see engage). Same TTL/status as
+// Engage; also the owner heartbeat the orphan sweep keys off (LastSeen).
 func (c *Controller) assertTenantLabel(ctx context.Context, storeName, tenant string) error {
 	now := time.Now()
 	return c.cfg.Store.UpsertCluster(ctx, &kuerystore.ClusterModel{
@@ -641,11 +682,11 @@ func (c *Controller) dropLocal(ctx context.Context, key string, releaseClaim boo
 		return
 	}
 	entry.cancel()
-	// kuery recorded the cluster under the path-based store name (see engage),
-	// not the cluster-based map key — disengage the same name. Disengage also
-	// clears the engine's per-process cluster registration; without it a later
-	// re-engage of the same name would be silently deduplicated.
-	storeName := entry.tenant + "/" + entry.edgeName
+	// The map key is the name kuery recorded the cluster under (see engage).
+	// Disengage also clears the engine's per-process cluster registration;
+	// without it a later re-engage of the same name would be silently
+	// deduplicated.
+	storeName := key
 	if err := c.cfg.Sync.Disengage(ctx, storeName); err != nil {
 		klog.FromContext(ctx).Error(err, "disengaging edge", "edge", storeName)
 	}

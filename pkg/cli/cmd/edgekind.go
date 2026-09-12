@@ -67,11 +67,19 @@ func getEdgeByName(ctx context.Context, dyn dynamic.Interface, name string) (*un
 // listAllEdges lists every connectable resource across all kinds, merged.
 func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Unstructured, error) {
 	var items []unstructured.Unstructured
+	served := 0
 	for _, gvr := range edgeKindGVRs {
 		list, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
 		if err != nil {
+			// A 404 for the resource means this workspace's edges API does
+			// not serve that kind (an older provider without macosservers,
+			// say); skip it. Only when no kind is served is edges disabled.
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 			return nil, fmt.Errorf("listing %s: %w", gvr.Resource, err)
 		}
+		served++
 		// Some dynamic API responses omit per-item TypeMeta. Preserve the GVR
 		// that produced each item so callers can still render a MacOSServer or
 		// LinuxServer correctly instead of falling back to Kubernetes.
@@ -85,5 +93,12 @@ func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Un
 		}
 		items = append(items, list.Items...)
 	}
+	if served == 0 {
+		return nil, errEdgesNotEnabled
+	}
 	return items, nil
 }
+
+// errEdgesNotEnabled is returned when the edges API is absent from the
+// workspace: the provider has not been enabled there.
+var errEdgesNotEnabled = fmt.Errorf("the edges provider is not enabled in this workspace (no edges.faros.sh API); enable it in the console's Providers page, then retry")

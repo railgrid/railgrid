@@ -142,7 +142,7 @@ func TestBrowserMCPParseConsole(t *testing.T) {
 }
 
 func TestBrowserMCPSessionSendsProtocolVersionAfterInitialize(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	seen := map[string]string{}
 	var traceMu sync.Mutex
 	var trace []projectAssistantBrowserTraceEvent
@@ -239,7 +239,7 @@ func TestBrowserMCPSessionRejectsInvalidNegotiatedProtocolVersion(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{hubBase: "https://hub.example"}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 			server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 				return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					recorder := httptest.NewRecorder()
@@ -300,7 +300,7 @@ func (body *testBrowserEventStreamErrorBody) Read([]byte) (int, error) {
 func (body *testBrowserEventStreamErrorBody) Close() error { return nil }
 
 func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	streamBody := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
 	deleteCalls := 0
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
@@ -366,7 +366,7 @@ func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing
 
 func TestBrowserMCPSessionKeepsEventStreamAliveAndClosesAfterDelete(t *testing.T) {
 	const negotiatedProtocol = "2025-06-18"
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	streamBody := &testBrowserEventStreamBody{
 		payload: []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\",\"params\":{}}\n\n"),
 		closed:  make(chan struct{}),
@@ -533,6 +533,7 @@ func TestPrivatePreviewHubOriginAcceptsConfiguredPublicHubRedirect(t *testing.T)
 	defer preview.Close()
 
 	server := &Server{
+		tenantWorkspaces:             defaultTestWorkspaces.lookup,
 		hubBase:                      "https://internal-hub.example.test",
 		hubPublicURL:                 publicHubURL,
 		previewInsecureSkipTLSVerify: true,
@@ -558,6 +559,7 @@ func TestPrivatePreviewHubOriginRejectsUntrustedHubRedirect(t *testing.T) {
 	defer preview.Close()
 
 	server := &Server{
+		tenantWorkspaces:             defaultTestWorkspaces.lookup,
 		hubBase:                      "https://internal-hub.example.test",
 		hubPublicURL:                 "https://trusted-hub.example.test",
 		previewInsecureSkipTLSVerify: true,
@@ -580,7 +582,7 @@ func TestPrivatePreviewConfiguredHubOriginRequiresAbsoluteHTTPSOrigin(t *testing
 		{name: "fragment", url: "https://hub.example.test#private"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := (&Server{hubPublicURL: tc.url}).privatePreviewConfiguredHubOrigin()
+			_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubPublicURL: tc.url}).privatePreviewConfiguredHubOrigin()
 			if err == nil || !strings.Contains(err.Error(), "FAROS_HUB_PUBLIC_URL") || !strings.Contains(err.Error(), "hub.publicURL") {
 				t.Fatalf("configured origin %q error = %v, want missing/invalid public URL naming the chart value", tc.url, err)
 			}
@@ -589,7 +591,7 @@ func TestPrivatePreviewConfiguredHubOriginRequiresAbsoluteHTTPSOrigin(t *testing
 }
 
 func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testing.T) {
-	_, err := (&Server{}).privatePreviewConfiguredHubOrigin()
+	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).privatePreviewConfiguredHubOrigin()
 	if err == nil {
 		t.Fatal("missing FAROS_HUB_PUBLIC_URL was accepted")
 	}
@@ -616,7 +618,7 @@ func TestBrowserSessionHandoffURLMintsWithCallerBearer(t *testing.T) {
 	}))
 	defer hub.Close()
 	origin, _ := url.Parse("https://console.example.test")
-	server := &Server{hubBase: hub.URL, hubPublicURL: origin.String()}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL, hubPublicURL: origin.String()}
 	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{token: "caller-token"}, origin)
 	if err != nil {
 		t.Fatal(err)

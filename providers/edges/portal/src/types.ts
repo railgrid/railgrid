@@ -79,7 +79,13 @@ export interface ErrorResponse {
 // Workload is a Workload projection for the portal's Workloads view.
 export interface Workload {
   name: string
+  // targetNamespace is the edge-cluster namespace the rendered objects land
+  // in (spec.targetNamespace, "default" when unset) — not the hub namespace.
+  targetNamespace: string
   image?: string
+  // imagePullSecrets names the docker-registry Secrets (simple mode) the
+  // pods reference; the Secrets themselves live on each edge, never here.
+  imagePullSecrets?: string[]
   replicas?: number
   strategy?: string
   selector?: Record<string, string>

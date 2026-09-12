@@ -15,9 +15,12 @@ oauth2:
   skipApprovalScreen: true
 
 staticClients:
+  # The hub and CLI are one PKCE public client: no secret, and refresh tokens
+  # (offline_access) work without one. A `secret:` here would make dex reject
+  # both the code exchange and every refresh with invalid_client.
   - id: faros
-    secret: ZXhhbXBsZS1hcHAtc2VjcmV0
     name: Faros
+    public: true
     redirectURIs:
       - https://localhost:9443/auth/callback
       - http://127.0.0.1:8080/auth/callback

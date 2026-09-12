@@ -36,18 +36,28 @@ What works today:
   edges-proxy as the workspace-local `faros-kuery` ServiceAccount the
   controller provisions there (the `faros-kuery-edgeproxy` grant gives it
   verb `proxy` on kubernetesclusters). Engaged clusters are keyed
-  `{tenantCluster}/{edgeName}` and labelled with their tenant.
+  `{clusterID}/{edgeName}` and labelled with their tenant, where the tenant
+  key is the tenant workspace's **kcp logical-cluster ID** (read from the
+  kuery `APIBinding`'s `kcp.io/cluster` annotation) — never a workspace
+  path. Rows nobody re-asserts for five minutes (a replica killed without a
+  disengage, or rows written under an older key format) are marked stale so
+  kuery's GC reaps them within their TTL; a running store converges on its
+  own.
 - **Tenant-scoped query API** (`queryapi/`): `POST /api/query` takes a
   kuery `QuerySpec`; the cluster filter is force-rewritten to the caller's
-  `X-Faros-Tenant` before it reaches the engine — the only path to the
-  store.
+  tenant cluster ID before it reaches the engine — the only path to the
+  store. The identity is `X-Faros-Cluster` (the hub injects it on every
+  proxied REST and MCP request); `X-Faros-Tenant` is accepted only when it
+  carries the same cluster ID, and a workspace path there is rejected with
+  a 400. Query results report `objects[].cluster` as `{clusterID}/{edge}`.
 - **MCP tools** (`mcpserver/`): `kuery_query` (fleet-wide spec
   passthrough) and `kuery_impact` (declared blast radius of one object) at
   `/mcp` + `/mcp/sse`.
 - **Portal UI** (`portal/`): fleet inventory table (edge/kind/namespace/
   name filters, click-through) and the impact view — the declared blast
   radius of one object, grouped by relation. Edge selector fed by
-  `GET /api/edges` (engaged edges for the caller's tenant).
+  `GET /api/edges` (engaged edges for the caller's tenant: `edges` are the
+  bare names, `clusters` the `{clusterID}/{edge}` keys, `tenant` the ID).
 - **Registration surface** from Phase 1: heartbeats, CatalogEntry
   (SavedView schema, `edges` claim, `edgeProxyAccess`), Helm chart.
 

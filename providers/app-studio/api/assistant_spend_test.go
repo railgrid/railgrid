@@ -292,7 +292,7 @@ func TestProjectEinoAssistantOrgSpendModelForIsInertWithoutStoreOrOrg(t *testing
 	if got := projectEinoAssistantOrgSpendModelFor(nil, projectAssistantRunRequest{}, base); got != base {
 		t.Fatal("nil server must not wrap the model")
 	}
-	server := &Server{store: store.NewMemoryStore()}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: store.NewMemoryStore()}
 	if got := projectEinoAssistantOrgSpendModelFor(server, projectAssistantRunRequest{}, base); got != base {
 		t.Fatal("request without an organization must not wrap the model")
 	}
@@ -597,7 +597,7 @@ func TestProjectEinoAssistantOrgSpendRecordsFloorForUnestimatablePrompt(t *testi
 // the cap on such a run must report through the guard without faulting.
 func TestProjectEinoAssistantOrgSpendModelForToleratesNilEventLedger(t *testing.T) {
 	t.Setenv(projectAssistantOrgMonthlyUSDCapEnv, "0.000001")
-	server := &Server{store: store.NewMemoryStore()}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: store.NewMemoryStore()}
 	req := projectAssistantRunRequest{
 		Identity: identity{orgUUID: "org-a"},
 		LLM:      projectLLMSettings{Model: "gpt-4o"},

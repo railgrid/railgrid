@@ -61,19 +61,19 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/kuery/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Faros-Tenant + X-Faros-User
+   │  proxy injects X-Faros-Cluster (tenant kcp cluster ID) + X-Faros-User
    ▼
 kuery provider pod
    │
    ├── engagement controller ── watches Edge CRs (permission claim, tenant-scoped)
-   │     on connect:    Engage("{tenantCluster}/{edgeName}", cluster.Cluster via edges-proxy)
+   │     on connect:    Engage("{clusterID}/{edgeName}", cluster.Cluster via edges-proxy)
    │     on disconnect: Disengage → kuery GC reaps stale objects
    │
    ├── embedded kuery ── informers stream edge objects through reverse tunnels
    │     into one local store (SQLite PVC; Postgres for production)
    │
    └── tenant-scoped query API ── rewrites spec.cluster on every Query to the
-         caller's tenant prefix before handing it to the kuery engine
+         caller's cluster-ID prefix before handing it to the kuery engine
 ```
 
 ### Repository layout
@@ -104,19 +104,34 @@ Host = apiurl.EdgeProxyURL(hubBase, cluster, edgeName, "k8s")
 MCP tools — authenticating as the workspace-local `faros-kuery` ServiceAccount the
 engagement controller provisions in that tenant (see "Edges-proxy authorization" below
 for why it is not the provider SA), wraps it in a controller-runtime `cluster.Cluster`,
-and `Engage`s it into kuery's sync controller under the name `{tenantCluster}/{edgeName}`.
-Kuery's discovery +
-dynamic informers then stream the edge's objects through the existing reverse tunnel into
-the local store. On Edge disconnect/delete the controller `Disengage`s; kuery's GC handles
-stale-cluster and stale-object cleanup (TTL-based).
+and `Engage`s it into kuery's sync controller under the name `{clusterID}/{edgeName}`,
+where `clusterID` is the tenant workspace's kcp logical-cluster ID (taken from the kuery
+`APIBinding`'s `kcp.io/cluster` annotation, which must match the reconcile request). Kuery's
+discovery + dynamic informers then stream the edge's objects through the existing reverse
+tunnel into the local store. On Edge disconnect/delete the controller `Disengage`s; kuery's GC
+handles stale-cluster and stale-object cleanup (TTL-based). Kuery's GC only reaps rows marked
+`stale`, so the controller additionally sweeps `active` rows no replica has re-asserted for
+five minutes (a SIGKILLed replica, or rows left by an older key format) and marks them stale;
+they are then reaped within their TTL of their last heartbeat, without manual cleanup.
+
+### Tenant identity
+
+The tenant key is the **kcp logical-cluster ID** of the tenant workspace — everywhere: the
+engaged cluster name (`{clusterID}/{edge}`), the `tenant` cluster label the query API scopes
+by, `/api/edges`, `/api/status`, and `objects[].cluster` in query results. Workspace paths
+(`root:faros:tenants:…`) are display names, never identity: they are not stored, not accepted
+in identity headers, and not translated.
 
 ### Tenant isolation
 
 Kuery has no authorization of its own, so its API is **never exposed directly**. The
-provider backend is the only entry point: it takes `X-Faros-Tenant` (injected by the hub's
-backend proxy) and forcibly rewrites every query's `spec.cluster` filter to the tenant's own
-cluster-name prefix (`{tenantCluster}/…`) before forwarding to the engine. One shared store,
-isolation enforced at the single choke point. `FAROS_DEV_ALLOW_TENANT_QUERY` mirrors the
+provider backend is the only entry point: it takes `X-Faros-Cluster` (the tenant's kcp
+logical-cluster ID, injected by the hub's backend proxy and by the MCP aggregate's federation
+client) and forcibly rewrites every query's `spec.cluster` filter to the tenant's own
+cluster-name prefix (`{clusterID}/…`) and `tenant` label before forwarding to the engine.
+`X-Faros-Tenant` is honoured only when `X-Faros-Cluster` is absent and only if it carries a
+cluster ID; a workspace path there is a `400`. One shared store, isolation enforced at the
+single choke point. `FAROS_DEV_ALLOW_TENANT_QUERY` (`?tenant=<clusterID>`) mirrors the
 infrastructure provider's dev escape hatch.
 
 Kuery's relationship to the **edge providers** also follows the platform

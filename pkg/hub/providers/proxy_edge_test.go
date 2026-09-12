@@ -43,6 +43,7 @@ type edgeUpstream struct {
 	path          string
 	user          string
 	tenant        string
+	cluster       string
 	authorization string
 }
 
@@ -82,6 +83,7 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		rec.path = r.URL.Path
 		rec.user = r.Header.Get("X-Faros-User")
 		rec.tenant = r.Header.Get("X-Faros-Tenant")
+		rec.cluster = r.Header.Get("X-Faros-Cluster")
 		rec.authorization = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -118,7 +120,22 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		}
 		return "alice", path, nil
 	}))
+	proxy.SetClusterResolver(testClusterResolver)
 	return proxy, rec
+}
+
+// testClusterResolver stands in for the hub's LogicalCluster lookup: a
+// deterministic, recognisable ID per workspace path, so a test can tell the
+// ID apart from the path it was derived from.
+func testClusterResolver(_ context.Context, tenantPath string) (string, error) {
+	if tenantPath == "" {
+		return "", errors.New("empty tenant path")
+	}
+	return testClusterIDFor(tenantPath), nil
+}
+
+func testClusterIDFor(tenantPath string) string {
+	return "lc-" + strings.ReplaceAll(strings.TrimPrefix(tenantPath, "root:faros:tenants:"), ":", "-")
 }
 
 // serveProxy sends an authenticated request, the way the portal does.
@@ -171,8 +188,8 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 	if rec.user != "alice" {
 		t.Errorf("X-Faros-User = %q, want alice — the far end cannot authorize without it", rec.user)
 	}
-	if rec.tenant != "root:faros:tenants:"+testOrg+":"+testWS {
-		t.Errorf("X-Faros-Tenant = %q, want the caller's workspace path", rec.tenant)
+	if want := testClusterIDFor("root:faros:tenants:" + testOrg + ":" + testWS); rec.tenant != want || rec.cluster != want {
+		t.Errorf("X-Faros-Tenant / X-Faros-Cluster = (%q, %q), want the caller's workspace cluster ID %q in both", rec.tenant, rec.cluster, want)
 	}
 	if rec.authorization != "Bearer "+delegatedToken {
 		t.Errorf("Authorization = %q, want the delegated token", rec.authorization)

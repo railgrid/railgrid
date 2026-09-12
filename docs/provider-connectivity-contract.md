@@ -65,7 +65,8 @@ API **without any admin/root client**. It uses one of two scoped mechanisms:
   workspace, bounded by the APIExport's `tenantScoped` permission claims.
 - **(2b) Per-request** — the provider drops its own credential and acts **as
   the caller**, using the bearer token forwarded by the hub, scoped to the
-  `X-Faros-Tenant` workspace path.
+  workspace whose kcp logical-cluster ID arrives in `X-Faros-Tenant` /
+  `X-Faros-Cluster` (both carry the ID; the workspace path is never sent).
 
 Both 2a and 2b are admin-free. New providers should pick one (or use 2a for
 controllers and 2b for request-driven endpoints, like `code` and
@@ -103,7 +104,7 @@ Two proxies back every provider, defined in
 | Proxy | Path | Token handling |
 |-------|------|----------------|
 | **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Faros-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
-| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Faros-User` + `X-Faros-Tenant` resolved from the token. Inbound `X-Faros-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
+| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Faros-User` plus the tenant workspace's kcp logical-cluster ID as both `X-Faros-Tenant` and `X-Faros-Cluster`, resolved from the token. Inbound `X-Faros-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
@@ -314,8 +315,9 @@ internal Service.
       **APIExportEndpointSlice** (2a); declare `tenantScoped` permission claims
       for exactly the resources/verbs you need.
 - [ ] Request-driven endpoints act as the **caller** via the forwarded token
-      (2b): build the tenant client from `Authorization` + `X-Faros-Tenant`,
-      drop the provider's own credential.
+      (2b): build the tenant client from `Authorization` + the cluster ID in
+      `X-Faros-Cluster` (`X-Faros-Tenant` carries the same ID), drop the
+      provider's own credential. Never parse a workspace path out of a header.
 - [ ] Never trust inbound `X-Faros-*` headers in the provider — the backend
       proxy strips and re-injects them; treat them as hub-asserted only.
 - [ ] To reach **another provider**, bind its `APIExport` and call its CRs /

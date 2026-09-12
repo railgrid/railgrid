@@ -91,13 +91,19 @@ func loadProviderConfig() (*rest.Config, error) {
 }
 
 type statusResponse struct {
-	Message      string    `json:"message"`
-	Provider     string    `json:"provider"`
-	ServedAt     time.Time `json:"servedAt"`
-	UserHeader   string    `json:"userHeader,omitempty"`
-	TokenLength  int       `json:"tokenLength,omitempty"`
-	StoreDriver  string    `json:"storeDriver"`
-	EngagedEdges int       `json:"engagedEdges"`
+	Message     string    `json:"message"`
+	Provider    string    `json:"provider"`
+	ServedAt    time.Time `json:"servedAt"`
+	UserHeader  string    `json:"userHeader,omitempty"`
+	TokenLength int       `json:"tokenLength,omitempty"`
+	StoreDriver string    `json:"storeDriver"`
+	// Tenant echoes the caller's tenant key — the kcp logical-cluster ID the
+	// hub injected — when the request carried one. Engaged clusters for it
+	// are keyed "{tenant}/{edge}" (see /api/edges).
+	Tenant string `json:"tenant,omitempty"`
+	// EngagedEdges is how many edges THIS replica syncs (per-replica
+	// introspection, all tenants); the caller's own edges come from /api/edges.
+	EngagedEdges int `json:"engagedEdges"`
 }
 
 // Subcommands:
@@ -185,7 +191,9 @@ func runServe() {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Tenant-scoped query API — the only path to the kuery store.
+	// Tenant-scoped query API — the only path to the kuery store. Tenant
+	// identity is the kcp logical-cluster ID the hub injects
+	// (X-Faros-Cluster); see queryapi.IdentityFromRequest.
 	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
 
 	// QuerySpec JSON Schema — powers the playground editor's autocomplete and
@@ -216,6 +224,9 @@ func runServe() {
 			ServedAt:    time.Now().UTC(),
 			UserHeader:  r.Header.Get("X-Faros-User"),
 			StoreDriver: storeDriver,
+		}
+		if id, err := queryapi.IdentityFromRequest(r); err == nil {
+			resp.Tenant = id.Cluster
 		}
 		if engagementCtl != nil {
 			resp.EngagedEdges = engagementCtl.EngagedCount()

@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -65,13 +66,30 @@ var endpointSliceGVR = schema.GroupVersionResource{
 // flapping dependency.
 const DefaultInterval = 60 * time.Second
 
-// Readiness holds the last probe result. The zero value is usable and reports
-// ready. Safe for concurrent use: the prober writes, HTTP handlers read.
+// Checker reports why a component is not ready, or nil. Readiness.Attach
+// folds any number of them into one readiness answer; apiexportprovider.Provider
+// is the one every controller-running provider should attach.
+type Checker interface {
+	Check() error
+}
+
+// Readiness holds the last probe result plus any attached Checkers. The zero
+// value is usable and reports ready. Safe for concurrent use: the prober and
+// Attach write, HTTP handlers read.
 type Readiness struct {
-	mu      sync.RWMutex
-	checked bool
-	url     string
-	err     error
+	mu       sync.RWMutex
+	checked  bool
+	url      string
+	err      error
+	attached map[string]attachment
+	// nextID stamps attachments so detach removes exactly the attachment it
+	// was returned for — Checker values need not be comparable.
+	nextID uint64
+}
+
+type attachment struct {
+	id      uint64
+	checker Checker
 }
 
 func (r *Readiness) set(url string, err error) {
@@ -80,22 +98,70 @@ func (r *Readiness) set(url string, err error) {
 	r.checked, r.url, r.err = true, url, err
 }
 
+// Attach makes r also report c's result, prefixed with name, until the
+// returned detach function is called. Attaching under a name already in use
+// replaces the earlier Checker.
+//
+// The intended shape is one attachment per controller term: a provider builds
+// its multicluster provider when it wins leadership, attaches it, and detaches
+// when the term ends. A replica that is not running controllers has nothing
+// attached and stays ready on the strength of the probe alone — its REST and
+// MCP surfaces are still serving. A nil c is a no-op that returns a no-op
+// detach.
+func (r *Readiness) Attach(name string, c Checker) (detach func()) {
+	if c == nil {
+		return func() {}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.attached == nil {
+		r.attached = map[string]attachment{}
+	}
+	r.nextID++
+	id := r.nextID
+	r.attached[name] = attachment{id: id, checker: c}
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.attached[name].id == id {
+			delete(r.attached, name)
+		}
+	}
+}
+
 // Check reports why the provider is not ready, or nil.
 //
-// Before the first probe completes it reports ready. Readiness gates traffic,
-// and a provider that has not finished starting must not be marked broken — the
-// interesting state is a probe that ran and failed. A later success clears it,
-// so a transient blip does not pin a provider unready until someone notices.
+// Before the first probe completes the probe reports ready. Readiness gates
+// traffic, and a provider that has not finished starting must not be marked
+// broken — the interesting state is a probe that ran and failed. A later
+// success clears it, so a transient blip does not pin a provider unready until
+// someone notices.
+//
+// Attached Checkers are consulted after the probe, in name order, and the
+// first failure wins. They decide their own startup semantics: the
+// apiexportprovider one reports unready until it is watching tenant
+// workspaces, because a leader that holds the lease and watches nothing is
+// exactly the silent state readiness exists to expose.
 func (r *Readiness) Check() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.checked || r.err == nil {
-		return nil
+	if r.checked && r.err != nil {
+		return fmt.Errorf("cannot reach the APIExport virtual workspace at %s: %w — "+
+			"resources in tenant workspaces will not reconcile. That address comes from the "+
+			"platform's Shard.spec.virtualWorkspaceURL and must be reachable from where this "+
+			"provider runs", r.url, r.err)
 	}
-	return fmt.Errorf("cannot reach the APIExport virtual workspace at %s: %w — "+
-		"resources in tenant workspaces will not reconcile. That address comes from the "+
-		"platform's Shard.spec.virtualWorkspaceURL and must be reachable from where this "+
-		"provider runs", r.url, r.err)
+	names := make([]string, 0, len(r.attached))
+	for name := range r.attached {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := r.attached[name].checker.Check(); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // Handler serves a readiness endpoint for r: 200 when ready, 503 with the

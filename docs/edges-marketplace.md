@@ -9,6 +9,12 @@
 > on a cluster** — chart versions in `portal/src/marketplace.ts` and the
 > gabe565 *arr values shapes need verifying against a real kind edge; see
 > "Order & verification".** Remaining/known gaps kept below.
+>
+> **Update (2026-09-11):** `Workload` gained `spec.targetNamespace`,
+> `spec.simple.imagePullSecrets` and `spec.template.metadata`; the agent
+> creates the target namespace and prunes across all namespaces. The
+> "namespace everything into `default`" rule below is superseded — see
+> "Target namespace, pod metadata and private images".
 
 Goal: a **mini marketplace inside the Workloads page** of the edges provider
 portal. One click deploys a catalog app (qBittorrent, Pi-hole, Grafana, …) as a
@@ -28,22 +34,35 @@ All paths relative to repo root; the edges provider is a separate Go module at
 ### Deploy path that already works end-to-end
 
 1. **`Workload` CR** — `providers/edges/apis/v1alpha1/types_workload.go`.
-   Namespaced (portal uses ns `default`), group `edges.faros.sh`.
-   `spec.simple` = `{image, ports, env, resources, command, args}` (there is
-   also `spec.template` for a full PodTemplateSpec), plus `replicas`,
-   `placement` (`edgeSelector` label selector + `strategy` Spread|Singleton)
-   and `access` (`expose`, `dnsName`, `port` — currently mostly unused).
+   Namespaced on the hub (portal creates in ns `default`), group
+   `edges.faros.sh`. `spec.targetNamespace` (DNS label, default `default`) is
+   the namespace on the **edge** the rendered objects land in — the hub
+   namespace is never carried over. `spec.simple` = `{image, ports, env,
+   resources, command, args, imagePullSecrets}` (there is also
+   `spec.template` = `{metadata.{labels,annotations}, spec: PodSpec}` and
+   `spec.helm`), plus `replicas`, `placement` (`edgeSelector` label selector
+   + `strategy` Spread|Singleton) and `access` (`expose`, `dnsName`, `port` —
+   currently mostly unused).
 2. **Scheduler** — `providers/edges/internal/scheduler/` fans a Workload out
    into one `Placement` per matching KubernetesCluster edge.
 3. **Agent** — `pkg/agent/reconciler/workload.go` (main faros module) watches
-   Placements through the hub and materializes each as a local `Deployment` in
-   ns `default` (`convertToDeployment`, `buildPodSpecFromSimple`). It does
-   **not** create a k8s `Service` today. Agent RBAC is already `*` on core/apps
-   (`deploy/charts/faros-agent/templates/rbac.yaml`) — no chart change needed
-   to start creating Services.
-4. **Portal** — `providers/edges/portal/src/Workloads.vue` (list + create via
-   `Wizard.vue`-style inline form), `api.ts` `createWorkload(WorkloadDraft)`
-   kube REST create through the hub's kcp proxy (`WORKLOAD_NS = 'default'`).
+   Placements through the hub and applies each Placement's rendered bundle
+   with server-side apply into the namespace every object names (falling back
+   to `default` only for objects that carry none). It stamps every applied
+   object with the placement labels and prunes labelled objects that left the
+   bundle — listing the prunable kinds **across all namespaces**, because
+   `spec.targetNamespace` can put a Workload's objects anywhere and the label,
+   not the namespace, ties them to the Placement. Namespaces themselves are
+   never pruned. Agent RBAC is already `*` on core/apps
+   (`deploy/charts/faros-agent/templates/rbac.yaml`).
+4. **Portal** — `providers/edges/portal/src/Workloads.vue` (list, with the
+   target namespace as a column and in the expanded per-edge row) +
+   `WorkloadCreate.vue` (route-owned create form with "Target namespace" and,
+   for simple mode, "Image pull secrets" inputs), `api.ts`
+   `createWorkload(WorkloadDraft)` kube REST create through the hub's kcp
+   proxy (`WORKLOAD_NS = 'default'` is the **hub** namespace;
+   `DEFAULT_TARGET_NAMESPACE` is the edge one and is omitted from the spec
+   when left at `default`).
 
 ### Service/MCP path that already works end-to-end
 
@@ -61,6 +80,69 @@ All paths relative to repo root; the edges provider is a separate Go module at
 - Portal `Services.vue` has the categorized preset dropdown (`PRESETS`,
   `PRESET_GROUPS`) with default port + token hint per type — **reuse this
   data** for the marketplace cards.
+
+## Target namespace, pod metadata and private images (2026-09)
+
+Three additive `Workload` spec fields, all rendered hub-side by
+`providers/edges/internal/render` so the agent stays a generic bundle applier:
+
+- **`spec.targetNamespace`** (DNS label, max 63, default `default`) — the
+  namespace on the edge cluster for every mode (`simple`, `template`,
+  `helm`). The Workload's own hub namespace is never carried over. When the
+  value is anything other than `default`, the rendered bundle starts with a
+  minimal `v1 Namespace` object, so the agent's server-side apply creates it
+  on each edge when it is missing. An existing namespace is reused as is, and
+  the agent **never deletes a Namespace** — deleting the Workload prunes the
+  Deployment/Service/… in it, but the namespace (and anything else in it)
+  survives. The `Namespace` object is not in the agent's prunable kinds.
+- **`spec.simple.imagePullSecrets: [{name}]`** — `LocalObjectReference`s
+  copied verbatim onto the rendered pod spec. The Workload never carries the
+  registry token; the named `docker-registry` Secret must already exist in
+  the target namespace on **every** selected edge, or the pods sit in
+  `ImagePullBackOff` on the edges that lack it. `template` mode already had
+  `imagePullSecrets` through the full `PodSpec`.
+- **`spec.template.metadata.{labels,annotations}`** — stamped on every pod of
+  the template-mode Deployment. The provider's `edges.faros.sh/workload`
+  selector label is always added on top and cannot be overridden.
+
+Prune semantics: the agent labels every applied object with the placement
+labels and, on every reconcile and on Placement deletion, lists the prunable
+namespaced kinds **across all namespaces** (`metav1.NamespaceAll`) by that
+label and deletes what is no longer in the bundle. Changing
+`spec.targetNamespace` on a live Workload therefore moves the objects: the
+old namespace's copies are pruned, the old namespace itself stays.
+
+Private-image recipe (simple mode):
+
+```sh
+# 1. On each selected edge (repeat per edge; the Secret never leaves the edge):
+faros kubeconfig edge <edge-name> > /tmp/edge.kubeconfig
+KUBECONFIG=/tmp/edge.kubeconfig kubectl create namespace kiosk   # optional; the agent creates it too
+KUBECONFIG=/tmp/edge.kubeconfig kubectl -n kiosk create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>
+
+# 2. On the hub: the Workload only references the Secret by name.
+kubectl apply -f - <<'EOF'
+apiVersion: edges.faros.sh/v1alpha1
+kind: Workload
+metadata:
+  name: kiosk-app
+  namespace: default          # hub namespace; not where it runs
+spec:
+  targetNamespace: kiosk      # created on each edge if missing, never deleted
+  placement: { strategy: Spread }
+  simple:
+    image: ghcr.io/example/app:1.0
+    ports: [{ name: http, containerPort: 80 }]
+    imagePullSecrets: [{ name: ghcr-pull }]
+EOF
+```
+
+The portal's create form exposes the same two knobs ("Target namespace" on
+both the manual and marketplace forms; "Image pull secrets" on the manual /
+simple form) and shows the target namespace in the Workloads table and the
+expanded per-edge row. Marketplace deploys pass the target namespace through
+to the follow-up edges `Service` `targetRef.namespace`.
 
 ## Decision: Helm is a PREREQUISITE, not a follow-up
 
@@ -116,7 +198,11 @@ faros-agent image — rebuild/rollout needed; Tiltfile.cluster covers dev kind):
   values — this pins the chart's Service name to the workload name, which the
   marketplace needs for deterministic `targetRef` wiring.
 - Rendering rules: `--include-crds` off by default (skip charts needing CRDs
-  in v1), drop `helm.sh/hook` resources, namespace everything into `default`.
+  in v1), drop `helm.sh/hook` resources, render with
+  `{{ .Release.Namespace }}` = `spec.targetNamespace` and stamp that
+  namespace onto objects the chart leaves namespace-less (cluster-scoped
+  kinds excepted). *(Originally "namespace everything into `default`";
+  superseded 2026-09.)*
 - Values hygiene: no secrets in `values` (rendered bundles are stored in kcp);
   apps that mint admin passwords should do it chart-side and surface where to
   find it in the card copy.
@@ -148,8 +234,10 @@ creates (both APIs exist in `api.ts`):
 
 1. `createWorkload` — extended for the `helm` mode fields.
 2. `createKubeEdgeService` — type, edgeName, targetRef
-   `{namespace:'default', name:<workload name>}` (guaranteed by
-   fullnameOverride), port from the preset, preset instructions if any.
+   `{namespace:<target namespace>, name:<workload name>}` (the name is
+   guaranteed by fullnameOverride; the namespace is the Workload's
+   `spec.targetNamespace`, `default` when unset), port from the preset,
+   preset instructions if any.
 
 Then surface "next: paste the API key" using the preset `tokenHint` — tokens
 are minted in each app's own UI and can't be auto-provisioned;

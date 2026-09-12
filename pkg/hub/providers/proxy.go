@@ -96,12 +96,14 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 // a platform provider gets the same treatment when the DelegationPolicy
 // selects it (SetDelegationPolicy) and the caller's bearer as-is otherwise.
 // If a TenantResolver is
-// installed via SetTenantResolver, the proxy resolves the caller's
-// identity and injects X-Faros-User + X-Faros-Tenant so the provider can
-// scope work without re-parsing the bearer token. Incoming
-// X-Faros-User / X-Faros-Tenant headers are ALWAYS stripped before the
-// request is forwarded — a third-party caller can't forge identity by
-// setting those headers directly.
+// installed via SetTenantResolver (and a cluster resolver via
+// SetClusterResolver), the proxy resolves the caller's identity and injects
+// X-Faros-User plus the tenant's kcp logical-cluster ID as both
+// X-Faros-Tenant and X-Faros-Cluster, so the provider can scope work without
+// re-parsing the bearer token. Incoming X-Faros-User / X-Faros-Tenant /
+// X-Faros-Cluster headers are ALWAYS stripped before the request is
+// forwarded — a third-party caller can't forge identity by setting those
+// headers directly.
 func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	p := &ProviderProxy{
 		reg:                  reg,
@@ -153,24 +155,44 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		if user != "" {
 			req.Header.Set("X-Faros-User", user)
 		}
-		if tenantPath != "" {
-			req.Header.Set("X-Faros-Tenant", tenantPath)
-		} else {
-			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Faros-Tenant", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
+		if tenantPath == "" {
+			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Faros-Tenant / X-Faros-Cluster", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
+			return
 		}
-		// Resolve the workspace path to its kcp logical-cluster ID and inject
-		// X-Faros-Cluster. Best-effort: a resolve failure drops only this
-		// header (the provider still has X-Faros-Tenant), so a provider that
-		// doesn't need the ID is unaffected.
-		if tenantPath != "" && p.clusterResolver != nil {
-			if clusterID, err := p.clusterResolver(req.Context(), tenantPath); err != nil {
-				p.log.Info("cluster-id resolve failed — forwarding without X-Faros-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
-			} else if clusterID != "" {
-				req.Header.Set("X-Faros-Cluster", clusterID)
-			}
+		// Tenant identity between the hub and a provider is the workspace's
+		// kcp logical-cluster ID, carried in BOTH X-Faros-Tenant and
+		// X-Faros-Cluster (the MCP aggregate's federation client sends the
+		// same pair). The workspace path resolved above stays hub-internal:
+		// it is never forwarded, so a provider cannot come to depend on it.
+		// Without an ID — no resolver wired, or the lookup failed — both
+		// headers are omitted rather than degraded to the path; a provider
+		// then reports the tenant as missing, which is the honest state.
+		clusterID, err := p.resolveClusterID(req.Context(), tenantPath)
+		if err != nil {
+			p.log.Info("cluster-id resolve failed — forwarding without X-Faros-Tenant / X-Faros-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
+			return
 		}
+		req.Header.Set("X-Faros-Tenant", clusterID)
+		req.Header.Set("X-Faros-Cluster", clusterID)
 	}
 	return p
+}
+
+// resolveClusterID maps a resolved tenant workspace path to the
+// logical-cluster ID the provider is told about. It is an error, not a
+// fallback, to have no resolver: the path must not stand in for the ID.
+func (p *ProviderProxy) resolveClusterID(ctx context.Context, tenantPath string) (string, error) {
+	if p.clusterResolver == nil {
+		return "", errors.New("no cluster resolver wired")
+	}
+	clusterID, err := p.clusterResolver(ctx, tenantPath)
+	if err != nil {
+		return "", err
+	}
+	if clusterID == "" {
+		return "", errors.New("resolver returned an empty cluster ID")
+	}
+	return clusterID, nil
 }
 
 // resolvedCallerKey memoizes one tenant resolution per request in its context.
@@ -209,19 +231,21 @@ func (p *ProviderProxy) withResolvedCaller(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{user: user, tenantPath: tenantPath, err: err}))
 }
 
-// SetTenantResolver installs the resolver used to populate
-// X-Faros-User and X-Faros-Tenant on proxied requests. Wire after the
-// kcpProxy and farosClient are built (see pkg/hub/server.go around the
-// providerRegistry setup). Calling with nil disables injection but the
-// inbound-header stripping below still runs.
+// SetTenantResolver installs the resolver used to populate X-Faros-User on
+// proxied requests and to find the caller's workspace, whose logical-cluster
+// ID then goes out as X-Faros-Tenant / X-Faros-Cluster (see
+// SetClusterResolver). Wire after the kcpProxy and farosClient are built (see
+// pkg/hub/server.go around the providerRegistry setup). Calling with nil
+// disables injection but the inbound-header stripping below still runs.
 func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
 	p.tenantResolver = r
 }
 
-// SetClusterResolver installs an optional resolver mapping a tenant workspace
-// path to its kcp logical-cluster ID, injected as X-Faros-Cluster on
-// backend-proxied requests. Wire alongside SetTenantResolver; without it the
-// header is simply omitted (and any inbound value is still stripped).
+// SetClusterResolver installs the resolver mapping a tenant workspace path to
+// its kcp logical-cluster ID, injected as both X-Faros-Tenant and
+// X-Faros-Cluster on backend-proxied requests. Wire alongside
+// SetTenantResolver; without it neither tenant header is sent (the workspace
+// path is never used in their place) and any inbound value is still stripped.
 func (p *ProviderProxy) SetClusterResolver(f func(ctx context.Context, tenantPath string) (string, error)) {
 	p.clusterResolver = f
 }
@@ -246,17 +270,18 @@ type ProviderProxy struct {
 	// is true. Nil until SetFallback is called; while nil, those paths 404.
 	fallback http.Handler
 
-	// tenantResolver, when set, populates X-Faros-User / X-Faros-Tenant
-	// on backend-proxied requests. Used only by the backend proxy; the
-	// UI proxy serves static assets and has no use for caller identity.
-	// See SetTenantResolver.
+	// tenantResolver, when set, populates X-Faros-User and finds the
+	// caller's workspace on backend-proxied requests. Used only by the
+	// backend proxy; the UI proxy serves static assets and has no use for
+	// caller identity. See SetTenantResolver.
 	tenantResolver TenantResolver
 
-	// clusterResolver, when set, maps the resolved tenant workspace path to
-	// its kcp logical-cluster ID, injected as X-Faros-Cluster. Providers need
-	// the ID (not the path) to address per-workspace surfaces that key on it —
-	// notably the hub's kcp proxy at /clusters/{id}, which authorizes by
-	// cluster ID and rejects workspace paths. See SetClusterResolver.
+	// clusterResolver maps the resolved tenant workspace path to its kcp
+	// logical-cluster ID, injected as X-Faros-Tenant and X-Faros-Cluster.
+	// The ID is the tenant's identity towards providers: it is what the
+	// hub's kcp proxy at /clusters/{id} authorizes by (workspace paths are
+	// rejected there), and what every provider keys its tenant scope on.
+	// See SetClusterResolver.
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
 
 	// delegatedIssuer mints the token that replaces the caller's bearer on

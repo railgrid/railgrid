@@ -152,3 +152,19 @@ func LockTokenCache(issuerURL, clientID string) (unlock func(), err error) {
 	lockPath := filepath.Join(dir, cacheKey(issuerURL, clientID)+".lock")
 	return acquireFileLock(lockPath)
 }
+
+// RemoveTokenCache deletes the cached tokens for the given OIDC config. It
+// reports whether a cache file existed.
+func RemoveTokenCache(issuerURL, clientID string) (bool, error) {
+	path, err := cachePath(issuerURL, clientID)
+	if err != nil {
+		return false, err
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}

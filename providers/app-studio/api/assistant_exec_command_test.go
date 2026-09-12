@@ -373,7 +373,8 @@ func TestProjectAssistantExecSyncEvidenceBootstrapsFreshProject(t *testing.T) {
 	}
 	calls := make(chan string, 1)
 	server := &Server{
-		workspaces: files,
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		workspaces:       files,
 		developmentSyncAfterMutation: func(_ identity, _ *aiv1alpha1.Project, name string) error {
 			calls <- name
 			return nil

@@ -18,12 +18,18 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -136,5 +142,100 @@ func TestDescribeDialError(t *testing.T) {
 	}
 	if !errors.Is(describeDialError(base, &http.Response{Status: "403 Forbidden", Body: io.NopCloser(strings.NewReader(""))}), base) {
 		t.Fatal("describeDialError() lost the wrapped error")
+	}
+}
+
+func TestBuildSSHWebSocketURLAsksForStdin(t *testing.T) {
+	u, err := buildSSHWebSocketURL(nil, "https://hub.example.com/services/providers/edges/edgeproxy/clusters/c/apis/edges.faros.sh/v1alpha1/linuxservers/box/ssh", "uptime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "wss" || parsed.Query().Get("cmd") != "uptime" || parsed.Query().Get("stdin") != "1" {
+		t.Fatalf("unexpected exec URL %s", u)
+	}
+	u, err = buildSSHWebSocketURL(nil, "https://hub.example.com/x/ssh", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(u, "stdin") {
+		t.Fatalf("interactive URL must not ask for stdin forwarding: %s", u)
+	}
+}
+
+// TestForwardSSHStdin runs the stdin forwarder against a WebSocket server
+// that records what it receives: piped bytes arrive as base64 "cmd"
+// messages followed by "eof"; a terminal stdin sends only the "eof".
+func TestForwardSSHStdin(t *testing.T) {
+	type got struct {
+		msgs []wsSSHMsg
+	}
+	run := func(t *testing.T, input string, isTerminal bool) []wsSSHMsg {
+		t.Helper()
+		done := make(chan got, 1)
+		upgrader := websocket.Upgrader{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer c.Close() //nolint:errcheck
+			var g got
+			for {
+				_, data, err := c.ReadMessage()
+				if err != nil {
+					break
+				}
+				var m wsSSHMsg
+				if err := json.Unmarshal(data, &m); err != nil {
+					t.Errorf("bad message %s: %v", data, err)
+					break
+				}
+				g.msgs = append(g.msgs, m)
+				if m.Type == "eof" {
+					break
+				}
+			}
+			done <- g
+		}))
+		defer srv.Close()
+		conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close() //nolint:errcheck
+		forwardSSHStdin(conn, strings.NewReader(input), isTerminal)
+		select {
+		case g := <-done:
+			return g.msgs
+		case <-time.After(5 * time.Second):
+			t.Fatal("server never saw eof")
+		}
+		return nil
+	}
+
+	msgs := run(t, "hello-stdin\n", false)
+	var data []byte
+	for _, m := range msgs[:len(msgs)-1] {
+		if m.Type != "cmd" {
+			t.Fatalf("unexpected message %+v", m)
+		}
+		b, err := base64.StdEncoding.DecodeString(m.Cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, b...)
+	}
+	if string(data) != "hello-stdin\n" || msgs[len(msgs)-1].Type != "eof" {
+		t.Fatalf("piped stdin arrived as %+v", msgs)
+	}
+
+	msgs = run(t, "keyboard input must not be read", true)
+	if len(msgs) != 1 || msgs[0].Type != "eof" {
+		t.Fatalf("terminal stdin should send only eof, got %+v", msgs)
 	}
 }

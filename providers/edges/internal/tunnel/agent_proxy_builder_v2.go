@@ -225,7 +225,8 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		if resource != macOSServerResource {
 			sshCreds = extractSSHCredsFromHeaders(r)
 		}
-		go p.markEdgeConnected(context.Background(), gvr, cluster, name, sshCreds, clearJoinToken)
+		hostname := agentHostnameFromHeader(r)
+		go p.markEdgeConnected(context.Background(), gvr, cluster, name, sshCreds, hostname, clearJoinToken)
 
 		// Stamp status.lastHeartbeatTime from the dialer's LastPong while the
 		// tunnel is alive. revdial's keep-alive/pong loop already detects dead
@@ -482,6 +483,32 @@ func (p *Server) authorizeByIssuedToken(ctx context.Context, gvr schema.GroupVer
 		return fmt.Errorf("resolving tenant config: %w", err)
 	}
 	return authorize(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", gvr.Group, gvr.Resource, name)
+}
+
+// AgentHostnameHeader is the WebSocket upgrade header on which the agent
+// reports the hostname of the machine it runs on; the provider records it in
+// status.hostname (edgeapi.ConnectionStatus.Hostname) on every tunnel open.
+// Absent or empty leaves the recorded value untouched.
+const AgentHostnameHeader = "X-Faros-Agent-Hostname"
+
+// maxAgentHostnameLen bounds the agent-asserted value stored in status: a
+// hostname is at most 253 characters (RFC 1035), and anything longer is not
+// one.
+const maxAgentHostnameLen = 253
+
+// agentHostnameFromHeader reads the agent's reported hostname, or "" when it
+// did not send one (older agents) or sent something that is not a hostname.
+func agentHostnameFromHeader(r *http.Request) string {
+	h := strings.TrimSpace(r.Header.Get(AgentHostnameHeader))
+	if h == "" || len(h) > maxAgentHostnameLen {
+		return ""
+	}
+	for _, c := range h {
+		if c > 0x7e || c < 0x21 { // printable ASCII only, no whitespace
+			return ""
+		}
+	}
+	return h
 }
 
 // sshCredsFromAgent holds SSH credentials passed by the agent via WebSocket

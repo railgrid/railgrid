@@ -24,6 +24,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -32,6 +33,8 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/faroshq/provider-sdk/tenantaccess"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -86,6 +89,11 @@ type Server struct {
 	// workspace-scoped Project client without a hub proxy endpoint.
 	// Production leaves it nil and uses clientFor's caller-scoped proxy path.
 	projectClientFor func(identity) (*asclient.Client, error)
+	// tenantWorkspaces maps the cluster ID the hub identifies a tenant by to
+	// the workspace's path / org / workspace UUIDs, read from kcp as the
+	// caller. Nil without a hub URL; identity then carries no org/workspace
+	// scope.
+	tenantWorkspaces workspaceLookup
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client
@@ -204,6 +212,7 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		attachmentDraftRetention: store.DefaultAttachmentDraftRetention,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
+		tenantWorkspaces:         workspaceLookupFor(tenantClient, hubBase, mcpInsecureSkipTLSVerify),
 		hubPublicURL:             strings.TrimSpace(os.Getenv("FAROS_HUB_PUBLIC_URL")),
 		actionsExternalURL:       strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
@@ -376,6 +385,7 @@ func (s *Server) Register(r *mux.Router) {
 	// lives in the same project settings surface.
 	r.HandleFunc("/api/projects/{project}/preview", s.getProjectPreviewAccess).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/preview", s.setProjectPreviewAccess).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview", s.resetProjectPreviewAccess).Methods(http.MethodDelete)
 	// Preview grants mirror the publishing ones exactly — same shapes, same
 	// member/invite semantics — because both delegate to the shared handlers.
 	r.HandleFunc("/api/projects/{project}/preview/grants", s.listProjectPreviewGrants).Methods(http.MethodGet)
@@ -446,15 +456,29 @@ func (s *Server) clientFor(id identity) (*asclient.Client, error) {
 	return asclient.NewFromScope(scope), nil
 }
 
+// workspaceLookupFor returns the kcp-backed workspace lookup for a hub, or nil
+// when the server has no hub to ask (bare dev / tests).
+func workspaceLookupFor(tenantClient *tenant.Client, hubBase string, insecure bool) workspaceLookup {
+	if tenantClient == nil || strings.TrimSpace(hubBase) == "" {
+		return nil
+	}
+	return tenantaccess.NewWorkspaceResolver(hubBase, insecure, 0).Resolve
+}
+
 // requireProjectClient resolves the caller identity and a workspace-scoped
 // client. Endpoints under /api/projects always require a workspace.
 func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*asclient.Client, identity, bool) {
-	id, ok := identityFromRequest(w, r)
+	id, ok := s.identityFromRequest(w, r)
 	if !ok {
 		return nil, identity{}, false
 	}
 	if id.workspaceUUID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — select an organization and workspace first")
+		if id.workspaceErr != nil {
+			log.Printf("app-studio: resolving workspace for cluster %s: %v", id.clusterID, id.workspaceErr)
+			writeStatus(w, http.StatusBadGateway, "WorkspaceUnresolved", "could not resolve the workspace behind cluster "+id.clusterID+" from the hub: "+id.workspaceErr.Error())
+			return nil, identity{}, false
+		}
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — cluster "+id.clusterID+" is an organization workspace; select a workspace first")
 		return nil, identity{}, false
 	}
 	if s.tenant == nil && s.projectClientFor == nil {

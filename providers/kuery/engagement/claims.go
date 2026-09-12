@@ -68,8 +68,9 @@ func newEdgeClaims(cfg *rest.Config) (*edgeClaims, error) {
 	}, nil
 }
 
-// claimName derives a Lease name from the path-based store name. Hashed:
-// workspace paths contain characters Lease names cannot.
+// claimName derives a Lease name from the "{clusterID}/{edge}" store name.
+// Hashed: the "/" separator (and arbitrary edge names) are not valid in Lease
+// names, and the hash keeps the name length bounded.
 func claimName(storeName string) string {
 	sum := sha256.Sum256([]byte(storeName))
 	return "kuery-engage-" + hex.EncodeToString(sum[:])[:16]

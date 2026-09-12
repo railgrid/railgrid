@@ -38,7 +38,7 @@ import (
 func newAgentCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Agent management commands",
+		Short: "Run, install or upgrade the edge agent on a cluster or server",
 	}
 
 	cmd.AddCommand(

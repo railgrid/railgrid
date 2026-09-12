@@ -31,9 +31,11 @@ import (
 
 func newGetCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "get [resource]",
-		Short: "Get resources",
-		Args:  cobra.ExactArgs(1),
+		Use:        "get [resource]",
+		Short:      "Get resources",
+		Hidden:     true,
+		Deprecated: "use 'faros edge list' or kubectl",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resource := args[0]
 			ctx := context.Background()

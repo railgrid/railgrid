@@ -39,6 +39,7 @@ const workloadColumns = [
   { key: 'expand', label: '', ariaLabel: 'Expand' },
   { key: 'name', label: 'Name', primary: true },
   { key: 'image', label: 'Image' },
+  { key: 'namespace', label: 'Namespace' },
   { key: 'placement', label: 'Placement' },
   { key: 'status', label: 'Status' },
   { key: 'ready', label: 'Ready', align: 'end' as const },
@@ -48,6 +49,10 @@ const workloadRows = computed<Array<Record<string, unknown>>>(() => workloads.va
   ...workload,
   expand: '',
   image: workload.image || '—',
+  // The edge-cluster namespace the objects land in (spec.targetNamespace),
+  // not the hub namespace the Workload itself lives in.
+  namespace: workload.targetNamespace || 'default',
+  pullSecrets: workload.imagePullSecrets ?? [],
   strategy: workload.strategy || 'Spread',
   placement: `${workload.strategy || 'Spread'} · ${selectorText(workload.selector)}`,
   status: workload.phase || 'Pending',
@@ -335,7 +340,8 @@ function handleWorkloadTableChange(change: ResourceTableChange) {
 }
 
 async function onDelete(w: Workload) {
-  if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
+  const ns = w.targetNamespace || 'default'
+  if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: `Its objects in namespace "${ns}" on every edge are removed. The namespace itself is kept.`, danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteWorkload(w.name)
     if (stopped) return
@@ -365,6 +371,9 @@ function selectorText(s?: Record<string, string>): string {
 }
 function workloadEdges(row: Record<string, unknown>): NonNullable<Workload['edges']> {
   return Array.isArray(row.edges) ? row.edges as NonNullable<Workload['edges']> : []
+}
+function workloadPullSecrets(row: Record<string, unknown>): string[] {
+  return Array.isArray(row.pullSecrets) ? row.pullSecrets.map(String) : []
 }
 function workloadTone(status: unknown): 'success' | 'danger' | null {
   const phase = String(status).toLowerCase()
@@ -500,6 +509,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       </template>
       <template #name="{ value }"><span class="name">{{ value }}</span></template>
       <template #image="{ value }"><span class="mono muted">{{ value }}</span></template>
+      <template #namespace="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #placement="{ value }"><span class="muted">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="workloadTone(value)" /></template>
       <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
@@ -507,6 +517,11 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #after-row="{ row, columnCount }">
         <tr v-if="expanded === row.name" class="detail-row">
           <td :colspan="columnCount">
+            <div class="es-head">On each edge</div>
+            <div class="muted es-target">
+              Objects land in namespace <span class="mono">{{ row.namespace }}</span>
+              <template v-if="workloadPullSecrets(row).length"> · image pull secrets <span class="mono">{{ workloadPullSecrets(row).join(', ') }}</span> (must exist there on every edge)</template>
+            </div>
             <div class="es-head">Per-edge status</div>
             <div v-if="workloadEdges(row).length === 0" class="muted">Not scheduled onto any edge yet (no edge matches the selector, or agents haven't reported).</div>
             <div v-else class="es-list">

@@ -33,8 +33,10 @@ func newApplyCommand() *cobra.Command {
 	var filename string
 
 	cmd := &cobra.Command{
-		Use:   "apply",
-		Short: "Apply a resource from a file",
+		Use:        "apply",
+		Short:      "Apply a resource from a file",
+		Hidden:     true,
+		Deprecated: "use kubectl apply against the workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filename == "" {
 				return fmt.Errorf("-f flag is required")

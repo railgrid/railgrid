@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/kcp-dev/multicluster-provider/apiexport"
+	"github.com/faroshq/provider-sdk/apiexportprovider"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -96,7 +96,7 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		log.Printf("edge controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
 	}
 
-	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: s})
+	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: s})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}

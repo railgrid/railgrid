@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"regexp"
@@ -105,6 +106,12 @@ type createAgentRequest struct {
 	// stays undiscovered. Unknown names are dropped; core is always granted.
 	InteractiveFamilies []string `json:"interactiveFamilies,omitempty"`
 	BackgroundFamilies  []string `json:"backgroundFamilies,omitempty"`
+	// MaxToolTurns caps tool-call iterations per run (0 = provider default).
+	// Accepted on create so a caller does not have to follow up with a PUT
+	// to get the limits it asked for — the same fields updateAgentRequest has.
+	MaxToolTurns int32 `json:"maxToolTurns,omitempty"`
+	// TimeoutSeconds bounds a run's wall clock (0 = provider default).
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 }
 
 var budgetDecimalPattern = regexp.MustCompile(`^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$`)
@@ -251,9 +258,10 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// applyAgentCreate validates the request and creates the agent. Shared by the
-// REST handler and the MCP create_agent tool.
-func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
+// agentFromCreateRequest validates the request and builds the Agent to
+// create. Pure: no tenant access, so it can be unit-tested; channel
+// uniqueness (which needs a list) is checked by applyAgentCreate.
+func agentFromCreateRequest(req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		return nil, errBadRequest("name is required")
@@ -261,6 +269,12 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 	budget, err := normalizeAgentBudget(nil, &req.BudgetTokens, &req.BudgetUSD)
 	if err != nil {
 		return nil, errBadRequest(err.Error())
+	}
+	if req.MaxToolTurns < 0 {
+		return nil, errBadRequest("maxToolTurns must be zero or greater")
+	}
+	if req.TimeoutSeconds < 0 {
+		return nil, errBadRequest("timeoutSeconds must be zero or greater")
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
 		req.DisplayName = req.Name
@@ -272,6 +286,10 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 			Description:  req.Description,
 			SystemPrompt: req.SystemPrompt,
 			Autonomy:     req.Autonomy,
+			Limits: agentsv1alpha1.AgentLimits{
+				MaxToolTurns:   req.MaxToolTurns,
+				TimeoutSeconds: req.TimeoutSeconds,
+			},
 		},
 	}
 	if cred := strings.TrimSpace(req.ModelCredential); cred != "" {
@@ -292,12 +310,37 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 		if err != nil {
 			return nil, errBadRequest(err.Error())
 		}
-		if err := s.validateChannelUniqueness(ctx, c, req.Name, chans); err != nil {
-			return nil, errConflict(err.Error())
-		}
 		a.Spec.Channels = chans
 	}
-	return c.Agents().Create(ctx, a, metav1.CreateOptions{})
+	return a, nil
+}
+
+// applyAgentCreate validates the request and creates the agent. Shared by the
+// REST handler and the MCP create_agent tool.
+func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
+	a, err := agentFromCreateRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(a.Spec.Channels) > 0 {
+		if err := s.validateChannelUniqueness(ctx, c, a.Name, a.Spec.Channels); err != nil {
+			return nil, errConflict(err.Error())
+		}
+	}
+	out, err := c.Agents().Create(ctx, a, metav1.CreateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	// A fresh agent is usable as soon as it exists — say so. Nothing else
+	// reconciles Agent status at create time, and an empty status read as
+	// "not ready" to callers polling for phase Ready. Best-effort: the agent
+	// was created either way and the background sweep re-stamps the phase.
+	if err := c.Agents().PatchStatus(ctx, out.Name, agentsv1alpha1.AgentStatus{Phase: agentsv1alpha1.AgentPhaseReady}); err != nil {
+		log.Printf("create agent %s: stamping phase Ready: %v", out.Name, err)
+	} else {
+		out.Status.Phase = agentsv1alpha1.AgentPhaseReady
+	}
+	return out, nil
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).

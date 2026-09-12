@@ -179,7 +179,7 @@ func TestProjectEinoAssistantRolloutBudgetIsPerRun(t *testing.T) {
 	ctx := context.Background()
 	memory := store.NewMemoryStore()
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-a"}
-	server := &Server{store: memory}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memory}
 
 	runOne := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := memory.SaveAssistantRun(ctx, scope, runOne); err != nil {
@@ -212,7 +212,7 @@ func TestProjectEinoAssistantRolloutBudgetDefaultsToFinitePerRunLimit(t *testing
 	ctx := context.Background()
 	memory := store.NewMemoryStore()
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-a"}
-	server := &Server{store: memory}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memory}
 	run := store.AssistantRun{ID: "run-default", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	if err := memory.SaveAssistantRun(ctx, scope, run); err != nil {
 		t.Fatal(err)

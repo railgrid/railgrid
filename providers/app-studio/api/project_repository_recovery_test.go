@@ -72,7 +72,7 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 			if _, err := c.Projects().Create(context.Background(), p, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			s := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
 			before := repo.DeepCopy()
 			view := projectRepositoryViewFromGetter(context.Background(), p, func(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
 				return c.Resource(codeResourceFor(gvr), "").Get(ctx, name, metav1.GetOptions{})

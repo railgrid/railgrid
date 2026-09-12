@@ -119,3 +119,77 @@ func TestFirstEndpointURL(t *testing.T) {
 		})
 	}
 }
+
+type checkerFunc func() error
+
+func (f checkerFunc) Check() error { return f() }
+
+// A leader that holds the lease and watches nothing is the state readiness
+// exists to expose: an attached Checker's failure must surface, with its name,
+// even while the reachability probe is fine.
+func TestAttachedCheckerMakesUnready(t *testing.T) {
+	var r Readiness
+	r.set("https://x/y", nil)
+	detach := r.Attach("controllers", checkerFunc(func() error { return errors.New("not watching endpoint") }))
+
+	err := r.Check()
+	if err == nil {
+		t.Fatal("failing attached checker reported ready")
+	}
+	for _, want := range []string{"controllers", "not watching endpoint"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message omits %q: %s", want, err)
+		}
+	}
+
+	// Detaching — the controller term ended, this replica is no longer the
+	// leader — returns readiness to the probe alone.
+	detach()
+	if err := r.Check(); err != nil {
+		t.Errorf("detached checker still reported: %v", err)
+	}
+}
+
+func TestProbeFailureWinsOverAttachedCheckers(t *testing.T) {
+	var r Readiness
+	r.Attach("controllers", checkerFunc(func() error { return errors.New("controllers down") }))
+	r.set("https://x/y", errors.New("no such host"))
+	err := r.Check()
+	if err == nil || !strings.Contains(err.Error(), "no such host") {
+		t.Errorf("probe failure should be reported first, got: %v", err)
+	}
+}
+
+func TestAttachReplacesByNameAndDetachIsScoped(t *testing.T) {
+	var r Readiness
+	detachOld := r.Attach("controllers", checkerFunc(func() error { return errors.New("old term") }))
+	r.Attach("controllers", checkerFunc(func() error { return errors.New("new term") }))
+	if err := r.Check(); err == nil || !strings.Contains(err.Error(), "new term") {
+		t.Errorf("second Attach did not replace the first: %v", err)
+	}
+	// The old term's deferred detach must not remove the new term's checker.
+	detachOld()
+	if err := r.Check(); err == nil || !strings.Contains(err.Error(), "new term") {
+		t.Errorf("stale detach removed the current checker: %v", err)
+	}
+	if r.Attach("nil", nil) == nil {
+		t.Error("Attach(nil) must return a usable detach")
+	}
+}
+
+func TestHandlerCarriesAttachedReason(t *testing.T) {
+	var r Readiness
+	r.Attach("controllers", checkerFunc(func() error { return errors.New("kcp apiexport provider has not started") }))
+	rec := httptest.NewRecorder()
+	Handler(&r).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unready → %d, want 503", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	if !strings.Contains(body["reason"], "has not started") {
+		t.Errorf("reason = %q", body["reason"])
+	}
+}

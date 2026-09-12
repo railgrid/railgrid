@@ -20,6 +20,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -34,16 +36,62 @@ import (
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
 )
 
+// execInputMsg is the subset of the SSH WebSocket protocol a non-interactive
+// exec reads from the client: "cmd" carries base64 stdin bytes (the same
+// message the interactive session uses for keystrokes), "eof" closes the
+// remote command's stdin.
+type execInputMsg struct {
+	Type string `json:"type"`
+	Cmd  string `json:"cmd"`
+}
+
+const execInputEOF = "eof"
+
 // sshExec runs remoteCmd on the SSH client via a non-interactive exec channel
 // and streams the combined stdout+stderr output as binary WebSocket messages.
 // It closes the WebSocket when the command finishes (or on error).
-func (p *Server) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient *gossh.Client, remoteCmd string, logger klog.Logger) {
+//
+// With forwardStdin the client's "cmd" messages become the command's stdin
+// until an "eof" message (or the WebSocket) closes it — this is what lets
+// `cat file | faros ssh host -- "cat > /tmp/file"` copy data. Without it
+// stdin is empty, as for clients that predate the flag.
+func (p *Server) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient *gossh.Client, remoteCmd string, forwardStdin bool, logger klog.Logger) {
 	sshSession, err := sshClient.NewSession()
 	if err != nil {
 		logger.Error(err, "failed to create SSH exec session")
 		return
 	}
 	defer sshSession.Close() //nolint:errcheck
+
+	if forwardStdin {
+		stdinR, stdinW := io.Pipe()
+		sshSession.Stdin = stdinR
+		go func() {
+			defer stdinW.Close() //nolint:errcheck
+			for {
+				_, data, err := wsConn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var msg execInputMsg
+				if err := json.Unmarshal(data, &msg); err != nil {
+					continue
+				}
+				switch msg.Type {
+				case "cmd":
+					raw, err := base64.StdEncoding.DecodeString(msg.Cmd)
+					if err != nil {
+						continue
+					}
+					if _, err := stdinW.Write(raw); err != nil {
+						return
+					}
+				case execInputEOF:
+					return
+				}
+			}
+		}()
+	}
 
 	// Pipe stdout+stderr to a goroutine that forwards chunks to the WebSocket.
 	pr, pw := io.Pipe()

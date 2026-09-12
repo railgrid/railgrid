@@ -135,24 +135,35 @@ To report a vulnerability, open a private security advisory on this repository r
 
 ## CLI reference
 
+The full, generated reference is in [docs/cli](docs/cli/README.md) (one page per
+command, regenerated with `make docs-cli`). `faros --help` groups the commands the
+same way; `faros completion --help` sets up shell completion.
+
 | Command | What it does |
 |---|---|
-| `faros login` | Authenticate with a hub via OIDC or static token |
-| `faros use` | Switch the active organization and workspace |
-| `faros edge create\|list\|get\|delete <name>` | Manage edges |
-| `faros edge join-command <name>` | Print the agent join command for an edge |
-| `faros edge upgrade <name>` | Print upgrade instructions for an edge agent |
-| `faros kubeconfig edge <name>` | Generate a kubeconfig that reaches an edge through the hub |
+| `faros login --hub-url <hub> [--token t] [-i]` | Log in (browser OIDC with silent refresh, or a static token); writes the `faros` kubeconfig context |
+| `faros logout` | Forget the cached tokens and the faros contexts on this machine |
+| `faros use [--org O --workspace W]` | Switch the active organization and workspace (interactive picker without flags) |
+| `faros whoami [-o json]` | Hub, identity, token state, org/workspace with your roles, and what kubectl points at |
+| `faros token [--refresh]` | Print a current bearer for curl; `--refresh` forces the OIDC refresh grant |
+| `faros edge create\|list\|get\|delete <name>` | Manage edges; `list`/`get` take `-o wide\|json\|yaml\|name` |
+| `faros edge join-command\|upgrade <name>` | Print the agent join command or upgrade instructions |
+| `faros edge kubeconfig <name> [-o file\|--merge]` | Kubeconfig for a cluster edge through the hub, standalone or merged as context `faros-<name>` |
+| `faros connect [<edge>]` / `faros disconnect` | Point kubectl at a cluster edge and back at the hub workspace |
 | `faros ssh <name> [-- cmd]` | Open a shell or run a command on a server edge |
+| `faros org list\|create\|members …` | Organizations you belong to; `members list\|add\|remove\|set-role` manage access |
+| `faros workspace list\|create\|members …` | Workspaces of an organization and their members |
 | `faros mcp url --mcpserver-name <name>` / `--edge <name>` | Print the workspace or per-edge MCP endpoint |
-| `faros get`, `faros apply` | Read and apply workspace resources |
-| `faros agent join\|run\|install\|uninstall\|upgrade` | Run or install the agent on a cluster or host |
-| `faros dev init\|update\|delete` | Manage a local kind-based environment |
-| `faros get-token` | OIDC token for a kubectl exec credential plugin |
 | `faros env [--json] [--no-mcp]` | Print `HUB`, `CLUSTER`, `ORG`, `WS`, `TOKEN`, `AS`, `MCP_URL`, `MCP_TOKEN` as shell exports |
-| `faros app list\|create\|status\|promote\|publish` | Manage App Studio projects |
+| `faros app list\|create\|status\|sync\|promote\|publish` | Manage App Studio projects |
 | `faros commit <repositoryRef> [--branch main] [--dry-run]` | Record local git commits through faros (`code__commit_files`) |
 | `faros sandbox sync\|exec\|logs\|restart\|status <instance> [component]` | Drive a development-mode instance through the data plane |
+| `faros agent join\|run\|install\|uninstall\|upgrade`, `faros install` | Run or install the agent on a cluster or host |
+| `faros dev init\|update\|delete` | Manage a local kind-based environment |
+
+Hidden but still accepted: `faros list`/`ls` (edge list), `faros kubeconfig edge`,
+`faros get`, `faros apply`, `faros get-token` (the kubectl exec plugin) and
+`faros kcp-workspace` (raw kcp workspace navigation).
 
 ### Building an app from a terminal or an AI agent
 

@@ -577,7 +577,14 @@ Proxy behavior:
 - Parse `{name}` from path: `/ui/providers/cost-insights/foo` → name=`cost-insights`, rest=`/foo`.
 - Look up in registry; **404** if unknown, **503** if not Ready.
 - Backend proxy: requires standard faros auth middleware; forwards the
-  user's `Authorization` header and adds `X-Faros-User`, `X-Faros-Tenant`.
+  user's `Authorization` header and adds `X-Faros-User` plus the tenant's
+  identity — the workspace's kcp logical-cluster ID — as both
+  `X-Faros-Tenant` and `X-Faros-Cluster`. The workspace path
+  (`root:faros:tenants:<org>:<ws>`) is hub-internal and is never forwarded;
+  a provider that needs it (or the org/workspace UUIDs) reads the
+  workspace's `LogicalCluster` `kcp.io/path` annotation as the caller
+  (`provider-sdk/tenantaccess.ResolveWorkspace`). If the ID cannot be
+  resolved, neither tenant header is sent.
 - UI proxy: no auth requirement on static assets; injects
   `X-Faros-Base-Path: /ui/providers/{name}` so the provider can rewrite
   absolute links.

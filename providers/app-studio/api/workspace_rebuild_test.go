@@ -36,6 +36,7 @@ import (
 // rebuilt tree.
 func TestWorkspaceRebuildSurfacesAsVerificationBlockerUntilNextMutation(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "pitch"

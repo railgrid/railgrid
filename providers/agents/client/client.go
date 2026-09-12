@@ -217,6 +217,23 @@ func (r *TypedResource[T, L]) UpdateStatus(ctx context.Context, obj *T, _ metav1
 	return obj, nil
 }
 
+// PatchStatus merge-patches the given status fields onto the named object's
+// status subresource, leaving every other status field as it is. Use it for
+// observed-state stamps (phase, lastRunAt) that must not clobber what other
+// writers recorded, and that do not need a read first.
+func (r *TypedResource[T, L]) PatchStatus(ctx context.Context, name string, status any) error {
+	st, err := toUnstructured(status)
+	if err != nil {
+		return err
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{}}
+	u.SetAPIVersion(r.gvk.GroupVersion().String())
+	u.SetKind(r.gvk.Kind)
+	u.SetName(name)
+	u.Object["status"] = st.Object
+	return r.scope.ApplyStatus(ctx, u)
+}
+
 func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, _ metav1.DeleteOptions) error {
 	return r.scope.Delete(ctx, r.res, "", name)
 }

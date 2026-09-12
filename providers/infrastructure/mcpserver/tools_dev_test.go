@@ -102,7 +102,7 @@ func (c *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	h := &captureHandler{}
-	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc123xyz", user: "dev@acme.io", token: "tok"}
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc123xyz", user: "dev@acme.io", token: "tok"}
 
 	body, status, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "simplewebapps", "my-site", "app", "sync", []byte(`{"files":[]}`), nil)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 
 func TestCallDataPlaneExtraHeadersCannotOverrideIdentity(t *testing.T) {
 	h := &captureHandler{}
-	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", user: "dev@acme.io", token: "tok"}
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", user: "dev@acme.io", token: "tok"}
 	extra := http.Header{"Idempotency-Key": []string{"key-1"}, "Authorization": []string{"Bearer forged"}}
 	if _, _, err := callDataPlane(context.Background(), h, ident, http.MethodPost, "instances", "x", "app", "exec", []byte(`{}`), extra); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func (s *scriptedDataPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
 	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"phase":"Synced","sourceRevision":3}`}
-	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", token: "tok"}
 	target := devTarget{resource: "instances", components: devComponentPaths(map[string]string{"backend": "api", "frontend": "web"})}
 	routed := routeDevSyncFiles([]devSyncFile{{Path: "web/src/App.jsx", Content: "x"}}, target.components)
 
@@ -181,7 +181,7 @@ func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
 
 func TestRunDevExecUsesRunActionAndAppliedRevision(t *testing.T) {
 	dp := &scriptedDataPlane{status: http.StatusOK, body: `{"sessionID":"s1","requestID":"key-1","state":"succeeded","exitCode":0,"stdout":"ok\n","sourceRevision":4,"sourceDigest":"abc"}`}
-	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", token: "tok"}
 	out, err := runDevExec(context.Background(), dp, ident, "instances", "my-app", "backend", devExecInput{
 		Argv: []string{"sh", "-c", "npm test"}, Workdir: " src ", TimeoutSeconds: 30, IdempotencyKey: "key-1",
 	})
@@ -485,7 +485,7 @@ func TestNormalizeDevSyncFiles(t *testing.T) {
 }
 
 func TestDevSyncBinaryFilesAreGatedOnAgentSyncEncodings(t *testing.T) {
-	ident := identity{tenantPath: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", token: "tok"}
 	target := devTarget{resource: "instances", components: devComponentPaths(map[string]string{"api": "api", "web": "web"})}
 	logo := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', 0x00, 0xff})
 	files, err := normalizeDevSyncFiles([]devSyncFile{

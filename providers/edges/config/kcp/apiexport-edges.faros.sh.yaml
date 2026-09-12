@@ -31,7 +31,7 @@ spec:
       crd: {}
   - group: edges.faros.sh
     name: workloads
-    schema: v260904-9ab06b67.workloads.edges.faros.sh
+    schema: v260911-c8af9718.workloads.edges.faros.sh
     storage:
       crd: {}
 status: {}

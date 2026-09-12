@@ -204,6 +204,11 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	// Optional non-interactive exec mode (e.g. `faros ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
+	// stdin=1 is set by CLIs that forward their stdin for non-interactive
+	// commands (and send "eof" when it ends); older clients never send it,
+	// so their commands keep an empty stdin instead of blocking on a pipe
+	// nobody closes.
+	forwardStdin := r.URL.Query().Get("stdin") == "1"
 	mode := "interactive"
 	if remoteCmd != "" {
 		mode = "exec"
@@ -314,7 +319,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 
 	if remoteCmd != "" {
 		// Non-interactive exec: run command, stream output, close.
-		p.sshExec(ctx, wsConn, sshClient, remoteCmd, logger)
+		p.sshExec(ctx, wsConn, sshClient, remoteCmd, forwardStdin, logger)
 		return
 	}
 

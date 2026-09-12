@@ -232,7 +232,7 @@ APIExport, schemas) and registers routing/heartbeat state.
 | `provision.go` | Creates kcp sub-workspace, ServiceAccount, APIExport, applies inline schemas; mints the provider kubeconfig |
 | `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
-| `pkg/hub/provider_tenant_resolver.go` | Resolves caller identity → tenant workspace path; injects `X-Faros-User` / `X-Faros-Tenant`, strips spoofed inbound copies |
+| `pkg/hub/provider_tenant_resolver.go` + `provider_cluster_resolver.go` | Resolves caller identity → tenant workspace → kcp logical-cluster ID; the proxy injects `X-Faros-User` and the ID as both `X-Faros-Tenant` / `X-Faros-Cluster` (never the path), strips spoofed inbound copies |
 
 Heartbeat: standalone providers POST every ~30s through the one shared
 client in `provider-sdk/hubclient` (`ConfigFromEnv` + `RunHeartbeat`), which
@@ -340,11 +340,16 @@ it to the canonical source under `provider-sdk/` and re-sync.
 ### 5.4 Tenant isolation in providers
 
 Providers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
-hub forwards the caller's bearer token plus resolved `X-Faros-Tenant` path; the
-provider's `tenant/` package (`client.go`, `credentials.go`) constructs a client
-scoped to `<host>/clusters/<tenantPath>`, acting as the caller in their
-workspace. See `providers/code/tenant/` and `providers/infrastructure/tenant/`
-for the canonical pattern, and `docs/provider-scoping.md`.
+hub forwards the caller's bearer token plus the tenant workspace's kcp
+logical-cluster ID (in both `X-Faros-Tenant` and `X-Faros-Cluster` — the
+workspace path is never sent); the provider's `tenant/` package (`client.go`,
+`credentials.go`) constructs a client scoped to `<host>/clusters/<clusterID>`,
+acting as the caller in their workspace. A provider that needs the org /
+workspace UUIDs or the path resolves them from kcp with
+`provider-sdk/tenantaccess.ResolveWorkspace` (the `LogicalCluster`
+`kcp.io/path` annotation, read as the caller), never by parsing a header. See
+`providers/code/tenant/` and `providers/infrastructure/tenant/` for the
+canonical pattern, and `docs/provider-scoping.md`.
 
 ### 5.5 Provider inventory
 

@@ -84,6 +84,7 @@ func TestTerminalToolResultSettlesWhileRunIsStopping(t *testing.T) {
 	canceled.Exec = &projectAssistantExecMetadata{Argv: []string{"sleep", "45"}, Status: "canceled", Component: "workspace"}
 	state := &projectAssistantDurableMetadataState{status: "Working", toolCalls: []projectToolCallStreamEvent{canceled}}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestProjectAssistantRunViewIncludesStructuredTerminalFields(t *testing.T) {
 }
 
 func TestProjectAssistantTerminalContentPreservesFinalProse(t *testing.T) {
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	const want = "Final model prose."
 	if got := server.projectAssistantRunTerminalContent(context.Background(), store.Scope{}, store.AssistantRun{}, want, "partial", errors.New("provider failed"), projectAssistantCompletionEvidence{}, false); got != want {
 		t.Fatalf("terminal content = %q, want %q", got, want)
@@ -230,7 +231,7 @@ func TestProjectAssistantTerminalContentPreservesFinalProse(t *testing.T) {
 }
 
 func TestProjectAssistantTerminalContentDoesNotRewriteModelProse(t *testing.T) {
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	const want = "Committed and pushed the changes; CI is running."
 	got := server.projectAssistantRunTerminalContent(
 		context.Background(),
@@ -518,6 +519,7 @@ func TestProjectAssistantActionOnlyTerminalTurnPersistsWorkedDuration(t *testing
 	}
 	state.upsertToolCall(projectToolCallStreamEvent{ID: "call-read", Name: projectToolReadFile, Status: "succeeded"})
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	completed := store.AssistantRunStatusCompleted
 	if err := server.persistProjectAssistantDurableMetadata(ctx, accumulator, workspace.Scope{}, state, &completed); err != nil {
 		t.Fatalf("persist terminal metadata: %v", err)
@@ -853,6 +855,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 		t.Fatalf("Attach: %v", err)
 	}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	status := "Preparing action"
 	provisional := false
 	var toolCalls []projectToolCallStreamEvent
@@ -928,6 +931,7 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 		t.Fatal(err)
 	}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}

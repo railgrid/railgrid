@@ -177,10 +177,20 @@ POST <hub>/auth/apps/token        Authorization: Bearer <hub token>
 ## 6. Private images and secrets
 
 - Pull secret: a `kubernetes.io/dockerconfigjson` Secret named
-  `<instance>-registry` in namespace `default` of your workspace; the
-  controller bridges it into the runtime namespace and attaches it to the
-  default ServiceAccount. App Studio mints this at promote from the code
-  Connection token.
+  `<instance>-registry` in namespace `default` of your workspace, created
+  **before** the Instance; the controller bridges it into the runtime
+  namespace and attaches it to the default ServiceAccount. App Studio mints
+  `<project>-prod-registry` itself at promote from the code Connection token.
+
+  ```bash
+  gh auth token | kubectl create secret docker-registry gosvc-direct-registry -n default \
+    --docker-server=ghcr.io --docker-username=<github user> --docker-password-stdin
+  ```
+
+  It is not always needed: on the self-hosted runtime tested 2026-09-11 a
+  private GHCR image of the connection owner pulled without any Secret
+  (the runtime already holds a credential). Try a throwaway instance without
+  one before assuming; `ImagePullBackOff` in `status.message` means you need it.
 - BYO OIDC client secret: Secret `cloud-credentials` key `oidc_client_secret`,
   bridged as `cloud-credentials-<instance>`.
 

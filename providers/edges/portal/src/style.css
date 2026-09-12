@@ -56,6 +56,8 @@ faros-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: u
 /* Labelled form field: label stacked above its control with a small gap. */
 faros-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
 faros-provider-edges .field-error { color: var(--color-danger, #ff5d5d); font-size: 11px; }
+/* Persistent help text under a form control (swapped for .field-error while invalid). */
+faros-provider-edges .field-help { color: var(--color-text-muted, #5d5f78); font-size: 11px; line-height: 1.4; }
 faros-provider-edges .service-create-grid,
 faros-provider-edges .workload-create-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
 faros-provider-edges .service-create-grid--two,
@@ -156,6 +158,8 @@ faros-provider-edges .es-item { display: flex; align-items: center; gap: 12px; f
 faros-provider-edges .es-name { font-weight: 500; color: var(--color-text-primary, #e9e9f2); min-width: 160px; }
 faros-provider-edges .es-ready { color: var(--color-text-secondary, #8a8ca6); }
 faros-provider-edges .es-msg { flex: 1; }
+/* Target-namespace line above the per-edge status list in an expanded workload row. */
+faros-provider-edges .es-target { font-size: 12px; margin: -2px 0 12px; overflow-wrap: anywhere; }
 
 /* EdgeService cards (server edge detail: discovered host services). */
 faros-provider-edges .svc-cards { display: flex; flex-direction: column; gap: 10px; }

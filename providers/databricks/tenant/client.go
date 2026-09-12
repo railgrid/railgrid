@@ -462,17 +462,21 @@ func (f *ClientFactory) TableResolverForRequest(r *http.Request) queryapi.TableR
 	return tableResolver{factory: f, identity: ident}
 }
 
+// identity is the hub-injected caller context. tenant (X-Faros-Tenant) and
+// clusterID (X-Faros-Cluster) both carry the workspace's kcp logical-cluster
+// ID; tenant is treated as an opaque presence check and clusterID addresses
+// the workspace.
 type identity struct {
-	tenantPath string
-	clusterID  string
-	token      string
+	tenant    string
+	clusterID string
+	token     string
 }
 
 func identityFromRequest(r *http.Request) identity {
 	return identity{
-		tenantPath: r.Header.Get("X-Faros-Tenant"),
-		clusterID:  r.Header.Get("X-Faros-Cluster"),
-		token:      bearerToken(r),
+		tenant:    r.Header.Get("X-Faros-Tenant"),
+		clusterID: r.Header.Get("X-Faros-Cluster"),
+		token:     bearerToken(r),
 	}
 }
 
@@ -547,7 +551,7 @@ func (r tableResolver) GetTable(ctx context.Context, name string) (queryapi.Tabl
 }
 
 func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
-	if r.identity.tenantPath == "" {
+	if r.identity.tenant == "" {
 		return nil, errors.New("no tenant identity on this request; bearer token did not resolve to a workspace")
 	}
 	if r.identity.clusterID == "" {

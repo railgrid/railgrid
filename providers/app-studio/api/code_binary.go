@@ -39,7 +39,7 @@ func (s *Server) codeBinaryCapabilities(ctx context.Context, r *http.Request, id
 	if r == nil || cluster == "" {
 		return false, false
 	}
-	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
+	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), r, id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		klog.V(2).Infof("read Code provider tool catalog for cluster %s: %v", cluster, err)
 		return false, false

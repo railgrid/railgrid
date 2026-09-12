@@ -211,6 +211,7 @@ const edgeDetail = {
 }
 const workload = {
   name: 'workload-a', image: 'nginx', replicas: 1, strategy: 'Spread', phase: 'Running',
+  targetNamespace: 'kiosk', imagePullSecrets: ['ghcr-pull'],
   edges: [{ edgeName: 'edge-a', phase: 'Running', readyReplicas: 1, message: 'ready' }],
 }
 
@@ -269,7 +270,7 @@ describe('edge list views', () => {
       if (view.label === 'services') {
         expect(state.serviceRows).toMatchObject([{ name: 'svc-a', edgeName: 'edge-a', status: 'Ready' }])
       } else {
-        expect(state.workloadRows).toMatchObject([{ name: 'workload-a', edges: [{ edgeName: 'edge-a', phase: 'Running' }] }])
+        expect(state.workloadRows).toMatchObject([{ name: 'workload-a', namespace: 'kiosk', pullSecrets: ['ghcr-pull'], edges: [{ edgeName: 'edge-a', phase: 'Running' }] }])
       }
       view.pageMock.mockResolvedValueOnce({ items: view.pageRows, continue: 'opaque-next' })
       state[view.change]({ reason: 'page', page: 2, pageSize: 25, query: '', filters: view.filters, cursor: 'opaque-next' })
@@ -794,6 +795,111 @@ describe('edge list views', () => {
       expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
         selector: { env: 'dev', region: 'us' },
       }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  const DNS_LABEL_ERROR = 'Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.'
+
+  it.each([
+    ['uppercase letters', 'Kiosk', DNS_LABEL_ERROR],
+    ['a trailing hyphen', 'kiosk-', DNS_LABEL_ERROR],
+    ['a dotted name', 'kiosk.apps', DNS_LABEL_ERROR],
+    ['more than 63 characters', 'a'.repeat(64), 'Namespace names are at most 63 characters.'],
+  ])('rejects a target namespace with %s', async (_label, namespace, expectedError) => {
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'nginx-demo'
+      state.draft.targetNamespace = namespace
+      await nextTick()
+      expect(state.targetNamespaceError).toBe(expectedError)
+      expect(state.canSubmit).toBe(false)
+      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Namespace')?.value)
+        .toBe('Fix the namespace')
+      await state.submit()
+      expect(api.createWorkload).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it.each([
+    ['an empty entry', 'ghcr-pull,', 'Secret names cannot be empty; separate them with commas.'],
+    ['an invalid name', 'GHCR_pull', '"GHCR_pull" is not a valid Secret name (lowercase letters, digits, hyphens and dots).'],
+    ['a duplicate', 'ghcr-pull, ghcr-pull', 'Secret "ghcr-pull" is listed more than once.'],
+  ])('rejects image pull secrets with %s', async (_label, secrets, expectedError) => {
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'nginx-demo'
+      state.draft.imagePullSecrets = secrets
+      await nextTick()
+      expect(state.pullSecretsError).toBe(expectedError)
+      expect(state.canSubmit).toBe(false)
+      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Image pull secrets')?.value)
+        .toBe('Fix the Secret names')
+      await state.submit()
+      expect(api.createWorkload).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('submits the target namespace and pull-secret names and leaves the default namespace unset', async () => {
+    const mounted = await mount(WorkloadCreate, { mode: 'manual' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const guidance = (label: string) => state.workloadGuidanceValues.find((item: { label: string }) => item.label === label)?.value
+      state.draft.name = 'kiosk-app'
+      state.draft.targetNamespace = ' kiosk '
+      state.draft.imagePullSecrets = 'ghcr-pull, quay-pull'
+      await nextTick()
+      expect(state.targetNamespaceError).toBeNull()
+      expect(state.pullSecretsError).toBeNull()
+      expect(guidance('Namespace')).toBe('kiosk')
+      expect(guidance('Image pull secrets')).toBe('ghcr-pull, quay-pull')
+      await state.submit()
+      expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
+        targetNamespace: 'kiosk',
+        imagePullSecrets: ['ghcr-pull', 'quay-pull'],
+      }))
+
+      api.createWorkload.mockClear()
+      state.draft.targetNamespace = ''
+      state.draft.imagePullSecrets = ''
+      await nextTick()
+      expect(guidance('Namespace')).toBe('default')
+      expect(guidance('Image pull secrets')).toBe('None (public image)')
+      await state.submit()
+      expect(api.createWorkload).toHaveBeenCalledWith(expect.objectContaining({
+        targetNamespace: undefined,
+        imagePullSecrets: [],
+      }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('passes the target namespace through a marketplace deploy', async () => {
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.targetNamespace = 'monitoring'
+      await nextTick()
+      expect(state.workloadGuidanceValues.find((item: { label: string }) => item.label === 'Namespace')?.value).toBe('monitoring')
+      expect(state.canSubmit).toBe(true)
+      await state.submit()
+      expect(api.deployMarketplaceApp).toHaveBeenCalledWith(expect.objectContaining({ targetNamespace: 'monitoring' }))
+
+      state.draft.targetNamespace = 'Monitoring'
+      await nextTick()
+      expect(state.canSubmit).toBe(false)
     } finally {
       mounted.unmount()
     }

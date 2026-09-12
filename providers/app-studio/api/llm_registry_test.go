@@ -122,11 +122,12 @@ func TestProjectLLMRegistryFallbackDefaultSkipsModelsWithoutCredentials(t *testi
 
 func TestCreateProjectLLMModelRejectsMissingCredential(t *testing.T) {
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{})
-	server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models", strings.NewReader(
 		`{"name":"GPT High","provider":"openai-compatible","baseURL":"https://api.openai.com/v1","model":"gpt-test"}`,
 	))
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 

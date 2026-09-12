@@ -277,7 +277,7 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 func TestProjectTemplateBindingContextAllowsMissingActionsURLWithoutGrant(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
-	context, err := (&Server{}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestProjectTemplateBindingContextAllowsMissingActionsURLWithoutGrant(t *tes
 func TestProjectTemplateBindingContextDoesNotEnableActionsWithoutGrant(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
-	context, err := (&Server{actionsExternalURL: "https://hub.example"}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example"}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *tes
 		},
 	}
 	bundle := "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----"
-	context, err := (&Server{actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *tes
 	}
 
 	noGrant := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "plain"}}
-	context, err = (&Server{actionsCABundle: bundle}).projectTemplateBindingContext(noGrant, identity{})
+	context, err = (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsCABundle: bundle}).projectTemplateBindingContext(noGrant, identity{})
 	if err != nil {
 		t.Fatalf("actionless projectTemplateBindingContext: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProjectTemplateBindingContextRejectsMissingOrInvalidActionsURLWithGrant
 		{name: "path", url: "https://hub.example/actions", want: "absolute HTTPS URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := (&Server{actionsExternalURL: tc.url}).projectTemplateBindingContext(p, identity{})
+			_, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: tc.url}).projectTemplateBindingContext(p, identity{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("projectTemplateBindingContext(%q) error = %v, want substring %q", tc.url, err, tc.want)
 			}
@@ -380,8 +380,10 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 		}`)},
 	}
 
-	updated, err := (&Server{}).projectDevelopmentRuntimeBinding(binding, p, identity{
-		tenantPath:    "root:faros:tenants:org:ws",
+	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup}).projectDevelopmentRuntimeBinding(binding, p, identity{
+		tenant:        "cluster-a",
+		clusterID:     "cluster-a",
+		workspacePath: "root:faros:tenants:org:ws",
 		orgUUID:       "org",
 		workspaceUUID: "ws",
 	})
@@ -436,7 +438,7 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 		}`)},
 	}
 
-	updated, err := (&Server{actionsExternalURL: "https://hub.example"}).projectDevelopmentRuntimeBinding(binding, p, identity{})
+	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, actionsExternalURL: "https://hub.example"}).projectDevelopmentRuntimeBinding(binding, p, identity{})
 	if err != nil {
 		t.Fatalf("projectDevelopmentRuntimeBinding: %v", err)
 	}
@@ -665,6 +667,7 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	}
 	client := newProjectCreationTestClient(&unstructured.Unstructured{Object: projectObject}, platformOwned)
 	server := &Server{
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
 		store:            store.NewMemoryStore(),
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 	}
@@ -672,7 +675,7 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	server.Register(router)
 
 	request := httptest.NewRequest(http.MethodPut, "/api/projects/demo/template", strings.NewReader(`{"template":"universal-coding-sandbox"}`))
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:ws-1")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	request.Header.Set("X-Faros-User", "alice")
 	request.Header.Set("Authorization", "Bearer test-token")

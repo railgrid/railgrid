@@ -333,6 +333,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		defer cancelPersist()
 		s.appendTurnTerminal(persistCtx, scope, run, sessionID, runStartedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), err.Error())
 		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: phase, Message: err.Error(), WorkedDurationMS: workedDurationMS}, end)
+		s.recordAgentRun(persistCtx, run.CR, agent, end, nil)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		return runResult{RunID: runID, Content: tracker.partialText(), Phase: phase, StartedAt: &runStartedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, err
 	}
@@ -343,7 +344,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	// not be billed at the chat model's rate; unknown models cost 0 rather than a
 	// fabricated number.
 	costMicros := llm.CostMicros(modelName, res.Usage.InputTokens, res.Usage.OutputTokens)
-	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
+	window, _ := s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
 
 	// Paused on an approval gate: persist the checkpoint and stop here — the
 	// approval resolution resumes the run in place.
@@ -387,6 +388,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	}
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	s.finishRun(persistCtx, scope, runID, fin, end)
+	s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 	cancelPersist()
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 

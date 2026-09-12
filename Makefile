@@ -63,6 +63,19 @@ build: build-faros build-hub
 build-faros:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros ./cmd/faros/
 
+## CLI reference docs (docs/cli/*.md) are generated from the cobra command
+## tree so they can never drift from the binary. verify-docs-cli is part of
+## `make verify`.
+docs-cli: build-faros ## Regenerate docs/cli from the faros command tree
+	$(BINDIR)/faros docs --dir docs/cli
+
+verify-docs-cli: docs-cli ## Fail when docs/cli is out of date with the command tree
+	@if [ -n "$$(git status --porcelain -- docs/cli)" ]; then \
+		echo "docs/cli is out of date; run 'make docs-cli' and commit the result"; \
+		git --no-pager status --short -- docs/cli; \
+		exit 1; \
+	fi
+
 build-release: ## Build the release-tagging helper (release <component|all>)
 	go build $(GOFLAGS) -o $(BINDIR)/release ./cmd/release/
 
@@ -1147,6 +1160,20 @@ e2e-edges-connectivity: build-hub build-edges-provider build-faros certs ## Run 
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## CLI suite: every user-facing `faros` command as a real subprocess against a
+## live hub (embedded kcp over HTTPS, two static-token users so membership
+## commands can be exercised, plus the edges-provider for edge/connect/ssh).
+## The server-edge path uses the in-process test sshd; the Kubernetes-edge
+## path needs kind and skips without it. Shares embedded-kcp etcd port 2380 —
+## do not run concurrently with the other subprocess suites.
+E2E_CLI_TIMEOUT ?= 20m
+e2e-cli: build-hub build-edges-provider build-faros certs ## Run the faros CLI e2e suite (kind optional)
+	@test -z "$$(lsof -ti :19483 :16483 :18108 :2380 2>/dev/null)" || { \
+		echo "ports 19483/16483/18108/2380 are in use; stop any running faros-hub/edges-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
@@ -2597,7 +2624,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

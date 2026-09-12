@@ -129,7 +129,7 @@ func TestProjectAssistantSkillToolsReceiptsCheckpointAndReadOnlyVisibility(t *te
 		t.Fatalf("drift error = %v", err)
 	}
 
-	registry := projectAssistantLocalToolRegistry(&Server{})
+	registry := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup})
 	readOnly := projectAssistantToolsForTurnPolicy(registry.Tools(false), projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging))
 	visible := map[string]projectAssistantToolSpec{}
 	for _, tool := range readOnly {
@@ -165,6 +165,7 @@ func TestProjectAssistantLoadSkillDurableReplayRestoresReceipt(t *testing.T) {
 func TestProjectAssistantSkillSelectionIsPartOfDurableReplayIdentity(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	start := func(store.AssistantRun, store.Message, bool) error { return nil }
 	first, err := server.startProjectAssistantRunDurablyWithModeAndSkills(
@@ -240,7 +241,7 @@ func projectAssistantSkillTestSnapshot(t *testing.T) appskills.Snapshot {
 	if err != nil {
 		t.Fatalf("apply skill files: %v", err)
 	}
-	server := &Server{workspaces: files}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: files}
 	snapshot, err := server.projectAssistantSkillSnapshot(context.Background(), scope)
 	if err != nil {
 		t.Fatalf("load skill snapshot: %v", err)

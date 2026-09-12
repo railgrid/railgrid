@@ -65,7 +65,7 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 			return true, nil, nil
 		})
 	}
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{
 			{
@@ -340,7 +340,7 @@ func TestMaterializeAutomaticProjectIntegrationsCatalogAndListFailuresAreBestEff
 	}
 	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{asclient.ProjectGVR: "ProjectList", testDatabricksTableGVR: "TableList"}, project)
 	c := asclient.NewFromDynamic(dyn)
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, errors.New("catalog unavailable")
 	}
@@ -379,7 +379,7 @@ func automaticIntegrationTestServer(t *testing.T, project *aiv1alpha1.Project, n
 	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
 		asclient.ProjectGVR: "ProjectList", testDatabricksTableGVR: "TableList",
 	}, objects...)
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{Name: projectIntegrationProviderDatabricks, Ready: true, Actions: []providerCatalogAction{
 			{ID: projectIntegrationActionQueryTable + "/" + projectIntegrationActionVersionV1, SchemaDigest: testProjectActionSchemaDigest,

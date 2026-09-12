@@ -47,16 +47,28 @@ const hubURLEnv = "FAROS_HUB_URL"
 
 func newLoginCommand() *cobra.Command {
 	var (
-		hubURL                string
-		insecureSkipTLSVerify bool
-		token                 string
-		interactive           bool
+		hubURL      string
+		token       string
+		interactive bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with the faros hub via OIDC or static token",
+		Short: "Log in to a faros hub (browser OIDC flow, or a static token)",
+		Long: `Authenticate against a hub and write a kubeconfig context named "faros"
+whose credentials refresh automatically (OIDC) or carry the static token.
+
+  faros login --hub-url https://hub.example.com        # opens the browser
+  faros login --hub-url https://hub.example.com -i     # …then pick org/workspace
+  faros login --hub-url https://hub.example.com --token <token>
+  export FAROS_HUB_URL=https://hub.example.com          # instead of --hub-url
+
+On a self-signed hub add --insecure-skip-tls-verify. After login, 'faros use'
+switches organization and workspace and 'faros whoami' shows the session.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			insecureSkipTLSVerify := globalInsecureTLS
+			out := cmd.OutOrStdout()
 			if hubURL == "" {
 				hubURL = strings.TrimSpace(os.Getenv(hubURLEnv))
 			}
@@ -65,7 +77,7 @@ func newLoginCommand() *cobra.Command {
 			}
 			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
-				if err := runStaticTokenLogin(hubURL, token, insecureSkipTLSVerify); err != nil {
+				if err := runStaticTokenLogin(out, hubURL, token, insecureSkipTLSVerify); err != nil {
 					return err
 				}
 			} else {
@@ -79,18 +91,12 @@ func newLoginCommand() *cobra.Command {
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
-				if err := runLogin(ctx, hubURL, insecureSkipTLSVerify); err != nil {
+				if err := runLogin(ctx, out, hubURL); err != nil {
 					return err
 				}
 			}
 			if interactive {
-				// runUse consults globalInsecureTLS; carry over the login
-				// flag so the org/workspace REST calls hit a self-signed hub
-				// without a second flag.
-				if insecureSkipTLSVerify {
-					globalInsecureTLS = true
-				}
-				fmt.Println()
+				_, _ = fmt.Fprintln(out)
 				return runUse(cmd.Context(), "", "")
 			}
 			return nil
@@ -98,7 +104,6 @@ func newLoginCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (or set "+hubURLEnv+")")
-	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification")
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "After login, interactively pick the organization and workspace")
 
@@ -132,7 +137,7 @@ func checkHubAuthMode(hubURL string, insecure bool) (bool, error) {
 	return result.OIDC, nil
 }
 
-func runStaticTokenLogin(hubURL, token string, insecure bool) error {
+func runStaticTokenLogin(out io.Writer, hubURL, token string, insecure bool) error {
 	// Call the server's token-login endpoint to provision user/workspace
 	// and get a kubeconfig with the correct cluster URL.
 	client := &http.Client{}
@@ -173,13 +178,26 @@ func runStaticTokenLogin(hubURL, token string, insecure bool) error {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
 
-	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", loginResp.Email, loginResp.UserID)
-	fmt.Printf("Kubeconfig context %q has been set.\n", contextName)
-	fmt.Printf("Run: kubectl --context=%q get edges\n", contextName)
+	printLoginSuccess(out, loginResp.Email, loginResp.UserID, contextName, nil)
 	return nil
 }
 
-func runLogin(ctx context.Context, hubURL string, insecure bool) error {
+// printLoginSuccess prints the outcome and what to do next. expiresAt is the
+// OIDC token expiry (nil for static tokens).
+func printLoginSuccess(out io.Writer, email, userID, contextName string, expiresAt *time.Time) {
+	who := email
+	if who == "" {
+		who = userID
+	}
+	_, _ = fmt.Fprintf(out, "Logged in as %s.\n", who)
+	_, _ = fmt.Fprintf(out, "Kubeconfig context %q is current; kubectl now targets your default workspace.\n", contextName)
+	if expiresAt != nil {
+		_, _ = fmt.Fprintf(out, "Token valid for %s; it refreshes automatically.\n", formatDuration(time.Until(*expiresAt)))
+	}
+	_, _ = fmt.Fprintf(out, "\nNext:\n  faros use          pick an organization and workspace\n  faros edge list    see connected clusters and servers\n  faros whoami       show this session\n")
+}
+
+func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
 	// 1. Start local callback server on a random port.
 	authenticator := cliauth.NewLocalhostCallbackAuthenticator()
 	if err := authenticator.Start(); err != nil {
@@ -201,12 +219,12 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 		hubURL, authenticator.Port(), sessionID, codeVerifier)
 
 	// 4. Open browser.
-	fmt.Printf("Opening browser for login...\n")
+	_, _ = fmt.Fprintf(out, "Opening browser for login...\n")
 	if err := openBrowser(authorizeURL); err != nil {
-		fmt.Printf("Could not open browser automatically.\nPlease open the following URL in your browser:\n\n  %s\n\n", authorizeURL)
+		_, _ = fmt.Fprintf(out, "Could not open browser automatically.\nPlease open the following URL in your browser:\n\n  %s\n\n", authorizeURL)
 	}
 
-	fmt.Println("Waiting for login to complete...")
+	_, _ = fmt.Fprintln(out, "Waiting for login to complete...")
 
 	// 6. Wait for the callback response.
 	resp, err := authenticator.WaitForResponse(ctx)
@@ -217,7 +235,16 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 	// 7. Save OIDC token cache so the exec credential plugin can use it.
 	// ClientSecret is intentionally not cached — PKCE public client refresh
 	// needs only the refresh token, issuer URL, and client ID.
+	var expiresAt *time.Time
 	if resp.IDToken != "" && resp.IssuerURL != "" {
+		if resp.RefreshToken == "" {
+			fmt.Fprintf(os.Stderr, "Warning: the identity provider issued no refresh token; you will have to log in again when the token expires.\n"+
+				"         (dex: the %q client needs 'public: true' and the hub requests the offline_access scope.)\n", resp.ClientID)
+		}
+		if resp.ExpiresAt > 0 {
+			t := time.Unix(resp.ExpiresAt, 0)
+			expiresAt = &t
+		}
 		cache := &cliauth.TokenCache{
 			IDToken:      resp.IDToken,
 			RefreshToken: resp.RefreshToken,
@@ -236,9 +263,7 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
 
-	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", resp.Email, resp.UserID)
-	fmt.Printf("Kubeconfig context %q has been set.\n", contextName)
-	fmt.Printf("Run: kubectl --context=%q get edges\n", contextName)
+	printLoginSuccess(out, resp.Email, resp.UserID, contextName, expiresAt)
 	return nil
 }
 
@@ -326,8 +351,14 @@ func rewriteFarosExecCommand(cfg *clientcmdapi.Config) {
 	}
 }
 
-// openBrowser opens the given URL in the default browser.
+// openBrowser opens the given URL in the default browser. $BROWSER, when
+// set, names the command to run instead (the freedesktop convention); it
+// also lets tests and headless environments capture the URL.
 func openBrowser(url string) error {
+	if browser := strings.TrimSpace(os.Getenv("BROWSER")); browser != "" {
+		parts := strings.Fields(browser)
+		return exec.Command(parts[0], append(parts[1:], url)...).Start()
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

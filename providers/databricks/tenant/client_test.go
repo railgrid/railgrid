@@ -265,9 +265,9 @@ func testResolver(dyn dynamic.Interface) tableResolver {
 			},
 		},
 		identity: identity{
-			tenantPath: "root:org:workspace",
-			clusterID:  "cluster-a",
-			token:      "caller-token",
+			tenant:    "root:org:workspace",
+			clusterID: "cluster-a",
+			token:     "caller-token",
 		},
 	}
 }

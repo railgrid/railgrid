@@ -12,10 +12,11 @@ citing the file and line. Architecture reference: [AGENTS.md](../AGENTS.md),
 A provider that talks to kcp MUST act **as the caller, in the caller's
 workspace** — never with elevated or shared credentials.
 
-- The hub forwards the caller's bearer token plus a resolved `X-Faros-Tenant`
-  path. The provider's `tenant/` package (`client.go`, `credentials.go`) must
-  build a **per-(tenant, caller) dynamic client** scoped to
-  `<host>/clusters/<tenantPath>`. Canonical patterns:
+- The hub forwards the caller's bearer token plus the tenant workspace's kcp
+  logical-cluster ID in `X-Faros-Tenant` and `X-Faros-Cluster` (never the
+  workspace path). The provider's `tenant/` package (`client.go`,
+  `credentials.go`) must build a **per-(tenant, caller) dynamic client**
+  scoped to `<host>/clusters/<clusterID>`. Canonical patterns:
   `providers/code/tenant/` and `providers/infrastructure/tenant/`.
 - **Flag** any code that constructs a kcp/Kubernetes client that is NOT derived
   from the caller's forwarded token + resolved tenant path: a client built from
@@ -23,7 +24,10 @@ workspace** — never with elevated or shared credentials.
   a package-level/singleton client, or a client whose host/cluster path is not
   scoped to the request's tenant.
 - **Flag** any path where the tenant scope comes from request *body* or a
-  client-supplied value instead of the hub-resolved `X-Faros-Tenant` header.
+  client-supplied value instead of the hub-resolved `X-Faros-Cluster` /
+  `X-Faros-Tenant` header, and any code that parses a workspace path
+  (`root:faros:tenants:...`) out of a header — org/workspace UUIDs come from
+  kcp (`provider-sdk/tenantaccess.ResolveWorkspace`).
 
 ## 2. No credential substitution / privilege escalation
 

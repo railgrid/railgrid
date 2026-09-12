@@ -33,7 +33,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/transport"
@@ -52,7 +51,7 @@ type wsSSHMsg struct {
 func newSSHCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ssh <name> [-- command [args...]]",
-		Short: "Open an SSH session to an edge via the hub",
+		Short: "Open an SSH session to a Linux server edge via the hub",
 		Long: `Open an interactive SSH session (or run a single command) on an Edge
 that is connected to the hub.
 
@@ -63,8 +62,8 @@ Examples:
   # Run a single command (non-interactive)
   faros ssh my-server -- echo hello
 `,
-		Args:               cobra.MinimumNArgs(1),
-		DisableFlagParsing: false,
+		Args:              cobra.MinimumNArgs(1),
+		ValidArgsFunction: completeServerEdgeNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSSH(cmd, args)
 		},
@@ -90,8 +89,9 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Fetch the connectable resource to get the proxy URL from status. The edge
-	// type lives in the edges provider, so discover its GVR dynamically.
+	// Fetch the Edge resource to get the proxy URL from status. The Edge type
+	// now lives in the edges-connectivity provider (edges.faros.sh), so we
+	// read it via the dynamic client and pull status.URL out of the unstructured.
 	client, err := farosclient.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating faros client: %w", err)
@@ -99,15 +99,26 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	edge, gvr, err := getEdgeByName(ctx, client.Dynamic(), name)
 	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("edge %q not found in this workspace (faros edge list)", name)
+		}
 		return fmt.Errorf("fetching edge %q: %w", name, err)
 	}
-	if gvr != farosclient.LinuxServerGVR {
-		return fmt.Errorf("edge %q is a %s edge; SSH is only available for LinuxServer edges", name, farosclient.EdgeTypeForGVR(gvr))
+	switch gvr {
+	case farosclient.LinuxServerGVR:
+	case farosclient.KubernetesClusterGVR:
+		return fmt.Errorf("edge %q is a Kubernetes cluster, not a Linux server; use: faros connect %s", name, name)
+	default:
+		return fmt.Errorf("edge %q is a %s edge; SSH is only available for Linux server edges", name, farosclient.EdgeTypeForGVR(gvr))
 	}
 
 	edgeURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
 	if edgeURL == "" {
-		return fmt.Errorf("edge %q has no proxy URL in status; is the agent running?", name)
+		connected, _, _ := unstructured.NestedBool(edge.Object, "status", "connected")
+		if !connected {
+			return fmt.Errorf("edge %q is not connected; start the agent on it ('faros edge join-command %s' prints how)", name, name)
+		}
+		return fmt.Errorf("edge %q has no proxy URL in status yet; retry shortly", name)
 	}
 
 	// Externalize the edge URL: status.URL may use an internal host (for kcp
@@ -173,16 +184,25 @@ func buildSSHWebSocketURL(_ *rest.Config, edgeURL, remoteCmd string) (string, er
 	if remoteCmd != "" {
 		q := url.Values{}
 		q.Set("cmd", remoteCmd)
+		// The CLI forwards its stdin (or an immediate EOF) for every
+		// non-interactive command; tell the hub so it wires the command's
+		// stdin to the WebSocket instead of leaving it empty.
+		q.Set("stdin", "1")
 		u.RawQuery = q.Encode()
 	}
 	return u.String(), nil
 }
 
 // runSSHCommandStream reads output messages from the WebSocket until the
-// connection is closed by the hub (after the remote command exits).  The
+// connection is closed by the hub (after the remote command exits). The
 // command itself was already conveyed to the hub via the "cmd" query
-// parameter in the WebSocket URL; there is nothing to write here.
+// parameter in the WebSocket URL. What is written here is the command's
+// stdin: when the local stdin is a pipe or file its bytes are forwarded as
+// "cmd" messages followed by "eof" (so `cat f | faros ssh x -- "cat > f"`
+// copies the file); when it is a terminal an "eof" goes out at once so
+// commands that read stdin do not hang waiting for the keyboard.
 func runSSHCommandStream(ctx context.Context, conn *websocket.Conn) error {
+	go forwardSSHStdin(conn, os.Stdin, term.IsTerminal(int(os.Stdin.Fd())))
 	for {
 		select {
 		case <-ctx.Done():
@@ -198,6 +218,31 @@ func runSSHCommandStream(ctx context.Context, conn *websocket.Conn) error {
 			return err
 		}
 	}
+}
+
+// forwardSSHStdin streams r to the hub as base64 "cmd" messages and ends
+// with an "eof" message. A terminal stdin is not read at all (only the EOF
+// is sent), because a non-interactive command has no business waiting for
+// keystrokes. Write errors end the copy silently: the read loop reports the
+// connection state.
+func forwardSSHStdin(conn *websocket.Conn, r io.Reader, isTerminal bool) {
+	send := func(msg wsSSHMsg) bool {
+		b, _ := json.Marshal(msg)
+		return conn.WriteMessage(websocket.TextMessage, b) == nil
+	}
+	if !isTerminal {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 && !send(wsSSHMsg{Type: "cmd", Cmd: base64.StdEncoding.EncodeToString(buf[:n])}) {
+				return
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	send(wsSSHMsg{Type: "eof"})
 }
 
 // runSSHInteractive bridges a raw terminal to the hub SSH WebSocket session.

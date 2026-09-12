@@ -475,8 +475,9 @@ What an Org gets is deliberately narrow.
   is what the user could already do in that workspace with `kubectl`. The
   account is bound to the same ClusterRole workspace members hold today
   (`cluster-admin` in the workspace, granted by the bootstrap); narrowing that
-  is the workspace RBAC's job, not the proxy's. `X-Faros-User` and
-  `X-Faros-Tenant` still name the human. When the provider calls back into the
+  is the workspace RBAC's job, not the proxy's. `X-Faros-User` still names
+  the human and `X-Faros-Tenant` / `X-Faros-Cluster` still carry the
+  workspace's cluster ID. When the provider calls back into the
   hub with the token — `/clusters/{id}` or another provider's backend, with
   `X-Faros-Org`/`X-Faros-Workspace` naming its workspace — the tenant resolver
   verifies it online and resolves it to the human user again. A request the

@@ -813,7 +813,8 @@ import type { Workload } from './types'
 interface RawWorkload {
   metadata: { name: string; creationTimestamp?: string }
   spec?: {
-    simple?: { image?: string }
+    targetNamespace?: string
+    simple?: { image?: string; imagePullSecrets?: Array<{ name?: string }> }
     replicas?: number
     placement?: { strategy?: string; edgeSelector?: { matchLabels?: Record<string, string> } }
   }
@@ -829,7 +830,11 @@ function toWorkload(it: RawWorkload): Workload {
   return {
     name: it.metadata.name,
     creationTimestamp: it.metadata.creationTimestamp,
+    targetNamespace: it.spec?.targetNamespace || DEFAULT_TARGET_NAMESPACE,
     image: it.spec?.simple?.image,
+    imagePullSecrets: (it.spec?.simple?.imagePullSecrets ?? [])
+      .map((ref) => ref.name ?? '')
+      .filter((name) => name !== ''),
     replicas: it.spec?.replicas,
     strategy: it.spec?.placement?.strategy,
     selector: it.spec?.placement?.edgeSelector?.matchLabels,
@@ -852,9 +857,23 @@ function parseRawWorkload(item: unknown, index: number): RawWorkload {
   return item as unknown as RawWorkload
 }
 
-// Workloads are namespaced; the portal creates them in `default` (where the
-// agent materializes their Deployments) and lists that namespace only.
+// Workloads are namespaced on the hub; the portal creates them in `default`
+// and lists that namespace only. The hub namespace is never where the objects
+// run on an edge: that is spec.targetNamespace (see DEFAULT_TARGET_NAMESPACE).
 const WORKLOAD_NS = 'default'
+
+// DEFAULT_TARGET_NAMESPACE mirrors the CRD default for spec.targetNamespace:
+// the edge-cluster namespace a Workload renders into when none is set. The
+// portal omits the field for this value so the object stays at its default.
+export const DEFAULT_TARGET_NAMESPACE = 'default'
+
+// normalizeTargetNamespace maps the form's optional namespace to the value the
+// spec carries: undefined for the default (field omitted), the trimmed name
+// otherwise. Validation (DNS label) happens in the form before submit.
+function normalizeTargetNamespace(value: string | undefined): string | undefined {
+  const ns = (value ?? '').trim()
+  return ns === '' || ns === DEFAULT_TARGET_NAMESPACE ? undefined : ns
+}
 
 async function listWorkloadsPageRaw(
   options: KubernetesListOptions = {},
@@ -891,15 +910,27 @@ export interface WorkloadDraft {
   replicas: number
   strategy: 'Spread' | 'Singleton'
   selector: Record<string, string>
+  // targetNamespace is the edge-cluster namespace (DNS label). Empty or
+  // "default" leaves spec.targetNamespace unset.
+  targetNamespace?: string
+  // imagePullSecrets are Secret names that must already exist in the target
+  // namespace on every selected edge; only the references travel.
+  imagePullSecrets?: string[]
 }
 
 export async function createWorkload(d: WorkloadDraft): Promise<void> {
+  const targetNamespace = normalizeTargetNamespace(d.targetNamespace)
+  const imagePullSecrets = (d.imagePullSecrets ?? []).map((name) => ({ name }))
   const object: KubeObject = {
     apiVersion: EDGES_API_VERSION,
     kind: 'Workload',
     metadata: { name: d.name, namespace: WORKLOAD_NS },
     spec: {
-      simple: { image: d.image },
+      ...(targetNamespace ? { targetNamespace } : {}),
+      simple: {
+        image: d.image,
+        ...(imagePullSecrets.length ? { imagePullSecrets } : {}),
+      },
       replicas: d.replicas,
       placement: {
         strategy: d.strategy,
@@ -927,12 +958,17 @@ export async function deployMarketplaceApp(opts: {
   serviceType: string
   port: number
   instructions?: string
+  // targetNamespace is the edge-cluster namespace the chart renders into; the
+  // follow-up Service's targetRef points at the same namespace.
+  targetNamespace?: string
 }): Promise<void> {
+  const targetNamespace = normalizeTargetNamespace(opts.targetNamespace)
   const workload: KubeObject = {
     apiVersion: EDGES_API_VERSION,
     kind: 'Workload',
     metadata: { name: opts.name, namespace: WORKLOAD_NS },
     spec: {
+      ...(targetNamespace ? { targetNamespace } : {}),
       helm: {
         repoURL: opts.chart.repoURL,
         chart: opts.chart.chart,
@@ -955,7 +991,7 @@ export async function deployMarketplaceApp(opts: {
     name: opts.name,
     edgeName: opts.edgeName,
     serviceType: opts.serviceType,
-    targetNamespace: WORKLOAD_NS,
+    targetNamespace: targetNamespace ?? DEFAULT_TARGET_NAMESPACE,
     targetName: opts.name,
     port: opts.port,
     instructions: opts.instructions,

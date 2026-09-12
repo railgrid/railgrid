@@ -22,13 +22,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -44,9 +42,14 @@ const farosContextName = "faros"
 // pkg/hub/restapi (OrgView, WorkspaceView, ListResponse). Only the fields the
 // switcher needs are decoded.
 type orgView struct {
-	UUID        string `json:"uuid"`
-	DisplayName string `json:"displayName"`
-	Personal    bool   `json:"personal"`
+	UUID                 string    `json:"uuid"`
+	DisplayName          string    `json:"displayName"`
+	Personal             bool      `json:"personal"`
+	WorkspaceCreation    string    `json:"workspaceCreation,omitempty"`
+	CatalogEntryCreation string    `json:"catalogEntryCreation,omitempty"`
+	CreatedAt            time.Time `json:"createdAt,omitempty"`
+	// Role is the caller's org-scope role (admin | member).
+	Role string `json:"role,omitempty"`
 }
 
 type workspaceView struct {
@@ -54,6 +57,9 @@ type workspaceView struct {
 	OrgUUID     string `json:"orgUUID"`
 	DisplayName string `json:"displayName"`
 	ClusterName string `json:"clusterName"`
+	// Role is the caller's workspace-scope role, empty when they hold no
+	// workspace row (an org admin listing every workspace).
+	Role string `json:"role,omitempty"`
 }
 
 type listResponse[T any] struct {
@@ -95,9 +101,9 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
 	}
-	raw, err := loadingRules.GetStartingConfig()
+	raw, destPath, err := loadRawKubeconfig()
 	if err != nil {
-		return fmt.Errorf("loading kubeconfig: %w", err)
+		return err
 	}
 	ctxName, kctx, err := resolveFarosContext(raw)
 	if err != nil {
@@ -130,7 +136,7 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 
 	// Interactive selection needs a TTY; bail early with actionable advice
 	// when one isn't available and a flag is missing.
-	if (orgFlag == "" || wsFlag == "") && !term.IsTerminal(int(os.Stdin.Fd())) {
+	if (orgFlag == "" || wsFlag == "") && !stdinIsTerminal() {
 		return fmt.Errorf("no interactive terminal; pass --org and --workspace to switch non-interactively")
 	}
 
@@ -163,22 +169,21 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 		return fmt.Errorf("workspace %q is not ready yet (no cluster assigned); try again shortly", displayLabel(ws.DisplayName, ws.UUID))
 	}
 
-	// 3. Retarget the faros cluster server URL and persist.
+	// 3. Retarget the faros cluster server URL, make the faros context
+	// current again (a previous 'faros connect' may have moved kubectl to an
+	// edge), and persist.
 	newServer := apiurl.HubServerURL(base, ws.ClusterName)
-	if cluster.Server == newServer {
-		fmt.Printf("Already using organization %q / workspace %q\n", org.DisplayName, displayLabel(ws.DisplayName, ws.UUID))
-		return nil
-	}
+	switched := cluster.Server != newServer
 	cluster.Server = newServer
-
-	destPath := loadingRules.GetDefaultFilename()
-	if kubeconfig != "" {
-		destPath = kubeconfig
-	}
+	raw.CurrentContext = ctxName
 	if err := clientcmd.WriteToFile(*raw, destPath); err != nil {
 		return fmt.Errorf("writing kubeconfig to %s: %w", destPath, err)
 	}
 
+	if !switched {
+		fmt.Printf("Already using organization %q / workspace %q\n", org.DisplayName, displayLabel(ws.DisplayName, ws.UUID))
+		return nil
+	}
 	fmt.Printf("Switched to organization %q / workspace %q\n", org.DisplayName, displayLabel(ws.DisplayName, ws.UUID))
 	fmt.Printf("Context %q now points at %s\n", ctxName, newServer)
 	return nil

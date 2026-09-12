@@ -27,7 +27,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/faroshq/provider-sdk/vwhealth"
 	"log"
 	"net/http"
 	"os"
@@ -43,6 +42,7 @@ import (
 	"github.com/faroshq/provider-code/server"
 	"github.com/faroshq/provider-code/tenant"
 	"github.com/faroshq/provider-sdk/hubclient"
+	"github.com/faroshq/provider-sdk/vwhealth"
 )
 
 // heartbeatVersion is reported to the hub; align with manifest.yaml spec.version.
@@ -102,7 +102,9 @@ func runServe() {
 	// Reachability of the APIExport virtual workspace, reported as readiness.
 	// A provider that cannot reach it keeps serving and keeps reconciling its
 	// own workspace, and silently does nothing in tenant workspaces — see
-	// provider-sdk/vwhealth.
+	// provider-sdk/vwhealth. While this replica leads, the controller
+	// manager also attaches its multicluster provider here, so readiness
+	// covers "reachable" AND "actually being watched".
 	vwState := &vwhealth.Readiness{}
 	if kcpErr != nil {
 		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
@@ -177,7 +179,7 @@ func runServe() {
 		}
 	}()
 
-	if err := startControllerManager(ctx, kcpConfig, backends, bundles); err != nil {
+	if err := startControllerManager(ctx, kcpConfig, backends, bundles, vwState); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set CODE_KUBECONFIG to enable")
 		} else {
@@ -189,6 +191,10 @@ func runServe() {
 	if err != nil {
 		log.Printf("heartbeat token: %v (beats will be unauthenticated)", err)
 	}
+	// The hub treats any received beat as "alive", so hold beats while
+	// readiness says otherwise: the TTL then flips the catalog entry to
+	// NotReady instead of it staying green over dead controllers.
+	hb.CanSend = func() bool { return vwState.Check() == nil }
 	go hubclient.RunHeartbeat(ctx, hb)
 
 	<-ctx.Done()

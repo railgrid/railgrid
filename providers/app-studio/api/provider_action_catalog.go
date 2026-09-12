@@ -305,8 +305,8 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 	if id.token != "" {
 		req.Header.Set("Authorization", "Bearer "+id.token)
 	}
-	if id.tenantPath != "" {
-		req.Header.Set("X-Faros-Tenant", id.tenantPath)
+	if id.tenant != "" {
+		req.Header.Set("X-Faros-Tenant", id.tenant)
 	}
 	if id.clusterID != "" {
 		req.Header.Set("X-Faros-Cluster", id.clusterID)

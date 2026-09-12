@@ -32,15 +32,27 @@ import (
 // loader.LoadArchive accepts.
 func chartArchive(t *testing.T, name, version string) []byte {
 	t.Helper()
+	return chartArchiveWithFiles(t, name, version, nil)
+}
+
+// chartArchiveWithFiles builds a chart tgz with Chart.yaml plus the given
+// files (path relative to the chart root, e.g. "templates/deploy.yaml").
+func chartArchiveWithFiles(t *testing.T, name, version string, files map[string]string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	chartYAML := fmt.Sprintf("apiVersion: v2\nname: %s\nversion: %s\n", name, version)
-	if err := tw.WriteHeader(&tar.Header{Name: name + "/Chart.yaml", Mode: 0o644, Size: int64(len(chartYAML))}); err != nil {
-		t.Fatal(err)
+	all := map[string]string{"Chart.yaml": fmt.Sprintf("apiVersion: v2\nname: %s\nversion: %s\n", name, version)}
+	for p, body := range files {
+		all[p] = body
 	}
-	if _, err := tw.Write([]byte(chartYAML)); err != nil {
-		t.Fatal(err)
+	for p, body := range all {
+		if err := tw.WriteHeader(&tar.Header{Name: name + "/" + p, Mode: 0o644, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)

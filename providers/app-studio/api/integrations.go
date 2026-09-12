@@ -662,8 +662,8 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	if id.tenantPath != "" {
-		req.Header.Set("X-Faros-Tenant", id.tenantPath)
+	if id.tenant != "" {
+		req.Header.Set("X-Faros-Tenant", id.tenant)
 	}
 	if id.clusterID != "" {
 		req.Header.Set("X-Faros-Cluster", id.clusterID)

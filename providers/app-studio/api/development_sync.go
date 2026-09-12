@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
@@ -250,11 +251,51 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 	}
 	result, err := s.syncProjectDevelopmentTarget(r.Context(), c, id, p, target)
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		writeDevelopmentSyncError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projectDevelopmentSyncResponse{Target: target, Result: result})
 }
+
+// writeDevelopmentSyncError maps a sync failure onto the status the caller can
+// act on. A workspace that cannot run in the sandbox (no toolchain manifest,
+// nothing under a component directory) and a sandbox that rejected the payload
+// are the caller's to fix, so they answer 4xx with the reason in the body. Only
+// a sandbox that could not be reached, or that failed internally, is a gateway
+// failure. The distinction matters beyond semantics: the edge in front of the
+// hub replaces origin 502 bodies with its own error page, so a precondition
+// reported as 502 reached clients as a bare "error code: 502" with no hint that
+// a package.json was all that was missing.
+func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
+	var precondition *projectDevelopmentSyncPreconditionError
+	if errors.As(err, &precondition) {
+		writeStatus(w, http.StatusUnprocessableEntity, "UnprocessableEntity", err.Error())
+		return
+	}
+	var rejected *projectDevelopmentSyncHTTPError
+	if errors.As(err, &rejected) {
+		switch rejected.status {
+		case http.StatusConflict:
+			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+			return
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			writeStatus(w, http.StatusUnprocessableEntity, "UnprocessableEntity", err.Error())
+			return
+		}
+	}
+	if apierrors.IsNotFound(err) {
+		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		return
+	}
+	writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+}
+
+// projectDevelopmentSyncPreconditionError reports a sync App Studio refused
+// before contacting the sandbox: the workspace tree, not the data plane, has to
+// change for it to succeed. writeDevelopmentSyncError answers it with 422.
+type projectDevelopmentSyncPreconditionError struct{ msg string }
+
+func (e *projectDevelopmentSyncPreconditionError) Error() string { return e.msg }
 
 func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
@@ -338,9 +379,9 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	// app never starts and nothing explains why. Fail with the expected
 	// layout instead.
 	if len(files) > 0 && countRoutedProjectSyncFiles(routed) == 0 {
-		return nil, fmt.Errorf(
+		return nil, &projectDevelopmentSyncPreconditionError{msg: fmt.Sprintf(
 			"none of the %d workspace files are under a development component directory (%s); application source must live under those directories to reach the development sandbox",
-			len(files), target.componentWorkspacePathSummary())
+			len(files), target.componentWorkspacePathSummary())}
 	}
 	// Files landing in the right directory but written for the wrong runtime
 	// fail silently otherwise: the sandbox image has no toolchain for them, the
@@ -593,6 +634,8 @@ func routeProjectSyncDeletedPaths(paths []string, components map[string]projectT
 // toolchain must never block a sync, since the template, not App Studio, is the
 // authority on what its sandbox can run.
 var projectToolchainManifests = map[string]struct {
+	// Label names the toolchain the way its users do.
+	Label string
 	// Files are the accepted manifest names; any one present satisfies the check.
 	Files []string
 	// Hint tells the caller what to write instead, in the terms the agent
@@ -600,20 +643,24 @@ var projectToolchainManifests = map[string]struct {
 	Hint string
 }{
 	"node": {
+		Label: "Node.js",
 		Files: []string{"package.json"},
-		Hint:  "write a package.json whose \"dev\" or \"start\" script launches the server on $PORT",
+		Hint:  "commit a package.json whose \"dev\" or \"start\" script launches the server on $PORT",
 	},
 	"python": {
+		Label: "Python",
 		Files: []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py"},
-		Hint:  "write a requirements.txt or pyproject.toml declaring the app's dependencies",
+		Hint:  "commit a requirements.txt or pyproject.toml declaring the app's dependencies",
 	},
 	"go": {
+		Label: "Go",
 		Files: []string{"go.mod"},
-		Hint:  "write a go.mod at the component root",
+		Hint:  "commit a go.mod at the component root",
 	},
 	"ruby": {
+		Label: "Ruby",
 		Files: []string{"Gemfile"},
-		Hint:  "write a Gemfile at the component root",
+		Hint:  "commit a Gemfile at the component root",
 	},
 }
 
@@ -656,11 +703,11 @@ func validateProjectSyncToolchains(routed map[string][]projectSandboxSyncFile, c
 		} else {
 			where += "/"
 		}
-		return fmt.Errorf(
-			"component %q runs a %s development sandbox but %s contains no %s — %s. The sandbox has no other toolchain installed and starts this component with: %s",
-			name, comp.Toolchain, where,
-			humanizeProjectManifestList(manifest.Files), manifest.Hint,
-			summarizeProjectStartCommand(comp.StartCommand))
+		return &projectDevelopmentSyncPreconditionError{msg: fmt.Sprintf(
+			"component %q has no %s in %s; the %s (%s) development sandbox needs one — %s, or skip the sandbox and promote. The sandbox has no other toolchain installed and starts this component with: %s",
+			name, humanizeProjectManifestList(manifest.Files), where,
+			manifest.Label, comp.Toolchain, manifest.Hint,
+			summarizeProjectStartCommand(comp.StartCommand))}
 	}
 	return nil
 }

@@ -21,9 +21,13 @@ local dev, with explicit in-memory mode available only for throwaway UI work).
 
 The provider acts **as the calling user**: the hub's backend proxy forwards
 `/services/providers/app-studio/*` with the verified `X-Faros-Tenant` /
+`X-Faros-Cluster` (both the workspace's kcp logical-cluster ID) and
 `X-Faros-User` headers and the caller's bearer token, and the provider builds a
-per-request, token-scoped client (see `tenant/`). There is no provider
-service-account escalation.
+per-request, token-scoped client (see `tenant/`). The organization / workspace
+UUIDs that key App Studio's durable state, and the tenant path handed to a
+project's Provider Actions identity, are read from kcp (the workspace's
+`LogicalCluster`, as the caller) rather than parsed from a header. There is no
+provider service-account escalation.
 
 ## Start with or without Git
 

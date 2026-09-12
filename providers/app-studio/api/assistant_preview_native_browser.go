@@ -499,7 +499,7 @@ type browserSessionOwner struct {
 
 func (o browserSessionOwner) key() string {
 	parts := []string{
-		o.Identity.tenantPath,
+		o.Identity.tenant,
 		o.Identity.clusterID,
 		o.Identity.orgUUID,
 		o.Identity.workspaceUUID,

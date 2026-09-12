@@ -46,7 +46,7 @@ func TestAssistantEditFileUsesLiveWorkspaceAndReturnsDiff(t *testing.T) {
 		Path:    "src/app.js",
 		Content: "const theme = 'light'\n",
 	}})
-	edit, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolEditFile)
+	edit, ok := projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspaces}).Get(projectToolEditFile)
 	if !ok {
 		t.Fatal("edit_file tool was not registered")
 	}

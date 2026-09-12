@@ -252,7 +252,7 @@ func TestProjectAssistantContextResourceExplicitContinuationValidatesReplacement
 	ref := projectAssistantContextResourceInput{Provider: "databricks", ResourceRef: aiv1alpha1.ProjectProviderResourceReference{
 		Name: "orders", APIVersion: databricksTableAPIVersion, Kind: databricksTableKind, Resource: databricksTableResource,
 	}}
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	_, _, err := server.prepareProjectAssistantContextResources(context.Background(), nil, identity{}, &aiv1alpha1.Project{}, []projectAssistantContextResourceInput{ref}, nil)
 	if !errors.Is(err, errProjectAssistantContextResourceStale) {
 		t.Fatalf("explicit replacement validation error = %v, want stale", err)
@@ -270,7 +270,7 @@ func TestProjectAssistantContextResourceErrorsMapToHTTPStatus(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			(&Server{}).writeAssistantThreadError(recorder, test.err)
+			(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).writeAssistantThreadError(recorder, test.err)
 			if recorder.Code != test.want {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.want)
 			}

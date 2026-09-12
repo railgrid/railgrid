@@ -313,7 +313,7 @@ func TestProjectAssistantUnlimitedLimitLogNamesOnlyActiveBounds(t *testing.T) {
 }
 
 func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) {
-	factory := newProjectEinoAssistantModelFactory(&Server{})
+	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup})
 	model, err := factory(context.Background(), projectAssistantRunRequest{
 		LLM: projectLLMSettings{
 			Provider: defaultProjectLLMProvider,
@@ -337,7 +337,7 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) 
 }
 
 func TestNewProjectEinoAssistantModelFactoryUsesNativeGeminiModel(t *testing.T) {
-	factory := newProjectEinoAssistantModelFactory(&Server{})
+	factory := newProjectEinoAssistantModelFactory(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup})
 	model, err := factory(context.Background(), projectAssistantRunRequest{
 		LLM: projectLLMSettings{
 			Provider: projectLLMProviderGoogle,

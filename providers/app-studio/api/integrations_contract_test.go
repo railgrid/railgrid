@@ -89,7 +89,7 @@ func TestProviderReferenceReconcileOnlyGetsAndNeverOwnsTarget(t *testing.T) {
 		})
 	}
 	c := asclient.NewFromDynamic(dyn)
-	if _, err := (&Server{}).reconcileProjectLiveBindings(context.Background(), c, project, identity{}); err != nil {
+	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).reconcileProjectLiveBindings(context.Background(), c, project, identity{}); err != nil {
 		t.Fatalf("reconcileProjectLiveBindings: %v", err)
 	}
 	got, err := c.Resource(providerBindingResource(testDatabricksTableGVR, databricksTableKind), "").Get(context.Background(), "orders", metav1.GetOptions{})
@@ -137,7 +137,7 @@ func TestProviderReferenceProjectCleanupDoesNotDeleteTarget(t *testing.T) {
 		t.Fatalf("project cleanup deleted provider-owned Table")
 		return true, nil, nil
 	})
-	if err := (&Server{}).deleteProjectProviderResources(context.Background(), asclient.NewFromDynamic(dyn), project, identity{}); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectProviderResources(context.Background(), asclient.NewFromDynamic(dyn), project, identity{}); err != nil {
 		t.Fatalf("deleteProjectProviderResources: %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestProviderActionForwardingNeverRetriesWithInsecureTLS(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := &Server{hubBase: upstream.URL, actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	ref := &aiv1alpha1.ProjectProviderResourceReference{
 		Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items",
@@ -207,7 +207,7 @@ func TestProviderActionForwardingAppendsConfiguredCAToSystemTrust(t *testing.T) 
 	defer upstream.Close()
 
 	caBundle := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw})
-	s := &Server{hubBase: upstream.URL, actionsExternalURL: "https://hub.example", actionsCABundle: string(caBundle), mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example", actionsCABundle: string(caBundle), mcpInsecureSkipTLSVerify: true}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
@@ -227,7 +227,7 @@ func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 		if got := r.Header.Get("X-Faros-Workspace"); got != "workspace-verified" {
 			t.Errorf("X-Faros-Workspace = %q, want workspace-verified", got)
 		}
-		if got := r.Header.Get("X-Faros-Tenant"); got != "root:faros:tenants:org-verified:workspace-verified" {
+		if got := r.Header.Get("X-Faros-Tenant"); got != "cluster-a" {
 			t.Errorf("X-Faros-Tenant = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
@@ -238,13 +238,13 @@ func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 		})
 	}))
 	defer upstream.Close()
-	s := &Server{hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-Org", "spoofed")
 	request.Header.Set("X-Faros-Workspace", "spoofed")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{
-		tenantPath: "root:faros:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
+		tenant: "cluster-a", workspacePath: "root:faros:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
 	}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
 		t.Fatalf("forward = status %d envelope %#v err %v", status, envelope, err)
@@ -266,7 +266,7 @@ func TestProviderActionForwardingRejectsRedirectWithoutLeakingBearer(t *testing.
 	}))
 	defer redirect.Close()
 	ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items"}
-	s := &Server{hubBase: redirect.URL, actionsExternalURL: "https://hub.example"}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, hubBase: redirect.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
@@ -525,7 +525,7 @@ func integrationHTTPTestRequest(method, path, body string) *http.Request {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "alice@example.com")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Org", "org-a")
 	request.Header.Set("X-Faros-Workspace", "workspace-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
@@ -539,6 +539,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
 	})
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -596,7 +597,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		t.Fatalf("provider action URL = %q, want data-plane action route", actionRequest.URL)
 	}
 	if actionRequest.Headers.Get("Authorization") != "Bearer caller-token" ||
-		actionRequest.Headers.Get("X-Faros-Tenant") != "root:faros:tenants:org-a:workspace-a" ||
+		actionRequest.Headers.Get("X-Faros-Tenant") != "cluster-a" ||
 		actionRequest.Headers.Get("X-Faros-Cluster") != "cluster-a" ||
 		actionRequest.Headers.Get("Idempotency-Key") != "idem-1" ||
 		actionRequest.Headers.Get("X-Request-ID") != "request-1" ||
@@ -634,6 +635,7 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	fixture := newIntegrationHTTPFixture(t, projectWithDevelopmentRuntimeBinding())
 	fixture.setApplication(t, developmentApplicationObject())
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -708,6 +710,7 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
 	server.Register(router)
@@ -768,6 +771,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.actionsExternalURL = actionsURL
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -798,6 +802,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(false))
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -846,6 +851,7 @@ func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 func TestProjectIntegrationInvokeForwardsGenericProviderAndInput(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, integrationProjectWithProvider("other"))
 	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.actionsExternalURL = "https://actions.example"
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
@@ -914,9 +920,9 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 		})
 	}
 	c := asclient.NewFromDynamic(dyn)
-	id := identity{tenantPath: "root:faros:tenants:org-a:workspace-a", clusterID: "cluster-a"}
+	id := identity{tenant: "cluster-a", clusterID: "cluster-a"}
 
-	if err := (&Server{}).deleteProjectDevelopmentBindingResources(context.Background(), c, project, id); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectDevelopmentBindingResources(context.Background(), c, project, id); err != nil {
 		t.Fatalf("delete old template binding: %v", err)
 	}
 	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
@@ -936,10 +942,10 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 			Name: "demo-prod", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
 		},
 	})
-	if _, err := (&Server{actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {
+	if _, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {
 		t.Fatalf("reconcile after template switch/promotion: %v", err)
 	}
-	if err := (&Server{}).deleteProjectProviderResources(context.Background(), c, project, id); err != nil {
+	if err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup}).deleteProjectProviderResources(context.Background(), c, project, id); err != nil {
 		t.Fatalf("project cleanup: %v", err)
 	}
 	if _, err := c.Resource(providerBindingResource(testDatabricksTableGVR, databricksTableKind), "").Get(context.Background(), "orders", metav1.GetOptions{}); err != nil {

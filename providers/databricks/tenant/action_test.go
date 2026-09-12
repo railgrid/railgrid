@@ -93,7 +93,7 @@ func TestActionExecutorUnknownProjectionReturnsTypedFailure(t *testing.T) {
 	).Build()
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenant: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: &actionTestExecutor{}, authorizer: &actionTestAuthorizer{},
 	}
 	_, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
@@ -123,7 +123,7 @@ func TestActionExecutorNotReadyResourceReturnsTypedFailure(t *testing.T) {
 	).Build()
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenant: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: &actionTestExecutor{}, authorizer: &actionTestAuthorizer{},
 	}
 	_, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
@@ -157,7 +157,7 @@ func TestActionExecutorResolvesTenantResourcesWithoutControlPlaneWrites(t *testi
 	executor := &actionTestExecutor{}
 	actionExecutor := &ActionExecutor{
 		factory: factory, authorityClient: authority,
-		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenant: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: executor, authorizer: authorizer,
 	}
 
@@ -199,7 +199,7 @@ func TestActionExecutorDeniedCallerDoesNotReadProviderResources(t *testing.T) {
 	executor := &actionTestExecutor{}
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenant: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: executor, authorizer: &actionTestAuthorizer{err: fmt.Errorf("caller denied by SelfSubjectAccessReview")},
 	}
 	if _, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{

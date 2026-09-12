@@ -11,9 +11,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/faroshq/provider-sdk/tenantaccess"
 
 	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/store"
@@ -22,56 +25,79 @@ import (
 // identity carries the verified tenant context the hub injects on every proxied
 // request. The hub authenticates the caller and resolves their workspace before
 // forwarding, so these headers are trusted.
+//
+// The tenant is identified by the workspace's kcp logical-cluster ID: the hub
+// sends it in both X-Faros-Tenant and X-Faros-Cluster and never sends the
+// workspace path. The organization / workspace UUIDs the store is keyed on are
+// therefore not parsed from any header; they come from kcp (the workspace's
+// LogicalCluster, read as the caller) via Server.workspaces.
 type identity struct {
-	tenantPath    string // X-Faros-Tenant, e.g. root:faros:orgs:<org>:<ws>
-	clusterID     string // X-Faros-Cluster, the workspace's kcp logical-cluster ID
-	orgUUID       string // parsed from tenantPath
-	workspaceUUID string // parsed from tenantPath ("" when the path is org-only)
+	tenant        string // X-Faros-Tenant: the workspace's kcp logical-cluster ID
+	clusterID     string // X-Faros-Cluster: the same ID; what the tenant client addresses
+	workspacePath string // resolved from kcp, e.g. root:faros:tenants:<org>:<ws>; never from a header
+	orgUUID       string // from workspacePath
+	workspaceUUID string // from workspacePath ("" for an organization workspace)
+	workspaceErr  error  // why workspacePath could not be resolved, when it could not
 	user          string // X-Faros-User
 	token         string // bearer token, forwarded as-is from Authorization
 }
 
+// workspaceLookup resolves a cluster ID to its workspace as the caller holding
+// token. Production wires tenantaccess.WorkspaceResolver; tests substitute a
+// table.
+type workspaceLookup func(ctx context.Context, clusterID, token string) (tenantaccess.Workspace, error)
+
 // identityFromRequest extracts and validates the tenant context. It writes a
-// 401 and returns ok=false when the tenant header is missing.
-func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
-	tenantPath := strings.TrimSpace(r.Header.Get("X-Faros-Tenant"))
-	if tenantPath == "" {
+// 401 and returns ok=false when the tenant header is missing. Workspace
+// resolution is best-effort here: handlers that need the org/workspace scope
+// check it (requireClient) and report the resolution error, so an endpoint
+// that only needs the cluster ID keeps working when the lookup is unavailable.
+func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
+	id := identity{
+		tenant:    strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
+		clusterID: strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
+		user:      strings.TrimSpace(r.Header.Get("X-Faros-User")),
+		token:     bearerToken(r),
+	}
+	if id.tenant == "" {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — the hub did not resolve a workspace for this request")
 		return identity{}, false
 	}
-	org, ws := parseTenantPath(tenantPath)
-	return identity{
-		tenantPath:    tenantPath,
-		clusterID:     strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
-		orgUUID:       org,
-		workspaceUUID: ws,
-		user:          strings.TrimSpace(r.Header.Get("X-Faros-User")),
-		token:         bearerToken(r),
-	}, true
+	if id.clusterID == "" {
+		// Older hubs sent only X-Faros-Tenant; both carry the cluster ID now.
+		id.clusterID = id.tenant
+	}
+	s.resolveWorkspace(r.Context(), &id)
+	return id, true
 }
 
-// tenantPathPrefix is the kcp logical-cluster path prefix for tenant
-// workspaces: root:faros:tenants:<orgUUID> (org scope) or
-// root:faros:tenants:<orgUUID>:<ws> (workspace scope). See pkg/kcppaths.
-const tenantPathPrefix = "root:faros:tenants:"
-
-// parseTenantPath splits a tenant path into its org and workspace segments.
-// Returns ("", "") when the prefix doesn't match and (org, "") for an org-only
-// path.
-func parseTenantPath(p string) (org, workspace string) {
-	rest := strings.TrimPrefix(p, tenantPathPrefix)
-	if rest == p {
-		return "", ""
+// resolveWorkspace fills the org/workspace scope of id from kcp. A missing
+// lookup (no hub URL configured) or a failed one leaves the scope empty and
+// records why in id.workspaceErr.
+func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
+	if s == nil || s.workspaces == nil {
+		id.workspaceErr = errNoWorkspaceLookup
+		return
 	}
-	parts := strings.Split(rest, ":")
-	if len(parts) >= 1 {
-		org = parts[0]
+	if id.clusterID == "" || id.token == "" {
+		id.workspaceErr = errNoWorkspaceLookup
+		return
 	}
-	if len(parts) >= 2 {
-		workspace = parts[1]
+	ws, err := s.workspaces(ctx, id.clusterID, id.token)
+	if err != nil {
+		id.workspaceErr = err
+		return
 	}
-	return org, workspace
+	id.workspacePath, id.orgUUID, id.workspaceUUID = ws.Path, ws.OrgUUID, ws.WorkspaceUUID
 }
+
+// errNoWorkspaceLookup is the workspaceErr when there is nothing to ask: no
+// hub URL configured, or the request carries no cluster ID / token.
+var errNoWorkspaceLookup = errNoLookup("workspace lookup unavailable (no hub URL configured or no caller credentials on the request)")
+
+type errNoLookup string
+
+func (e errNoLookup) Error() string { return string(e) }
 
 // bearerToken returns the token from an Authorization: Bearer header, or "".
 func bearerToken(r *http.Request) string {
@@ -150,7 +176,7 @@ func (id identity) scope(agentName string) store.Scope {
 // client. Returns ok=false (after writing the response) when the tenant context
 // is incomplete or the provider has no hub URL configured.
 func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsclient.Client, identity, bool) {
-	id, ok := identityFromRequest(w, r)
+	id, ok := s.identityFromRequest(w, r)
 	if !ok {
 		return nil, identity{}, false
 	}
@@ -158,12 +184,17 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
 		return nil, identity{}, false
 	}
-	if id.workspaceUUID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required — select an organization and workspace first")
-		return nil, identity{}, false
-	}
 	if id.clusterID == "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster")
+		return nil, identity{}, false
+	}
+	if id.workspaceUUID == "" {
+		if id.workspaceErr != nil {
+			log.Printf("agents: resolving workspace for cluster %s: %v", id.clusterID, id.workspaceErr)
+			writeStatus(w, http.StatusBadGateway, "WorkspaceUnresolved", "could not resolve the workspace behind cluster "+id.clusterID+" from the hub: "+id.workspaceErr.Error())
+			return nil, identity{}, false
+		}
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required — cluster "+id.clusterID+" is an organization workspace; select a workspace first")
 		return nil, identity{}, false
 	}
 	scope, err := s.tenant.For(id.clusterID, id.token)

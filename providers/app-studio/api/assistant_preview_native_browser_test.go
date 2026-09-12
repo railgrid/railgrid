@@ -131,7 +131,7 @@ func TestProjectAssistantBrowserCapabilityValidation(t *testing.T) {
 }
 
 func TestProjectAssistantBrowserDiscoveryFailureIsPrompted(t *testing.T) {
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	mismatch := &projectAssistantBrowserCapabilityMismatchError{
 		Required:  []string{"browser_snapshot"},
@@ -199,7 +199,7 @@ func TestProjectAssistantNativeBrowserToolsJoinEinoDiscovery(t *testing.T) {
 		Parameters:  json.RawMessage(`{"type":"object"}`),
 		Risk:        projectAssistantToolRiskRead,
 	}}
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	discovery := projectEinoAssistantDiscoverTools(context.Background(), server, projectAssistantRunRequest{
 		ToolPort:   fakeNativeBrowserToolPort{tools: []projectAssistantTool{browser}},
 		TurnPolicy: projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
@@ -352,25 +352,25 @@ func TestProjectAssistantNativeBrowserEvidenceUsesReceipts(t *testing.T) {
 func TestProjectAssistantBrowserSessionOwnerIncludesProjectAndCaller(t *testing.T) {
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-a", UID: types.UID("uid-a")}}
 	base := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        project,
 		AssistantRunID: "run-a",
 	}
-	owner := (&Server{}).nativeBrowserOwner(base)
+	owner := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(base)
 	otherUser := base
 	otherUser.Identity.user = "bob"
 	otherProject := base
 	otherProject.Project = &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-b", UID: types.UID("uid-b")}}
-	if owner.key() == (&Server{}).nativeBrowserOwner(otherUser).key() {
+	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(otherUser).key() {
 		t.Fatal("different caller inherited the same browser session key")
 	}
-	if owner.key() == (&Server{}).nativeBrowserOwner(otherProject).key() {
+	if owner.key() == (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).nativeBrowserOwner(otherProject).key() {
 		t.Fatal("different project inherited the same browser session key")
 	}
 }
 
 func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -378,7 +378,7 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 	}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        project,
 		AssistantRunID: "run-a",
 	}
@@ -401,7 +401,7 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserFirstNonNavigationStartsAtPreview(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -414,7 +414,7 @@ func TestProjectAssistantNativeBrowserFirstNonNavigationStartsAtPreview(t *testi
 		return "https://demo.preview.example/", nil
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-first-preview",
 	}
@@ -443,6 +443,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 	defer preview.Close()
 
 	server := &Server{
+		tenantWorkspaces:             defaultTestWorkspaces.lookup,
 		hubBase:                      hub.URL,
 		hubPublicURL:                 hub.URL,
 		previewInsecureSkipTLSVerify: true,
@@ -507,7 +508,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-private-first-preview",
 	}
@@ -525,7 +526,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 }
 
 func TestProjectAssistantNativeBrowserFirstNavigationIsNotDuplicated(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	var toolCalls []string
@@ -538,7 +539,7 @@ func TestProjectAssistantNativeBrowserFirstNavigationIsNotDuplicated(t *testing.
 		return "https://demo.preview.example/", nil
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-first-navigation",
 		Arguments:      map[string]any{"url": "/tasks"},
@@ -627,7 +628,7 @@ func TestProjectAssistantNativeBrowserTabsParseOfficialMarkdownReceipt(t *testin
 }
 
 func TestProjectEinoAssistantBrowserDiscoveryCachesAcrossModelBoundariesAndCheckpoint(t *testing.T) {
-	server := &Server{previewInspector: &fakeProjectAssistantPreviewInspector{}}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, previewInspector: &fakeProjectAssistantPreviewInspector{}}
 	port := &countingNativeBrowserToolPort{
 		server:       server,
 		browserTools: nativeBrowserCatalogTestTools(server),
@@ -666,7 +667,7 @@ func TestProjectEinoAssistantBrowserDiscoveryCachesAcrossModelBoundariesAndCheck
 }
 
 func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example", previewInspector: &fakeProjectAssistantPreviewInspector{}}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example", previewInspector: &fakeProjectAssistantPreviewInspector{}}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	var initializeCalls int
 	configurePreviewInteractionBrowserTestServer(t, server, func(method, _ string) {
@@ -683,7 +684,7 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 	}
 	req := projectAssistantRunRequest{
 		ToolPort:   port,
-		Identity:   identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:   identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:    &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		TurnPolicy: projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
@@ -721,7 +722,7 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 }
 
 func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -773,7 +774,7 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-discovery-guard",
 		Arguments:      map[string]any{"url": "/"},
@@ -806,7 +807,7 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 }
 
 func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundary(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -860,7 +861,7 @@ func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundar
 			return recorder.Result(), nil
 		})}
 	}
-	identity := identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"}
+	identity := identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
 		Identity:       identity,
@@ -929,7 +930,7 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{hubBase: "https://hub.example"}
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 			server.browserSessions = newProjectAssistantBrowserSessionManager()
 			configurePreviewInteractionBrowserTestServer(t, server, nil)
 			server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -981,7 +982,7 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 				})}
 			}
 			request := projectAssistantToolCallRequest{
-				Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+				Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 				Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 				AssistantRunID: "run-safety",
 			}
@@ -1027,7 +1028,7 @@ func TestProjectAssistantNativeBrowserReceiptBridgesScreenshotTransiently(t *tes
 
 func TestProjectAssistantBrowserSessionManagerReapsIdleEntries(t *testing.T) {
 	manager := newProjectAssistantBrowserSessionManager()
-	owner := browserSessionOwner{Identity: identity{tenantPath: "tenant", clusterID: "cluster", user: "alice"}, AssistantRunID: "run"}
+	owner := browserSessionOwner{Identity: identity{tenant: "tenant", clusterID: "cluster", user: "alice"}, AssistantRunID: "run"}
 	entry := manager.entry(owner, dataPlaneRef{Resource: "instances", Name: "browser"})
 	if entry == nil {
 		t.Fatal("manager did not create an entry")
@@ -1050,8 +1051,8 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 	manager := newProjectAssistantBrowserSessionManager()
 	defer manager.closeAll()
 	ref := dataPlaneRef{Resource: "instances", Name: "browser"}
-	idA := identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a", user: "alice"}
-	idB := identity{tenantPath: "root:faros:tenants:org-b:ws-b", clusterID: "cluster-b", orgUUID: "org-b", workspaceUUID: "ws-b", user: "bob"}
+	idA := identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a", user: "alice"}
+	idB := identity{tenant: "root:faros:tenants:org-b:ws-b", clusterID: "cluster-b", orgUUID: "org-b", workspaceUUID: "ws-b", user: "bob"}
 	ownerA := browserSessionOwner{Identity: idA, AssistantRunID: "run-a"}
 	ownerB := browserSessionOwner{Identity: idB, AssistantRunID: "run-b"}
 
@@ -1094,7 +1095,7 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1151,7 +1152,7 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-read",
 	}
@@ -1165,7 +1166,7 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 }
 
 func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	manager := newProjectAssistantBrowserSessionManager()
 	server.browserSessions = manager
 	defer manager.closeAll()
@@ -1238,7 +1239,7 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 		t.Fatal("unexpected event-stream EOF did not invalidate initial session")
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-eof-read",
 	}
@@ -1258,7 +1259,7 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 }
 
 func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiable(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1316,7 +1317,7 @@ func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiab
 	}
 	state := newProjectEinoAssistantRunState()
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-pending-read",
 		RunState:       state,
@@ -1366,7 +1367,7 @@ func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiab
 }
 
 func TestProjectAssistantNativeBrowserMutationDoesNotReplayLostSession(t *testing.T) {
-	server := &Server{hubBase: "https://hub.example"}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -1415,7 +1416,7 @@ func TestProjectAssistantNativeBrowserMutationDoesNotReplayLostSession(t *testin
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenantPath: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-mutation",
 	}

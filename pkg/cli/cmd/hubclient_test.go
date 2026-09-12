@@ -42,6 +42,8 @@ type fakeHub struct {
 	*httptest.Server
 	mux *http.ServeMux
 	t   *testing.T
+	// orgs is what GET /api/orgs serves; tests may replace it.
+	orgs []map[string]any
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -60,11 +62,12 @@ func newFakeHub(t *testing.T) *fakeHub {
 	}))
 	t.Cleanup(h.Close)
 
+	h.orgs = []map[string]any{
+		{"uuid": "org-a", "displayName": "Personal", "personal": true},
+		{"uuid": "org-b", "displayName": "Acme"},
+	}
 	h.handle("GET /api/orgs", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(w, map[string]any{"items": []map[string]any{
-			{"uuid": "org-a", "displayName": "Personal", "personal": true},
-			{"uuid": "org-b", "displayName": "Acme"},
-		}})
+		writeTestJSON(w, map[string]any{"items": h.orgs})
 	})
 	h.handle("GET /api/orgs/{org}/workspaces", func(w http.ResponseWriter, r *http.Request) {
 		org := r.PathValue("org")

@@ -212,6 +212,7 @@ func TestProjectAssistantAnnotationDurableReplayAndThreadProjection(t *testing.T
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	annotation := validProjectAssistantAnnotation()
 	parts := []projectAssistantContentPart{projectAssistantContentPartFromAnnotation(annotation)}
@@ -247,6 +248,7 @@ func TestProjectAssistantDurableStartRejectsMalformedContentParts(t *testing.T) 
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	started := false
 	malformed := projectAssistantContentPart{Type: "text", Text: "request", SkillID: "not-allowed"}
@@ -407,6 +409,7 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	resource := projectAssistantContextResourceInput{
 		Provider: "demo",
@@ -504,6 +507,7 @@ func TestProjectAssistantReplayFindsCanonicalTurnAcrossThreads(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	canonical, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-canonical", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil)

@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,6 +60,7 @@ func publishingTestServer(t *testing.T, dyn *fake.FakeDynamicClient, members ...
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
 	server := &Server{
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return members, nil
@@ -120,7 +122,7 @@ func rawJSONForPublishing(value any) runtime.RawExtension {
 }
 
 func setPublishingIdentity(r *http.Request) {
-	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:ws-1")
+	r.Header.Set("X-Faros-Tenant", "cluster-a")
 	r.Header.Set("X-Faros-Cluster", "cluster-a")
 	r.Header.Set("X-Faros-User", "alice")
 	r.Header.Set("Authorization", "Bearer test-token")
@@ -141,29 +143,100 @@ func publishingDo(t *testing.T, router *mux.Router, method, target, body string)
 	return rec
 }
 
-func TestRequestedAccessValueVocabulary(t *testing.T) {
+func TestRequestedPublishingModeVocabulary(t *testing.T) {
 	project := publishingTestProjectTyped("demo", "uid", "")
-	for input, want := range map[string]string{
-		"public":     accessPublic,
-		"restricted": accessPrivate,
-		"members":    accessPrivate,
-		"private":    accessPrivate,
+	for input, want := range map[string]struct {
+		access string
+		policy aiv1alpha1.ProjectSharingMode
+	}{
+		"public":     {accessPublic, aiv1alpha1.ProjectSharingModePublic},
+		"restricted": {accessPrivate, aiv1alpha1.ProjectSharingModeShared},
+		"members":    {accessPrivate, aiv1alpha1.ProjectSharingModeShared},
+		"private":    {accessPrivate, aiv1alpha1.ProjectSharingModeShared},
 	} {
-		got, err := requestedAccessValue(input, project)
-		if err != nil || got != want {
-			t.Fatalf("requestedAccessValue(%q) = %q, %v; want %q", input, got, err, want)
+		access, policy, err := requestedPublishingMode(input, project)
+		if err != nil || access != want.access || policy != want.policy {
+			t.Fatalf("requestedPublishingMode(%q) = %q, %q, %v; want %q, %q", input, access, policy, err, want.access, want.policy)
 		}
 	}
-	if _, err := requestedAccessValue("bogus", project); err == nil {
-		t.Fatal("requestedAccessValue accepted an unknown mode")
+	if _, _, err := requestedPublishingMode("bogus", project); err == nil {
+		t.Fatal("requestedPublishingMode accepted an unknown mode")
 	}
-	// Empty preserves an explicit public setting, otherwise defaults private.
+	// Empty preserves an explicit public setting, otherwise defaults to
+	// invite-only.
 	publicProject := publishingTestProjectTyped("demo", "uid", accessPublic)
-	if got, _ := requestedAccessValue("", publicProject); got != accessPublic {
-		t.Fatalf("empty mode on public project = %q, want public", got)
+	if access, policy, _ := requestedPublishingMode("", publicProject); access != accessPublic || policy != aiv1alpha1.ProjectSharingModePublic {
+		t.Fatalf("empty mode on public project = %q/%q, want public", access, policy)
 	}
-	if got, _ := requestedAccessValue("", project); got != accessPrivate {
-		t.Fatalf("empty mode on unconfigured project = %q, want private", got)
+	if access, policy, _ := requestedPublishingMode("", project); access != accessPrivate || policy != aiv1alpha1.ProjectSharingModeShared {
+		t.Fatalf("empty mode on unconfigured project = %q/%q, want private/shared", access, policy)
+	}
+}
+
+// Invite-only and unpublished both run with private access; what tells them
+// apart is the recorded policy or, for a project that predates it, whether
+// anyone actually holds a grant. A fresh promote is unpublished.
+func TestPublishingStateDistinguishesRestrictedFromUnpublished(t *testing.T) {
+	grant := []projectPublishingGrantView{{Name: "g", User: "bob"}}
+	revoked := []projectPublishingGrantView{{Name: "g", User: "bob", Revoked: true}}
+	withPolicy := func(mode aiv1alpha1.ProjectSharingMode) *aiv1alpha1.Project {
+		p := publishingTestProjectTyped("demo", "uid", "private")
+		p.Spec.Sharing.Publishing.Mode = mode
+		return p
+	}
+	for _, test := range []struct {
+		name      string
+		project   *aiv1alpha1.Project
+		access    string
+		grants    []projectPublishingGrantView
+		published bool
+		mode      string
+	}{
+		{name: "public access", project: withPolicy(""), access: accessPublic, published: true, mode: "public"},
+		{name: "shared policy without grants", project: withPolicy(aiv1alpha1.ProjectSharingModeShared), access: accessPrivate, published: true, mode: "restricted"},
+		{name: "private policy without grants", project: withPolicy(aiv1alpha1.ProjectSharingModePrivate), access: accessPrivate, published: false, mode: "private"},
+		{name: "private policy with a grant", project: withPolicy(aiv1alpha1.ProjectSharingModePrivate), access: accessPrivate, grants: grant, published: true, mode: "restricted"},
+		{name: "legacy project without grants", project: withPolicy(""), access: accessPrivate, published: false, mode: "private"},
+		{name: "legacy project with a grant", project: withPolicy(""), access: accessPrivate, grants: grant, published: true, mode: "restricted"},
+		{name: "revoked grants do not publish", project: withPolicy(""), access: accessPrivate, grants: revoked, published: false, mode: "private"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			published, mode := publishingState(test.project, appAccessRuntime{desiredAccess: test.access}, test.grants)
+			if published != test.published || mode != test.mode {
+				t.Fatalf("publishingState = %v, %q; want %v, %q", published, mode, test.published, test.mode)
+			}
+		})
+	}
+}
+
+func TestPublishRestrictedRecordsSharedPolicy(t *testing.T) {
+	dyn := publishingTestDynamic(
+		publishingTestProject("demo", "project-uid", "private"),
+		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
+	)
+	router := publishingTestServer(t, dyn)
+	// Freshly promoted, never published: private.
+	rec := publishingDo(t, router, http.MethodGet, "/api/projects/demo/publishing", "")
+	var body projectPublishingResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusOK || body.Published || body.Publication == nil || body.Publication.Mode != "private" {
+		t.Fatalf("fresh promote = %d %+v, want unpublished with mode private", rec.Code, body)
+	}
+	rec = publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing", `{"mode":"restricted"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body = projectPublishingResponse{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if !body.Published || body.Publication == nil || body.Publication.Mode != "restricted" || !body.Publication.Ready {
+		t.Fatalf("restricted publish = %+v, want published restricted and ready", body)
+	}
+	stored, err := dyn.Resource(asclient.ProjectGVR).Get(context.Background(), "demo", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Project: %v", err)
+	}
+	if mode, _, _ := unstructured.NestedString(stored.Object, "spec", "sharing", "publishing", "mode"); mode != string(aiv1alpha1.ProjectSharingModeShared) {
+		t.Fatalf("stored publishing mode = %q, want shared", mode)
 	}
 }
 
@@ -340,6 +413,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 	client := asclient.NewFromDynamic(dyn)
 	var invitedEmail string
 	server := &Server{
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return nil, nil // the invitee is not a member yet
@@ -432,9 +506,24 @@ func TestUnpublishGoesPrivateAndRemovesGrants(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unpublish status = %d: %s", rec.Code, rec.Body.String())
 	}
+	var body projectPublishingResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Published || body.Publication == nil || body.Publication.Mode != "private" || len(body.Grants) != 0 {
+		t.Fatalf("unpublish response = %+v, want unpublished, mode private, no grants", body)
+	}
+	// A later read agrees: the app is unpublished, not "restricted".
+	rec = publishingDo(t, router, http.MethodGet, "/api/projects/demo/publishing", "")
+	body = projectPublishingResponse{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Published || body.Publication == nil || body.Publication.Mode != "private" {
+		t.Fatalf("publishing after unpublish = %+v, want unpublished with mode private", body)
+	}
 	stored, err := dyn.Resource(asclient.ProjectGVR).Get(context.Background(), "demo", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get Project: %v", err)
+	}
+	if mode, _, _ := unstructured.NestedString(stored.Object, "spec", "sharing", "publishing", "mode"); mode != string(aiv1alpha1.ProjectSharingModePrivate) {
+		t.Fatalf("stored publishing mode = %q, want private", mode)
 	}
 	envs, _, _ := unstructured.NestedSlice(stored.Object, "spec", "environments")
 	env, _ := envs[0].(map[string]any)
@@ -467,4 +556,212 @@ func staleGrantBinding(instance, user string) *unstructured.Unstructured {
 		"subjects": []any{map[string]any{"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": user}},
 		"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": appAccessRoleName(instance)},
 	}}
+}
+
+// publishingHubStub stands in for the hub membership API: it records the
+// invite it receives, answers it with a canned status and body, and serves the
+// org and workspace rosters for org-a / ws-1 (the tenant setPublishingIdentity
+// presents).
+type publishingHubStub struct {
+	URL          string
+	inviteMethod string
+	invitePath   string
+	inviteHeader http.Header
+	inviteBody   []byte
+}
+
+func newPublishingHubStub(t *testing.T, inviteStatus int, inviteBody string, orgRoster, wsRoster []publishingMember) *publishingHubStub {
+	t.Helper()
+	stub := &publishingHubStub{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/orgs/org-a/memberships":
+			body, _ := io.ReadAll(r.Body)
+			stub.inviteMethod, stub.invitePath, stub.inviteHeader, stub.inviteBody = r.Method, r.URL.Path, r.Header.Clone(), body
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(inviteStatus)
+			_, _ = w.Write([]byte(inviteBody))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/orgs/org-a/memberships":
+			writeJSON(w, http.StatusOK, publishingMembersResponse{Items: orgRoster})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/orgs/org-a/workspaces/ws-1/memberships":
+			writeJSON(w, http.StatusOK, publishingMembersResponse{Items: wsRoster})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	stub.URL = server.URL
+	return stub
+}
+
+// publishingServerAgainstHub wires a Server that talks to the stub hub over
+// HTTP — no fetcher/inviter fakes — so the request App Studio sends is what
+// gets checked.
+func publishingServerAgainstHub(t *testing.T, dyn *fake.FakeDynamicClient, hubURL string) *mux.Router {
+	t.Helper()
+	client := asclient.NewFromDynamic(dyn)
+	server := &Server{
+		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup,
+		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+		hubBase:          hubURL,
+	}
+	router := mux.NewRouter()
+	server.Register(router)
+	return router
+}
+
+func publishingInviteDynamic() *fake.FakeDynamicClient {
+	return publishingTestDynamic(
+		publishingTestProject("demo", "project-uid", "private"),
+		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
+	)
+}
+
+func publishingBindingSubject(t *testing.T, dyn *fake.FakeDynamicClient, instance, user string) string {
+	t.Helper()
+	binding, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName(instance, user), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("grant binding for %s missing: %v", user, err)
+	}
+	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
+	if len(subjects) != 1 {
+		t.Fatalf("binding subjects = %v, want one", subjects)
+	}
+	subject, _ := subjects[0].(map[string]any)
+	name, _ := subject["name"].(string)
+	return name
+}
+
+// The invite is one POST to the hub's org membership route, scoped to the
+// caller's workspace as well as the org (a delegated token can only be
+// verified there), with the hub's invite semantics: pre-provision a pending
+// User for the email and make it an org member. The grant then binds the
+// identity the hub reports.
+func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusCreated,
+		`{"user":"user-carol","rbacIdentity":"faros:carol@example.com","email":"carol@example.com","role":"member","orgUUID":"org-a"}`,
+		nil, nil)
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"carol@example.com","invite":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invite status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if hub.inviteMethod != http.MethodPost || hub.invitePath != "/api/orgs/org-a/memberships" {
+		t.Fatalf("hub call = %s %s, want POST /api/orgs/org-a/memberships", hub.inviteMethod, hub.invitePath)
+	}
+	for header, want := range map[string]string{
+		"Authorization":     "Bearer test-token",
+		"X-Faros-Org":       "org-a",
+		"X-Faros-Workspace": "ws-1",
+		"X-Faros-User":      "alice",
+		"Content-Type":      "application/json",
+	} {
+		if got := hub.inviteHeader.Get(header); got != want {
+			t.Errorf("invite header %s = %q, want %q", header, got, want)
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal(hub.inviteBody, &body); err != nil {
+		t.Fatalf("invite body %q: %v", hub.inviteBody, err)
+	}
+	if body["user"] != "carol@example.com" || body["role"] != "member" || body["invite"] != true || len(body) != 3 {
+		t.Fatalf("invite body = %v, want user/role=member/invite=true", body)
+	}
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "faros:carol@example.com" {
+		t.Fatalf("grant bound %q, want the hub-reported RBAC identity", subject)
+	}
+}
+
+// A caller the hub will not let add members (not an admin there) gets the
+// hub's own 403 and reason, exactly as through the portal — not a 500.
+func TestInviteForbiddenByHubAnswersForbidden(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusForbidden,
+		`{"kind":"Status","status":"Failure","reason":"Forbidden","code":403,"message":"this endpoint requires admin role"}`,
+		nil, nil)
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"carol@example.com","invite":true}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "this endpoint requires admin role") {
+		t.Fatalf("status = %d: %s, want 403 with the hub's message", rec.Code, rec.Body.String())
+	}
+	list, err := dyn.Resource(clusterRoleBindingGVR).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("a refused invite still wrote a grant: %v", list.Items)
+	}
+}
+
+// When the hub reports the person already exists, the grant proceeds against
+// the identity the roster carries for that email.
+func TestInviteConflictProceedsWithExistingMember(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusConflict,
+		`{"kind":"Status","status":"Failure","reason":"AlreadyExists","code":409,"message":"user carol@example.com already exists"}`,
+		[]publishingMember{{User: "user-carol", RBACIdentity: "faros:carol@example.com", Email: "Carol@Example.com", Role: "member"}},
+		nil)
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"carol@example.com","invite":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invite status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "faros:carol@example.com" {
+		t.Fatalf("grant bound %q, want the roster's RBAC identity", subject)
+	}
+}
+
+// A conflict the roster cannot explain is reported as the hub's conflict.
+func TestInviteConflictWithoutRosterMatchAnswersConflict(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusConflict,
+		`{"kind":"Status","status":"Failure","reason":"AlreadyExists","code":409,"message":"user carol@example.com already exists"}`,
+		[]publishingMember{{User: "bob", RBACIdentity: "faros:bob@example.com", Email: "bob@example.com"}}, nil)
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"carol@example.com","invite":true}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "already exists") {
+		t.Fatalf("status = %d: %s, want 409 with the hub's message", rec.Code, rec.Body.String())
+	}
+}
+
+// The hub refusing App Studio's own credential is not the caller's fault and
+// not an internal error: it is an upstream failure, surfaced with the hub's
+// reason so it can be diagnosed.
+func TestInviteRejectedCredentialAnswersBadGateway(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusUnauthorized,
+		`{"kind":"Status","status":"Failure","reason":"Unauthorized","code":401,"message":"Unauthorized"}`, nil, nil)
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"carol@example.com","invite":true}`)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "HTTP 401") {
+		t.Fatalf("status = %d: %s, want 502 naming the hub's answer", rec.Code, rec.Body.String())
+	}
+}
+
+// Granting an existing member reads the rosters over HTTP and binds the
+// rbacIdentity the hub reports; the merge across the org and workspace rows
+// must keep it (it used to drop it, so every such grant failed with 502).
+func TestGrantExistingMemberKeepsHubRBACIdentity(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusInternalServerError, "",
+		[]publishingMember{{User: "bob", RBACIdentity: "faros:bob@example.com", Email: "bob@example.com", Role: "member"}},
+		[]publishingMember{{User: "bob", Role: "admin"}})
+	dyn := publishingInviteDynamic()
+	router := publishingServerAgainstHub(t, dyn, hub.URL)
+
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if subject := publishingBindingSubject(t, dyn, "demo-prod", "bob"); subject != "faros:bob@example.com" {
+		t.Fatalf("grant bound %q, want the org roster's RBAC identity", subject)
+	}
+	if hub.inviteMethod != "" {
+		t.Fatal("granting an existing member must not invite")
+	}
 }

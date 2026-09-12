@@ -27,7 +27,7 @@ import (
 )
 
 func TestProviderMCPClientDefaultTimeoutPolicy(t *testing.T) {
-	client := newProviderMCPClient("", "", "")
+	client := newProviderMCPClient("", "")
 
 	if got, want := client.discoveryTimeout, 15*time.Second; got != want {
 		t.Fatalf("discovery timeout = %s, want %s", got, want)
@@ -41,7 +41,7 @@ func TestProviderMCPClientDefaultTimeoutPolicy(t *testing.T) {
 }
 
 func TestProviderMCPClientInitializeUsesDiscoveryTimeout(t *testing.T) {
-	client := newProviderMCPClient("", "", "")
+	client := newProviderMCPClient("", "")
 	deadline := make(chan time.Time, 1)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		d, ok := r.Context().Deadline()
@@ -62,7 +62,7 @@ func TestProviderMCPClientInitializeUsesDiscoveryTimeout(t *testing.T) {
 }
 
 func TestProviderMCPClientListUsesDefaultDiscoveryTimeout(t *testing.T) {
-	client := newProviderMCPClient("", "", "")
+	client := newProviderMCPClient("", "")
 	deadline := make(chan time.Time, 1)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		d, ok := r.Context().Deadline()
@@ -85,7 +85,7 @@ func TestProviderMCPClientListUsesDefaultDiscoveryTimeout(t *testing.T) {
 }
 
 func TestProviderMCPClientCallUsesDefaultCallTimeout(t *testing.T) {
-	client := newProviderMCPClient("", "", "")
+	client := newProviderMCPClient("", "")
 	deadline := make(chan time.Time, 1)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		d, ok := r.Context().Deadline()
@@ -107,7 +107,7 @@ func TestProviderMCPClientCallUsesDefaultCallTimeout(t *testing.T) {
 
 func TestProviderMCPClientListUsesDiscoveryTimeout(t *testing.T) {
 	started := make(chan struct{})
-	client := newProviderMCPClientWithTimeouts("", "", "", 20*time.Millisecond, time.Second)
+	client := newProviderMCPClientWithTimeouts("", "", 20*time.Millisecond, time.Second)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		close(started)
 		<-r.Context().Done()
@@ -134,7 +134,7 @@ func TestProviderMCPClientListUsesDiscoveryTimeout(t *testing.T) {
 func TestProviderMCPClientCallUsesLongerTimeout(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	client := newProviderMCPClientWithTimeouts("", "", "", 20*time.Millisecond, 200*time.Millisecond)
+	client := newProviderMCPClientWithTimeouts("", "", 20*time.Millisecond, 200*time.Millisecond)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		close(started)
 		select {
@@ -192,7 +192,7 @@ func TestProviderMCPClientCallUsesLongerTimeout(t *testing.T) {
 
 func TestProviderMCPClientCallHonorsCallerCancellation(t *testing.T) {
 	started := make(chan struct{})
-	client := newProviderMCPClientWithTimeouts("", "", "", time.Second, time.Second)
+	client := newProviderMCPClientWithTimeouts("", "", time.Second, time.Second)
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		close(started)
 		<-r.Context().Done()
@@ -233,7 +233,7 @@ func jsonResponse(body string) *http.Response {
 }
 
 func TestProviderMCPClientResponseCap(t *testing.T) {
-	if got, want := newProviderMCPClient("", "", "").maxResponseBytes, int64(96<<20); got != want {
+	if got, want := newProviderMCPClient("", "").maxResponseBytes, int64(96<<20); got != want {
 		t.Fatalf("default response cap = %d, want %d (96 MiB, sized for base64 binary payloads)", got, want)
 	}
 
@@ -248,7 +248,7 @@ func TestProviderMCPClientResponseCap(t *testing.T) {
 		{name: "well over cap", limit: 64, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newProviderMCPClient("", "", "")
+			client := newProviderMCPClient("", "")
 			client.maxResponseBytes = tc.limit
 			client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return jsonResponse(body), nil

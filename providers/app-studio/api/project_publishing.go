@@ -103,6 +103,9 @@ type publishingMember struct {
 	// the User CR name appears in no kcp binding.
 	RBACIdentity string `json:"rbacIdentity,omitempty"`
 	Role         string `json:"role,omitempty"`
+	// Email lets an invite that the hub answers with "already exists" find
+	// the person on the roster and still write the grant.
+	Email string `json:"email,omitempty"`
 }
 
 type publishingMembersResponse struct {
@@ -222,12 +225,12 @@ func (s *Server) publishProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	access, err := requestedAccessValue(req.Mode, p)
+	access, policy, err := requestedPublishingMode(req.Mode, p)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	updated, err := s.setProductionAccess(r.Context(), c, p, access)
+	updated, err := s.setProductionAccess(r.Context(), c, p, access, policy)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -242,14 +245,16 @@ func (s *Server) publishProject(w http.ResponseWriter, r *http.Request) {
 
 // unpublishProject is DELETE /publishing. Production is always reachable on
 // its URL by design, so "unpublish" means: private access plus no grants —
-// only workspace members can open the app.
+// only workspace members can open the app. The Project records the private
+// policy so a later read reports the app as unpublished rather than as
+// "restricted" like an invite-only one.
 func (s *Server) unpublishProject(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
 	_ = id
-	updated, err := s.setProductionAccess(r.Context(), c, p, accessPrivate)
+	updated, err := s.setProductionAccess(r.Context(), c, p, accessPrivate, aiv1alpha1.ProjectSharingModePrivate)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -352,8 +357,24 @@ func (s *Server) createAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 		// stable User name plus the kcp RBAC identity the grant binds.
 		invited, err := s.invitePublishingMember(r.Context(), id, user)
 		if err != nil {
-			writeError(w, err)
-			return
+			var hubErr *hubStatusError
+			if errors.As(err, &hubErr) && hubErr.Status == http.StatusConflict {
+				// The hub already holds this person, so there is nothing to
+				// provision; the grant only needs their identity, which the
+				// roster still reports.
+				member, found, lookupErr := s.publishingMemberByEmail(r.Context(), id, user)
+				if lookupErr != nil {
+					writeHubError(w, lookupErr)
+					return
+				}
+				if found {
+					invited, err = member, nil
+				}
+			}
+			if err != nil {
+				writeHubError(w, err)
+				return
+			}
 		}
 		user = invited.User
 		subject = invited.RBACIdentity
@@ -365,7 +386,7 @@ func (s *Server) createAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 		}
 		members, err := s.currentPublishingMembers(r.Context(), id)
 		if err != nil {
-			writeError(w, err)
+			writeHubError(w, err)
 			return
 		}
 		isMember := false
@@ -460,12 +481,41 @@ func (s *Server) projectPublishingResponse(ctx context.Context, c *asclient.Clie
 		// Not promoted yet: nothing is published and there is nothing to show.
 		return projectPublishingResponse{Published: false}, nil
 	}
-	view := publicationViewFromRuntime(runtime)
 	grants, err := s.appAccessGrantViews(ctx, c, runtime.target.Name)
 	if err != nil {
 		return projectPublishingResponse{}, err
 	}
-	return projectPublishingResponse{Published: true, Publication: &view, Grants: grants}, nil
+	published, mode := publishingState(p, runtime, grants)
+	view := publicationViewFromRuntime(runtime)
+	view.Mode = mode
+	return projectPublishingResponse{Published: published, Publication: &view, Grants: grants}, nil
+}
+
+// publishingState derives the two facts a client acts on — is the app
+// published, and how — from the places the answer lives. The binding's access
+// value is what the gate enforces, so public there is public whatever the
+// policy says. Otherwise the app is invite-only ("restricted") when the
+// project asked for it or when someone actually holds a grant, and private —
+// promoted, open to workspace members, not published — when neither holds.
+// Before this the response said "published, restricted" for every private
+// app, including one that had just been unpublished, so clients could not
+// tell the two apart.
+func publishingState(p *aiv1alpha1.Project, rt appAccessRuntime, grants []projectPublishingGrantView) (bool, string) {
+	if rt.desiredAccess == accessPublic {
+		return true, "public"
+	}
+	if p != nil {
+		switch p.Spec.Sharing.Publishing.Mode {
+		case aiv1alpha1.ProjectSharingModeShared, aiv1alpha1.ProjectSharingModePublic:
+			return true, "restricted"
+		}
+	}
+	for _, grant := range grants {
+		if !grant.Revoked {
+			return true, "restricted"
+		}
+	}
+	return false, "private"
 }
 
 func publicationViewFromRuntime(rt appAccessRuntime) projectPublishingPublicationView {
@@ -494,7 +544,8 @@ func publicationViewFromRuntime(rt appAccessRuntime) projectPublishingPublicatio
 }
 
 // portalModeString maps the template access vocabulary onto the portal's
-// publishing vocabulary (public/restricted).
+// sharing vocabulary (public/restricted). Publishing refines "restricted"
+// further through publishingState; the preview has only the two states.
 func portalModeString(access string) string {
 	if access == accessPublic {
 		return "public"
@@ -545,10 +596,12 @@ func (s *Server) productionRuntime(ctx context.Context, c *asclient.Client, p *a
 }
 
 // setProductionAccess merges the access value into the production binding's
-// values and updates the Project. The Project reconciler applies the changed
-// binding to the live instance; the template gate picks the value up as an
-// in-place env change.
-func (s *Server) setProductionAccess(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, access string) (*aiv1alpha1.Project, error) {
+// values, records the matching publishing policy on the Project, and updates
+// it in one write. The Project reconciler applies the changed binding to the
+// live instance; the template gate picks the value up as an in-place env
+// change. The policy is what distinguishes an invite-only app from an
+// unpublished one — both run with private access.
+func (s *Server) setProductionAccess(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, access string, policy aiv1alpha1.ProjectSharingMode) (*aiv1alpha1.Project, error) {
 	next := p.DeepCopy()
 	binding := findProjectProductionBinding(next)
 	if binding == nil || binding.ResourceRef == nil {
@@ -561,7 +614,7 @@ func (s *Server) setProductionAccess(ctx context.Context, c *asclient.Client, p 
 	if values == nil {
 		values = map[string]any{}
 	}
-	if current, _ := values[accessValueField].(string); current == access {
+	if current, _ := values[accessValueField].(string); current == access && next.Spec.Sharing.Publishing.Mode == policy {
 		return next, nil
 	}
 	values[accessValueField] = access
@@ -570,16 +623,22 @@ func (s *Server) setProductionAccess(ctx context.Context, c *asclient.Client, p 
 		return nil, err
 	}
 	binding.Values = runtime.RawExtension{Raw: raw}
+	next.Spec.Sharing.Publishing.Mode = policy
 	return c.Projects().Update(ctx, next, metav1.UpdateOptions{})
 }
 
-func requestedAccessValue(requested string, p *aiv1alpha1.Project) (string, error) {
+// requestedPublishingMode maps the portal vocabulary onto the two values a
+// publish writes: the template access input the gate enforces and the
+// publishing policy the Project records. "restricted" (and its aliases) is
+// private access with the shared policy — invite-only; unpublishing is the
+// only path to the private policy (DELETE /publishing).
+func requestedPublishingMode(requested string, p *aiv1alpha1.Project) (string, aiv1alpha1.ProjectSharingMode, error) {
 	raw := strings.ToLower(strings.TrimSpace(requested))
 	switch raw {
 	case "public":
-		return accessPublic, nil
+		return accessPublic, aiv1alpha1.ProjectSharingModePublic, nil
 	case "restricted", "members", "private":
-		return accessPrivate, nil
+		return accessPrivate, aiv1alpha1.ProjectSharingModeShared, nil
 	case "":
 		// Empty body preserves the current mode; a never-configured app
 		// defaults to invite-only, matching the portal's safe default.
@@ -587,13 +646,13 @@ func requestedAccessValue(requested string, p *aiv1alpha1.Project) (string, erro
 		if binding != nil {
 			if values, err := projectProviderBindingValues(*binding); err == nil {
 				if current, _ := values[accessValueField].(string); current == accessPublic {
-					return accessPublic, nil
+					return accessPublic, aiv1alpha1.ProjectSharingModePublic, nil
 				}
 			}
 		}
-		return accessPrivate, nil
+		return accessPrivate, aiv1alpha1.ProjectSharingModeShared, nil
 	default:
-		return "", newValidationError(fmt.Sprintf("unknown publishing mode %q: want public or restricted", requested))
+		return "", "", newValidationError(fmt.Sprintf("unknown publishing mode %q: want public or restricted", requested))
 	}
 }
 
@@ -764,6 +823,12 @@ func subjectUserName(binding *unstructured.Unstructured) string {
 // pending User adopted at first sign-in). Deliberately org membership, not
 // workspace membership — workspace members hold workspace-admin RBAC, which
 // "can open this one app" must never imply. Returns the stable User name.
+//
+// The request names the workspace as well as the org, like the roster reads
+// do: under --provider-delegated-tokens the bearer is a delegated token the
+// hub can only verify in the workspace it was minted for, and the hub then
+// authorizes the write as the person it stands for — an org admin, or the
+// workspace's admin, adds a member; anyone else gets the hub's 403.
 func (s *Server) invitePublishingMember(ctx context.Context, id identity, email string) (publishingMember, error) {
 	if s.publishingMemberInviter != nil {
 		return s.publishingMemberInviter(ctx, id, email)
@@ -771,8 +836,8 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	if s.hubBase == "" {
 		return publishingMember{}, fmt.Errorf("hub URL is not configured; cannot invite members")
 	}
-	if id.orgUUID == "" || id.token == "" {
-		return publishingMember{}, fmt.Errorf("trusted organization and bearer identity are required to invite members")
+	if id.orgUUID == "" || id.workspaceUUID == "" || id.token == "" {
+		return publishingMember{}, fmt.Errorf("trusted organization, workspace, and bearer identity are required to invite members")
 	}
 	payload, err := json.Marshal(map[string]any{"user": email, "role": "member", "invite": true})
 	if err != nil {
@@ -787,6 +852,7 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+id.token)
 	req.Header.Set("X-Faros-Org", id.orgUUID)
+	req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
 	req.Header.Set("X-Faros-User", id.user)
 	client := s.publishingHTTPClient
 	if client == nil {
@@ -802,7 +868,7 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 		return publishingMember{}, readErr
 	}
 	if resp.StatusCode/100 != 2 {
-		return publishingMember{}, fmt.Errorf("membership invite returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return publishingMember{}, fmt.Errorf("membership invite: %w", newHubStatusError(resp.StatusCode, body))
 	}
 	var view publishingMember
 	if err := json.Unmarshal(body, &view); err != nil {
@@ -812,6 +878,76 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 		return publishingMember{}, fmt.Errorf("membership invite returned no user identity")
 	}
 	return view, nil
+}
+
+// publishingMemberByEmail finds a current org/workspace member by email, for
+// an invite the hub declined because the person already exists there.
+func (s *Server) publishingMemberByEmail(ctx context.Context, id identity, email string) (publishingMember, bool, error) {
+	members, err := s.currentPublishingMembers(ctx, id)
+	if err != nil {
+		return publishingMember{}, false, err
+	}
+	want := strings.TrimSpace(email)
+	for _, member := range members {
+		if strings.EqualFold(strings.TrimSpace(member.Email), want) {
+			return member, true, nil
+		}
+	}
+	return publishingMember{}, false, nil
+}
+
+// hubStatusError is a non-2xx answer from the hub membership API, carrying
+// the hub's own message so the caller learns why the platform refused.
+type hubStatusError struct {
+	Status  int
+	Message string
+}
+
+func (e *hubStatusError) Error() string {
+	return fmt.Sprintf("hub returned HTTP %d: %s", e.Status, e.Message)
+}
+
+// newHubStatusError lifts the message out of the hub's kubernetes-style
+// Status envelope when the body is one, and keeps the raw body otherwise.
+func newHubStatusError(status int, body []byte) *hubStatusError {
+	message := strings.TrimSpace(string(body))
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && strings.TrimSpace(envelope.Message) != "" {
+		message = strings.TrimSpace(envelope.Message)
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	return &hubStatusError{Status: status, Message: message}
+}
+
+// writeHubError answers a grant whose hub membership call failed. The hub's
+// verdicts on the request itself travel through unchanged, with the hub's
+// message — 403 because the caller may not add members, 400 for a malformed
+// email, 404/409 about the account — so the client sees the platform's
+// reason. Anything else (401 because the hub would not accept App Studio's
+// credential, 5xx, transport failures) means App Studio could not get a
+// usable answer from the hub: a 502 naming the hub's response.
+func writeHubError(w http.ResponseWriter, err error) {
+	var hubErr *hubStatusError
+	if !errors.As(err, &hubErr) {
+		writeError(w, err)
+		return
+	}
+	switch hubErr.Status {
+	case http.StatusBadRequest:
+		writeStatus(w, http.StatusBadRequest, "BadRequest", hubErr.Message)
+	case http.StatusForbidden:
+		writeStatus(w, http.StatusForbidden, "Forbidden", hubErr.Message)
+	case http.StatusNotFound:
+		writeStatus(w, http.StatusNotFound, "NotFound", hubErr.Message)
+	case http.StatusConflict:
+		writeStatus(w, http.StatusConflict, "Conflict", hubErr.Message)
+	default:
+		writeStatus(w, http.StatusBadGateway, "BadGateway", "the platform could not complete the membership request: "+err.Error())
+	}
 }
 
 func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]publishingMember, error) {
@@ -852,16 +988,31 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 			return nil, readErr
 		}
 		if resp.StatusCode/100 != 2 {
-			return nil, fmt.Errorf("membership lookup returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return nil, fmt.Errorf("membership lookup: %w", newHubStatusError(resp.StatusCode, body))
 		}
 		var decoded publishingMembersResponse
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode membership lookup: %w", err)
 		}
+		// A person on both rosters keeps the identity fields from whichever
+		// row carries them: the grant binds RBACIdentity, so dropping it here
+		// (as the merge once did) made every existing-member grant fail with
+		// "the platform did not report the member's RBAC identity".
 		for _, member := range decoded.Items {
-			if user := strings.TrimSpace(member.User); user != "" {
-				seen[user] = publishingMember{User: user, Role: strings.TrimSpace(member.Role)}
+			user := strings.TrimSpace(member.User)
+			if user == "" {
+				continue
 			}
+			merged := seen[user]
+			merged.User = user
+			merged.Role = strings.TrimSpace(member.Role)
+			if rbac := strings.TrimSpace(member.RBACIdentity); rbac != "" {
+				merged.RBACIdentity = rbac
+			}
+			if email := strings.TrimSpace(member.Email); email != "" {
+				merged.Email = email
+			}
+			seen[user] = merged
 		}
 	}
 	out := make([]publishingMember, 0, len(seen))

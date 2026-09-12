@@ -31,6 +31,7 @@ func TestConcurrentAssistantThreadPatchesMergeFieldIntent(t *testing.T) {
 		updateReady: make(chan struct{}),
 	}
 	server := NewWithWorkspace(nil, wrapped, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	if _, err := inner.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: "thread-merge", ActorID: "alice", Title: "before", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now}, nil); err != nil {

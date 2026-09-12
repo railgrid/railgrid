@@ -21,17 +21,26 @@ import (
 // engagement disabled the endpoint serves an empty list rather than 404, so
 // the portal renders consistently in dev.
 type EdgeLister interface {
-	TenantEdges(ctx context.Context, tenant string) ([]string, error)
+	// TenantEdges lists the bare edge names engaged for the tenant
+	// identified by its kcp logical-cluster ID.
+	TenantEdges(ctx context.Context, cluster string) ([]string, error)
 }
 
-// EdgesHandler serves GET /api/edges: the caller's currently-engaged edge
-// names (the portal's edge selector source).
+// EdgesHandler serves GET /api/edges: the caller's currently-engaged edges
+// (the portal's edge selector source).
 type EdgesHandler struct {
 	Lister EdgeLister
 }
 
+// edgesResponse lists the caller's engaged edges. Edges are the bare edge
+// names the portal shows and accepts as cluster.name; Clusters are the same
+// edges as the "{clusterID}/{edge}" keys kuery records them under (what
+// query results report in objects[].cluster); Tenant is the caller's kcp
+// logical-cluster ID.
 type edgesResponse struct {
-	Edges []string `json:"edges"`
+	Tenant   string   `json:"tenant"`
+	Edges    []string `json:"edges"`
+	Clusters []string `json:"clusters"`
 }
 
 func (h *EdgesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,21 +48,22 @@ func (h *EdgesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	id := IdentityFromRequest(r)
-	if id.Tenant == "" {
-		http.Error(w, "missing tenant identity (X-Faros-Tenant)", http.StatusUnauthorized)
+	id, err := IdentityFromRequest(r)
+	if err != nil {
+		writeIdentityError(w, err)
 		return
 	}
-	resp := edgesResponse{Edges: []string{}}
+	resp := edgesResponse{Tenant: id.Cluster, Edges: []string{}, Clusters: []string{}}
 	if h.Lister != nil {
-		edges, err := h.Lister.TenantEdges(r.Context(), id.Tenant)
+		edges, err := h.Lister.TenantEdges(r.Context(), id.Cluster)
 		if err != nil {
 			log.Printf("listing tenant edges: %v", err)
 			http.Error(w, "listing edges failed", http.StatusInternalServerError)
 			return
 		}
-		if edges != nil {
-			resp.Edges = edges
+		for _, edge := range edges {
+			resp.Edges = append(resp.Edges, edge)
+			resp.Clusters = append(resp.Clusters, id.Cluster+"/"+edge)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

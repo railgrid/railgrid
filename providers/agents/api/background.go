@@ -421,6 +421,7 @@ func (b *background) loop(ctx context.Context) {
 	// make every messaging connection verifiable (or say why it is not).
 	if b.ready() {
 		b.reconcileChannelSecrets(ctx)
+		b.reconcileAgentPhases(ctx)
 	}
 	// Recover runs a previous process left in flight before doing anything else:
 	// a restarted deploy should pick its work back up, not sit on rows stuck in
@@ -449,6 +450,7 @@ func (b *background) loop(ctx context.Context) {
 				b.discord.reconcile(ctx)
 			}
 			b.reconcileChannelSecrets(ctx)
+			b.reconcileAgentPhases(ctx)
 		}
 	}
 }
@@ -554,7 +556,7 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 
 	fire, next, permErr := scheduleDue(sched, now)
 	if permErr != nil {
-		return b.updateStatus(ctx, clusterID, u, map[string]any{
+		return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, map[string]any{
 			"disabledReason":     permErr.Error(),
 			"observedGeneration": u.GetGeneration(),
 		})
@@ -570,7 +572,7 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 			fields["nextRun"] = next.Format(time.RFC3339)
 		}
 		if len(fields) > 0 {
-			return b.updateStatus(ctx, clusterID, u, fields)
+			return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, fields)
 		}
 		return nil
 	}
@@ -584,7 +586,7 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 	if !next.IsZero() {
 		claim["nextRun"] = next.Format(time.RFC3339)
 	}
-	if err := b.updateStatus(ctx, clusterID, u, claim); err != nil {
+	if err := b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, claim); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "conflict") {
 			return nil
 		}
@@ -601,7 +603,7 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 		trigger = agentsv1alpha1.RunTriggerWakeup
 	}
 	if strings.TrimSpace(task) == "" {
-		return b.updateStatus(ctx, clusterID, u, map[string]any{"disabledReason": "schedule has no task/checklist"})
+		return b.updateStatus(ctx, clusterID, agentsclient.ScheduleGVR, u, map[string]any{"disabledReason": "schedule has no task/checklist"})
 	}
 
 	return b.exec.Submit(ctx, executor.Job{
@@ -666,24 +668,43 @@ func scheduleDue(sched *agentsv1alpha1.Schedule, now time.Time) (fire bool, next
 
 // updateStatus merges fields into .status and PUTs the status subresource in
 // the object's cluster, using the object's resourceVersion (optimistic claim).
-func (b *background) updateStatus(ctx context.Context, clusterID string, u *unstructured.Unstructured, fields map[string]any) error {
+func (b *background) updateStatus(ctx context.Context, clusterID string, gvr schema.GroupVersionResource, u *unstructured.Unstructured, fields map[string]any) error {
 	dyn, err := b.scoped(ctx, clusterID)
 	if err != nil {
 		return err
 	}
 	obj := u.DeepCopy()
-	status, _, _ := unstructured.NestedMap(obj.Object, "status")
-	if status == nil {
-		status = map[string]any{}
-	}
-	for k, v := range fields {
-		status[k] = v
-	}
-	if err := unstructured.SetNestedMap(obj.Object, status, "status"); err != nil {
+	if err := mergeStatusFields(obj, fields); err != nil {
 		return err
 	}
-	_, err = dyn.Resource(agentsclient.ScheduleGVR).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	_, err = dyn.Resource(gvr).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	return err
+}
+
+// reconcileAgentPhases stamps phase Ready on every agent that has no phase.
+// An Agent has no controller of its own: the create handler stamps Ready, but
+// agents created before that existed (or whose stamp failed) stayed at
+// status {} forever, which reads as "not ready" to anyone polling. Suspended
+// (or any other non-empty phase) is left alone.
+func (b *background) reconcileAgentPhases(ctx context.Context) {
+	items, err := b.listAll(ctx, agentsclient.AgentGVR)
+	if err != nil {
+		log.Printf("agents: listing agents: %v", err)
+		return
+	}
+	for i := range items {
+		u := &items[i]
+		if phase, _, _ := unstructured.NestedString(u.Object, "status", "phase"); phase != "" {
+			continue
+		}
+		cluster := u.GetAnnotations()["kcp.io/cluster"]
+		if cluster == "" {
+			continue
+		}
+		if err := b.updateStatus(ctx, cluster, agentsclient.AgentGVR, u, map[string]any{"phase": agentsv1alpha1.AgentPhaseReady}); err != nil {
+			log.Printf("agents: agent %s/%s: stamping phase Ready: %v", cluster, u.GetName(), err)
+		}
+	}
 }
 
 // ---- job handler ------------------------------------------------------------

@@ -194,13 +194,15 @@ get a delegated token instead — see
 ```go
 // providers/mcp/aggregate/provider_proxy.go
 cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
-//                          └ caller's token   └ tenant workspace (→ X-Faros-Tenant)
+//                          └ caller's token   └ tenant cluster ID (→ X-Faros-Tenant + X-Faros-Cluster)
 ```
 
 - `cfg.BearerToken` is the token the client authenticated the **aggregate**
   request with (`builder.ExtractBearerToken(r)`).
-- `cfg.Cluster` is the tenant workspace parsed off the MCPServer URL, forwarded
-  as the `X-Faros-Tenant` header on every federated call.
+- `cfg.Cluster` is the tenant workspace's kcp logical-cluster ID parsed off
+  the MCPServer URL, forwarded as both `X-Faros-Tenant` and `X-Faros-Cluster`
+  on every federated call — the same pair the hub backend proxy injects, so a
+  provider sees one identity contract whichever way it is reached.
 
 So the identity flows end-to-end:
 
@@ -211,12 +213,13 @@ AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServ
                           └─ federation (platform provider): POST {provider BackendURL}/mcp
                                Authorization: Bearer T
                                X-Faros-Tenant: {cluster}
+                               X-Faros-Cluster: {cluster}
                              (org-owned provider: POST via edges tunnel,
                                Authorization: Bearer <delegated token>, never T)
                                     │
                                     ▼
                         out-of-process provider (own /mcp)
-                          identity = { tenant: X-Faros-Tenant, token: Bearer T }
+                          identity = { cluster: X-Faros-Cluster (= X-Faros-Tenant), token: Bearer T }
                           tenant client uses T, scoped to {cluster}
                           → acts AS the caller, authorized by the caller's RBAC
 ```
@@ -279,8 +282,8 @@ Two consequences:
   `selfsubjectaccessreviews` create. Nothing grants secrets, service accounts,
   RBAC, or APIBinding access, so a leaked token cannot escalate.
 - **No provider-wide identity.** A federated provider must perform its tenant
-  work as the forwarded caller token, scoped to the workspace from
-  `X-Faros-Tenant`. The infrastructure provider does this in
+  work as the forwarded caller token, scoped to the workspace whose cluster ID
+  is in `X-Faros-Cluster` / `X-Faros-Tenant`. The infrastructure provider does this in
   [`providers/infrastructure/tenant/client.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
   built per-(tenant, caller) from the request token; the provider's own
   credentials are never used for tenant work.
@@ -321,8 +324,10 @@ Use this when your integration runs as its own process/binary.
 2. Register a `ProviderCatalogEntry` and **heartbeat** so the hub marks you
    `Ready` with a reachable `BackendURL`. The aggregate fetches `{BackendURL}/mcp`.
 3. **Honour the forwarded identity.** Read the caller from each request:
-   `X-Faros-Tenant` for the tenant workspace and `Authorization: Bearer <token>`
-   for the credential (see `providers/infrastructure/mcpserver/context.go`).
+   `X-Faros-Cluster` (the tenant workspace's kcp logical-cluster ID; the
+   hub sends the same value as `X-Faros-Tenant`) and
+   `Authorization: Bearer <token>` for the credential (see
+   `providers/infrastructure/mcpserver/context.go`).
    Do all tenant work **as that token**, scoped to that workspace — never with a
    provider-wide service account.
 4. Your tools appear in the aggregate as `<your-provider>__<tool>` automatically.
@@ -341,7 +346,8 @@ each provider separately.
      `/mcp` tools as `<provider>__<tool>`.
 4. The composed server answers `tools/list` / `tools/call`.
 5. Federated `tools/call` is forwarded to the provider's `/mcp` with
-   `X-Faros-Tenant` and — for a platform provider — the caller's bearer, or —
+   `X-Faros-Tenant` / `X-Faros-Cluster` (the cluster ID) and — for a platform
+   provider — the caller's bearer, or —
    for an org-owned provider — over the edge tunnel with a delegated token.
 
 ## Resilience notes

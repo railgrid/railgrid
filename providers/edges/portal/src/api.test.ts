@@ -469,6 +469,41 @@ describe('unchanged edge fleet and CRUD contracts', () => {
     expect(calls[3]?.body).toMatchObject({ kind: 'DeleteOptions' })
   })
 
+  it('carries the edge target namespace and pull-secret references on workload creates', async () => {
+    const calls = route((call) => response(call.body, 201))
+
+    await createWorkload({ name: 'kiosk', image: 'ghcr.io/example/app:1.0', replicas: 1, strategy: 'Spread', selector: {}, targetNamespace: ' kiosk ', imagePullSecrets: ['ghcr-pull'] })
+    await createWorkload({ name: 'plain', image: 'nginx:latest', replicas: 1, strategy: 'Spread', selector: {}, targetNamespace: 'default', imagePullSecrets: [] })
+    await deployMarketplaceApp({
+      name: 'ha',
+      edgeName: 'edge-a',
+      chart: { repoURL: 'https://charts.example', chart: 'home-assistant', version: '1.2.3' },
+      serviceType: 'homeassistant',
+      port: 8123,
+      targetNamespace: 'home',
+    })
+
+    expect(calls.map((call) => [call.method, call.path])).toEqual([
+      ['POST', WORKLOADS],
+      ['POST', WORKLOADS],
+      ['POST', WORKLOADS],
+      ['POST', SERVICES],
+    ])
+    // The hub namespace stays `default`; spec.targetNamespace alone names the
+    // edge namespace, and only the Secret *names* travel with the Workload.
+    expect(calls[0]?.body).toMatchObject({
+      metadata: { name: 'kiosk', namespace: 'default' },
+      spec: { targetNamespace: 'kiosk', simple: { image: 'ghcr.io/example/app:1.0', imagePullSecrets: [{ name: 'ghcr-pull' }] } },
+    })
+    // The CRD default is left unset rather than written out.
+    const plain = calls[1]?.body as { spec: { simple: Record<string, unknown> } & Record<string, unknown> }
+    expect(plain.spec).not.toHaveProperty('targetNamespace')
+    expect(plain.spec.simple).not.toHaveProperty('imagePullSecrets')
+    // A marketplace deploy points the follow-up Service at the same namespace.
+    expect(calls[2]?.body).toMatchObject({ spec: { targetNamespace: 'home' } })
+    expect(calls[3]?.body).toMatchObject({ spec: { targetRef: { namespace: 'home', name: 'ha' } } })
+  })
+
   it('updates services with JSON merge patches that clear the unused target', async () => {
     const calls = route((call) => response({ ...service('svc'), spec: (call.body as { spec: unknown }).spec }))
 

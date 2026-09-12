@@ -309,8 +309,9 @@ func (r *WorkloadReconciler) reconcile(ctx context.Context, key string) error {
 
 // appliedRef identifies one applied object for prune bookkeeping.
 type appliedRef struct {
-	gvr  schema.GroupVersionResource
-	name string
+	gvr       schema.GroupVersionResource
+	namespace string
+	name      string
 }
 
 // applyBundle applies each rendered object with server-side apply, stamps the
@@ -347,7 +348,7 @@ func (r *WorkloadReconciler) applyBundle(ctx context.Context, placement *placeme
 		if _, err := ri.Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{FieldManager: fieldManager, Force: true}); err != nil {
 			return fmt.Errorf("applying %s %q: %w", mapping.Resource.Resource, obj.GetName(), err)
 		}
-		keep[appliedRef{gvr: mapping.Resource, name: obj.GetName()}] = true
+		keep[appliedRef{gvr: mapping.Resource, namespace: obj.GetNamespace(), name: obj.GetName()}] = true
 		logger.V(4).Info("Applied object", "kind", gvk.Kind, "name", obj.GetName())
 	}
 
@@ -356,11 +357,13 @@ func (r *WorkloadReconciler) applyBundle(ctx context.Context, placement *placeme
 
 // prune deletes objects labeled for this placement that are not in keep. keep
 // nil means the placement is gone → delete everything it owns. Only namespaced
-// prunableResources in ns "default" are swept (see prunableResources).
+// prunableResources are swept (see prunableResources), across every namespace:
+// a Workload's spec.targetNamespace puts its objects anywhere, and the
+// placement label is what ties them to this Placement, not the namespace.
 func (r *WorkloadReconciler) prune(ctx context.Context, placementName string, keep map[appliedRef]bool) error {
 	sel := labelPlacement + "=" + placementName
 	for _, gvr := range prunableResources {
-		list, err := r.downstreamDyn.Resource(gvr).Namespace(targetNamespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
+		list, err := r.downstreamDyn.Resource(gvr).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: sel})
 		if err != nil {
 			if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) || apierrors.IsMethodNotSupported(err) {
 				continue
@@ -369,13 +372,13 @@ func (r *WorkloadReconciler) prune(ctx context.Context, placementName string, ke
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
-			if keep[appliedRef{gvr: gvr, name: item.GetName()}] {
+			if keep[appliedRef{gvr: gvr, namespace: item.GetNamespace(), name: item.GetName()}] {
 				continue
 			}
-			if err := r.downstreamDyn.Resource(gvr).Namespace(targetNamespace).Delete(ctx, item.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("pruning %s %q: %w", gvr.Resource, item.GetName(), err)
+			if err := r.downstreamDyn.Resource(gvr).Namespace(item.GetNamespace()).Delete(ctx, item.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("pruning %s %s/%s: %w", gvr.Resource, item.GetNamespace(), item.GetName(), err)
 			}
-			klog.FromContext(ctx).Info("Pruned object", "resource", gvr.Resource, "name", item.GetName(), "placement", placementName)
+			klog.FromContext(ctx).Info("Pruned object", "resource", gvr.Resource, "namespace", item.GetNamespace(), "name", item.GetName(), "placement", placementName)
 		}
 	}
 	return nil

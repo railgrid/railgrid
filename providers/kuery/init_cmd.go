@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	apiExportName        = "kuery.providers.faros.sh"
+	apiExportName = "kuery.providers.faros.sh"
 )
 
 // runInitCmd applies kuery's in-workspace objects (APIResourceSchemas,

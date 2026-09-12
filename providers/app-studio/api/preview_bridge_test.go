@@ -161,14 +161,14 @@ func TestPreviewBridgeStoreExpiresSessions(t *testing.T) {
 }
 
 func TestPreviewBridgeToolIsRemoved(t *testing.T) {
-	if projectAssistantLocalToolRegistry(&Server{}).Has("get_preview_bridge_logs") {
+	if projectAssistantLocalToolRegistry(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).Has("get_preview_bridge_logs") {
 		t.Fatal("legacy preview bridge tool is still registered")
 	}
 }
 
 func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 	router := mux.NewRouter()
-	(&Server{}).Register(router)
+	(&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -184,7 +184,7 @@ func TestProjectAssistantMetricsRouteExposesSkillMetrics(t *testing.T) {
 }
 
 func TestPreviewBridgeDisabledRouteReturnsControlledNotFound(t *testing.T) {
-	server := &Server{}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
 	router := mux.NewRouter()
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/preview-bridge/sessions", strings.NewReader(`{}`))
@@ -240,6 +240,7 @@ spec:
 	proxy.Add(tenant.InfrastructureInstancesResource.GVR, tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`))
 
 	server := NewWithWorkspace(proxy.Client(), nil, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	signer, err := newEphemeralPreviewBridgeCapabilitySigner()
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +324,6 @@ func setPreviewBridgeTestHeaders(request *http.Request, actor, clusterID string)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", actor)
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-1:workspace-1")
+	request.Header.Set("X-Faros-Tenant", clusterID)
 	request.Header.Set("X-Faros-Cluster", clusterID)
 }

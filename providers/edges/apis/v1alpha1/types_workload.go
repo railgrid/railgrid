@@ -40,6 +40,11 @@ const (
 	PlacementStrategySingleton PlacementStrategy = "Singleton"
 )
 
+// DefaultTargetNamespace is the edge-cluster namespace a Workload renders into
+// when spec.targetNamespace is unset. It mirrors the agent's fallback for
+// bundle objects that carry no namespace.
+const DefaultTargetNamespace = "default"
+
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -72,12 +77,22 @@ type WorkloadList struct {
 // WorkloadSpec defines the desired state of Workload. Exactly one of simple,
 // template or helm selects how the workload is rendered.
 type WorkloadSpec struct {
+	// TargetNamespace is the namespace on the edge cluster the rendered
+	// objects land in, for every mode (simple, template, helm). The Workload's
+	// own (hub) namespace is never carried over. Defaults to "default". For any
+	// other value the rendered bundle also carries the Namespace object, so the
+	// edge agent creates it if it is missing (an existing namespace is left as
+	// is and is never deleted with the Workload).
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	TargetNamespace string `json:"targetNamespace,omitempty"`
 	// Simple mode: just image + ports + env.
 	// +optional
 	Simple *SimpleWorkloadSpec `json:"simple,omitempty"`
-	// Advanced mode: full PodTemplateSpec.
+	// Advanced mode: a pod template (labels/annotations + full PodSpec).
 	// +optional
-	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+	Template *WorkloadPodTemplate `json:"template,omitempty"`
 	// Helm mode: render an upstream chart. The provider fetches + templates the
 	// chart hub-side and ships the rendered manifests to the edge; the edge
 	// needs no chart-registry egress.
@@ -88,6 +103,28 @@ type WorkloadSpec struct {
 	Placement PlacementSpec `json:"placement"`
 	// +optional
 	Access *AccessSpec `json:"access,omitempty"`
+}
+
+// WorkloadPodTemplate is the template-mode pod template. It has the wire shape
+// of a core PodTemplateSpec but declares the metadata fields explicitly, so
+// labels and annotations survive the CRD schema (an embedded ObjectMeta is
+// collapsed to an opaque object and rejects them).
+type WorkloadPodTemplate struct {
+	// Metadata carries labels/annotations stamped on every pod of the
+	// Deployment. The provider always adds its own edges.faros.sh/workload
+	// selector label on top; it cannot be overridden.
+	// +optional
+	Metadata *WorkloadPodTemplateMeta `json:"metadata,omitempty"`
+	// Spec is the full pod spec.
+	Spec corev1.PodSpec `json:"spec"`
+}
+
+// WorkloadPodTemplateMeta is the subset of ObjectMeta a pod template accepts.
+type WorkloadPodTemplateMeta struct {
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // HelmWorkloadSpec deploys a workload from a Helm chart, rendered by the
@@ -127,6 +164,12 @@ type SimpleWorkloadSpec struct {
 	Command []string `json:"command,omitempty"`
 	// +optional
 	Args []string `json:"args,omitempty"`
+	// ImagePullSecrets names docker-registry Secrets in the target namespace
+	// on the edge cluster that pull the image (a private registry). The
+	// Workload never carries the Secret itself — create it on every selected
+	// edge beforehand (e.g. through `faros kubeconfig edge`).
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // PlacementSpec defines how to place the workload on KubernetesCluster edges.

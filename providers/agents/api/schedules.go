@@ -34,6 +34,20 @@ func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// getSchedule returns one schedule in the same shape as a list item.
+func (s *Server) getSchedule(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	sched, err := c.Schedules().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sched)
+}
+
 type createScheduleRequest struct {
 	Name      string `json:"name"`
 	AgentRef  string `json:"agentRef"`

@@ -191,6 +191,7 @@ func TestLoadAssistantThreadEventWindowPagesCompleteTurns(t *testing.T) {
 	messages := store.NewMemoryStore()
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
@@ -277,6 +278,7 @@ func TestLoadAssistantThreadEventWindowNeverEmitsCursorWithoutTurnStart(t *testi
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
@@ -307,6 +309,7 @@ func TestLoadAssistantThreadEventWindowCompletesTurnAcrossStorePages(t *testing.
 	messages := store.NewMemoryStore()
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	events := []store.AssistantThreadEvent{
@@ -358,6 +361,7 @@ func TestLoadAssistantThreadEventWindowSkipsOversizedTurnAndKeepsOlderHistoryRea
 	messages := store.NewMemoryStore()
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	oldItem := assistantThreadItem{
@@ -417,6 +421,7 @@ func TestLoadAssistantThreadEventWindowSkipsMetadataOnlyTailAndKeepsOlderHistory
 	messages := store.NewMemoryStore()
 	counting := &assistantThreadWindowCountingStore{Store: messages}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	oldItem := assistantThreadItem{
@@ -582,6 +587,7 @@ func TestMaterializeAssistantThreadItemsRepairsUnfinishedImageModelInputOnTermin
 func TestAttachAssistantThreadMessagePresentationRepairsHistoricalItems(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	progress := projectAssistantProgressSnapshot{
@@ -627,6 +633,7 @@ func TestAttachAssistantThreadMessagePresentationReadsRecentEndOfLargeHistory(t 
 	ctx := context.Background()
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	for index := 0; index < 5_001; index++ {
@@ -669,6 +676,7 @@ func TestAttachAssistantThreadDynamicToolPresentationRepairsHistoricalInteractio
 	ctx := context.Background()
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	runID := "run-interaction"
 	now := time.Now().UTC()
@@ -744,6 +752,7 @@ func TestAttachAssistantThreadDynamicToolPresentationSharesBudgetAcrossRuns(t *t
 		},
 	}
 	server := NewWithWorkspace(nil, enrichmentStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	legacyItem := func(id, runID, callID string) assistantThreadItem {
 		action := projectAssistantActionFeedItem{
 			ID: projectAssistantActionPublicID(callID), Kind: projectAssistantActionFeedItemOther,
@@ -785,6 +794,7 @@ func TestAssistantThreadCompatibilityEnrichmentIsBounded(t *testing.T) {
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	counting := &assistantThreadEnrichmentCountingStore{Store: store.NewMemoryStore()}
 	server := NewWithWorkspace(nil, counting, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 
 	legacyAction := projectAssistantActionFeedItem{
 		ID: "missing-action", Kind: projectAssistantActionFeedItemOther,
@@ -831,6 +841,7 @@ func TestAssistantThreadCompatibilityEnrichmentIsBounded(t *testing.T) {
 func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-stream-turns", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
@@ -868,6 +879,7 @@ func TestTerminalizeProjectAssistantTurnStartFailureClosesCanonicalTurn(t *testi
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
 	now := time.Now().UTC()
 	thread := store.AssistantThread{ID: "thread-start-failure", ActorID: "alice", CreatedAt: now, UpdatedAt: now}

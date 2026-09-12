@@ -18,7 +18,7 @@ POLICIES = {
     "e2e": {
         "always": set(),
         "full": {"actions-node-sdk", "e2e-providers", "e2e-standalone", "e2e-ssh",
-                 "e2e-oidc", "e2e-external-kcp", "e2e-edges-connectivity"},
+                 "e2e-oidc", "e2e-external-kcp", "e2e-edges-connectivity", "e2e-cli"},
     },
     "images": {
         "always": set(),

@@ -157,9 +157,10 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/infrastructure/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Faros-Tenant + X-Faros-User
-   │  (pkg/hub/providers/proxy.go SetTenantResolver +
-   │   pkg/hub/provider_tenant_resolver.go)
+   │  proxy injects X-Faros-Tenant + X-Faros-Cluster (the workspace's
+   │  kcp logical-cluster ID, in both) + X-Faros-User
+   │  (pkg/hub/providers/proxy.go SetTenantResolver/SetClusterResolver +
+   │   pkg/hub/provider_tenant_resolver.go / provider_cluster_resolver.go)
    ▼
 this provider pod
    │

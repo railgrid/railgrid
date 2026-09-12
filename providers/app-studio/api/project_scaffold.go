@@ -42,9 +42,14 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	scope := projectWorkspaceScope(id, p)
 
 	// Do not clobber a workspace that already has content (re-create races, an
-	// adopted repo hydrate, or a prior seed).
+	// adopted repo hydrate, or a prior seed). The git host's autoInit
+	// boilerplate does not count: a prompt-only project has no template at
+	// creation, and by the time the assistant selects one the reconciler has
+	// hydrated the fresh repository's README into the workspace. Treating that
+	// README as "content" meant the scaffold was never seeded for exactly the
+	// projects that need it most — no build workflow, so never promotable.
 	existing, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{})
-	if err == nil && len(existing.Files) > 0 {
+	if err == nil && !workspaceHoldsOnlyRepositoryBoilerplate(existing.Files) {
 		return 0, nil
 	}
 
@@ -73,6 +78,29 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 		return 0, fmt.Errorf("tracking seeded files: %w", err)
 	}
 	return len(files), nil
+}
+
+// repositoryBoilerplatePaths are the root files a git host writes when it
+// initializes an empty repository (and that hydration then copies into the
+// workspace). A workspace holding nothing else has no application code to
+// protect, so a scaffold may still be seeded into it. README.md and LICENSE are
+// never part of a scaffold (scaffold.skippedPath drops them) and survive the
+// seed; a scaffold that ships its own .gitignore replaces the generated one.
+var repositoryBoilerplatePaths = map[string]bool{
+	"README.md":  true,
+	"LICENSE":    true,
+	".gitignore": true,
+}
+
+// workspaceHoldsOnlyRepositoryBoilerplate reports whether every file in the
+// listing is git-host boilerplate — including the empty listing.
+func workspaceHoldsOnlyRepositoryBoilerplate(files []workspace.FileInfo) bool {
+	for _, f := range files {
+		if !repositoryBoilerplatePaths[f.Path] {
+			return false
+		}
+	}
+	return true
 }
 
 // reseedProjectScaffold is POST /api/projects/{project}/scaffold — re-attach

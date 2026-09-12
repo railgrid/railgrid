@@ -35,7 +35,7 @@ func TestSavedModelConnectionCredentialBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
-	server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	for _, tt := range []struct {
 		name, id, endpoint, provider string
 		status                       int

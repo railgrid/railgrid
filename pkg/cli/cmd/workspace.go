@@ -17,28 +17,116 @@ limitations under the License.
 package cmd
 
 import (
-	"os"
+	"fmt"
+	"io"
+	"net/http"
 
 	"github.com/spf13/cobra"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-
-	workspacecmd "github.com/kcp-dev/cli/pkg/workspace/cmd"
 )
 
 func newWorkspaceCommand() *cobra.Command {
-	wsCmd, err := workspacecmd.New(genericclioptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
-	if err != nil {
-		// This only fails if the create subcommand can't be built, which
-		// shouldn't happen. Panic rather than silently returning nil.
-		panic(err)
+	var target hubTarget
+	cmd := &cobra.Command{
+		Use:     "workspace",
+		Aliases: []string{"workspaces", "ws"},
+		Short:   "Workspaces of an organization, and who is in them",
+		Long: `A workspace is the Kubernetes-style API you work in: edges, providers and
+their resources live there, and access is per workspace.
+
+  faros workspace list                      # workspaces in the current org
+  faros workspace list --org acme
+  faros workspace members                   # members of the current workspace
+  faros workspace members --workspace platform
+  faros workspace create "Platform"
+  faros use --workspace platform            # make it the kubectl target`,
 	}
-	// Surface the kcp workspace command under the faros-native name `connect`,
-	// which matches what users actually do: connect to a specific edge cluster.
-	// `faros connect <edge>` enters its mount; `faros connect :` returns to the
-	// hub root, effectively disconnecting. Keep the old names as aliases so
-	// existing muscle memory and docs keep working.
-	wsCmd.Use = "connect [<edge>|:|..|.|-|~|<root:absolute:workspace>] [-i|--interactive]"
-	wsCmd.Short = "Connect to (or disconnect from) an edge cluster — use ':' to return to the hub root"
-	wsCmd.Aliases = []string{"ws", "workspace", "workspaces"}
-	return wsCmd
+	target.addFlags(cmd)
+	cmd.AddCommand(newWorkspaceListCommand(&target), newWorkspaceCreateCommand(&target), newMembersCommand(workspaceScope, &target))
+	return cmd
+}
+
+func newWorkspaceListCommand(target *hubTarget) *cobra.Command {
+	output := newOutputFlags()
+	cmd := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List the workspaces of an organization",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmdContext(cmd)
+			s, err := openHubSession()
+			if err != nil {
+				return err
+			}
+			// Remember which workspace kubectl points at before resolveOrg
+			// may retarget the session.
+			current := s.Cluster
+			if err := s.resolveOrg(ctx, target.org); err != nil {
+				return err
+			}
+			workspaces, err := fetchWorkspaces(ctx, s.client, s.Hub, s.Org.UUID)
+			if err != nil {
+				return withLoginHint(err)
+			}
+			return printWorkspaces(cmd.OutOrStdout(), output, s.Org, workspaces, current)
+		},
+	}
+	output.addFlag(cmd)
+	return cmd
+}
+
+func printWorkspaces(w io.Writer, output *outputFlags, org orgView, workspaces []workspaceView, currentCluster string) error {
+	switch {
+	case output.structured():
+		return output.printStructured(w, workspaces)
+	case output.names():
+		names := make([]string, len(workspaces))
+		for i, ws := range workspaces {
+			names[i] = displayLabel(ws.DisplayName, ws.UUID)
+		}
+		return printNames(w, names)
+	}
+	if len(workspaces) == 0 {
+		_, err := fmt.Fprintf(w, "Organization %q has no workspaces you can access.\n", displayLabel(org.DisplayName, org.UUID))
+		return err
+	}
+	t := &table{headers: []string{"CURRENT", "NAME", "ROLE", "UUID", "CLUSTER"}}
+	for _, ws := range workspaces {
+		mark := ""
+		if ws.ClusterName != "" && ws.ClusterName == currentCluster {
+			mark = "*"
+		}
+		cluster := ws.ClusterName
+		if cluster == "" {
+			cluster = "(not ready)"
+		}
+		t.add(mark, displayLabel(ws.DisplayName, ws.UUID), ws.Role, ws.UUID, cluster)
+	}
+	return t.write(w)
+}
+
+func newWorkspaceCreateCommand(target *hubTarget) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create <display-name>",
+		Short: "Create a workspace in an organization",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmdContext(cmd)
+			s, err := openHubSession()
+			if err != nil {
+				return err
+			}
+			if err := s.resolveOrg(ctx, target.org); err != nil {
+				return err
+			}
+			var created workspaceView
+			if err := s.orgScoped().do(ctx, http.MethodPost, s.Hub+"/api/orgs/"+s.Org.UUID+"/workspaces", map[string]string{"displayName": args[0]}, &created); err != nil {
+				return fmt.Errorf("creating workspace: %w", err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q created (%s) in organization %q.\nSwitch to it with: faros use --org %s --workspace %s\n",
+				displayLabel(created.DisplayName, created.UUID), created.UUID, displayLabel(s.Org.DisplayName, s.Org.UUID), s.Org.UUID, created.UUID)
+			return nil
+		},
+	}
+	return cmd
 }

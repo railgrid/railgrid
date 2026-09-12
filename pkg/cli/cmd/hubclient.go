@@ -85,6 +85,20 @@ type hubSession struct {
 // workspace UUIDs by matching the context's cluster against the workspaces the
 // user can see (or against the --org / --workspace overrides).
 func newHubSession(ctx context.Context, target hubTarget) (*hubSession, error) {
+	s, err := openHubSession()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveTenant(ctx, target); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// openHubSession builds an authenticated session from the faros kubeconfig
+// context without resolving the tenant. Commands that only need the hub and
+// the caller's identity (whoami, org list) start here.
+func openHubSession() (*hubSession, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
@@ -130,18 +144,61 @@ func newHubSession(ctx context.Context, target hubTarget) (*hubSession, error) {
 		plainTransport.TLSClientConfig = tlsConfig
 	}
 
-	s := &hubSession{
+	return &hubSession{
 		Context:    ctxName,
 		Hub:        base,
 		Cluster:    clusterName,
 		restConfig: restCfg,
 		client:     &http.Client{Transport: rt},
 		plain:      &http.Client{Transport: plainTransport},
+	}, nil
+}
+
+// resolveOrg fills Org only. With --org it matches by name or UUID; without
+// it, the org owning the kubeconfig's workspace wins, then the only org the
+// user belongs to, otherwise the caller must disambiguate.
+func (s *hubSession) resolveOrg(ctx context.Context, orgFlag string) error {
+	listCtx, cancel := context.WithTimeout(ctx, hubRESTTimeout)
+	defer cancel()
+	orgs, err := fetchOrgs(listCtx, s.client, s.Hub)
+	if err != nil {
+		return withLoginHint(err)
 	}
-	if err := s.resolveTenant(ctx, target); err != nil {
-		return nil, err
+	if len(orgs) == 0 {
+		return fmt.Errorf("you are not a member of any organizations")
 	}
-	return s, nil
+	if orgFlag != "" {
+		o, err := matchOrg(orgs, orgFlag)
+		if err != nil {
+			return err
+		}
+		s.Org = o
+		return nil
+	}
+	if err := s.resolveTenant(ctx, hubTarget{}); err == nil {
+		s.WS = workspaceView{} // org-scope commands must not send X-Faros-Workspace
+		return nil
+	}
+	if len(orgs) == 1 {
+		s.Org = orgs[0]
+		return nil
+	}
+	names := make([]string, len(orgs))
+	for i, o := range orgs {
+		names[i] = displayLabel(o.DisplayName, o.UUID)
+	}
+	return fmt.Errorf("the kubeconfig does not point at a workspace of any of your %d organizations; pass --org (one of: %s)", len(orgs), strings.Join(names, ", "))
+}
+
+// orgScoped returns a copy of the session that sends only the org tenant
+// header. The hub's tenant middleware requires an exact (org, workspace)
+// membership row whenever X-Faros-Workspace is present, which an org admin
+// without a row in that workspace would fail; org-scope routes must not
+// carry it.
+func (s *hubSession) orgScoped() *hubSession {
+	c := *s
+	c.WS = workspaceView{}
+	return &c
 }
 
 // resolveTenant fills Org and WS. Without overrides it finds the workspace

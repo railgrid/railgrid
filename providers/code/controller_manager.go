@@ -37,9 +37,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/leaderelection"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+
+	"github.com/faroshq/provider-sdk/apiexportprovider"
+	"github.com/faroshq/provider-sdk/leaderelection"
+	"github.com/faroshq/provider-sdk/vwhealth"
 
 	"github.com/faroshq/provider-code/backend"
 	"github.com/faroshq/provider-code/commitbundle"
@@ -70,8 +72,9 @@ const controllerLeaseName = "code-controllers"
 // for the controller lease and — while leader — runs the multicluster manager
 // with the reconcilers, dispatching through the shared backend registry
 // (built in runServe so the HTTP packages handler shares it). A nil config
-// means "skip the manager, run REST/MCP-only".
-func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store) error {
+// means "skip the manager, run REST/MCP-only". ready, when set, reports the
+// multicluster provider's watch state for the duration of each term.
+func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, ready *vwhealth.Readiness) error {
 	if config == nil {
 		return errControllerDisabled
 	}
@@ -97,7 +100,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 			Namespace: leaderelection.DefaultNamespace,
 			Name:      controllerLeaseName,
 		}, func(termCtx context.Context) {
-			if err := runControllerManager(termCtx, config, registry, bundles); err != nil {
+			if err := runControllerManager(termCtx, config, registry, bundles, ready); err != nil {
 				log.Printf("controller manager exited: %v", err)
 			}
 		}); err != nil {
@@ -110,12 +113,21 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 // runControllerManager builds the multicluster manager and blocks in Start
 // until the leadership term ends. Called once per term — a stopped
 // controller-runtime manager cannot be restarted.
-func runControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store) error {
+//
+// The multicluster provider is attached to readiness for the term: from the
+// moment this replica is leader until it stops being one, /readyz (and so the
+// hub's BackendHealthy) and the heartbeat say whether tenant workspaces are
+// actually being watched. Without that, a watcher that failed to start left
+// every signal green while no Repository ever got a status.
+func runControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, ready *vwhealth.Readiness) error {
 	scheme := codescheme.NewScheme()
 
-	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: scheme})
+	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
+	}
+	if ready != nil {
+		defer ready.Attach("controllers", provider)()
 	}
 
 	skipNameValidation := true

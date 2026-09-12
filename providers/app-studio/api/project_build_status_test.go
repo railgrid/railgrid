@@ -64,11 +64,11 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
-	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "70aed526")
+	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "70aed526")
 	if err != nil {
 		t.Fatalf("fetchProjectBuildRun: %v", err)
 	}
@@ -105,7 +105,8 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 		template,
 	)
 	s := &Server{
-		hubBase: mcp.URL,
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		hubBase:          mcp.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
@@ -116,7 +117,7 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
-	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha"); err != nil {
+	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha"); err != nil {
 		t.Fatalf("getProjectBuildLogs: %v", err)
 	}
 	if gotWorkflow != "build.yaml" {
@@ -149,7 +150,8 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 		template,
 	)
 	s := &Server{
-		hubBase: mcp.URL,
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
+		hubBase:          mcp.URL,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
@@ -160,7 +162,7 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
-	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha"); err == nil {
+	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha"); err == nil {
 		t.Fatal("getProjectBuildLogs succeeded, want declared workflow error")
 	}
 	if !reflect.DeepEqual(workflows, []string{"build.yaml"}) {
@@ -204,11 +206,11 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 			}))
 			t.Cleanup(mcp.Close)
 
-			s := &Server{hubBase: mcp.URL}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
 			p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 			req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 			req.Header.Set("Authorization", "Bearer caller-token")
-			raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "  reviewed-sha  ")
+			raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "  reviewed-sha  ")
 			if err != nil {
 				t.Fatalf("getProjectBuildLogs: %v", err)
 			}
@@ -258,11 +260,11 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
-	raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha")
+	raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "reviewed-sha")
 	if err != nil {
 		t.Fatalf("getProjectBuildLogs: %v", err)
 	}
@@ -310,11 +312,11 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: mcp.URL}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
 	req.Header.Set("Authorization", "Bearer caller-token")
-	if _, err := s.rebuildProject(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "  reviewed-sha  "); err != nil {
+	if _, err := s.rebuildProject(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "  reviewed-sha  "); err != nil {
 		t.Fatalf("rebuildProject: %v", err)
 	}
 	if len(workflows) != 2 || workflows[0] != projectBuildWorkflowFileName || workflows[1] != projectLegacyBuildWorkflowFileName {
@@ -332,7 +334,7 @@ func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
 	calls := 0
 	started := make(chan struct{})
 	release := make(chan struct{})
-	s := &Server{projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
 		mu.Lock()
 		calls++
 		if calls == 1 {
@@ -343,7 +345,7 @@ func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
 		return &projectBuildRunObservation{Found: true, HeadSHA: commit, Status: "queued"}, nil
 	}}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
-	id := identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
+	id := identity{tenant: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
 
 	results := make(chan *projectBuildRunObservation, 2)
 	for range 2 {
@@ -376,7 +378,7 @@ func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
 func TestObserveProjectBuildRunCacheScopesClusterIdentity(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
-	s := &Server{projectBuildRunResolver: func(_ context.Context, id identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(_ context.Context, id identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -385,8 +387,8 @@ func TestObserveProjectBuildRunCacheScopesClusterIdentity(t *testing.T) {
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	commit := "70aed526"
 
-	first, firstErr := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}, p, nil, commit)
-	second, secondErr := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-b", user: "alice"}, p, nil, commit)
+	first, firstErr := s.observeProjectBuildRun(context.Background(), identity{tenant: "root:tenant-a", clusterID: "cluster-a", user: "alice"}, p, nil, commit)
+	second, secondErr := s.observeProjectBuildRun(context.Background(), identity{tenant: "root:tenant-a", clusterID: "cluster-b", user: "alice"}, p, nil, commit)
 	if firstErr != "" || secondErr != "" {
 		t.Fatalf("errors = %q, %q", firstErr, secondErr)
 	}
@@ -408,6 +410,7 @@ func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.
 	workflowPath := ".github/workflows/build.yaml"
 	calls := 0
 	s := &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			obj := applicationTemplateObject()
 			_ = unstructured.SetNestedField(obj.Object, workflowPath, "spec", "development", "build", "workflowPath")
@@ -429,7 +432,7 @@ func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.
 		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
-	id := identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
+	id := identity{tenant: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
 	first, firstErr := s.observeProjectBuildRun(context.Background(), id, p, nil, "70aed526")
 	workflowPath = ".github/workflows/release.yml"
 	second, secondErr := s.observeProjectBuildRun(context.Background(), id, p, nil, "70aed526")
@@ -444,6 +447,7 @@ func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.
 func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
 	resolverCalled := false
 	s := &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return nil, fmt.Errorf("template catalog unavailable")
 		},
@@ -456,7 +460,7 @@ func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
 		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
-	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
+	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenant: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
 	if run != nil || errorText != "Build status temporarily unavailable." {
 		t.Fatalf("run = %#v, error = %q", run, errorText)
 	}
@@ -466,11 +470,11 @@ func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
 }
 
 func TestObserveProjectBuildRunDegradesLookupFailureWithoutChangingArtifacts(t *testing.T) {
-	s := &Server{projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
 		return nil, fmt.Errorf("github unavailable")
 	}}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
-	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
+	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenant: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
 	if run != nil || errorText != "Build status temporarily unavailable." {
 		t.Fatalf("run = %#v, error = %q", run, errorText)
 	}
@@ -637,7 +641,7 @@ func TestResolveProjectComponentImagesKeepsPackagesBoundToProjectRepository(t *t
 	project := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
 		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
 	}}
-	images, err := (&Server{}).resolveProjectComponentImages(
+	images, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).resolveProjectComponentImages(
 		context.Background(),
 		asclient.NewFromScope(scope),
 		project,

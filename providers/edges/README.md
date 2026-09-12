@@ -39,6 +39,52 @@ own workspace when self-hosted).
 Revoking access is deleting the edge — that garbage-collects the ServiceAccount
 and its grants.
 
+## Workloads
+
+A `Workload` (namespaced on the hub) is rendered by the provider into a
+manifest bundle and fanned out as one `Placement` per selected
+`KubernetesCluster`; the edge agent applies the bundle with server-side apply
+and prunes what disappears. `Placement.spec.manifests[]` is the rendered
+output — read it to see exactly what lands on the edge.
+
+```yaml
+apiVersion: edges.faros.sh/v1alpha1
+kind: Workload
+metadata:
+  name: kiosk-whoami
+  namespace: kiosk            # hub namespace only; NOT where it runs on the edge
+spec:
+  targetNamespace: kiosk      # edge namespace (default "default"); created if missing
+  placement:
+    strategy: Spread          # or Singleton
+    edgeSelector:
+      matchExpressions:
+        - {key: edges.faros.sh/name, operator: In, values: [home, minis]}
+  replicas: 1                 # per edge
+  simple:
+    image: ghcr.io/example/app:1.0
+    ports: [{name: http, containerPort: 80}]
+    imagePullSecrets: [{name: ghcr-pull}]   # must already exist in targetNamespace on each edge
+```
+
+- `spec.targetNamespace` — the edge namespace for every mode (`simple`,
+  `template`, `helm`). The hub namespace is never carried over. Any value
+  other than `default` makes the bundle start with the `Namespace` object, so
+  the agent creates it when missing; an existing namespace is reused and is
+  never deleted with the Workload.
+- Exactly one of `simple`, `template`, `helm`. `simple` renders a Deployment
+  (+ a ClusterIP Service named after the Workload when `ports` are set);
+  `simple.imagePullSecrets` names docker-registry Secrets that must already
+  exist in the target namespace on each edge — the Workload ships no Secrets.
+- `template` is a pod template: `template.metadata.labels` / `.annotations`
+  land on the pods (the provider's `edges.faros.sh/workload` selector label is
+  always added and cannot be overridden) and `template.spec` is a full PodSpec
+  (so `imagePullSecrets`, volumes, sidecars, …).
+- `helm` templates the chart hub-side into the target namespace
+  (`{{ .Release.Namespace }}`); objects the chart leaves namespace-less are
+  stamped with it, cluster-scoped kinds are not. `fullnameOverride` is forced
+  to the Workload name.
+
 ## Scaling
 
 The provider is horizontally scalable. Each agent holds exactly one control

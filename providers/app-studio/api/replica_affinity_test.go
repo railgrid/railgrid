@@ -28,14 +28,15 @@ import (
 func affinityTestServer(t *testing.T, replicaID, addr string) (*Server, store.Store) {
 	t.Helper()
 	msgStore := store.NewMemoryStore()
-	s := &Server{store: msgStore}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-1": testWorkspace("cluster-1", "org-1", "ws-1")}.lookup, store: msgStore}
 	s.SetReplicaRouting(replicaID, addr, "internal-token")
 	return s, msgStore
 }
 
 func projectRequest(path string, method string) *http.Request {
 	r := httptest.NewRequest(method, path, nil)
-	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-1:ws-1")
+	r.Header.Set("X-Faros-Tenant", "cluster-1")
+	r.Header.Set("Authorization", "Bearer test-token")
 	return r
 }
 

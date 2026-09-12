@@ -26,9 +26,11 @@ config:
 
   enablePasswordDB: true
   staticClients:
+    # PKCE public client: the hub never sends a client secret, so `public: true`
+    # is required for login and for refresh-token rotation.
     - id: faros
       name: faros
-      secret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
+      public: true
       redirectURIs:
         - https://hub.faros.sh/auth/callback
 

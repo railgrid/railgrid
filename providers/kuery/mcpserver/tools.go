@@ -26,10 +26,33 @@ import (
 )
 
 // queryInput is the kuery_query tool input: a raw kuery QuerySpec. Kept as
-// a JSON blob (not a typed mirror) so the tool tracks kuery's spec without
-// a copy — the description carries the shape the model needs.
+// a generic JSON object (not a typed mirror) so the tool tracks kuery's spec
+// without a copy — the description carries the shape the model needs.
+//
+// It is a map, NOT json.RawMessage: the SDK's schema reflector renders a
+// RawMessage ([]byte) as {"type":["null","array"],"items":{"type":"integer"}},
+// so the aggregate's input validation rejected every real (object) spec and
+// a byte array failed to unmarshal — the tool was unusable. A map reflects
+// to {"type":"object"} and round-trips to the QuerySpec through json.
 type queryInput struct {
-	Spec json.RawMessage `json:"spec" jsonschema:"kuery QuerySpec JSON. Key fields: filter.objects[] (groupKind{group,kind}, namespace, name, labels, categories), cluster.name (an EDGE name to restrict to one edge; omit for the whole fleet), limit, objects.object (sparse projection, e.g. {metadata:{name:true},spec:{replicas:true}}), objects.relations{} (owners, owners+, descendants, descendants+, references, selects, selected-by, linked, linked+, grouped), maxDepth."`
+	Spec map[string]any `json:"spec" jsonschema:"kuery QuerySpec as a JSON object. Key fields: filter.objects[] (groupKind{apiGroup,kind}, namespace, name, labels, categories), cluster.name (an EDGE name to restrict to one edge; omit for the whole fleet), limit, objects.object (sparse projection, e.g. {metadata:{name:true},spec:{replicas:true}}), objects.relations{} (owners, owners+, descendants, descendants+, references, selects, selected-by, linked, linked+, grouped), maxDepth."`
+}
+
+// querySpecFromInput converts the tool's generic spec object into kuery's
+// typed QuerySpec. A nil/empty spec is a valid "everything in scope" query.
+func querySpecFromInput(in map[string]any) (*v1alpha1.QuerySpec, error) {
+	var spec v1alpha1.QuerySpec
+	if len(in) == 0 {
+		return &spec, nil
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("invalid QuerySpec: %w", err)
+	}
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return nil, fmt.Errorf("invalid QuerySpec: %w", err)
+	}
+	return &spec, nil
 }
 
 // queryOutput is the kuery_query result. It is returned as the handler's
@@ -87,8 +110,8 @@ type impactOutput struct {
 // by default — they are blacklisted from sync.
 var impactRelations = []string{"descendants+", "references", "selects", "selected-by", "owners", "linked+", "grouped", "namespace", "namespaced"}
 
-// edgeName strips the "{tenant}/" prefix kuery records on a cluster key, so the
-// model sees the bare edge name it knows.
+// edgeName strips the "{clusterID}/" prefix kuery records on a cluster key, so
+// the model sees the bare edge name it knows.
 func edgeName(cluster string) string {
 	if i := strings.LastIndex(cluster, "/"); i >= 0 {
 		return cluster[i+1:]
@@ -144,7 +167,16 @@ func classifyImpact(anchor *v1alpha1.ObjectResult) (impactedBy, impacts, associa
 }
 
 func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
-	ident := queryapi.IdentityFromRequest(r)
+	// Identity failures surface per call, not at registration: registration
+	// also serves tools/list, which must not fail for a caller that cannot be
+	// scoped — only a tools/call does.
+	ident, identErr := queryapi.IdentityFromRequest(r)
+	tenantFor := func() (string, error) {
+		if identErr != nil {
+			return "", identErr
+		}
+		return ident.Cluster, nil
+	}
 
 	safeRegister("kuery_query", func() {
 		mcp.AddTool(srv, &mcp.Tool{
@@ -157,17 +189,16 @@ func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 			// recursive v1alpha1.ObjectResult and panic. 'any' keeps the structured
 			// output without the schema.
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in queryInput) (*mcp.CallToolResult, any, error) {
-			if ident.Tenant == "" {
-				return nil, nil, fmt.Errorf("missing tenant identity")
+			tenant, err := tenantFor()
+			if err != nil {
+				return nil, nil, err
 			}
-			var spec v1alpha1.QuerySpec
-			if len(in.Spec) > 0 {
-				if err := json.Unmarshal(in.Spec, &spec); err != nil {
-					return nil, nil, fmt.Errorf("invalid QuerySpec: %w", err)
-				}
+			spec, err := querySpecFromInput(in.Spec)
+			if err != nil {
+				return nil, nil, err
 			}
-			queryapi.ScopeToTenant(&spec, ident.Tenant)
-			status, err := deps.Engine.Execute(ctx, &spec)
+			queryapi.ScopeToTenant(spec, tenant)
+			status, err := deps.Engine.Execute(ctx, spec)
 			if err != nil {
 				return nil, nil, fmt.Errorf("query failed: %w", err)
 			}
@@ -186,76 +217,93 @@ func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 				"Coupling is DECLARED — ownerRefs, spec field references, label selectors, namespace membership — NOT runtime traffic or network policy, so a clean result is not proof nothing else depends on it at runtime. Each related object is returned with its kind/namespace/name/edge and the relation that linked it. Prefer this over per-edge kubectl for change-safety and root-cause questions that span edges.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in impactInput) (*mcp.CallToolResult, impactOutput, error) {
-			if ident.Tenant == "" {
-				return nil, impactOutput{}, fmt.Errorf("missing tenant identity")
-			}
-			if in.Kind == "" || in.Name == "" {
-				return nil, impactOutput{}, fmt.Errorf("kind and name are required")
-			}
-			maxDepth := in.MaxDepth
-			if maxDepth == 0 {
-				maxDepth = 5
-			}
-
-			// Project just enough on related objects to identify them.
-			relProj, _ := json.Marshal(map[string]any{
-				"kind":       true,
-				"apiVersion": true,
-				"metadata":   map[string]any{"name": true, "namespace": true},
-			})
-			relObjects := &v1alpha1.ObjectsSpec{Cluster: true, Object: &runtime.RawExtension{Raw: relProj}}
-			relations := map[string]v1alpha1.RelationSpec{}
-			for _, rel := range impactRelations {
-				rs := v1alpha1.RelationSpec{Objects: relObjects}
-				if rel == "namespaced" {
-					rs.Limit = 200 // a Namespace's membership can be large
-				}
-				relations[rel] = rs
-			}
-			spec := v1alpha1.QuerySpec{
-				Cluster:  &v1alpha1.ClusterFilter{Name: in.Edge},
-				MaxDepth: maxDepth,
-				Filter: &v1alpha1.QueryFilter{
-					Objects: []v1alpha1.ObjectFilter{{
-						GroupKind: &v1alpha1.GroupKindFilter{APIGroup: in.Group, Kind: in.Kind},
-						Namespace: in.Namespace,
-						Name:      in.Name,
-					}},
-				},
-				Objects: &v1alpha1.ObjectsSpec{
-					ID:        true,
-					Cluster:   true,
-					Relations: relations,
-				},
-			}
-			if in.Edge == "" {
-				spec.Cluster = nil
-			}
-			queryapi.ScopeToTenant(&spec, ident.Tenant)
-			status, err := deps.Engine.Execute(ctx, &spec)
+			tenant, err := tenantFor()
 			if err != nil {
-				return nil, impactOutput{}, fmt.Errorf("impact query failed: %w", err)
+				return nil, impactOutput{}, err
 			}
-
-			target := impactRef{Edge: in.Edge, Group: in.Group, Kind: in.Kind, Namespace: in.Namespace, Name: in.Name}
-			if len(status.Objects) == 0 {
-				return nil, impactOutput{
-					Object:  target,
-					Found:   false,
-					Summary: fmt.Sprintf("%s/%s not found in the kuery store (sync may be catching up)", in.Kind, in.Name),
-				}, nil
-			}
-			impactedBy, impacts, associated := classifyImpact(&status.Objects[0])
-			out := impactOutput{
-				Object:     target,
-				Found:      true,
-				ImpactedBy: impactedBy,
-				Impacts:    impacts,
-				Associated: associated,
-				Summary: fmt.Sprintf("%s %s/%s: %d upstream dependency(ies) that can break it, %d downstream object(s) in its blast radius, %d associated.",
-					in.Kind, in.Namespace, in.Name, len(impactedBy), len(impacts), len(associated)),
+			out, err := runImpact(ctx, deps.Engine, tenant, in)
+			if err != nil {
+				return nil, impactOutput{}, err
 			}
 			return nil, out, nil
 		})
 	})
+}
+
+// impactSpec builds the kuery query the impact tool runs: the one target
+// object (by group/kind/namespace/name, optionally pinned to an edge) with
+// every impact relation expanded one level and projected to identity only.
+func impactSpec(in impactInput) *v1alpha1.QuerySpec {
+	maxDepth := in.MaxDepth
+	if maxDepth == 0 {
+		maxDepth = 5
+	}
+
+	// Project just enough on related objects to identify them.
+	relProj, _ := json.Marshal(map[string]any{
+		"kind":       true,
+		"apiVersion": true,
+		"metadata":   map[string]any{"name": true, "namespace": true},
+	})
+	relObjects := &v1alpha1.ObjectsSpec{Cluster: true, Object: &runtime.RawExtension{Raw: relProj}}
+	relations := map[string]v1alpha1.RelationSpec{}
+	for _, rel := range impactRelations {
+		rs := v1alpha1.RelationSpec{Objects: relObjects}
+		if rel == "namespaced" {
+			rs.Limit = 200 // a Namespace's membership can be large
+		}
+		relations[rel] = rs
+	}
+	spec := &v1alpha1.QuerySpec{
+		MaxDepth: maxDepth,
+		Filter: &v1alpha1.QueryFilter{
+			Objects: []v1alpha1.ObjectFilter{{
+				GroupKind: &v1alpha1.GroupKindFilter{APIGroup: in.Group, Kind: in.Kind},
+				Namespace: in.Namespace,
+				Name:      in.Name,
+			}},
+		},
+		Objects: &v1alpha1.ObjectsSpec{
+			ID:        true,
+			Cluster:   true,
+			Relations: relations,
+		},
+	}
+	if in.Edge != "" {
+		spec.Cluster = &v1alpha1.ClusterFilter{Name: in.Edge}
+	}
+	return spec
+}
+
+// runImpact executes the impact query for one object in the caller's tenant
+// (its kcp logical-cluster ID) and buckets the result by impact direction.
+func runImpact(ctx context.Context, eng *engine.Engine, tenant string, in impactInput) (impactOutput, error) {
+	if in.Kind == "" || in.Name == "" {
+		return impactOutput{}, fmt.Errorf("kind and name are required")
+	}
+	spec := impactSpec(in)
+	queryapi.ScopeToTenant(spec, tenant)
+	status, err := eng.Execute(ctx, spec)
+	if err != nil {
+		return impactOutput{}, fmt.Errorf("impact query failed: %w", err)
+	}
+
+	target := impactRef{Edge: in.Edge, Group: in.Group, Kind: in.Kind, Namespace: in.Namespace, Name: in.Name}
+	if len(status.Objects) == 0 {
+		return impactOutput{
+			Object:  target,
+			Found:   false,
+			Summary: fmt.Sprintf("%s/%s not found in the kuery store (sync may be catching up)", in.Kind, in.Name),
+		}, nil
+	}
+	impactedBy, impacts, associated := classifyImpact(&status.Objects[0])
+	return impactOutput{
+		Object:     target,
+		Found:      true,
+		ImpactedBy: impactedBy,
+		Impacts:    impacts,
+		Associated: associated,
+		Summary: fmt.Sprintf("%s %s/%s: %d upstream dependency(ies) that can break it, %d downstream object(s) in its blast radius, %d associated.",
+			in.Kind, in.Namespace, in.Name, len(impactedBy), len(impacts), len(associated)),
+	}, nil
 }

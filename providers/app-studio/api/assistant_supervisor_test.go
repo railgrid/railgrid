@@ -264,6 +264,7 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	memoryStore := store.NewMemoryStore()
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.assistantSupervisor = supervisor
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	release, err := supervisor.Reserve(scope)
@@ -296,6 +297,7 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	stale := store.AssistantRun{ID: "run-stale", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-stale", UserMessageID: "user-stale", ActiveMessageID: "assistant-stale", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -329,6 +331,7 @@ func TestProjectAssistantReconcilesOrphanedCanonicalTurn(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	thread := store.AssistantThread{ID: "thread-orphaned", ActorID: "test-user", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now}
@@ -434,6 +437,7 @@ func TestProjectAssistantReconcileTargetsRequestedRunWithoutInterruptingNewerRun
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	oldRun := store.AssistantRun{ID: "run-old", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted, ActiveMessageID: "assistant-old", CreatedAt: now, UpdatedAt: now, Revision: 1}
@@ -1112,6 +1116,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	<-updates
 	state := &projectAssistantDurableMetadataState{status: "Writing files", toolCalls: []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolEditFile, Status: "succeeded"}}}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	if err := server.persistProjectAssistantDurableMetadata(context.Background(), accumulator, workspace.Scope{}, state, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1232,6 +1237,7 @@ func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjec
 	failing := &failAssistantSnapshotSavesStore{Store: inner, failures: 2}
 	supervisor := newProjectAssistantSupervisor(context.Background(), failing)
 	server := NewWithWorkspace(nil, failing, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.assistantSupervisor = supervisor
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
@@ -1314,6 +1320,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), messages, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := messages.CreateProjectBootstrapPermit(context.Background(), scope, "test-user", projectInitialBootstrapPromptDigest("build a todo app")); err != nil {
 		t.Fatal(err)
@@ -1329,7 +1336,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer caller-token")
 		request.Header.Set("X-Faros-User", "test-user")
-		request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+		request.Header.Set("X-Faros-Tenant", "cluster-a")
 		request.Header.Set("X-Faros-Cluster", "cluster-a")
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, request)
@@ -1378,6 +1385,7 @@ func TestProjectAssistantRunStartInitialBootstrapSeesTranscriptAfterReservation(
 	messages := store.NewMemoryStore()
 	observingStore := &reservationObservingStore{Store: messages, scope: scope}
 	server := NewWithWorkspace(nil, observingStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	observingStore.supervisor = server.projectAssistantSupervisor()
 	now := time.Now().UTC()
 	if err := messages.AppendMessage(context.Background(), scope, store.Message{ID: "prior-user", Role: "user", ActorID: "test-user", Content: "already started", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -1404,6 +1412,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
@@ -1419,7 +1428,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-1/events", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -1450,6 +1459,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
@@ -1473,7 +1483,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -1492,6 +1502,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
@@ -1628,6 +1639,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	firstPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"},
 	}}
@@ -1645,7 +1657,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -1728,6 +1740,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			memoryStore := store.NewMemoryStore()
 			server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
+			server.tenantWorkspaces = defaultTestWorkspaces.lookup
 			server.assistantEngine = terminalStartRouteEngine{err: tt.err}
 			scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 			createAssistantThreadForHTTPTest(t, memoryStore, scope, "thread-1", "test-user")
@@ -1737,7 +1750,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer caller-token")
 			request.Header.Set("X-Faros-User", "test-user")
-			request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+			request.Header.Set("X-Faros-Tenant", "cluster-a")
 			request.Header.Set("X-Faros-Cluster", "cluster-a")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
@@ -1775,6 +1788,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	latestPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
@@ -1806,7 +1820,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)

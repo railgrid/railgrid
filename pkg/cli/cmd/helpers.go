@@ -17,13 +17,17 @@ limitations under the License.
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -48,18 +52,29 @@ func normalizeHubURL(u string) string {
 	return u
 }
 
+// loadRestConfig returns the client config for talking to the hub. It uses
+// the "faros" context whenever the kubeconfig has one, so hub commands keep
+// working while 'faros connect' has pointed kubectl's current context at an
+// edge; without one it falls back to the current context (or in-cluster).
 func loadRestConfig() (*rest.Config, error) {
 	var config *rest.Config
 	var err error
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	overrides := &clientcmd.ConfigOverrides{}
+	if raw, rerr := loadingRules.Load(); rerr == nil {
+		if _, ok := raw.Contexts[farosContextName]; ok {
+			overrides.CurrentContext = farosContextName
+		}
+	}
+	if kubeconfig != "" || overrides.CurrentContext != "" {
+		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-			configOverrides := &clientcmd.ConfigOverrides{}
-			kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-			config, err = kubeConfig.ClientConfig()
+			config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
 		}
 	}
 	if err != nil {
@@ -157,10 +172,54 @@ func externalizeEdgeURL(edgeURL string, rawConfig *clientcmdapi.Config) (string,
 		return edgeURL, nil //nolint:nilerr
 	}
 
+	// status.URL may be a full URL with an internal host, or a bare path when
+	// the provider has no public host configured; both become hub-relative.
 	if !strings.HasPrefix(parsed.Path, "/services/") {
 		return edgeURL, nil
 	}
 
 	hubBase := hubParsed.Scheme + "://" + hubParsed.Host
 	return hubBase + parsed.Path, nil
+}
+
+// stdinIsTerminal reports whether the process has an interactive stdin.
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// confirm asks a yes/no question on the command's streams. Without a
+// terminal it refuses rather than guessing, so scripts must pass --yes.
+func confirm(cmd *cobra.Command, question string) (bool, error) {
+	if !stdinIsTerminal() {
+		return false, fmt.Errorf("%s\nconfirmation needed but stdin is not a terminal; pass --yes", question)
+	}
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", question)
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && line == "" {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	}
+	return false, nil
+}
+
+// loadRawKubeconfig loads the kubeconfig file the CLI operates on (the
+// --kubeconfig path, else the default loading rules) and the path writes
+// must go to.
+func loadRawKubeconfig() (*clientcmdapi.Config, string, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	raw, err := loadingRules.GetStartingConfig()
+	if err != nil {
+		return nil, "", fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	path := loadingRules.GetDefaultFilename()
+	if kubeconfig != "" {
+		path = kubeconfig
+	}
+	return raw, path, nil
 }

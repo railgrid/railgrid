@@ -569,7 +569,7 @@ func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method,
 		}
 	}
 	req.Header.Set("Authorization", "Bearer "+ident.token)
-	req.Header.Set("X-Faros-Tenant", ident.tenantPath)
+	req.Header.Set("X-Faros-Tenant", ident.tenant)
 	req.Header.Set("X-Faros-User", ident.user)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")

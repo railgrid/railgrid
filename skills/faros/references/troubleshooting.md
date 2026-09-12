@@ -32,8 +32,10 @@ Exact strings are in backticks; `…` marks elided detail.
 | HTTP 200 but the call failed | Tool errors come back as `result.isError: true` with text in `result.content[0].text`; on success the field is absent, not `false` | Test `(.result.isError // false)`, never the status |
 | A `<provider>__*` tool does not exist | Provider is org-scoped (BYO): federated only for a human bearer in a team workspace, never for the connect token (a ServiceAccount), and the org copy hides the platform copy of the same name | Call `tools/list` with your own hub `TOKEN`, or use kubectl / the provider's REST API ([mcp-and-edges.md](mcp-and-edges.md)) |
 | `provider <method> response exceeds the 96 MiB limit; the result is too large to federate` | Tool result over the aggregate's cap | Ask for less (fewer files, no `binaryEncoding`) |
-| `kuery__kuery_query` → `validating /properties/spec: … want one of "null, array"` (or, with a byte array, `cannot unmarshal array into Go value of type v1alpha1.QuerySpec`) | The tool's schema declares `spec` as bytes; no spec can pass | `POST $HUB/services/providers/kuery/api/query` with the same body |
-| kuery query answers `{}`, `GET …/kuery/api/edges` → `{"edges":[]}` | `kuery` is not enabled in this workspace (its tools are federated regardless), or its edge engagement fails provider-side (`GET …/api/status` → `engagedEdges: 0`) | Enable the provider with its four claims; if `engagedEdges` stays 0 with connected edges, the operator checks the kuery provider logs |
+| kuery query answers `{}`, `GET …/kuery/api/edges` → `{"edges":[]}` | `kuery` is not enabled in this workspace (its tools are federated regardless), or its edge engagement fails provider-side (`GET …/api/status` → `engagedEdges: 0`) | Enable the provider with its four claims; edges engage within ~1 min. If `engagedEdges` stays 0 with connected Kubernetes edges, the operator checks the kuery provider logs |
+| kuery MCP tool → `… not known to kuery yet` / 401 | The provider has not yet mapped this workspace's cluster ID (it learns it on its first reconcile after start or enable) | Retry in a few seconds |
+| `cat f \| faros ssh x -- "cat > /tmp/f"` exits 0 but writes an empty file | The hub's edges provider ignores the CLI's `stdin=1` (it predates stdin forwarding) | Upgrade the edges provider; until then embed the content in the command (`printf '%s' '…' > /tmp/f`, or base64) |
+| `kubectl` suddenly targets an edge, `faros env`/`faros app` complain about the workspace | `faros connect <edge>` made context `faros-<edge>` current | `faros disconnect` (or `faros use`) returns to `faros` |
 
 ### App Studio
 
@@ -55,6 +57,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | `files/upload` → 409 `file "<p>" already exists; upload with overwrite=true to replace it` | Existing target | `overwrite=true` |
 | 413 `file exceeds the 26214400-byte binary limit` / `text file "<p>" is too large: N > 262144 bytes` / `upload exceeds the 50331648-byte request limit` | Workspace limits: 25 MiB binary, 256 KiB text, 48 MiB per upload | Smaller files; split uploads |
 | `files/raw` → 409 `file changed while it was being read; retry` | Concurrent write | Retry |
+| `publishing/grants` → 403 with the hub's message | You are not an admin of the workspace (inviting adds an org member) | Ask a workspace admin, or `faros workspace members add <email> --invite` as one |
 | DELETE project → 409 `repository "<r>" was adopted (imported) … never deletes adopted repositories; …` or `… is not owned by project "<p>"; it was not deleted` | `deleteRepository=true` on an adopted/foreign repo | Delete without `deleteRepository`; remove the repo via the code provider |
 | Attachment → 413 `attachment is N bytes; maximum is M` | Over 25 MiB (any file), or the per-kind bound | Smaller file |
 | Assistant: `binary files cannot be placed while this run uses an isolated coding sandbox; …` | `import_attachment`/`download_file` in run-sandbox mode | Upload in the Code tab (`files/upload`) |
@@ -107,7 +110,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | `faros sandbox exec` → `HTTP 404: exec is not declared for component worker` | The template declares no `exec` verb for that component (`worker`) | Use `faros sandbox logs`; test from an `application`/`simple-webapp` sandbox instead |
 | Synced source changes are not visible; `Synced … restarted=false`, `faros sandbox status` shows the same `attempt N` | A non-Vite dev server keeps running the old code (reload rules cover only `package.json`/lockfiles) | `faros sandbox restart <i> <c>`, then probe a route only the new code has |
 | `kubectl apply` changed `values.env` on a dev-mode Instance but the process still sees the old value, even after `faros sandbox restart` | The pod's env is read at container start; `restart` restarts the process only | `POST …/components/<c>/env {"env":{…}}` then `faros sandbox restart` (keep the kubectl change so it survives a re-render) |
-| `faros app sync` → Cloudflare 502 `origin_bad_gateway` from `sync-development` on a brand-new `worker` project | The workspace is empty; the sandbox has nothing to run | Commit files first (`faros commit`), then sync |
+| `faros app sync` → 422 `component "<c>" has no package.json in the workspace root; the Node.js (node) development sandbox needs one …` | An empty `worker` project, or an adopted non-Node tree | Commit a `package.json` (even a Node shim), or skip the sandbox: CI + promote still work |
 | Sync 413 `sync request body exceeds 100663296 bytes; …` / `sync request too large: …` | Over 96 MiB body, 500 files, 25 MiB/file or 48 MiB decoded | Fewer files per request |
 | `dev_sync` → `nothing was synced — component "<c>" cannot receive binary files …` | A target component's dev agent does not list `base64` in `syncEncodings` | Drop the binaries from the call; check `process` → `syncEncodings` |
 | Workspace `read` → 413 `… above the 1048576-byte text limit …` / 422 `… is not UTF-8 text: it is a binary file …` | Opaque file in the run-sandbox workspace API | Not readable as text by design |
@@ -124,9 +127,6 @@ Exact strings are in backticks; `…` marks elided detail.
 |---|---|---|
 | Agent run has no edge tools | Background run; only chat and channel runs get `edges__*` | Use chat/channel runs |
 | Agent MCP tools say "open the agents UI once" | Provider has not seen the workspace over the UI path yet | Open the Agents page once, retry |
-| `GET /api/schedules/{name}` → 405 | The route does not exist (only list, `PUT`, `DELETE`, `…/run`) | Read it from `GET /api/schedules` or `kubectl get schedules.agents.faros.sh <name>` |
-| Agent created with `maxToolTurns`/`timeoutSeconds` but `spec.limits` is `{}` | `POST /api/agents` ignores those fields; only `PUT` (and `agents__update_agent`) sets them | `PUT /api/agents/<name>` with the limits after creating |
-| Agent `status` stays `{}` after successful runs | Status is not populated on current builds | Judge by `GET /api/runs?agent=<name>` |
 
 ## 2. Latency is not failure
 
@@ -154,7 +154,8 @@ Reference timeline for one App Studio project, measured on a dev hub
 | `code__commit_files` → commit recorded | ~7 s |
 | commit → `promotable: true` | 3.2–4.5 min (first sample set) |
 | first promote → prod Ready | 1–1.5 min |
-| first promote → new hostname serves TLS | 0–9 min (eleven runs: ~0, ~0, 2 m 50 s, ~4, ~5, 5 m 20 s, 5 m 30 s, ~7, 8 m 51 s) |
-| commit → `promotable: true` (second sample set) | 2 m 45 s, 4 m 00 s, 4 m 40 s, 4 m 57 s, 5 m 01 s |
+| first promote → new hostname serves TLS | 0–9 min (thirteen runs: ~0, ~0, 2 m 30 s, 2 m 50 s, ~4, 4 m 10 s, ~5, 5 m 20 s, 5 m 30 s, ~7, 8 m 51 s) |
+| commit → `promotable: true` (second sample set, Node) | 2 m 45 s, 4 m 00 s, 4 m 40 s, 4 m 57 s, 5 m 01 s |
+| commit → `promotable: true` (Go, multi-arch Railpack under QEMU) | 8 m 10 s — `build.status: none` with your SHA the whole time |
 | promote → prod Ready (second sample set) | 42 s, 42 s, 50 s |
 | assistant turn end → reconciler commit | 5–15 s |

@@ -40,11 +40,11 @@ import (
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 )
 
-// renderHelm fetches the chart archive hub-side and templates it, returning the
-// rendered objects (hooks and CRDs excluded). fullnameOverride is forced to the
-// Workload name so the chart's Service name is deterministic — the marketplace
-// wires an edges Service targetRef to "<workload>.<ns>.svc".
-func renderHelm(ctx context.Context, vw *edgesv1alpha1.Workload) ([]*unstructured.Unstructured, error) {
+// renderHelm fetches the chart archive hub-side and templates it into ns,
+// returning the rendered objects (hooks and CRDs excluded). fullnameOverride
+// is forced to the Workload name so the chart's Service name is deterministic
+// — the marketplace wires an edges Service targetRef to "<workload>.<ns>.svc".
+func renderHelm(ctx context.Context, vw *edgesv1alpha1.Workload, ns string) ([]*unstructured.Unstructured, error) {
 	h := vw.Spec.Helm
 	ch, err := fetchChart(ctx, h.RepoURL, h.Chart, h.Version)
 	if err != nil {
@@ -76,7 +76,7 @@ func renderHelm(ctx context.Context, vw *edgesv1alpha1.Workload) ([]*unstructure
 
 	inst := action.NewInstall(cfg)
 	inst.ReleaseName = vw.Name
-	inst.Namespace = targetNamespace
+	inst.Namespace = ns // what {{ .Release.Namespace }} renders to
 	inst.DryRun = true
 	inst.ClientOnly = true // no cluster access: pure template
 	inst.IncludeCRDs = false
@@ -86,7 +86,61 @@ func renderHelm(ctx context.Context, vw *edgesv1alpha1.Workload) ([]*unstructure
 	if err != nil {
 		return nil, fmt.Errorf("helm template: %w", err)
 	}
-	return splitManifests(rel.Manifest)
+	objs, err := splitManifests(rel.Manifest)
+	if err != nil {
+		return nil, err
+	}
+	if ns != edgesv1alpha1.DefaultTargetNamespace {
+		stampNamespace(objs, ns)
+	}
+	return objs, nil
+}
+
+// clusterScopedKinds are the kinds a chart commonly emits that must NOT be
+// given a namespace: the agent applies them cluster-wide and the apiserver
+// rejects a cluster-scoped body that names one. Rendering happens hub-side
+// with no edge discovery, so scope is decided by kind, not by a REST mapper.
+var clusterScopedKinds = map[string]bool{
+	"Namespace":                        true,
+	"Node":                             true,
+	"PersistentVolume":                 true,
+	"StorageClass":                     true,
+	"ClusterRole":                      true,
+	"ClusterRoleBinding":               true,
+	"CustomResourceDefinition":         true,
+	"PriorityClass":                    true,
+	"IngressClass":                     true,
+	"RuntimeClass":                     true,
+	"MutatingWebhookConfiguration":     true,
+	"ValidatingWebhookConfiguration":   true,
+	"ValidatingAdmissionPolicy":        true,
+	"ValidatingAdmissionPolicyBinding": true,
+	"APIService":                       true,
+	"CSIDriver":                        true,
+	"CSINode":                          true,
+	"VolumeAttachment":                 true,
+	"CertificateSigningRequest":        true,
+	"FlowSchema":                       true,
+	"PriorityLevelConfiguration":       true,
+	"ClusterIssuer":                    true, // cert-manager
+	"GatewayClass":                     true, // gateway-api
+	"ClusterSecretStore":               true, // external-secrets
+	"ClusterExternalSecret":            true,
+}
+
+// stampNamespace sets metadata.namespace on every rendered object that lacks
+// one and is not cluster-scoped. Charts mostly omit the namespace and rely on
+// `helm install -n`; here the agent would otherwise default those objects to
+// "default" instead of the Workload's target namespace. Objects that name a
+// namespace keep it. Skipped for the default namespace so pre-existing
+// bundles stay byte-identical.
+func stampNamespace(objs []*unstructured.Unstructured, ns string) {
+	for _, o := range objs {
+		if o.GetNamespace() != "" || clusterScopedKinds[o.GetKind()] {
+			continue
+		}
+		o.SetNamespace(ns)
+	}
 }
 
 // errChartNotInIndex marks a repo whose index parsed fine but does not carry

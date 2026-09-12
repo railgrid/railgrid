@@ -169,7 +169,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	deltaIn := max(res.Usage.InputTokens-ck.Engine.Usage.InputTokens, 0)
 	deltaOut := max(res.Usage.OutputTokens-ck.Engine.Usage.OutputTokens, 0)
 	costMicros := llm.CostMicros(modelName, res.Usage.InputTokens, res.Usage.OutputTokens)
-	_, _ = s.store.AddUsage(ctx, agentScope, agent.Name, deltaIn, deltaOut,
+	window, _ := s.store.AddUsage(ctx, agentScope, agent.Name, deltaIn, deltaOut,
 		llm.CostMicros(modelName, deltaIn, deltaOut), end, 30*24*time.Hour)
 
 	// The resumed loop may hit ANOTHER gated call — checkpoint again.
@@ -200,6 +200,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
 		Output: body, Sources: sources, WorkedDurationMS: tracker.workedDurationMS(),
 	}, end)
+	s.recordAgentRun(persistCtx, rd.CR, agent, end, &window)
 	cancelPersist()
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 

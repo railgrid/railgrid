@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/kcp-dev/multicluster-provider/apiexport"
+	"github.com/faroshq/provider-sdk/apiexportprovider"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/faroshq/provider-app-studio/api"
@@ -260,7 +260,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 	ctrl.SetLogger(klog.NewKlogr())
 	scheme := appscheme.NewScheme()
 
-	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: scheme})
+	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}

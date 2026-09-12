@@ -124,7 +124,8 @@ window reports `repository.status: Provisioning` (sometimes with the message
 `Creating repository "<name>".`, sometimes with no message at all) while the
 reconciler finalizer `ai.faros.sh/instances` is absent, or for 10 minutes
 after creation. If it lasts more than ~2 min and the `Repository` CR has no
-`status` at all, the code provider is not reconciling
+`status` at all, the code provider is not reconciling — `faros app status`
+says so and `GET /api/providers` shows `code` not ready
 ([troubleshooting.md](troubleshooting.md)).
 `RepositoryMissing` means the CR existed and is gone. A
 `code__commit_files` issued in that window fails with
@@ -154,7 +155,7 @@ PUT    /api/projects/{p}/files/content?path=<p>          body = raw file bytes
 DELETE /api/projects/{p}/files/content?path=<p>          optional If-Match
 POST   /api/projects/{p}/files/upload                    multipart
 POST   /api/projects/{p}/hydrate-workspace               {ref?} → {repositoryRef,ref,commitSHA,written[],skipped[]}   git → workspace via code__checkout_repository
-POST   /api/projects/{p}/restore-workspace               {commitSHA,expectedSourceRevision} → {…,written[],deleted[],sourceRevision,skipped[]?}
+POST   /api/projects/{p}/restore-workspace               {commitSHA:"<full sha>",expectedSourceRevision:<ProjectView.sourceRevision, number or numeric string>} → {…,written[],deleted[],sourceRevision,skipped[]?}   409 when the revision moved; restoring an older commit deletes files and the reconciler commits the deletions; a restored commit without a workflow builds nothing (`build.status: none`)
 POST   /api/projects/{p}/scaffold                        re-seed template starter files into an EMPTY workspace
 ```
 
@@ -221,7 +222,7 @@ GET  /api/projects/{p}/development-logs[?component=]     streamed
 GET  /api/projects/{p}/development-status                raw instance status
 POST /api/projects/{p}/authorize-development-preview     → {target,ready,previewURL,message,reason,desiredAccess,observedAccess,accessConverged}
 POST|DELETE /api/projects/{p}/preview-bridge/sessions[/{session}]   DOM-annotation iframe bridge
-GET|POST /api/projects/{p}/preview                        {mode public|restricted}; DELETE resets to private
+GET|POST|DELETE /api/projects/{p}/preview                 POST {mode public|restricted}; DELETE = private again and drops every preview grant (200 even without a dev environment); converges in ~20–30 s, with a transient Cloudflare 502 possible while flipping
 GET|POST /api/projects/{p}/preview/grants ; POST …/preview/grants/{grant} (revoke)
 ```
 
@@ -232,9 +233,14 @@ you use the infrastructure data plane's `exec` on `<project>-dev` directly
 MCP `infrastructure__dev_exec`).
 `sync-development` returns `{result: {<component>: {phase, changed, restarted, sourceRevision, sourceDigest, skipped?: [{path, reason}]}}}` — `reason` is `binary-unsupported` (the agent lacks base64 sync), `too-large` (over the per-file limit) or `sync-limit` (over the sync's total size or file count); `skipped` is present only when something was skipped. Runtime
 mutations such as `npm install` inside the sandbox are not synced back.
-Against a still-empty workspace (a `worker` project before its first commit)
-`sync-development` can answer a Cloudflare 502 `origin_bad_gateway`: the
-sandbox has nothing to run yet; commit or hydrate first.
+`sync-development` answers 422 `component "app" has no package.json in the
+workspace root; the Node.js (node) development sandbox needs one — commit a
+package.json whose "dev" or "start" script launches the server on $PORT, or
+skip the sandbox and promote` when a component's workspace has no
+`package.json` (an empty `worker` project before its first commit, or an
+adopted Go/Python tree); 409 when the sandbox refuses the revision, 404 for a
+missing instance, 502 only for transport failures. Hydrate, logs, restart and
+the `process` verb still work without a `package.json`.
 
 Mixing syncs: the dev agent stamps a revision on plain syncs too (`faros sandbox sync` uses Unix-seconds revisions), which can
 put the agent's applied revision ahead of App Studio's FileStore revision. On
@@ -260,7 +266,7 @@ PATCH|DELETE /api/projects/{p}/assistant/threads/{t}              {title?,archiv
 GET        /api/projects/{p}/assistant/threads/{t}/items          ?limit&beforeSequence
 GET        /api/projects/{p}/assistant/threads/{t}/events         SSE; replays from sequence 1 unless Last-Event-ID; ends after turn.completed; closing does not cancel
 POST       /api/projects/{p}/assistant/threads/{t}/turns          {content,clientUserMessageID,modelID?,collaborationMode default|plan (case-insensitive),skills?[],contextResources?[],contentParts?[]} → {thread,turn,continuationOfTurnID?}
-POST       /api/projects/{p}/assistant/threads/{t}/reviews        {target,clientUserMessageID,modelID?,skills?}  read-only Review turn
+POST       /api/projects/{p}/assistant/threads/{t}/reviews        {"target":{"type":"current_workspace"},clientUserMessageID,modelID?,skills?}  read-only Review turn (`current_workspace` is the only target type; a string target is 400); the review arrives as one `agentMessage` after `inspect` tool calls, `turn.mode` is `review`
 GET        /api/projects/{p}/assistant/threads/{t}/turns/active   204 when idle (404 until the thread exists); check it before `PUT files/content`, which is 409 during a turn
 GET        /api/projects/{p}/assistant/threads/{t}/turns/{turn}   {turn,effectiveSettings?}
 POST       …/turns/{turn}/steer                                    {content,clientUserMessageID}
@@ -287,6 +293,18 @@ current-turn images ≤ 20 MiB. Unbound drafts: 128 MiB and 64 per project.
 `file` attachments reach the model as metadata only (filename, ID, type,
 size, and a hint to call `import_attachment`); their bytes are never sent.
 
+Binding an attachment to a turn: send `contentParts` —
+`[{"type":"text","text":"Place it at public/logo.png"},{"type":"attachment","attachment":{id,filename,contentType,sizeBytes,sha256,createdAt}}]`
+with exactly those six fields copied from the upload receipt (`kind`,
+`draft`, `expiresAt` are rejected: `unknown attachment receipt field`). When
+`contentParts` is present the top-level `content` is ignored, so the
+instruction must be a `text` part. An attachment binds to one turn (a second
+turn with the same receipt is 500 `bind project attachments: attachment
+already exists`; later turns may still `import_attachment` it by ID), and a
+failed POST consumes its `clientUserMessageID` (409 `client request ID was
+already used for different input`) — use a fresh one. The upload's `id`
+equals `clientAttachmentID` when you pass one.
+
 Thread event `project.committed`: appended to the turn of the
 project's latest assistant run when the reconciler settles a commit;
 payload `{commitSHA, commitURL?, branch?, repositoryRef, files[]}` (files
@@ -299,7 +317,9 @@ with `type` ∈ `thread.created`, `turn.started`, `item.started`, `item.delta`,
 `.payload.item.type` ∈ `userMessage`, `agentMessage` (`.content`), `plan`,
 `dynamicToolCall` (`.data = {kind inspect|edit|…, title, target, status
 succeeded|failed, severity}`); `turn.completed` carries
-`.payload.turn.status`. To list what the assistant did:
+`.payload.turn.status`; a failed tool item carries only
+`diagnostic {message, category, referenceID}` (no tool name), and a `plan`
+mode reply is an ordinary `agentMessage`. To list what the assistant did:
 
 ```bash
 sed -n 's/^data: //p' events.log | jq -r 'select(.type=="item.completed") | .payload.item | select(.type=="dynamicToolCall") | .data | [.status,.kind,.title,(.target|tostring)] | @tsv'
@@ -390,9 +410,9 @@ owned and always overriding: `name`, `farosMode`, image inputs,
 ### Publishing
 
 ```
-GET|POST|DELETE /api/projects/{p}/publishing            GET → {published, publication:{name,uid,mode,host,url,ready,phase,target}}; POST {mode public|restricted}; DELETE = private and drop grants
+GET|POST|DELETE /api/projects/{p}/publishing            GET → {published, publication:{name,uid,mode,host,url,ready,phase,target}} — `published:true, mode:public|restricted` only while published (restricted = shared policy or an active grant), otherwise `published:false, mode:"private"` (a fresh promote and an unpublished app both read private); POST {mode public|restricted}; DELETE = private and drop grants
 GET   /api/projects/{p}/publishing/members               workspace members with rbacIdentity
-GET|POST /api/projects/{p}/publishing/grants             POST {user,invite?}   invite = email pre-provisions a pending User
+GET|POST /api/projects/{p}/publishing/grants             POST {user,invite?}   `user` is the stable platform User name (`user-xxxxx`, from members/memberships), not an email — 400 `user must be the stable platform User name; set invite to share with a new email`; `invite` = email pre-provisions a pending User
 POST  /api/projects/{p}/publishing/grants/{grant}        revoke
 ```
 

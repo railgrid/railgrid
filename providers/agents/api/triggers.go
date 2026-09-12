@@ -64,6 +64,20 @@ func (s *Server) listTriggers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// getTrigger returns one trigger in the same shape as a list item.
+func (s *Server) getTrigger(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	tr, err := c.Triggers().Get(r.Context(), r.PathValue("name"), metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tr)
+}
+
 type createTriggerRequest struct {
 	Name          string            `json:"name"`
 	AgentRef      string            `json:"agentRef"`

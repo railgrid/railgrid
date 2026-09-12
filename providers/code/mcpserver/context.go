@@ -17,32 +17,33 @@ import (
 )
 
 // identity is what each tool handler closes over so it can act on the caller's
-// behalf. tenantPath/clusterID/user come from the headers the hub backend proxy
+// behalf. tenant/clusterID/user come from the headers the hub backend proxy
 // injects after auth; token is the caller's own bearer token. Every kcp action
 // runs as this token — there is no provider-wide identity.
 //
 // clusterID (X-Faros-Cluster) is the workspace's kcp logical-cluster ID. kcp
-// MUST be addressed by ID (/clusters/<id>), never by the workspace path: the hub
+// MUST be addressed by ID (/clusters/<id>), never by a workspace path: the hub
 // proxy's membership gate rejects path-form /clusters/<root:...> with a 403.
-// tenantPath stays for non-addressing uses (e.g. the transient commit-bundle
-// scope, which is re-keyed to the cluster ID before the controller reads it).
+// tenant (X-Faros-Tenant) is the hub's tenant identity for the request — the
+// same cluster ID — kept as an opaque key for non-addressing uses (e.g. the
+// transient commit-bundle staging scope).
 type identity struct {
-	tenantPath string
-	clusterID  string
-	user       string
-	token      string
+	tenant    string
+	clusterID string
+	user      string
+	token     string
 }
 
 func identityFromRequest(r *http.Request) identity {
 	id := identity{
-		tenantPath: r.Header.Get("X-Faros-Tenant"),
-		clusterID:  r.Header.Get("X-Faros-Cluster"),
-		user:       r.Header.Get("X-Faros-User"),
-		token:      bearerToken(r),
+		tenant:    r.Header.Get("X-Faros-Tenant"),
+		clusterID: r.Header.Get("X-Faros-Cluster"),
+		user:      r.Header.Get("X-Faros-User"),
+		token:     bearerToken(r),
 	}
 	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" {
-		if id.tenantPath == "" {
-			id.tenantPath = r.URL.Query().Get("tenant")
+		if id.tenant == "" {
+			id.tenant = r.URL.Query().Get("tenant")
 		}
 		if id.clusterID == "" {
 			id.clusterID = r.URL.Query().Get("cluster")

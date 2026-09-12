@@ -49,10 +49,12 @@ type helloResponse struct {
 	UserHeader  string    `json:"userHeader,omitempty"`
 	TokenLength int       `json:"tokenLength,omitempty"`
 
-	// TenantHeader and ClusterHeader complete the identity picture. Together
-	// with UserHeader they are what a self-hosted copy of this provider proves
-	// when reached over an edge tunnel: the hub's injected identity survived
-	// the revdial hop rather than being dropped or rewritten somewhere in it
+	// TenantHeader and ClusterHeader complete the identity picture. Both carry
+	// the tenant workspace's kcp logical-cluster ID (the hub identifies a
+	// tenant by that ID, never by a workspace path). Together with UserHeader
+	// they are what a self-hosted copy of this provider proves when reached
+	// over an edge tunnel: the hub's injected identity survived the revdial
+	// hop rather than being dropped or rewritten somewhere in it
 	// (docs/byo-provider-edge-transport.md E-6).
 	TenantHeader  string `json:"tenantHeader,omitempty"`
 	ClusterHeader string `json:"clusterHeader,omitempty"`

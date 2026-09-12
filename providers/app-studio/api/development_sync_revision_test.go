@@ -76,7 +76,7 @@ func TestPostProjectComponentSyncRecoversFromPlainSyncRevisions(t *testing.T) {
 		agent := &fakeDevelopmentAgent{applied: 7}
 		hub := httptest.NewServer(agent)
 		defer hub.Close()
-		server := &Server{hubBase: hub.URL}
+		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL}
 
 		if _, err := server.postProjectComponentSync(ctx, id, ref, "web", 6, request); err != nil {
 			t.Fatalf("postProjectComponentSync: %v", err)
@@ -105,7 +105,7 @@ func TestPostProjectComponentSyncRecoversFromPlainSyncRevisions(t *testing.T) {
 		agent := &fakeDevelopmentAgent{applied: 6}
 		hub := httptest.NewServer(agent)
 		defer hub.Close()
-		server := &Server{hubBase: hub.URL}
+		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL}
 		if _, err := server.postProjectComponentSync(ctx, id, ref, "web", 6, request); err != nil {
 			t.Fatalf("postProjectComponentSync: %v", err)
 		}
@@ -118,7 +118,7 @@ func TestPostProjectComponentSyncRecoversFromPlainSyncRevisions(t *testing.T) {
 		agent := &fakeDevelopmentAgent{applied: 7, hideStatus: true}
 		hub := httptest.NewServer(agent)
 		defer hub.Close()
-		server := &Server{hubBase: hub.URL}
+		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL}
 		_, err := server.postProjectComponentSync(ctx, id, ref, "web", 6, request)
 		if err == nil || !strings.Contains(err.Error(), "409") {
 			t.Fatalf("error = %v, want the 409 conflict", err)
@@ -132,7 +132,7 @@ func TestPostProjectComponentSyncRecoversFromPlainSyncRevisions(t *testing.T) {
 		agent := &fakeDevelopmentAgent{applied: 1, respondWith: 12}
 		hub := httptest.NewServer(agent)
 		defer hub.Close()
-		server := &Server{hubBase: hub.URL}
+		server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: hub.URL}
 		if _, err := server.postProjectComponentSync(ctx, id, ref, "web", 3, request); err != nil {
 			t.Fatalf("postProjectComponentSync: %v", err)
 		}

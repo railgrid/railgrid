@@ -27,7 +27,7 @@ import (
 
 func binaryToolFixture(t *testing.T) (*Server, workspace.Scope, projectAssistantToolRegistry) {
 	t.Helper()
-	server := &Server{workspaces: workspace.NewFileStore(t.TempDir())}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: workspace.NewFileStore(t.TempDir())}
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid"}
 	return server, scope, projectAssistantLocalToolRegistry(server)
 }

@@ -81,6 +81,7 @@ func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID st
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "test-project-uid-demo"}}
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
 	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)

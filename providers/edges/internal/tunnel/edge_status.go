@@ -42,9 +42,11 @@ import (
 // When clearJoinToken is true, the bootstrap JoinToken is also cleared from status.
 // clearJoinToken should only be true when the agent has received a durable credential
 // (kubeconfig) — otherwise the agent would be unable to reconnect after a restart.
+// hostname, when non-empty, is the agent-reported machine hostname
+// (X-Faros-Agent-Hostname) and is recorded in status.hostname.
 // It is called by the agent-proxy handler when a tunnel is established.
 // Best-effort: errors are logged but not propagated.
-func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, sshCreds *sshCredsFromAgent, clearJoinToken bool) {
+func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, sshCreds *sshCredsFromAgent, hostname string, clearJoinToken bool) {
 	cfg, err := p.tenantConfigFor(ctx, cluster)
 	if err != nil {
 		p.logger.Error(err, "markEdgeConnected: failed to resolve tenant config",
@@ -112,6 +114,13 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			delete(status, "URL")
 		} else if url := p.edgeProxyStatusURL(gvr, cluster, name); url != "" {
 			status["URL"] = url
+		}
+
+		// The agent's heartbeat patch deliberately leaves hostname alone (it is
+		// hub-owned), so this is the only writer: record what the agent
+		// reported on this tunnel open, keep the previous value otherwise.
+		if hostname != "" {
+			status["hostname"] = hostname
 		}
 
 		// Set the Registered condition to True.

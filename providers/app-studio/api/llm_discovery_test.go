@@ -115,6 +115,7 @@ func TestDiscoverProjectLLMModelsHandlerReusesStoredCredential(t *testing.T) {
 	}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
 	server := &Server{
+		tenantWorkspaces:       staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup,
 		projectClientFor:       func(identity) (*asclient.Client, error) { return client, nil },
 		llmDiscoveryHTTPClient: upstream.Client(),
 	}
@@ -140,7 +141,7 @@ func TestDiscoverProjectLLMModelsHandlerReusesStoredCredential(t *testing.T) {
 
 func TestDiscoverProjectLLMModelsHandlerRequiresCredential(t *testing.T) {
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{})
-	server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	response := httptest.NewRecorder()
 
 	server.discoverProjectLLMModels(response, projectLLMDiscoveryRequest(t, `{"provider":"openai-compatible","baseURL":"https://api.openai.com/v1"}`))
@@ -169,7 +170,7 @@ func TestDiscoverProjectLLMModelsHandlerDoesNotReuseCredentialForChangedEndpoint
 		t.Fatal(err)
 	}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: secret})
-	server := &Server{projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
+	server := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
 	response := httptest.NewRecorder()
 
 	server.discoverProjectLLMModels(response, projectLLMDiscoveryRequest(t, `{"provider":"openai-compatible","baseURL":"https://gateway.example/v1","existingModelID":"gpt-high"}`))
@@ -186,7 +187,8 @@ func projectLLMDiscoveryRequest(t *testing.T, body string) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models/discover", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }

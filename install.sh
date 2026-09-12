@@ -27,17 +27,21 @@ need curl
 need tar
 need uname
 
+# Release archives are named after `uname` (see .goreleaser.yml): title-case
+# OS and the machine name as uname reports it — kubectl-faros_Linux_x86_64,
+# kubectl-faros_Linux_aarch64, kubectl-faros_Darwin_arm64, ….
 os="$(uname -s)"
 case "$os" in
-    Linux)  os=linux ;;
-    Darwin) os=darwin ;;
-    *)      err "unsupported OS: $os (linux, darwin only)" ;;
+    Linux)  os=Linux ;;
+    Darwin) os=Darwin ;;
+    *)      err "unsupported OS: $os (Linux, Darwin only)" ;;
 esac
 
 arch="$(uname -m)"
 case "$arch" in
-    x86_64|amd64)  arch=amd64 ;;
-    aarch64|arm64) arch=arm64 ;;
+    x86_64|amd64)  arch=x86_64 ;;
+    aarch64|arm64)
+        if [ "$os" = "Linux" ]; then arch=aarch64; else arch=arm64; fi ;;
     ppc64le)       arch=ppc64le ;;
     *)             err "unsupported architecture: $arch" ;;
 esac
@@ -100,7 +104,9 @@ esac
 
 cat <<EOF
 Next:
-    faros login           # sign in (defaults to console.faros.sh)
-    faros edge create     # connect your first edge
+    faros login --hub-url https://<your-hub>   # sign in (browser OIDC, or --token <token>)
+    faros use                                  # pick an organization and workspace
+    faros edge create <name>                   # register your first edge and print its join command
+    faros --help                               # everything else
 
 EOF

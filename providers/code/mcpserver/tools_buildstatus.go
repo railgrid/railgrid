@@ -28,9 +28,32 @@ import (
 
 var repositoryBuildStatusesGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorybuildstatuses")
 
+// defaultWorkflowFileName is the workflow the shipped App Studio scaffolds
+// build with (.github/workflows/build.yaml), used when a caller names none.
+const defaultWorkflowFileName = "build.yaml"
+
+const workflowFileNameDoc = "Workflow file under .github/workflows/, as a basename (build.yaml) or the full path (.github/workflows/build.yaml). Defaults to build.yaml, the workflow the shipped scaffolds use"
+
+// normalizeWorkflowFileName resolves the workflowFileName a caller passed:
+// blank means the default, and a path such as .github/workflows/build.yaml is
+// reduced to its basename, which is what the host's Actions API keys on.
+func normalizeWorkflowFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return defaultWorkflowFileName
+	}
+	if i := strings.LastIndexAny(name, "/\\"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		return defaultWorkflowFileName
+	}
+	return name
+}
+
 type buildStatusInput struct {
 	RepositoryRef    string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR whose build to inspect"`
-	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to inspect, e.g. faros-app-studio-build.yml"`
+	WorkflowFileName string `json:"workflowFileName,omitempty" jsonschema:"Workflow file under .github/workflows/ to inspect, as a basename (build.yaml) or the full path (.github/workflows/build.yaml); defaults to build.yaml"`
 	Ref              string `json:"ref,omitempty" jsonschema:"Commit SHA to inspect; defaults to the most recent run"`
 	MaxLogLines      int    `json:"maxLogLines,omitempty" jsonschema:"Max failure-log lines per failed job (default 200)"`
 }
@@ -55,7 +78,7 @@ type buildStatusOutput struct {
 
 type rebuildInput struct {
 	RepositoryRef    string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to re-run the build for"`
-	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to re-run, e.g. faros-app-studio-build.yml"`
+	WorkflowFileName string `json:"workflowFileName,omitempty" jsonschema:"Workflow file under .github/workflows/ to re-run, as a basename (build.yaml) or the full path (.github/workflows/build.yaml); defaults to build.yaml"`
 	Ref              string `json:"ref,omitempty" jsonschema:"Branch to re-run on; defaults to the repository default branch"`
 }
 
@@ -73,7 +96,7 @@ func registerBuildStatusTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build_status",
 		Title:       "Inspect a repository's CI build run",
-		Description: "Read the latest run of a repository's build workflow (optionally for a specific commit): the run status and conclusion, each job's outcome, and a log tail for any failed job. Use it to diagnose why a build failed.",
+		Description: "Read the latest run of a repository's build workflow (optionally for a specific commit): the run status and conclusion, each job's outcome, and a log tail for any failed job. Use it to diagnose why a build failed. " + workflowFileNameDoc + ".",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true, OpenWorldHint: &yes},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in buildStatusInput) (*mcp.CallToolResult, buildStatusOutput, error) {
 		dyn, err := tenantClient(deps, ident)
@@ -86,7 +109,7 @@ func registerBuildStatusTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "rebuild",
 		Title:       "Re-run a repository's CI build",
-		Description: "Trigger the repository's build workflow to run again without a code change (workflow_dispatch). Use it to retry a flaky or failed build.",
+		Description: "Trigger the repository's build workflow to run again without a code change (workflow_dispatch). Use it to retry a flaky or failed build. " + workflowFileNameDoc + ".",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: false, OpenWorldHint: &yes},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in rebuildInput) (*mcp.CallToolResult, rebuildOutput, error) {
 		dyn, err := tenantClient(deps, ident)
@@ -99,9 +122,9 @@ func registerBuildStatusTools(srv *mcp.Server, deps Deps, ident identity) {
 
 func buildStatus(ctx context.Context, dyn dynamic.Interface, in buildStatusInput) (*mcp.CallToolResult, buildStatusOutput, error) {
 	in.RepositoryRef = strings.TrimSpace(in.RepositoryRef)
-	in.WorkflowFileName = strings.TrimSpace(in.WorkflowFileName)
-	if in.RepositoryRef == "" || in.WorkflowFileName == "" {
-		return nil, buildStatusOutput{}, fmt.Errorf("repositoryRef and workflowFileName are required")
+	in.WorkflowFileName = normalizeWorkflowFileName(in.WorkflowFileName)
+	if in.RepositoryRef == "" {
+		return nil, buildStatusOutput{}, fmt.Errorf("repositoryRef is required")
 	}
 	spec := map[string]any{
 		"repositoryRef":    in.RepositoryRef,
@@ -146,9 +169,9 @@ func buildStatus(ctx context.Context, dyn dynamic.Interface, in buildStatusInput
 
 func rebuildWorkflow(ctx context.Context, dyn dynamic.Interface, in rebuildInput) (*mcp.CallToolResult, rebuildOutput, error) {
 	in.RepositoryRef = strings.TrimSpace(in.RepositoryRef)
-	in.WorkflowFileName = strings.TrimSpace(in.WorkflowFileName)
-	if in.RepositoryRef == "" || in.WorkflowFileName == "" {
-		return nil, rebuildOutput{}, fmt.Errorf("repositoryRef and workflowFileName are required")
+	in.WorkflowFileName = normalizeWorkflowFileName(in.WorkflowFileName)
+	if in.RepositoryRef == "" {
+		return nil, rebuildOutput{}, fmt.Errorf("repositoryRef is required")
 	}
 	spec := map[string]any{
 		"repositoryRef":    in.RepositoryRef,

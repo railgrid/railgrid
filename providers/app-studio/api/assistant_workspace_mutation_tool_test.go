@@ -63,7 +63,7 @@ func TestAssistantOrdinaryWorkspaceMutationToolsPerformCreateEditDeleteMove(t *t
 	ctx := context.Background()
 	files := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
-	server := &Server{workspaces: files}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: files}
 	registry := projectAssistantLocalToolRegistry(server)
 	call := func(name string, args map[string]any, state *projectEinoAssistantRunState, initial bool) (workspace.MutationResult, error) {
 		tool, ok := registry.Get(name)
@@ -119,7 +119,7 @@ func TestAssistantOrdinaryMutationToolsRejectUnsafeOrStaleEdits(t *testing.T) {
 	ctx := context.Background()
 	files := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
-	server := &Server{workspaces: files}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, workspaces: files}
 	registry := projectAssistantLocalToolRegistry(server)
 	edit, _ := registry.Get(projectToolEditFile)
 	if _, err := edit.Call(ctx, projectAssistantToolCallRequest{WorkspaceScope: scope, RunState: newProjectEinoAssistantRunState(), Arguments: map[string]any{"path": "../secret", "oldString": "old", "newString": "new", "expectedVersion": "sha256:test"}}); err == nil {

@@ -34,7 +34,7 @@ import (
 func newMCPCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "MCP (Model Context Protocol) related commands",
+		Short: "MCP endpoints for AI clients (Claude Code, Cursor, Codex)",
 		Long:  `Commands for interacting with the faros MCP endpoint.`,
 	}
 

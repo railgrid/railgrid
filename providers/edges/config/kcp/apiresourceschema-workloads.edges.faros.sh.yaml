@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260904-9ab06b67.workloads.edges.faros.sh
+  name: v260911-c8af9718.workloads.edges.faros.sh
 spec:
   group: edges.faros.sh
   names:
@@ -330,6 +330,29 @@ spec:
                   type: array
                 image:
                   type: string
+                imagePullSecrets:
+                  description: |-
+                    ImagePullSecrets names docker-registry Secrets in the target namespace
+                    on the edge cluster that pull the image (a private registry). The
+                    Workload never carries the Secret itself — create it on every selected
+                    edge beforehand (e.g. through `faros kubeconfig edge`).
+                  items:
+                    description: |-
+                      LocalObjectReference contains enough information to let you locate the
+                      referenced object inside the same namespace.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  type: array
                 ports:
                   items:
                     description: ContainerPort represents a network port in a single
@@ -431,18 +454,38 @@ spec:
               required:
               - image
               type: object
+            targetNamespace:
+              description: |-
+                TargetNamespace is the namespace on the edge cluster the rendered
+                objects land in, for every mode (simple, template, helm). The Workload's
+                own (hub) namespace is never carried over. Defaults to "default". For any
+                other value the rendered bundle also carries the Namespace object, so the
+                edge agent creates it if it is missing (an existing namespace is left as
+                is and is never deleted with the Workload).
+              maxLength: 63
+              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+              type: string
             template:
-              description: 'Advanced mode: full PodTemplateSpec.'
+              description: 'Advanced mode: a pod template (labels/annotations + full
+                PodSpec).'
               properties:
                 metadata:
                   description: |-
-                    Standard object's metadata.
-                    More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+                    Metadata carries labels/annotations stamped on every pod of the
+                    Deployment. The provider always adds its own edges.faros.sh/workload
+                    selector label on top; it cannot be overridden.
+                  properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    labels:
+                      additionalProperties:
+                        type: string
+                      type: object
                   type: object
                 spec:
-                  description: |-
-                    Specification of the desired behavior of the pod.
-                    More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status
+                  description: Spec is the full pod spec.
                   properties:
                     activeDeadlineSeconds:
                       description: |-
@@ -8876,6 +8919,8 @@ spec:
                   required:
                   - containers
                   type: object
+              required:
+              - spec
               type: object
           required:
           - placement

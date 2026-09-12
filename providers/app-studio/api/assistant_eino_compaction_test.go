@@ -241,7 +241,7 @@ func TestProjectEinoAssistantCompactionPersistsExactReplacementHistory(t *testin
 	model := &projectEinoAssistantCompactionTestModel{}
 	runState := newProjectEinoAssistantRunState()
 	runState.SetToolPrompt("Current tool contract")
-	middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{store: memoryStore}, req, runState)
+	middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memoryStore}, req, runState)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestProjectEinoAssistantCompactionToolOnlyResponsePersistsInertCheckpoint(t
 			Arguments: `{"patch":"must not persist"}`,
 		},
 	}})}
-	middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{store: memoryStore}, req, newProjectEinoAssistantRunState())
+	middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memoryStore}, req, newProjectEinoAssistantRunState())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +754,7 @@ func TestProjectEinoAssistantCompactionFailuresWriteNoCheckpoint(t *testing.T) {
 				LLM:               projectLLMSettings{MaxRetriesConfigured: true},
 			}
 			model := &projectEinoAssistantCompactionTestModel{response: test.response, err: test.err}
-			middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{store: memoryStore}, req, newProjectEinoAssistantRunState())
+			middleware, err := projectEinoAssistantCompactionMiddleware(ctx, model, &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, store: memoryStore}, req, newProjectEinoAssistantRunState())
 			if err != nil {
 				t.Fatal(err)
 			}

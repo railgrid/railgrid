@@ -59,6 +59,7 @@ func newPlatformProxy(t *testing.T, name, wsOfCaller string) (*ProviderProxy, *p
 		}
 		return "alice", path, nil
 	}))
+	proxy.SetClusterResolver(testClusterResolver)
 	return proxy, rec
 }
 
@@ -119,8 +120,8 @@ func TestPlatformDelegationSwapsTheBearer(t *testing.T) {
 			if strings.Contains(rec.authorization, callerBearer) {
 				t.Error("the caller's hub bearer reached a platform provider")
 			}
-			if rec.user != "alice" || rec.tenant != "root:faros:tenants:"+testOrg+":"+testWS {
-				t.Errorf("identity headers = (%q, %q), want the caller's — providers attribute work with them", rec.user, rec.tenant)
+			if rec.user != "alice" || rec.tenant != testClusterIDFor("root:faros:tenants:"+testOrg+":"+testWS) {
+				t.Errorf("identity headers = (%q, %q), want the caller's user and workspace cluster ID — providers attribute work with them", rec.user, rec.tenant)
 			}
 			if issuer.calls != 1 || issuer.org != testOrg || issuer.ws != testWS || issuer.user != "alice" || issuer.provider != "infrastructure" {
 				t.Errorf("issuer asked for %+v, want (org=%s, ws=%s, user=alice, provider=infrastructure) once", issuer, testOrg, testWS)

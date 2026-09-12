@@ -17,7 +17,7 @@ import (
 )
 
 func TestDataPlaneURL(t *testing.T) {
-	s := &Server{hubBase: "https://hub.example/"}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example/"}
 
 	got := s.dataPlaneURL("root:faros:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
 	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:faros:orgs:acme/applications/shop-dev/log"
@@ -45,11 +45,11 @@ func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 	id := identity{clusterID: "c1", token: "tok"}
 	ref := dataPlaneRef{Resource: "applications", Name: "r1"}
 	// No hub base configured.
-	if _, err := (&Server{}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
+	if _, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when hubBase is unset")
 	}
 	// No cluster on the request.
-	s := &Server{hubBase: "https://hub.example"}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	if _, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{token: "tok"}, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when clusterID is empty")
 	}
@@ -71,7 +71,7 @@ func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 // sandbox sync, exec and restart returned once the infrastructure provider
 // moved into a tenant cluster.
 func TestNewDataPlaneRequestSelectsTheCallerWorkspace(t *testing.T) {
-	s := &Server{hubBase: "https://hub.example"}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, hubBase: "https://hub.example"}
 	ref := dataPlaneRef{Resource: "instances", Name: "pitch-dev", Component: "app"}
 	req, err := s.newDataPlaneRequest(context.Background(), http.MethodPost, identity{
 		clusterID:     "c1",

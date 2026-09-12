@@ -124,8 +124,8 @@ ready-made `claude mcp add` / Codex / Claude Desktop snippets with a real token.
 | Workspace resources (instances, templates, repos, agents CRs, secrets) | `kubectl` on the `faros` context |
 | Provision a container/database without App Studio | `Instance` CR (section 5) or `infrastructure__provision` |
 | Hosted agents and runs | REST `$HUB/services/providers/agents/api/…` or `agents__*` |
-| Edge clusters/servers | `faros kubeconfig edge`, `faros connect`, `faros ssh`, `edges__*` |
-| Fleet-wide reads across edge clusters | kuery REST `POST $HUB/services/providers/kuery/api/query` after enabling `kuery` in the workspace (the `kuery__kuery_query` MCP tool rejects every spec today; [references/mcp-and-edges.md](references/mcp-and-edges.md)) |
+| Edge clusters/servers | `faros edge kubeconfig` (file), `faros connect`/`disconnect` (switch kubectl), `faros ssh`, `edges__*` |
+| Fleet-wide reads across edge clusters | `kuery__kuery_query {spec}` or REST `POST $HUB/services/providers/kuery/api/query`, after enabling `kuery` in the workspace ([references/mcp-and-edges.md](references/mcp-and-edges.md)) |
 
 **MCP tools exist only for providers federated into your aggregate.** Human
 bearers get platform providers plus their org's own (an org copy shadows the
@@ -166,6 +166,13 @@ delete_repo, read:org, admin:public_key, read:packages`, or use the portal's
 | `application` | `web/` (Vite) + `api/` + Postgres on one host, `/api/*` → api | yes | Node.js only |
 | `simple-webapp` | one container, one port | yes | Node.js only |
 | `worker` | Deployment, no Service; **dev sandbox only** | no | Node.js |
+
+The split: **production** accepts any language (Railpack auto-detects Go,
+Python, … — a Go build for arm64 under QEMU took ~8 min to promotable);
+the **dev sandbox** is Node only. A tree without `package.json` makes the
+`simple-webapp` sandbox run `npx vite` as a static file server (every route
+404 unless there is an `index.html`, `faros sandbox status` still says
+`Running: true, reachable=true`) and `faros app sync` answers 502.
 
 - A `worker` project has no scaffold and no build components: `faros app status`
   shows `build=unsupported`, it can never be promoted, and its dev instance
@@ -209,6 +216,22 @@ faros app create shop --template application --display-name Shop --wait
   `.repository.ref` from `GET $AS/api/projects/<p>`), never assume it equals
   the project name.
 - `--prompt` records what to build; it does not start an assistant turn.
+- **Prompt-only creation (REST, no `templateName`) creates only the Project
+  and the Repository** (`template: null`, no dev instance yet); a
+  `displayName` you send is kept. The assistant's first `default` turn picks
+  the template (`select_project_template`, or `PUT …/template`), and only
+  then are the scaffold and the dev instance created — the git host's
+  `README.md`/`LICENSE`/`.gitignore` boilerplate does not block the scaffold.
+  Pass `templateName` (or `--template`) when you already know it.
+- **Adopting an existing GitHub repo**: create a code `Repository` CR naming
+  the repo (it adopts instead of creating, ready in ~10 s), then
+  `faros app create gosvc-app --template simple-webapp --existing-repository gosvc-repo`
+  (REST: `POST $AS/api/projects` with `existingRepositoryRef`).
+  The project hydrates from the default branch and `repository.ready` is
+  true at once; `.repository.adopted` stays `null`, so don't read it as the
+  signal. The repo's pre-existing history is **never promotable**
+  (`build=none`, checkpoints say `No source commit has landed yet.` even with
+  green CI): make one `faros commit` first.
 - Typical timings: repository ready ~10 s, scaffold commit 15–40 s, dev
   instance Ready 1–2.5 min. If `repository.ready` is still false after 2 min
   and `kubectl get repositories.code.faros.sh <name> -o jsonpath='{.status}'`
@@ -325,6 +348,12 @@ faros app promote shop --hostname-prefix shop
 faros app publish shop --mode public            # or restricted; private = back to default
 ```
 
+`--mode private` unpublishes: the Instance flips to `access: private`,
+anonymous requests get a 302 again and `GET …/publishing` reads
+`published: false, mode: private`. The owner's own app token keeps working
+(the owner passes the access review), so prove "gated" with an anonymous
+request, not your token.
+
 - **Every faros-recorded commit runs the full CI build**, including a
   binary-only one, so upload assets before the last code commit rather than
   after it; several builds can be in flight and only the newest commit's
@@ -347,9 +376,8 @@ faros app publish shop --mode public            # or restricted; private = back 
   (curl exits 35 until it is issued, then the app's own status code).
 - A re-promote rolls pods while the instance stays `Ready`, so probe something
   only the new version has to know it rolled out.
-- After the first promote, `GET …/publishing` already reads
-  `.publication.mode: "restricted"` — the private default (the project's own
-  `.sharing.publishing.mode` says `private`).
+- After the first promote, `GET …/publishing` reads `published: false,
+  mode: "private"` until you publish.
 - **Testing a private app from a shell**: mint a short-lived
   token for that one app and send it as a bearer; the gate refuses raw hub
   tokens:
@@ -414,9 +442,9 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
 - **Changing `env` on a live dev-mode instance:** `kubectl apply` with new
   `values.env` updates the object but the running pod keeps its old env, and
   `faros sandbox restart` restarts the process, not the pod. For the live
-  change also `POST $HUB/services/providers/infrastructure/dataplane/clusters/$CLUSTER/instances/<i>/components/<c>/env`
-  with `{"env":{"KEY":"value"}}` (→ `{"phase":"EnvUpdated","applied":[…]}`),
-  then `faros sandbox restart <i> <c>`. There is no `faros sandbox env`.
+  change run `faros sandbox env <i> <c> KEY=value --restart` (the data plane's
+  `env` verb plus a restart); keep `values.env` in sync so it survives a
+  re-render, and never pass secrets this way.
 - **`cron-job` has no `command`/`args` input**: the image entrypoint must do
   the work. With a public image, drive it through `env` (e.g. `node:20-alpine`
   with `NODE_OPTIONS=--import=data:text/javascript;base64,…`). Its
@@ -457,15 +485,27 @@ fc -X POST "$AG/api/agents/digest/runs" -H 'Content-Type: application/json' --ma
 ```bash
 faros edge create home-lab --labels env=home      # or --type server for a Linux host
 faros edge join-command home-lab
-faros kubeconfig edge home-lab > home-lab.kubeconfig && kubectl --kubeconfig home-lab.kubeconfig get nodes
+faros edge kubeconfig home-lab -o home-lab.kubeconfig && kubectl --kubeconfig home-lab.kubeconfig get nodes
+faros connect home-lab && kubectl get nodes && faros disconnect   # or: switch kubectl itself
 faros ssh my-vps -- uptime                        # server edges; no port forwarding
+cat deploy.sh | faros ssh my-vps -- "cat > /tmp/deploy.sh"   # stdin is forwarded for one-shot commands
 ```
+
+To run something on several edges at once, a `Workload` (spread by
+`edgeSelector`) fans out one `Placement` per edge — but it always renders into
+namespace `default` on the edge and `simple` mode cannot pull private images;
+for a namespace of your own or a private ghcr image, apply a Deployment (plus
+a `docker-registry` Secret) through `faros edge kubeconfig`. Expose an
+in-cluster Service to the hub with an edges `Service` CR and its `…/proxy`
+route. YAML for both: [references/mcp-and-edges.md](references/mcp-and-edges.md).
 
 On MCP: `edges__cluster_list`, the kubernetes toolset (`edges__pods_list`, …,
 `cluster` parameter) and one bundle per discovered Service. Fleet reads across
 clusters: kuery, which must be enabled in the workspace first (it is in the
-catalog and on `tools/list` even when it is not); use its REST query, the MCP
-tool is broken today. More: [references/mcp-and-edges.md](references/mcp-and-edges.md).
+catalog and on `tools/list` even when it is not); pass
+`objects.cluster: true` to see which edge each object is on. `faros connect <edge>` makes
+kubectl context `faros-<edge>` current (undo with `faros disconnect`); in
+scripts prefer `faros edge kubeconfig -o <file>`. More: [references/mcp-and-edges.md](references/mcp-and-edges.md).
 
 ## 8. Reading failures
 
@@ -477,7 +517,7 @@ Identify which one you're looking at before waiting or rebuilding:
 | New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–9 min) | An existing app on the same domain serves; `openssl s_client -connect <host>:443 -servername <host> </dev/null \| openssl x509 -noout -subject` prints `Could not find certificate from <stdin>` — that output *is* the "no cert yet" signal |
 | `build.status: none`, SHA is yours | CI or the package crawl hasn't caught up | `code__build_status`; the crawl runs every 30 s for 10 min after a commit, else every 2 min |
 | New project's repository `Provisioning` for under 2 min | Repository still being created | Poll `.repository.ready` |
-| Repository `Provisioning` > 2 min, `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` empty, no finalizer | **Not latency**: the code provider's controllers are down (its `/healthz` stays ok). Other fresh Repositories are statusless too and `kubectl get packages.code.faros.sh -o jsonpath='{.items[*].status.lastSyncTime}'` is stale | Stop polling; the operator restarts the provider. Don't recreate the project (409 on the name) |
+| Repository `Provisioning` > 2 min, `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` empty, no finalizer (`faros app status` prints `not ready for <age> with no status: the code provider is not reconciling`) | **Not latency**: the code provider's controllers are not engaged with kcp. `GET /api/providers` shows `code` `ready: false` and its `/readyz` names the endpoint it is retrying; other fresh Repositories are statusless too | Wait — the provider retries its kcp watch with backoff and catches up by itself; if `ready` stays false for long, the operator checks its logs. Don't recreate the project (409 on the name) |
 | A commit stays `Running`, condition reason `RateLimited` | The GitHub quota behind the code `Connection` is spent; it retries at the reset (up to 15 min) | The condition message names the retry time |
 | Private URL → 302 `/auth/apps/authorize` | The access gate wants a browser | Use an app token (4.6) or `faros sandbox exec` |
 | Instance Ready, no `status.url` | **Not latency**: `exposure: internal` | `kubectl get template <t> -o jsonpath='{.spec.exposure}'` |
