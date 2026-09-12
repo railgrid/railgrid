@@ -107,6 +107,10 @@ type Provider struct {
 	// Enable, the hub grants the provider SA the "proxy" verb on edges in
 	// the tenant workspace (see pkg/hub/restapi/providers_enable.go).
 	EdgeProxyAccess bool
+	// HubAccess mirrors CatalogEntry.spec.hubAccess: the hub REST
+	// capabilities the provider requests. Declaring grants nothing; they are
+	// enforced only as accepted by a tenant (pkg/hub/hubaccess).
+	HubAccess []providersv1alpha1.ProviderHubAccess
 	// WorkspaceCluster is the logical cluster ID of the provider's
 	// sub-workspace (Workspace.spec.cluster of root:faros:providers:{name}).
 	// It anchors the qualified RBAC subject the edge-proxy grant binds —
@@ -633,6 +637,7 @@ func cloneProvider(p Provider) Provider {
 		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
 	}
 	p.Children = append([]NavChild(nil), p.Children...)
+	p.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), p.HubAccess...)
 	p.Actions = append([]ProviderAction(nil), p.Actions...)
 	for i := range p.Actions {
 		p.Actions[i].InputSchema = append(json.RawMessage(nil), p.Actions[i].InputSchema...)

@@ -1,0 +1,181 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260912-b0309487-2.grants.tenants.faros.sh
+spec:
+  group: tenants.faros.sh
+  names:
+    kind: Grant
+    listKind: GrantList
+    plural: grants
+    singular: grant
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.subject.name
+      name: Subject
+      type: string
+    - jsonPath: .spec.subject.kind
+      name: Kind
+      type: string
+    - jsonPath: .spec.orgUUID
+      name: Org
+      type: string
+    - jsonPath: .spec.workspaceUUID
+      name: Workspace
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        Grant records which capabilities a tenant accepted for a subject in one
+        workspace. It is the consent record: the component that admits the
+        subject's calls enforces a capability only when it is listed here (and,
+        for providers, also still declared by the provider's catalog entry), and
+        the person on whose behalf the subject acts is independently authorized.
+
+        Grants live in root:faros:system:tenants beside Organization and
+        UserMembershipIndex — a workspace no tenant, provider, or user identity can
+        reach — so a workspace member cannot widen a subject's access by editing
+        one. For providers, Enable writes the grant (with an empty capability list
+        when nothing was accepted, which records a decision) and Disable deletes it.
+        metadata.name is derived from (org, workspace, subject).
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: GrantSpec is what a tenant accepted for one subject in one
+            workspace.
+          properties:
+            acceptedAt:
+              format: date-time
+              type: string
+            acceptedBy:
+              description: AcceptedBy is the User who accepted, and AcceptedAt when.
+              type: string
+            capabilities:
+              description: |-
+                Capabilities are the accepted capabilities, with the limits in force
+                when they were accepted.
+              items:
+                description: GrantedCapability is one accepted capability.
+                properties:
+                  allowInvite:
+                    description: AllowInvite permits pre-provisioning an unknown email.
+                    type: boolean
+                  capability:
+                    description: |-
+                      Capability is a capability name from the subject kind's vocabulary
+                      (for providers: memberships.read, memberships.invite).
+                    minLength: 1
+                    type: string
+                  maxRole:
+                    description: MaxRole caps the role a membership capability may
+                      grant.
+                    type: string
+                  scope:
+                    description: Scope is org or workspace.
+                    enum:
+                    - org
+                    - workspace
+                    type: string
+                required:
+                - capability
+                - scope
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - capability
+              - scope
+              x-kubernetes-list-type: map
+            declined:
+              description: |-
+                Declined are capabilities someone entitled to decide them turned down.
+                A capability in neither list is undecided: nobody who could decide it
+                has (for example, a workspace admin enabled the provider but an
+                org-scoped capability needs an org admin). The component enforcing the
+                grant decides what undecided means; for providers it is the platform
+                default for platform providers and "no" for org-owned ones.
+              items:
+                description: CapabilityRef names a capability at a scope.
+                properties:
+                  capability:
+                    minLength: 1
+                    type: string
+                  scope:
+                    enum:
+                    - org
+                    - workspace
+                    type: string
+                required:
+                - capability
+                - scope
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - capability
+              - scope
+              x-kubernetes-list-type: map
+            orgUUID:
+              description: OrgUUID and WorkspaceUUID name the workspace the grant
+                applies to.
+              minLength: 1
+              type: string
+            source:
+              description: Source is how the grant was written (enable).
+              type: string
+            subject:
+              description: Subject is who the grant is for.
+              properties:
+                kind:
+                  description: |-
+                    GrantSubjectKind is the kind of principal a Grant is for. Each kind has its
+                    own capability vocabulary, owned and enforced by the component that admits
+                    that principal's calls.
+                  enum:
+                  - Provider
+                  type: string
+                name:
+                  description: Name is the subject's name (for a provider, its name
+                    in the catalog).
+                  minLength: 1
+                  type: string
+                orgUUID:
+                  description: |-
+                    OrgUUID is the Organization that owns the subject, empty for a
+                    platform-wide one. An org-owned provider may share its name with the
+                    platform provider it shadows; a grant to one never applies to the other.
+                  type: string
+              required:
+              - kind
+              - name
+              type: object
+            workspaceUUID:
+              minLength: 1
+              type: string
+          required:
+          - orgUUID
+          - subject
+          - workspaceUUID
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -285,11 +285,20 @@ func Middleware(userResolver UserResolver, lookup MembershipLookup) func(next ht
 			}
 
 			// Step 6: attach context, invoke next.
+			// The org-scope role is resolved separately so org routes can
+			// authorize against it even when the request also names a
+			// workspace (the portal and providers send X-Faros-Workspace on
+			// nearly every call). Only a live org-scope row counts here.
+			orgRole := role
+			if workspaceUUID != "" {
+				orgRole, _ = matchEntry(index, orgUUID, "")
+			}
 			tc := TenantContext{
 				User:          user,
 				OrgUUID:       orgUUID,
 				WorkspaceUUID: workspaceUUID,
 				Role:          role,
+				OrgRole:       orgRole,
 			}
 			next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), tc)))
 		})

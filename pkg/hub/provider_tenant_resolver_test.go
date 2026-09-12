@@ -61,6 +61,9 @@ type workloadResolverRoundTripper struct {
 	// forged builds the delegated account exactly as a tenant member would:
 	// every field the hub writes except the one it cannot, the keyed proof.
 	forged bool
+	// provider and providerOrg name the provider the delegated account was
+	// minted for (default "infrastructure", a platform provider).
+	provider, providerOrg string
 }
 
 func (rt workloadResolverRoundTripper) serviceAccountObject() *corev1.ServiceAccount {
@@ -80,14 +83,21 @@ func (rt workloadResolverRoundTripper) serviceAccountObject() *corev1.ServiceAcc
 		sa.Annotations[serviceaccounts.AnnotationDelegatedUser] = rt.delegatedUser
 		sa.Annotations[serviceaccounts.AnnotationDelegatedOrg] = org
 		sa.Annotations[serviceaccounts.AnnotationDelegatedWorkspace] = ws
-		sa.Annotations[serviceaccounts.AnnotationDelegatedProvider] = "infrastructure"
+		provider := rt.provider
+		if provider == "" {
+			provider = "infrastructure"
+		}
+		sa.Annotations[serviceaccounts.AnnotationDelegatedProvider] = provider
+		if rt.providerOrg != "" {
+			sa.Annotations[serviceaccounts.AnnotationDelegatedProviderOrg] = rt.providerOrg
+		}
 		if !rt.forged {
 			key, err := resolverProofKeys.DelegatedProofKey(context.Background())
 			if err != nil {
 				panic(err)
 			}
 			if err := serviceaccounts.SignDelegatedUserServiceAccount(key, sa, rt.tenantPath,
-				serviceaccounts.Identity{User: rt.delegatedUser}, "infrastructure"); err != nil {
+				serviceaccounts.Identity{User: rt.delegatedUser}, provider); err != nil {
 				panic(err)
 			}
 		}

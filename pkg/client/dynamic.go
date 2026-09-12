@@ -105,6 +105,16 @@ var (
 		Resource: "usermembershipindices",
 	}
 
+	// GrantGVR points at the cluster-scoped Grant CRD (see
+	// apis/tenancy/v1alpha1/types_grant.go): the capabilities a tenant
+	// accepted for a subject (today: a provider) in a workspace. Lives in
+	// root:faros:system:tenants beside the UMI.
+	GrantGVR = schema.GroupVersionResource{
+		Group:    "tenants.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "grants",
+	}
+
 	// OrganizationGVR points at the cluster-scoped Organization CRD
 	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
 	// step 10 REST surface for Org CRUD against root:faros:users.
@@ -217,6 +227,16 @@ func (c *Client) UserPreferences() *TypedResource[tenancyv1alpha1.UserPreference
 	return &TypedResource[tenancyv1alpha1.UserPreferences, tenancyv1alpha1.UserPreferencesList]{
 		client: c.dynamic.Resource(UserPreferencesGVR),
 		gvk:    UserPreferencesGVR.GroupVersion().WithKind("UserPreferences"),
+	}
+}
+
+// Grants returns a typed interface for the cluster-scoped Grant CRD. The
+// provider Enable flow writes grants and the hub-access gate reads them to
+// authorize a provider's delegated token.
+func (c *Client) Grants() *TypedResource[tenancyv1alpha1.Grant, tenancyv1alpha1.GrantList] {
+	return &TypedResource[tenancyv1alpha1.Grant, tenancyv1alpha1.GrantList]{
+		client: c.dynamic.Resource(GrantGVR),
+		gvk:    GrantGVR.GroupVersion().WithKind("Grant"),
 	}
 }
 

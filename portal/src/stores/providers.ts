@@ -69,6 +69,9 @@ export interface ProviderDTO {
   apiExportPath?: string
   apiExportName?: string
   permissionClaims?: PermissionClaim[]
+  // Hub REST capabilities the provider requests (CatalogEntry.spec.hubAccess).
+  // Shown in the Enable dialog; none applies until a user accepts it there.
+  hubAccess?: HubAccessRequest[]
   // Builtin = true for first-party providers shipped with the hub
   // binary, regardless of how they surface UI (legacy builtinRoute or
   // new custom-element via embedded assets). Side-nav skips the
@@ -104,6 +107,9 @@ export interface EnabledProviderDetail {
   // CR finalizers, failed deletes). A binding in this state never finishes
   // disabling on its own. Absent while deletion progresses normally.
   deletionBlocked?: string
+  // The provider's hub capabilities here: in force, and declared but not yet
+  // accepted. Absent when the provider requests none.
+  hubAccess?: HubAccessState
 }
 
 // StaleClaim mirrors pkg/hub/restapi.StaleClaim. kcp reports a binding with a
@@ -145,6 +151,29 @@ export interface PermissionClaim {
   resource: string
   verbs?: string[]
   tenantScoped?: boolean
+}
+
+// HubAccessRequest mirrors providersv1alpha1.ProviderHubAccess: one hub
+// capability a provider asks to use with the delegated token it receives.
+export interface HubAccessRequest {
+  capability: string
+  scope: 'org' | 'workspace'
+  maxRole?: string
+  allowInvite?: boolean
+  reason: string
+}
+
+// AcceptedHubAccess names one accepted capability by (capability, scope).
+export interface AcceptedHubAccess {
+  capability: string
+  scope: string
+}
+
+// HubAccessState mirrors pkg/hub/restapi.HubAccessState.
+export interface HubAccessState {
+  granted?: AcceptedHubAccess[]
+  pending?: AcceptedHubAccess[]
+  implicit?: boolean
 }
 
 export type ProviderBindingsLoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -439,6 +468,12 @@ export const useProvidersStore = defineStore('providers', () => {
     return staleClaims(name).length > 0
   }
 
+  // Hub capabilities an enabled provider declares that nobody here has
+  // accepted yet — new in its catalog entry, or declined earlier.
+  function pendingHubAccess(name: string): AcceptedHubAccess[] {
+    return bindingsByProvider.value[name]?.hubAccess?.pending ?? []
+  }
+
   function dependencyLabel(name: string): string {
     return byName(name)?.displayName ?? name
   }
@@ -636,7 +671,7 @@ export const useProvidersStore = defineStore('providers', () => {
   // the provider's declared claims — anything the user didn't accept
   // is sent to kcp as state=Rejected (which prevents the binding from
   // going Bound and surfaces the mismatch cleanly).
-  async function enable(p: ProviderDTO, accept: PermissionClaim[]): Promise<void> {
+  async function enable(p: ProviderDTO, accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []): Promise<void> {
     if (!p.apiExportPath || !p.apiExportName) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
@@ -656,6 +691,7 @@ export const useProvidersStore = defineStore('providers', () => {
 
     const body = {
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
+      acceptedHubAccess: acceptHubAccess.map((h) => ({ capability: h.capability, scope: h.scope })),
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
 
@@ -804,6 +840,7 @@ export const useProvidersStore = defineStore('providers', () => {
     selfManaged,
     selfHostable,
     bindingsByProvider,
+    pendingHubAccess,
     hasAnyEnabled,
     isEnabled,
     isSelfManaged,

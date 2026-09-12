@@ -375,6 +375,7 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 		farosclient.OrganizationGVR:        "OrganizationList",
 		farosclient.UserGVR:                "UserList",
 		farosclient.UserMembershipIndexGVR: "UserMembershipIndexList",
+		farosclient.GrantGVR:               "GrantList",
 	}
 	// Use the customListKinds variant with no seed objects, then seed
 	// via the dynamic client so the GVR/Kind mapping is exercised
@@ -454,12 +455,21 @@ func newTestServer(t *testing.T, mgr *Manager, tc tenant.TenantContext) *httptes
 	return httptest.NewServer(r)
 }
 
+// adminTC and memberTC model what tenant.Middleware attaches. For an
+// org-scope context (ws == "") the org role is the role itself; for a
+// workspace-scope one it is the caller's separate org-scope role, which these
+// helpers take to be the same as the workspace role. Use tcWithOrgRole to
+// model a workspace admin who is not an org admin.
 func adminTC(user, org, ws string) tenant.TenantContext {
-	return tenant.TenantContext{User: user, OrgUUID: org, WorkspaceUUID: ws, Role: tenancyv1alpha1.MembershipRoleAdmin}
+	return tcWithOrgRole(user, org, ws, tenancyv1alpha1.MembershipRoleAdmin, tenancyv1alpha1.MembershipRoleAdmin)
 }
 
 func memberTC(user, org, ws string) tenant.TenantContext {
-	return tenant.TenantContext{User: user, OrgUUID: org, WorkspaceUUID: ws, Role: tenancyv1alpha1.MembershipRoleMember}
+	return tcWithOrgRole(user, org, ws, tenancyv1alpha1.MembershipRoleMember, tenancyv1alpha1.MembershipRoleMember)
+}
+
+func tcWithOrgRole(user, org, ws, role, orgRole string) tenant.TenantContext {
+	return tenant.TenantContext{User: user, OrgUUID: org, WorkspaceUUID: ws, Role: role, OrgRole: orgRole}
 }
 
 func TestListOrgs_SuppressesSoftDeleted(t *testing.T) {
@@ -915,6 +925,95 @@ func TestAddOrgMembership_UpdatesCRAndUMI(t *testing.T) {
 	idx, _ := mgr.client.UserMembershipIndices().Get(context.Background(), "bob", metav1.GetOptions{})
 	if len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].Role != "member" {
 		t.Errorf("UMI: %#v", idx)
+	}
+}
+
+// TestOrgRoutesAuthorizeOnOrgRole is the regression test for the org-admin
+// escalation: a workspace admin who is only an org member (or holds no
+// org-scope row at all) sends X-Faros-Workspace with an org-scope request.
+// Every org-admin route must refuse, and nothing may be written.
+func TestOrgRoutesAuthorizeOnOrgRole(t *testing.T) {
+	for name, orgRole := range map[string]string{"org member": tenancyv1alpha1.MembershipRoleMember, "workspace-only": ""} {
+		t.Run(name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{
+				ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+				Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+			}
+			mallory := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "mallory"}}
+			bob := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "bob"}}
+			mgr, ops, _ := newTestManager(t, org, mallory, bob)
+			ops.orgMemberships["org-a"] = map[string]string{"mallory": tenancyv1alpha1.MembershipRoleMember, "bob": tenancyv1alpha1.MembershipRoleMember}
+			srv := newTestServer(t, mgr, tcWithOrgRole("mallory", "org-a", "ws-1", tenancyv1alpha1.MembershipRoleAdmin, orgRole))
+			defer srv.Close()
+
+			do := func(method, path string, body any) int {
+				t.Helper()
+				b, _ := json.Marshal(body)
+				req, _ := http.NewRequest(method, srv.URL+path, jsonBody(b))
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("%s %s: %v", method, path, err)
+				}
+				_ = resp.Body.Close()
+				return resp.StatusCode
+			}
+			if got := do(http.MethodPost, "/api/orgs/org-a/memberships", MembershipAddRequest{User: "mallory", Role: "admin"}); got != http.StatusForbidden {
+				t.Errorf("self-promotion via POST: got %d, want 403", got)
+			}
+			if got := do(http.MethodPost, "/api/orgs/org-a/memberships", MembershipAddRequest{User: "carol@example.com", Role: "admin", Invite: true}); got != http.StatusForbidden {
+				t.Errorf("invite as org admin: got %d, want 403", got)
+			}
+			if got := do(http.MethodPatch, "/api/orgs/org-a/memberships/mallory", MembershipPatchRequest{Role: "admin"}); got != http.StatusForbidden {
+				t.Errorf("PATCH own role: got %d, want 403", got)
+			}
+			if got := do(http.MethodDelete, "/api/orgs/org-a/memberships/bob", nil); got != http.StatusForbidden {
+				t.Errorf("remove member: got %d, want 403", got)
+			}
+			if ops.orgMemberships["org-a"]["mallory"] != tenancyv1alpha1.MembershipRoleMember || ops.orgMemberships["org-a"]["bob"] != tenancyv1alpha1.MembershipRoleMember {
+				t.Errorf("memberships changed: %v", ops.orgMemberships["org-a"])
+			}
+			if _, err := mgr.client.UserMembershipIndices().Get(context.Background(), "mallory", metav1.GetOptions{}); err == nil {
+				t.Errorf("a UMI row was written for mallory")
+			}
+		})
+	}
+}
+
+// TestAddOrgMembership_ExistingMemberKeepsRole: POST never changes the role of
+// someone who is already a member (PATCH does). It answers 200 with the
+// member's actual role and heals the UMI row to match the Membership.
+func TestAddOrgMembership_ExistingMemberKeepsRole(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	bob := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "bob"}}
+	mgr, ops, _ := newTestManager(t, org, bob)
+	ops.orgMemberships["org-a"] = map[string]string{"bob": tenancyv1alpha1.MembershipRoleMember}
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	body, _ := json.Marshal(MembershipAddRequest{User: "bob", Role: "admin"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/memberships", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+	var view MembershipView
+	_ = json.NewDecoder(resp.Body).Decode(&view)
+	if view.Role != tenancyv1alpha1.MembershipRoleMember {
+		t.Errorf("response role = %q, want member", view.Role)
+	}
+	if ops.orgMemberships["org-a"]["bob"] != tenancyv1alpha1.MembershipRoleMember {
+		t.Errorf("membership role changed: %v", ops.orgMemberships)
+	}
+	idx, err := mgr.client.UserMembershipIndices().Get(context.Background(), "bob", metav1.GetOptions{})
+	if err != nil || len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].Role != tenancyv1alpha1.MembershipRoleMember {
+		t.Errorf("UMI after re-add: %#v, %v", idx, err)
 	}
 }
 

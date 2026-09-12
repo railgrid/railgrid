@@ -80,6 +80,12 @@ const (
 	// issued for. It participates in the account name, so a token minted for
 	// one provider is a different identity from one minted for another.
 	AnnotationDelegatedProvider = "faros.sh/delegated-provider"
+	// AnnotationDelegatedProviderOrg is the Organization that owns the
+	// provider the token was issued for, absent for a platform provider. An
+	// org-owned provider may share its name with the platform provider it
+	// shadows, so the name alone does not say which one holds the token; the
+	// owner does, and it is covered by the proof.
+	AnnotationDelegatedProviderOrg = "faros.sh/delegated-provider-org"
 
 	// DelegatedUserClusterRole is what the delegated account is bound to. It is
 	// the role every workspace member holds today: the bootstrap grants members
@@ -111,12 +117,49 @@ type Identity struct {
 	User string
 }
 
+// DelegatedProvider identifies the provider a delegated token was issued
+// to: its name and, for an org-owned provider, the Organization that owns it
+// (empty for a platform provider).
+type DelegatedProvider struct {
+	Name    string
+	OrgUUID string
+}
+
+// PlatformProvider is the DelegatedProvider for a platform provider.
+func PlatformProvider(name string) DelegatedProvider { return DelegatedProvider{Name: name} }
+
+// DelegatedIdentity is what a verified delegated token establishes: the
+// person it stands in for and the provider it was issued to.
+type DelegatedIdentity struct {
+	User     string
+	Provider DelegatedProvider
+	// Legacy is true for an account signed before the provider's owner was
+	// part of the proof (proof v1). Provider.OrgUUID is then unknown rather
+	// than "platform"; callers that authorize by provider must resolve it the
+	// way the proxy did when it issued the token.
+	Legacy bool
+}
+
 // DelegatedUserServiceAccountName returns the stable, DNS-safe ServiceAccount
+// name for a (tenant, user, platform provider) tuple. See
+// delegatedServiceAccountName.
+func DelegatedUserServiceAccountName(tenantPath string, user Identity, providerName string) string {
+	return delegatedServiceAccountName(tenantPath, user, PlatformProvider(providerName))
+}
+
+// delegatedServiceAccountName returns the stable, DNS-safe ServiceAccount
 // name for one (tenant, user, provider) tuple. Hash-only for the same reason
 // WorkloadServiceAccountName is: user names are email-shaped and provider
-// names are tenant-chosen, and neither belongs in an RBAC object name.
-func DelegatedUserServiceAccountName(tenantPath string, user Identity, providerName string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{tenantPath, user.User, providerName}, "\x00")))
+// names are tenant-chosen, and neither belongs in an RBAC object name. The
+// owner org joins the hash only for org-owned providers, so a platform
+// provider's account keeps the name it had before owners were recorded and
+// is upgraded in place.
+func delegatedServiceAccountName(tenantPath string, user Identity, provider DelegatedProvider) string {
+	parts := []string{tenantPath, user.User, provider.Name}
+	if provider.OrgUUID != "" {
+		parts = append(parts, "org="+provider.OrgUUID)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return delegatedUserNamePrefix + hex.EncodeToString(sum[:20])
 }
 
@@ -127,13 +170,13 @@ func DelegatedUserBindingName(serviceAccountName string) string {
 }
 
 type delegatedTokenKey struct {
-	orgUUID, wsUUID, user, provider string
+	orgUUID, wsUUID, user, provider, providerOrg string
 }
 
 // String is the singleflight key. Every component is NUL-free by
 // validateDelegatedInputs, so distinct tuples cannot collide on one string.
 func (k delegatedTokenKey) String() string {
-	return strings.Join([]string{k.orgUUID, k.wsUUID, k.user, k.provider}, "\x00")
+	return strings.Join([]string{k.orgUUID, k.wsUUID, k.user, k.provider, k.providerOrg}, "\x00")
 }
 
 type delegatedTokenEntry struct {
@@ -154,11 +197,11 @@ type delegatedTokenEntry struct {
 // The caller is responsible for having authenticated user and verified their
 // membership in the workspace: this method mints on the hub's own authority
 // and does not re-check either.
-func (m *Manager) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user Identity, providerName string) (string, time.Time, error) {
-	if err := validateDelegatedInputs(orgUUID, wsUUID, user, providerName); err != nil {
+func (m *Manager) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) (string, time.Time, error) {
+	if err := validateDelegatedInputs(orgUUID, wsUUID, user, provider); err != nil {
 		return "", time.Time{}, err
 	}
-	key := delegatedTokenKey{orgUUID: orgUUID, wsUUID: wsUUID, user: user.User, provider: providerName}
+	key := delegatedTokenKey{orgUUID: orgUUID, wsUUID: wsUUID, user: user.User, provider: provider.Name, providerOrg: provider.OrgUUID}
 
 	if token, expiresAt, ok := m.cachedDelegatedToken(key); ok {
 		return token, expiresAt, nil
@@ -180,7 +223,7 @@ func (m *Manager) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID s
 		if token, expiresAt, ok := m.cachedDelegatedToken(key); ok {
 			return mintResult{token: token, expiresAt: expiresAt}, nil
 		}
-		token, expiresAt, err := m.mintDelegatedUserToken(ctx, key, orgUUID, wsUUID, user, providerName)
+		token, expiresAt, err := m.mintDelegatedUserToken(ctx, key, orgUUID, wsUUID, user, provider)
 		if err != nil {
 			return nil, err
 		}
@@ -206,7 +249,7 @@ func (m *Manager) cachedDelegatedToken(key delegatedTokenKey) (string, time.Time
 
 // mintDelegatedUserToken does the work IssueDelegatedUserToken deduplicates:
 // reconcile the account and its binding, then issue and cache a token.
-func (m *Manager) mintDelegatedUserToken(ctx context.Context, key delegatedTokenKey, orgUUID, wsUUID string, user Identity, providerName string) (string, time.Time, error) {
+func (m *Manager) mintDelegatedUserToken(ctx context.Context, key delegatedTokenKey, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) (string, time.Time, error) {
 	now := m.clock()
 	proofKey, err := delegatedProofKey(ctx, m.proofKeys)
 	if err != nil {
@@ -217,8 +260,8 @@ func (m *Manager) mintDelegatedUserToken(ctx context.Context, key delegatedToken
 		return "", time.Time{}, err
 	}
 	tenantPath := tenantPathFor(orgUUID, wsUUID)
-	name := DelegatedUserServiceAccountName(tenantPath, user, providerName)
-	if err := ensureDelegatedUserServiceAccount(ctx, cs, proofKey, name, tenantPath, orgUUID, wsUUID, user, providerName); err != nil {
+	name := delegatedServiceAccountName(tenantPath, user, provider)
+	if err := ensureDelegatedUserServiceAccount(ctx, cs, proofKey, name, tenantPath, orgUUID, wsUUID, user, provider); err != nil {
 		return "", time.Time{}, err
 	}
 	if err := ensureWorkloadClusterRoleBinding(ctx, cs, DelegatedUserBindingName(name), DelegatedUserClusterRole, name); err != nil {
@@ -279,17 +322,35 @@ func IsDelegatedUserServiceAccount(sa *corev1.ServiceAccount) bool {
 // workspace no tenant identity can reach. Do not add an identity path here
 // that does not require it.
 func DelegatedUserFromServiceAccount(ctx context.Context, keys ProofKeySource, sa *corev1.ServiceAccount) (Identity, error) {
-	if !IsDelegatedUserServiceAccount(sa) {
-		return Identity{}, fmt.Errorf("ServiceAccount is not a delegated user identity")
-	}
-	key, err := delegatedProofKey(ctx, keys)
+	id, err := DelegatedIdentityFromServiceAccount(ctx, keys, sa)
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := verifyDelegatedUserAnnotations(key, sa); err != nil {
-		return Identity{}, err
+	return Identity{User: id.User}, nil
+}
+
+// DelegatedIdentityFromServiceAccount verifies a delegated account and returns
+// the person and the provider it was minted for. Every field it returns is
+// covered by the hub's keyed proof.
+func DelegatedIdentityFromServiceAccount(ctx context.Context, keys ProofKeySource, sa *corev1.ServiceAccount) (DelegatedIdentity, error) {
+	if !IsDelegatedUserServiceAccount(sa) {
+		return DelegatedIdentity{}, fmt.Errorf("ServiceAccount is not a delegated user identity")
 	}
-	return Identity{User: sa.Annotations[AnnotationDelegatedUser]}, nil
+	key, err := delegatedProofKey(ctx, keys)
+	if err != nil {
+		return DelegatedIdentity{}, err
+	}
+	if err := verifyDelegatedUserAnnotations(key, sa); err != nil {
+		return DelegatedIdentity{}, err
+	}
+	return DelegatedIdentity{
+		User: sa.Annotations[AnnotationDelegatedUser],
+		Provider: DelegatedProvider{
+			Name:    sa.Annotations[AnnotationDelegatedProvider],
+			OrgUUID: sa.Annotations[AnnotationDelegatedProviderOrg],
+		},
+		Legacy: sa.Annotations[AnnotationDelegatedProofVersion] != delegatedProofVersionCurrent,
+	}, nil
 }
 
 // verifyDelegatedUserAnnotations checks the shape of a delegated identity and
@@ -316,12 +377,15 @@ func verifyDelegatedUserAnnotations(key []byte, sa *corev1.ServiceAccount) error
 	return verifyDelegatedProof(key, sa)
 }
 
-func validateDelegatedInputs(orgUUID, wsUUID string, user Identity, providerName string) error {
+func validateDelegatedInputs(orgUUID, wsUUID string, user Identity, provider DelegatedProvider) error {
+	if strings.ContainsAny(provider.OrgUUID, "\r\n\x00:") {
+		return fmt.Errorf("provider owner org contains prohibited characters")
+	}
 	for name, value := range map[string]string{
 		"orgUUID":      orgUUID,
 		"wsUUID":       wsUUID,
 		"user":         user.User,
-		"providerName": providerName,
+		"providerName": provider.Name,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", name)
@@ -345,14 +409,18 @@ func tenantPathFor(orgUUID, wsUUID string) string {
 	return kcppaths.WorkspacePath(orgUUID, wsUUID)
 }
 
-func delegatedUserAnnotations(tenantPath, orgUUID, wsUUID string, user Identity, providerName string) map[string]string {
-	return map[string]string{
+func delegatedUserAnnotations(tenantPath, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) map[string]string {
+	out := map[string]string{
 		AnnotationWorkloadIdentityTenantPath: tenantPath,
 		AnnotationDelegatedUser:              user.User,
 		AnnotationDelegatedOrg:               orgUUID,
 		AnnotationDelegatedWorkspace:         wsUUID,
-		AnnotationDelegatedProvider:          providerName,
+		AnnotationDelegatedProvider:          provider.Name,
 	}
+	if provider.OrgUUID != "" {
+		out[AnnotationDelegatedProviderOrg] = provider.OrgUUID
+	}
+	return out
 }
 
 // ensureDelegatedServiceAccountAttempts bounds the create/replace loop. Each
@@ -360,9 +428,9 @@ func delegatedUserAnnotations(tenantPath, orgUUID, wsUUID string, user Identity,
 // number covers replicas racing on the same tuple.
 const ensureDelegatedServiceAccountAttempts = 4
 
-func ensureDelegatedUserServiceAccount(ctx context.Context, cs kubernetes.Interface, proofKey []byte, name, tenantPath, orgUUID, wsUUID string, user Identity, providerName string) error {
+func ensureDelegatedUserServiceAccount(ctx context.Context, cs kubernetes.Interface, proofKey []byte, name, tenantPath, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) error {
 	sas := cs.CoreV1().ServiceAccounts(Namespace)
-	want := delegatedUserAnnotations(tenantPath, orgUUID, wsUUID, user, providerName)
+	want := delegatedUserAnnotations(tenantPath, orgUUID, wsUUID, user, provider)
 	for attempt := 0; attempt < ensureDelegatedServiceAccountAttempts; attempt++ {
 		sa, err := sas.Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -383,7 +451,7 @@ func ensureDelegatedUserServiceAccount(ctx context.Context, cs kubernetes.Interf
 				return fmt.Errorf("creating delegated ServiceAccount: %w", createErr)
 			}
 			// The proof binds the UID, which only exists once the object does.
-			return stampDelegatedProof(ctx, sas, created, proofKey, tenantPath, user, providerName)
+			return stampDelegatedProof(ctx, sas, created, proofKey, tenantPath, user, provider.Name)
 		}
 		if err != nil {
 			return fmt.Errorf("getting delegated ServiceAccount: %w", err)
@@ -400,7 +468,28 @@ func ensureDelegatedUserServiceAccount(ctx context.Context, cs kubernetes.Interf
 				return fmt.Errorf("ServiceAccount %q is bound to a different delegated identity", name)
 			}
 		}
+		if sa.Annotations[AnnotationDelegatedProviderOrg] != provider.OrgUUID {
+			return fmt.Errorf("ServiceAccount %q is bound to a different delegated identity", name)
+		}
 		if verifyDelegatedProof(proofKey, sa) == nil {
+			if sa.Annotations[AnnotationDelegatedProofVersion] == delegatedProofVersionCurrent {
+				return nil
+			}
+			// A v1 account the hub itself signed for this exact tuple (only a
+			// platform provider's account keeps its name across versions).
+			// Re-sign it in place: the UID is unchanged, so tokens already
+			// issued against it stay valid and now verify with the owner in
+			// the proof.
+			upgraded := sa.DeepCopy()
+			if err := SignDelegatedUserServiceAccount(proofKey, upgraded, tenantPath, user, provider.Name); err != nil {
+				return err
+			}
+			if _, err := sas.Update(ctx, upgraded, metav1.UpdateOptions{}); err != nil {
+				if apierrors.IsConflict(err) {
+					continue
+				}
+				return fmt.Errorf("upgrading delegated ServiceAccount proof: %w", err)
+			}
 			return nil
 		}
 		// The object describes the right identity but carries no proof from

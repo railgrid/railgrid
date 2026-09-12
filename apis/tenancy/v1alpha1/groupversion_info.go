@@ -49,6 +49,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&UserMembershipIndexList{},
 		&UserPreferences{},
 		&UserPreferencesList{},
+		&Grant{},
+		&GrantList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

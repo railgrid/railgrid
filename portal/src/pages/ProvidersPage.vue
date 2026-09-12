@@ -6,7 +6,7 @@ import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO, type PermissionClaim, type AcceptedHubAccess } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -375,7 +375,7 @@ watch(selectedEdgeKey, () => {
   selfHostError.value = null
 })
 
-async function onDialogConfirm(accept: PermissionClaim[]) {
+async function onDialogConfirm(accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []) {
   const p = dialogProvider.value
   const revision = dialogRevision.value
   const scope = dialogScope.value
@@ -383,7 +383,7 @@ async function onDialogConfirm(accept: PermissionClaim[]) {
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
-    await providers.enable(p, accept)
+    await providers.enable(p, accept, acceptHubAccess)
     if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
       closeEnableDialog()
     }
@@ -926,6 +926,26 @@ function dependencyNotice(p: ProviderDTO): string {
             </p>
           </div>
 
+          <!-- An enabled provider that declares hub capabilities nobody here
+               accepted (new in its catalog entry, or declined) works without
+               them until someone reviews the request. -->
+          <div
+            v-if="providers.isEnabled(p.name) && providers.pendingHubAccess(p.name).length"
+            class="mt-3 rounded-md border border-border-subtle bg-surface-overlay/40 p-2.5"
+          >
+            <p class="text-[10px] leading-relaxed text-text-muted">
+              Asks for access it doesn't have here yet:
+              {{ providers.pendingHubAccess(p.name).map((h) => `${h.capability} (${h.scope})`).join(', ') }}.
+            </p>
+            <button
+              type="button"
+              class="k-btn k-btn--ghost mt-1 px-1.5 py-0.5 text-[10px] text-accent"
+              @click="openEnableDialog(p)"
+            >
+              Review access
+            </button>
+          </div>
+
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
             <button
               type="button"
@@ -1028,6 +1048,8 @@ function dependencyNotice(p: ProviderDTO): string {
 
     <ProviderEnableDialog
       :provider="dialogProvider"
+      :org-role="tenant.activeOrg?.role"
+      :workspace-role="tenant.activeWorkspace?.role"
       :busy="dialogProvider ? !!busy[dialogProvider.name] : false"
       :error="dialogProvider ? actionError : null"
       @cancel="closeEnableDialog"

@@ -81,6 +81,23 @@ spec:
         group: rbac.authorization.k8s.io
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
+  # Hub REST capabilities App Studio uses with the delegated token the hub
+  # hands it in place of the caller's bearer: publishing validates grantees
+  # against the org and workspace rosters, and sharing with a new email adds
+  # them to the org as a member. Tenants accept these on Enable
+  # (docs/providers.md, "Hub access"). Keep deploy/chart/templates/catalogentry.yaml in sync.
+  hubAccess:
+    - capability: memberships.read
+      scope: org
+      reason: "Check that people you share an app with belong to your organization."
+    - capability: memberships.read
+      scope: workspace
+      reason: "Check that people you share an app with belong to this workspace."
+    - capability: memberships.invite
+      scope: org
+      maxRole: member
+      allowInvite: true
+      reason: "Add people you share an app with to your organization as members, inviting them by email if they have no account yet."
   # Lets an organization run this provider in its own cluster
   # (docs/byo-providers.md). Keep manifest.yaml and
   # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the

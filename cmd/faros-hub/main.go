@@ -84,6 +84,9 @@ func main() {
 			"Default off for this release; the next release defaults to platform.")
 	cmd.Flags().StringSliceVar(&opts.ProviderDelegatedTokensExclude, "provider-delegated-tokens-exclude", opts.ProviderDelegatedTokensExclude,
 		"Platform providers that keep receiving the caller's bearer under --provider-delegated-tokens=platform (comma-separated or repeat).")
+	cmd.Flags().BoolVar(&opts.ProviderHubAccessPlatformDefault, "provider-hub-access-platform-default", opts.ProviderHubAccessPlatformDefault,
+		"Let platform providers use the hub capabilities they declare (spec.hubAccess) in workspaces where no one has accepted or declined them yet. "+
+			"Org-owned providers always need an explicit acceptance. Set false to require acceptance for every provider.")
 
 	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
 	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,

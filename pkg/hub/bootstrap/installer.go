@@ -108,6 +108,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		"memberships.tenants.faros.sh",
 		"usermembershipindices.tenants.faros.sh",
 		"userpreferences.tenants.faros.sh",
+		"grants.tenants.faros.sh",
 		"catalogentries.providers.faros.sh",
 	}
 

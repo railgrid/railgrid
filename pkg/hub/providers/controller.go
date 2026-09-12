@@ -350,6 +350,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		CatalogEntryCluster: string(req.ClusterName),
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
+	prov.HubAccess = append([]providersv1alpha1.ProviderHubAccess(nil), entry.Spec.HubAccess...)
 
 	// An org-owned provider runs in the tenant's own cluster, so its data plane
 	// travels the edge tunnel rather than a URL the hub dials. Resolve that

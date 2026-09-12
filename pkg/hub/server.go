@@ -54,6 +54,7 @@ import (
 	"github.com/faroshq/faros/pkg/hub/controllers/membershipindex"
 	"github.com/faroshq/faros/pkg/hub/controllers/organization"
 	"github.com/faroshq/faros/pkg/hub/controllers/softdelete"
+	"github.com/faroshq/faros/pkg/hub/hubaccess"
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	"github.com/faroshq/faros/pkg/hub/leaderelection"
 	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
@@ -740,13 +741,21 @@ func (s *Server) Run(ctx context.Context) error {
 				tenant.OptionalOrgMiddleware(userResolver, membershipLookup),
 				catalogWorkloads.resolveWorkloadServiceAccount,
 			))
-			// A provider that received a delegated token in place of the
-			// caller's bearer (App Studio validating publishing grants and
-			// inviting a new email) may read the tenant's membership roster
-			// and add an org member with it, as the person the token stands
-			// for; everything else on /api/orgs keeps requiring the human's
-			// own credential.
-			membershipResolver := delegatedMembershipResolver(userResolver, catalogWorkloads.resolveWorkloadServiceAccount)
+			// A provider holding a delegated token in place of the caller's
+			// bearer may call only the hub REST capabilities its catalog entry
+			// declares (spec.hubAccess) and the tenant accepted for it
+			// (ProviderAccessGrant) — see pkg/hub/hubaccess. The gate admits
+			// such a call and marks it; the tenant middleware then resolves it
+			// to the person the token stands for, whose own role still applies.
+			hubAccessGrants := hubaccess.NewStore(userClient)
+			hubAccessGate := &hubaccess.Gate{
+				Human:           userResolver,
+				Verify:          catalogWorkloads.verifyHubAccessCaller,
+				Providers:       providerRegistry,
+				Grants:          hubAccessGrants,
+				PlatformDefault: s.opts.ProviderHubAccessPlatformDefault,
+			}
+			membershipResolver := hubaccess.DelegatedUserResolver(userResolver)
 			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys)
 			backendProxy.SetTenantResolver(providerTenantResolver)
 			// The UI proxy serves an org-owned bundle only against a grant the
@@ -780,6 +789,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
+			apiMgr.WithHubAccessGrants(hubAccessGrants, s.opts.ProviderHubAccessPlatformDefault)
 			// Org-owned ("bring your own") providers: the Bootstrapper builds
 			// the Org's provider workspaces, the Provisioner mints the
 			// workspace-scoped install credential. Both need kcp, so this is
@@ -807,6 +817,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 			// Full tenant-context routes (Org admin / member, optionally Workspace)
 			tenantSub := router.PathPrefix("/api/orgs").Subrouter()
+			tenantSub.Use(hubAccessGate.Middleware)
 			tenantSub.Use(tenant.Middleware(membershipResolver, membershipLookup))
 			apiHandler.RegisterTenantScoped(tenantSub)
 

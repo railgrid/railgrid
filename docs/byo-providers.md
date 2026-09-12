@@ -483,11 +483,19 @@ What an Org gets is deliberately narrow.
   verifies it online and resolves it to the human user again. A request the
   hub cannot mint a token for (no resolvable caller, no workspace selection,
   issuer unavailable) is refused; it never falls back to forwarding the bearer.
-  Anonymous probes carry no credential at all. Platform providers still receive
-  the caller's own bearer; moving them to delegated tokens is a separate
-  change (security remediation plan, item 3.3). The aggregate MCP endpoint
+  Anonymous probes carry no credential at all. Platform providers receive the
+  caller's own bearer unless the hub runs with
+  `--provider-delegated-tokens=platform|all`. The aggregate MCP endpoint
   follows the same rule through the same code — see *Aggregate MCP endpoint*
   below.
+- **Hub REST access needs explicit consent.** The delegated token reaches no
+  hub REST route except the capabilities the provider declares in
+  `spec.hubAccess` (today: reading member lists, adding members) and an org
+  admin accepted in the Enable dialog for that workspace. Unlike platform
+  providers, an org-owned provider never gets these by default. The grant is
+  keyed by the provider's owner org as well as its name, so a self-hosted copy
+  never inherits the platform provider's grant. See `docs/providers.md`,
+  *Hub access*.
 
 What is **not** yet isolated is the raw kcp `bind` verb — see *Known gaps*.
 

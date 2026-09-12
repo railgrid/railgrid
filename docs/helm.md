@@ -316,6 +316,7 @@ kind delete cluster --name faros
 | `hub.staticAuthToken` | Static bearer token (bypasses OIDC) | `""` |
 | `hub.security.providerHeartbeatAuth` | Provider heartbeat auth: `warn` (log and accept) or `enforce` (reject). Unset leaves the binary default; next release defaults to `enforce` | `""` (binary: `warn`) |
 | `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all`. Next release defaults to `platform` | `""` (binary: `off`) |
+| `hub.security.providerHubAccessPlatformDefault` | Let platform providers use the hub capabilities they declare where no one has accepted or declined them; `false` requires acceptance for every provider | `null` (binary: `true`) |
 | `hub.security.providerDelegatedTokensExclude` | Platform providers kept on the caller's bearer under `platform`; replaces the built-in list | `[]` (binary: `[edges]`) |
 | `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `faros:provider` role. Next release defaults to `false` | `null` (binary: `true`) |
 | `hub.extraArgs` | Extra hub flags appended after the modelled ones; entries repeating a modelled flag are refused | `[]` |

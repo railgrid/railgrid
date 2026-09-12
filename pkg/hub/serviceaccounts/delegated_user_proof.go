@@ -73,6 +73,14 @@ const (
 	// one ever share this key.
 	delegatedProofDomain = "faros.sh/delegated-user-proof/v1"
 
+	// AnnotationDelegatedProofVersion records which MAC construction signed
+	// the account. Version 2 also covers the provider's owner org
+	// (AnnotationDelegatedProviderOrg); an account without it carries a v1
+	// proof, which names the provider but not whose it is.
+	AnnotationDelegatedProofVersion = "faros.sh/delegated-user-proof-version"
+	delegatedProofVersionCurrent    = "2"
+	delegatedProofDomainV2          = "faros.sh/delegated-user-proof/v2"
+
 	// delegatedProofKeySecretName is the Secret holding the HMAC key, in the
 	// hub-internal workspace/namespace the hub already uses for its
 	// cross-replica state (root:faros:system:controllers, namespace
@@ -240,24 +248,25 @@ func SignDelegatedUserServiceAccount(key []byte, sa *corev1.ServiceAccount, tena
 	if sa.Annotations == nil {
 		sa.Annotations = map[string]string{}
 	}
-	sa.Annotations[AnnotationDelegatedProof] = computeDelegatedProof(key, tenantPath, user, providerName, sa.Name, sa.UID)
+	provider := DelegatedProvider{Name: providerName, OrgUUID: sa.Annotations[AnnotationDelegatedProviderOrg]}
+	sa.Annotations[AnnotationDelegatedProofVersion] = delegatedProofVersionCurrent
+	sa.Annotations[AnnotationDelegatedProof] = computeDelegatedProof(key, delegatedProofVersionCurrent, tenantPath, user, provider, sa.Name, sa.UID)
 	return nil
 }
 
 // computeDelegatedProof is the MAC over one delegated identity. Fields are
 // NUL-joined; every one of them is validated to be NUL-free before it reaches
-// here (validateDelegatedInputs), so the encoding is unambiguous.
-func computeDelegatedProof(key []byte, tenantPath string, user Identity, providerName, saName string, saUID types.UID) string {
+// here (validateDelegatedInputs), so the encoding is unambiguous. Version 2
+// adds the provider's owner org under its own domain, so a v1 proof can never
+// be read as a v2 one and vice versa.
+func computeDelegatedProof(key []byte, version, tenantPath string, user Identity, provider DelegatedProvider, saName string, saUID types.UID) string {
+	fields := []string{delegatedProofDomain, tenantPath, user.User, provider.Name, saName, string(saUID)}
+	if version == delegatedProofVersionCurrent {
+		fields = []string{delegatedProofDomainV2, tenantPath, user.User, provider.Name, provider.OrgUUID, saName, string(saUID)}
+	}
 	mac := hmac.New(sha256.New, key)
 	// Writing to an hmac.Hash never returns an error.
-	_, _ = mac.Write([]byte(strings.Join([]string{
-		delegatedProofDomain,
-		tenantPath,
-		user.User,
-		providerName,
-		saName,
-		string(saUID),
-	}, "\x00")))
+	_, _ = mac.Write([]byte(strings.Join(fields, "\x00")))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -280,11 +289,24 @@ func verifyDelegatedProof(key []byte, sa *corev1.ServiceAccount) error {
 	if err != nil || len(presented) != sha256.Size {
 		return fmt.Errorf("delegated ServiceAccount carries no valid hub proof")
 	}
+	version := sa.Annotations[AnnotationDelegatedProofVersion]
+	switch version {
+	case delegatedProofVersionCurrent:
+	case "":
+		// A v1 proof does not cover the owner org, so an account claiming one
+		// under a v1 proof was not written by the hub.
+		if sa.Annotations[AnnotationDelegatedProviderOrg] != "" {
+			return fmt.Errorf("delegated ServiceAccount carries no valid hub proof")
+		}
+	default:
+		return fmt.Errorf("delegated ServiceAccount carries no valid hub proof")
+	}
 	want, err := hex.DecodeString(computeDelegatedProof(
 		key,
+		version,
 		sa.Annotations[AnnotationWorkloadIdentityTenantPath],
 		Identity{User: sa.Annotations[AnnotationDelegatedUser]},
-		sa.Annotations[AnnotationDelegatedProvider],
+		DelegatedProvider{Name: sa.Annotations[AnnotationDelegatedProvider], OrgUUID: sa.Annotations[AnnotationDelegatedProviderOrg]},
 		sa.Name,
 		sa.UID,
 	))

@@ -364,6 +364,10 @@ test-hub-chart: ## Lint and render the faros-hub chart's provider hardening valu
 		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerWorkspaceClusterAdmin=maybe >/dev/null 2>&1; then \
 			echo "invalid providerWorkspaceClusterAdmin unexpectedly rendered"; exit 1; \
 		fi; \
+		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=maybe >/dev/null 2>&1; then \
+			echo "invalid providerHubAccessPlatformDefault unexpectedly rendered"; exit 1; \
+		fi; \
+		helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=false | grep -q -- '--provider-hub-access-platform-default=false'; \
 		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--dev-mode}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating a modelled flag unexpectedly rendered"; exit 1; \
 		fi; \

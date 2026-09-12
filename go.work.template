@@ -19,10 +19,13 @@ go 1.26.8
 use (
 	.
 	./provider-sdk
-	./providers/quickstart
-	./providers/infrastructure
-	./providers/code
-	./providers/kuery
+	./providers/agents
 	./providers/app-studio
+	./providers/code
 	./providers/databricks
+	./providers/edges
+	./providers/infrastructure
+	./providers/kuery
+	./providers/linear
+	./providers/quickstart
 )

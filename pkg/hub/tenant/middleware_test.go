@@ -88,7 +88,7 @@ func TestMiddleware_OrgScopeHappyPath(t *testing.T) {
 	default:
 		t.Fatal("next handler was not invoked")
 	}
-	want := TenantContext{User: user, OrgUUID: orgUUID, Role: tenancyv1alpha1.MembershipRoleAdmin}
+	want := TenantContext{User: user, OrgUUID: orgUUID, Role: tenancyv1alpha1.MembershipRoleAdmin, OrgRole: tenancyv1alpha1.MembershipRoleAdmin}
 	if got != want {
 		t.Errorf("TenantContext: got %#v, want %#v", got, want)
 	}
@@ -137,9 +137,57 @@ func TestMiddleware_WorkspaceScopeHappyPath(t *testing.T) {
 		OrgUUID:       orgUUID,
 		WorkspaceUUID: wsUUID,
 		Role:          tenancyv1alpha1.MembershipRoleMember,
+		OrgRole:       tenancyv1alpha1.MembershipRoleAdmin,
 	}
 	if got != want {
 		t.Errorf("TenantContext: got %#v, want %#v", got, want)
+	}
+}
+
+// TestMiddleware_WorkspaceAdminIsNotOrgAdmin pins the escalation fix: a
+// caller who is admin of one workspace but only a member of the Org gets
+// Role=admin (the workspace row) and OrgRole=member, and a workspace-only
+// member gets no org role at all. Org-scope routes authorize on OrgRole.
+func TestMiddleware_WorkspaceAdminIsNotOrgAdmin(t *testing.T) {
+	for name, tc := range map[string]struct {
+		entries     []tenancyv1alpha1.MembershipIndexEntry
+		wantOrgRole string
+	}{
+		"org member": {
+			entries: []tenancyv1alpha1.MembershipIndexEntry{
+				{OrgUUID: "org-uuid", Role: tenancyv1alpha1.MembershipRoleMember},
+				{OrgUUID: "org-uuid", WorkspaceUUID: "ws-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin},
+			},
+			wantOrgRole: tenancyv1alpha1.MembershipRoleMember,
+		},
+		"workspace-only": {
+			entries: []tenancyv1alpha1.MembershipIndexEntry{
+				{OrgUUID: "org-uuid", WorkspaceUUID: "ws-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin},
+			},
+			wantOrgRole: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			index := fakeIndex("mallory", tc.entries...)
+			resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "mallory", nil })
+			lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+				return index, nil
+			})
+			var got TenantContext
+			reached := make(chan struct{}, 1)
+			h := Middleware(resolver, lookup)(captureNext(&got, reached))
+			req := httptest.NewRequest(http.MethodPost, "/api/orgs/org-uuid/memberships", nil)
+			req.Header.Set(HeaderFarosOrg, "org-uuid")
+			req.Header.Set(HeaderFarosWorkspace, "ws-uuid")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			if got.Role != tenancyv1alpha1.MembershipRoleAdmin || got.OrgRole != tc.wantOrgRole {
+				t.Fatalf("got Role=%q OrgRole=%q, want Role=admin OrgRole=%q", got.Role, got.OrgRole, tc.wantOrgRole)
+			}
+		})
 	}
 }
 
@@ -252,7 +300,7 @@ func TestMiddleware_SoftDeletedOrgUndeleteAllowed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	want := TenantContext{User: "alice", OrgUUID: "org-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin}
+	want := TenantContext{User: "alice", OrgUUID: "org-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin, OrgRole: tenancyv1alpha1.MembershipRoleAdmin}
 	if got != want {
 		t.Errorf("context: got %+v, want %+v", got, want)
 	}

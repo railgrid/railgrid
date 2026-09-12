@@ -39,7 +39,7 @@ import {
 } from 'lucide-vue-next'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO, type PermissionClaim, type AcceptedHubAccess } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
@@ -136,7 +136,7 @@ watch(dialogScope, () => {
   if (dialogProvider.value) closeEnableDialog()
 })
 
-async function onDialogConfirm(accept: PermissionClaim[]) {
+async function onDialogConfirm(accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[] = []) {
   const p = dialogProvider.value
   const revision = dialogRevision.value
   const scope = dialogScope.value
@@ -144,7 +144,7 @@ async function onDialogConfirm(accept: PermissionClaim[]) {
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
-    await providers.enable(p, accept)
+    await providers.enable(p, accept, acceptHubAccess)
     if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
       closeEnableDialog()
     }
@@ -469,6 +469,8 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
 
     <ProviderEnableDialog
       :provider="dialogProvider"
+      :org-role="tenant.activeOrg?.role"
+      :workspace-role="tenant.activeWorkspace?.role"
       :busy="dialogProvider ? !!busy[dialogProvider.name] : false"
       :error="dialogProvider ? actionError : null"
       @cancel="closeEnableDialog"

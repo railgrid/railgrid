@@ -55,6 +55,8 @@ hack/                 Codegen + boilerplate + dev scripts
 test/e2e/             End-to-end suites (see §7)
 deploy/               Dockerfiles + Helm charts
 docs/                 Architecture docs (per-provider, security, mcp, hub proxy)
+docs/roadmap/         NOT IMPLEMENTED proposals — never treat a command, package or
+                      endpoint named there as existing (see docs/roadmap/README.md)
 Makefile              The single source of truth for build/test/lint/codegen
 Tiltfile              Local dev loop (embedded kcp + static auth)
 go.work               Workspace: root + standalone provider modules

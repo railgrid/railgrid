@@ -112,6 +112,16 @@ type Options struct {
 	// Defaults to providers.DefaultDelegationExclude.
 	ProviderDelegatedTokensExclude []string
 
+	// ProviderHubAccessPlatformDefault lets a platform provider use the hub
+	// capabilities it declares (CatalogEntry.spec.hubAccess) in a workspace
+	// where no tenant decision was recorded yet. Platform providers are
+	// operator-installed and, under ProviderDelegatedTokens=off, hold the
+	// caller's own bearer anyway; this keeps them working across the upgrade
+	// to the hub-access contract. An explicit decision (Enable with or
+	// without accepting) always wins, and org-owned providers always need
+	// one. Set false to require acceptance for every provider.
+	ProviderHubAccessPlatformDefault bool
+
 	// AdminUsers is the allowlist of platform-admin identities permitted to
 	// reach the /api/admin/* surface and the portal's /bonkers area. Each entry
 	// matches a User CR by name, email, or rbacIdentity (case-insensitive).
@@ -197,5 +207,7 @@ func NewOptions() *Options {
 		ProviderWorkspaceClusterAdmin:  true,
 		ProviderDelegatedTokens:        string(providers.DelegationOff),
 		ProviderDelegatedTokensExclude: append([]string(nil), providers.DefaultDelegationExclude...),
+
+		ProviderHubAccessPlatformDefault: true,
 	}
 }

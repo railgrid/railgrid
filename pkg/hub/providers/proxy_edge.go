@@ -28,15 +28,15 @@ import (
 // the caller's tenant workspace, annotated with the human user it stands in
 // for. Implemented by *serviceaccounts.Manager.
 type DelegatedTokenIssuer interface {
-	IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, providerName string) (string, time.Time, error)
+	IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error)
 }
 
 // DelegatedTokenIssuerFunc adapts a plain function to DelegatedTokenIssuer.
-type DelegatedTokenIssuerFunc func(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, providerName string) (string, time.Time, error)
+type DelegatedTokenIssuerFunc func(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error)
 
 // IssueDelegatedUserToken satisfies DelegatedTokenIssuer.
-func (f DelegatedTokenIssuerFunc) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, providerName string) (string, time.Time, error) {
-	return f(ctx, orgUUID, wsUUID, user, providerName)
+func (f DelegatedTokenIssuerFunc) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error) {
+	return f(ctx, orgUUID, wsUUID, user, provider)
 }
 
 // SetDelegatedTokenIssuer installs the issuer used on the org-owned provider
@@ -216,7 +216,7 @@ func issueDelegatedToken(ctx context.Context, issuer DelegatedTokenIssuer, prov 
 		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "no delegated token issuer wired",
 			message: "delegated identity unavailable for provider: " + prov.Name}
 	}
-	token, _, err := issuer.IssueDelegatedUserToken(ctx, caller.OrgUUID, caller.WorkspaceUUID, serviceaccounts.Identity{User: caller.User}, prov.Name)
+	token, _, err := issuer.IssueDelegatedUserToken(ctx, caller.OrgUUID, caller.WorkspaceUUID, serviceaccounts.Identity{User: caller.User}, serviceaccounts.DelegatedProvider{Name: prov.Name, OrgUUID: prov.OrgUUID})
 	if err != nil {
 		return "", &delegationRefusal{status: http.StatusServiceUnavailable, reason: "issuing delegated user token", err: err,
 			message: "delegated identity unavailable for provider: " + prov.Name}

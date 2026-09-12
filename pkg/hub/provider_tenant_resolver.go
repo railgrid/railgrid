@@ -35,6 +35,7 @@ import (
 	"k8s.io/klog/v2"
 
 	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/hubaccess"
 	"github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
 	kcpproxy "github.com/faroshq/faros/pkg/server/proxy"
@@ -215,43 +216,89 @@ func isServiceAccountIdentity(user string) bool {
 }
 
 func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (string, string, error) {
+	caller, err := r.verifyWorkloadCaller(req)
+	if err != nil {
+		return "", "", err
+	}
+	return caller.User, caller.TenantPath, nil
+}
+
+// verifyHubAccessCaller adapts verifyWorkloadCaller for the hub-access gate.
+func (r *kcpTenantResolver) verifyHubAccessCaller(req *http.Request) (hubaccess.Caller, error) {
+	caller, err := r.verifyWorkloadCaller(req)
+	if err != nil {
+		return hubaccess.Caller{}, err
+	}
+	return hubaccess.Caller{
+		User:            caller.User,
+		OrgUUID:         caller.OrgUUID,
+		WorkspaceUUID:   caller.WSUUID,
+		Delegated:       caller.Delegated,
+		Provider:        caller.Provider.Name,
+		ProviderOrgUUID: caller.Provider.OrgUUID,
+		Legacy:          caller.Legacy,
+	}, nil
+}
+
+// workloadCaller is a verified workload or delegated identity presented with
+// the tenant headers.
+type workloadCaller struct {
+	// User is the person a delegated token stands for, or the workload's own
+	// kcp username.
+	User       string
+	TenantPath string
+	OrgUUID    string
+	WSUUID     string
+	// Delegated is true for a delegated user token; Provider and Legacy are
+	// set only then, and are covered by the hub's keyed proof.
+	Delegated bool
+	Provider  serviceaccounts.DelegatedProvider
+	Legacy    bool
+}
+
+func (r *kcpTenantResolver) verifyWorkloadCaller(req *http.Request) (workloadCaller, error) {
 	if r == nil || r.workloadConfig == nil || req == nil {
-		return "", "", errors.New("workload identity resolver unavailable")
+		return workloadCaller{}, errors.New("workload identity resolver unavailable")
 	}
 	orgUUID := strings.TrimSpace(req.Header.Get(headerFarosOrg))
 	wsUUID := strings.TrimSpace(req.Header.Get(headerFarosWorkspace))
 	if orgUUID == "" || wsUUID == "" || strings.ContainsAny(orgUUID+wsUUID, ":\r\n") {
-		return "", "", errors.New("workload identity requires a concrete tenant selection")
+		return workloadCaller{}, errors.New("workload identity requires a concrete tenant selection")
 	}
 	authHeader := strings.TrimSpace(req.Header.Get("Authorization"))
 	if len(authHeader) <= len("Bearer ") || !strings.EqualFold(authHeader[:len("Bearer ")], "Bearer ") {
-		return "", "", errors.New("workload identity requires a bearer token")
+		return workloadCaller{}, errors.New("workload identity requires a bearer token")
 	}
 	token := strings.TrimSpace(authHeader[len("Bearer "):])
 	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return "", "", errors.New("workload identity bearer is malformed")
+		return workloadCaller{}, errors.New("workload identity bearer is malformed")
 	}
 	tenantPath := workspacePathRoot + ":" + orgUUID + ":" + wsUUID
 	cfg := r.workloadConfig.ChildWorkspaceConfig(orgUUID, wsUUID)
 	username, sa, err := serviceaccounts.VerifyWorkloadServiceAccountDetails(req.Context(), cfg, token, tenantPath, r.proofKeys)
 	if err != nil {
-		return "", "", err
+		return workloadCaller{}, err
 	}
-	// A delegated user token (the credential the backend proxy hands an
-	// org-owned provider in place of the caller's bearer) stands in for a
-	// person. Surface the person as X-Faros-User, so a provider calling back
-	// into the hub with it attributes the work to the user, not to the
-	// faros-du-* account. The tenant binding was verified above, and so was
-	// the hub's keyed proof — without it this account is just an object any
-	// workspace member could have written, naming anyone they chose.
+	caller := workloadCaller{User: username, TenantPath: tenantPath, OrgUUID: orgUUID, WSUUID: wsUUID}
+	// A delegated user token (the credential the backend proxy hands a
+	// provider in place of the caller's bearer) stands in for a person.
+	// Surface the person, so a provider calling back into the hub with it
+	// attributes the work to the user, not to the faros-du-* account — and
+	// the provider it was issued to, so hub access can be authorized per
+	// provider. The tenant binding was verified above, and so was the hub's
+	// keyed proof — without it this account is just an object any workspace
+	// member could have written, naming anyone they chose.
 	if serviceaccounts.IsDelegatedUserServiceAccount(sa) {
-		identity, err := serviceaccounts.DelegatedUserFromServiceAccount(req.Context(), r.proofKeys, sa)
+		identity, err := serviceaccounts.DelegatedIdentityFromServiceAccount(req.Context(), r.proofKeys, sa)
 		if err != nil {
-			return "", "", err
+			return workloadCaller{}, err
 		}
-		return identity.User, tenantPath, nil
+		caller.User = identity.User
+		caller.Delegated = true
+		caller.Provider = identity.Provider
+		caller.Legacy = identity.Legacy
 	}
-	return username, tenantPath, nil
+	return caller, nil
 }
 
 // resolveFromHeaders honors the portal's sidebar-driven X-Faros-Org

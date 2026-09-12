@@ -59,6 +59,14 @@ type TenantContext struct {
 	// role from the org-scope Membership. Validated against
 	// MembershipRole* constants in apis/tenancy/v1alpha1.
 	Role string
+
+	// OrgRole is the caller's ORG-scope role in OrgUUID, independent of any
+	// X-Faros-Workspace header: the role of the org-scope Membership, or ""
+	// when the caller holds none (a workspace-only member). Org-scope routes
+	// must authorize against this, never against Role: when a request names
+	// a workspace, Role is that workspace's role, and a workspace admin is
+	// not an org admin.
+	OrgRole string
 }
 
 // contextKey is unexported so callers must use the helpers below to
@@ -81,4 +89,37 @@ func WithContext(ctx context.Context, tc TenantContext) context.Context {
 func FromContext(ctx context.Context) (TenantContext, bool) {
 	tc, ok := ctx.Value(contextKey{}).(TenantContext)
 	return tc, ok
+}
+
+// DelegatedCall marks a request made by a provider with a delegated user
+// token that the hub-access gate (pkg/hub/hubaccess) admitted: the provider,
+// the capability the route maps to, and the limits the tenant accepted.
+// Handlers read it to apply those limits on top of the person's own role; a
+// request without one is the person's own call.
+type DelegatedCall struct {
+	// User is the person the token stands for (User CR name).
+	User string
+	// Provider and ProviderOrgUUID identify the provider ("" org = platform).
+	Provider        string
+	ProviderOrgUUID string
+	// Capability and Scope are the hub capability the route maps to.
+	Capability string
+	Scope      string
+	// MaxRole caps the role a membership write may grant.
+	MaxRole string
+	// AllowInvite permits pre-provisioning an unknown email.
+	AllowInvite bool
+}
+
+type delegatedCallKey struct{}
+
+// WithDelegatedCall attaches an admitted delegated call to ctx.
+func WithDelegatedCall(ctx context.Context, call DelegatedCall) context.Context {
+	return context.WithValue(ctx, delegatedCallKey{}, call)
+}
+
+// DelegatedCallFrom returns the admitted delegated call, if the request is one.
+func DelegatedCallFrom(ctx context.Context) (DelegatedCall, bool) {
+	call, ok := ctx.Value(delegatedCallKey{}).(DelegatedCall)
+	return call, ok
 }

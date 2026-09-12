@@ -5,6 +5,11 @@ metadata:
 spec:
   resources:
   - group: tenants.faros.sh
+    name: grants
+    schema: v260912-b0309487-2.grants.tenants.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.faros.sh
     name: memberships
     schema: v260615-5246b68.memberships.tenants.faros.sh
     storage:

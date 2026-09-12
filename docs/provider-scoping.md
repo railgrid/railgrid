@@ -294,6 +294,22 @@ org workspace is not an option. In practice the portal's provider frames require
 a selected workspace before they mount, and `portalkit`'s `tenantHeaders()` sends
 both headers.
 
+### Provider identity and hub access
+
+The delegated account's proof (`faros.sh/delegated-user-proof`, version 2)
+covers the provider's name **and its owner org**
+(`faros.sh/delegated-provider-org`, absent for platform providers), and the
+account name hashes the owner in too. An org-owned provider sharing a platform
+provider's name is therefore a different identity everywhere it matters. Accounts
+signed before version 2 are re-signed in place on the next mint (platform
+providers) or replaced by a new account (org-owned); tokens from them verify as
+*legacy* until they expire, and the hub resolves their provider the way the
+proxy did when it issued them.
+
+What a delegated token may do on the hub REST surface is the provider's
+declared-and-accepted `hubAccess` (`docs/providers.md`, *Hub access*), enforced
+by `pkg/hub/hubaccess`.
+
 ### Per-provider audit
 
 Every consumer of the forwarded bearer, and whether a workspace-scoped SA token

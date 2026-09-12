@@ -17,7 +17,12 @@ limitations under the License.
 package restapi
 
 import (
+	"fmt"
 	"net/http"
+
+	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros/pkg/hub/tenant"
 
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -89,6 +94,23 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 
+	// A provider acting with a delegated token (admitted by the hub-access
+	// gate) is held to the limits the tenant accepted for it, on top of the
+	// admin check above that the person it acts for already had to pass.
+	delegated, isDelegated := tenant.DelegatedCallFrom(r.Context())
+	if isDelegated {
+		if delegated.MaxRole == "" || req.Role != tenancyv1alpha1.MembershipRoleMember {
+			writeStatus(w, http.StatusForbidden, "Forbidden",
+				fmt.Sprintf("provider %q may add members with role %q only", delegated.Provider, tenancyv1alpha1.MembershipRoleMember))
+			return
+		}
+		if req.Invite && !delegated.AllowInvite {
+			writeStatus(w, http.StatusForbidden, "Forbidden",
+				fmt.Sprintf("provider %q may not invite people who have no account yet", delegated.Provider))
+			return
+		}
+	}
+
 	// Resolve the identifier (email / UUID / rbacIdentity) to the User CR
 	// so every object we write below is named after a valid User name.
 	// With invite set, an unknown email pre-provisions a pending User that
@@ -99,31 +121,53 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write the Membership CR in the Org workspace.
-	if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), orgUUID, target.Name, req.Role); err != nil {
-		writeError(w, err)
-		return
-	}
-	// Update the added user's UMI.
 	org, err := h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+
+	// Adding someone who is already a member never changes their role: roles
+	// change only through PATCH. Without this, POSTing an existing member
+	// (yourself included) with role=admin rewrote the UMI row the tenant
+	// middleware authorizes against, which turned "add member" into
+	// "promote anyone". The UMI row is still upserted with the Membership's
+	// actual role, which heals CR-exists-but-row-missing drift.
+	role, status := req.Role, http.StatusCreated
+	existing, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), orgUUID, target.Name)
+	switch {
+	case err == nil && existing != "":
+		role, status = existing, http.StatusOK
+	case err != nil && !apierrors.IsNotFound(err):
+		writeError(w, err)
+		return
+	default:
+		// Write the Membership CR in the Org workspace.
+		if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), orgUUID, target.Name, role); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if err := h.mgr.upsertUMIEntry(r.Context(), target.Name, tenancyv1alpha1.MembershipIndexEntry{
 		OrgUUID:        orgUUID,
 		OrgDisplayName: org.Spec.DisplayName,
 		OrgCreatedAt:   org.CreationTimestamp,
-		Role:           req.Role,
+		Role:           role,
 		Personal:       org.Spec.Personal,
 	}); err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, MembershipView{
+	if isDelegated {
+		klog.FromContext(r.Context()).Info("Provider added organization member",
+			"provider", delegated.Provider, "providerOrg", delegated.ProviderOrgUUID,
+			"actingFor", delegated.User, "org", orgUUID, "member", target.Name,
+			"role", role, "invited", req.Invite, "alreadyMember", status == http.StatusOK)
+	}
+	writeJSON(w, status, MembershipView{
 		User: target.Name, RBACIdentity: target.Spec.RBACIdentity,
 		Email: target.Spec.Email, UserDisplayName: target.Spec.Name,
-		Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
+		Role: role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
 	})
 }
 
@@ -348,19 +392,25 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	// As at org scope, adding an existing workspace member keeps their role;
+	// PATCH is the only way to change it.
+	wsRole, status := req.Role, http.StatusCreated
+	if existing, ok := h.mgr.workspaceRoleOf(r.Context(), target.Name, tc.OrgUUID, tc.WorkspaceUUID); ok {
+		wsRole, status = existing, http.StatusOK
+	}
 	if err := h.mgr.upsertUMIEntry(r.Context(), target.Name, tenancyv1alpha1.MembershipIndexEntry{
 		OrgUUID:              tc.OrgUUID,
 		OrgDisplayName:       org.Spec.DisplayName,
 		OrgCreatedAt:         org.CreationTimestamp,
 		WorkspaceUUID:        tc.WorkspaceUUID,
 		WorkspaceDisplayName: dn,
-		Role:                 req.Role,
+		Role:                 wsRole,
 	}); err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, MembershipView{
-		User: target.Name, RBACIdentity: target.Spec.RBACIdentity, Role: req.Role,
+	writeJSON(w, status, MembershipView{
+		User: target.Name, RBACIdentity: target.Spec.RBACIdentity, Role: wsRole,
 		Email: target.Spec.Email, UserDisplayName: target.Spec.Name,
 		OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID,
 		OrgDisplayName: org.Spec.DisplayName, WorkspaceDisplayName: dn,

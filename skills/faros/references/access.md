@@ -192,9 +192,9 @@ GET|PUT          /api/orgs/{org}/workspaces/{ws}/dashboard/layout
 GET|POST         /api/orgs/{org}/workspaces/{ws}/mcpservers      POST {"name","displayName","instructions","readOnly"}
 PATCH|DELETE     /api/orgs/{org}/workspaces/{ws}/mcpservers/{name}
 GET              /api/orgs/{org}/workspaces/{ws}/mcpservers/{name}/connect   → {endpointURL,serverName,token,tokenReady}
-POST             /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable     {"acceptedClaims":[{"group":"","resource":"secrets"}]} → {"bindingName"}
+POST             /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable     {"acceptedClaims":[{"group":"","resource":"secrets"}],"acceptedHubAccess":[{"capability":"memberships.read","scope":"org"}]} → {"bindingName","hubAccess"}; org-scoped hubAccess needs an org admin
 POST             /api/orgs/{org}/workspaces/{ws}/providers/{name}/disable
-GET              /api/orgs/{org}/workspaces/{ws}/providers/enabled
+GET              /api/orgs/{org}/workspaces/{ws}/providers/enabled   bindingsByProvider[p].hubAccess = {granted, pending, implicit}
 GET              /api/orgs/{org}/workspaces/{ws}/app-access
 DELETE           /api/orgs/{org}/workspaces/{ws}/app-access/{binding}
 GET|POST         /api/orgs/{org}/workspaces/{ws}/serviceaccounts             POST {"displayName","role":"admin|member"} (both required: 400 `invalid role "" (want admin or member)`, `displayName is required`) → 201 {uuid,displayName,role,createdAt}; no token in the response
@@ -218,8 +218,12 @@ platform providers of the same name), rejects providers without an
 APIExport (built-ins are implicitly enabled), returns 409 listing missing
 dependencies, builds claims only from the provider's declared
 `permissionClaims` (you choose accept or reject per resource), then creates
-the kcp `APIBinding` named after the provider. Source:
-`pkg/hub/restapi/providers_enable.go`.
+the kcp `APIBinding` named after the provider. If the provider declares
+`hubAccess` (hub REST capabilities its delegated token may use, e.g. App
+Studio reading member lists and inviting), `acceptedHubAccess` records which
+you accept in a `Grant` (org-scoped ones need an org admin; unaccepted ones are
+refused with a 403 naming the capability). Source:
+`pkg/hub/restapi/providers_enable.go`, `pkg/hub/hubaccess`.
 
 Workspace kubeconfig download emits cluster `faros` at
 `<hub>/clusters/<clusterName>` with an exec plugin on OIDC hubs or an

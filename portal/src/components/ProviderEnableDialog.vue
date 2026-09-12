@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X, ShieldCheck, ShieldAlert, Loader2 } from 'lucide-vue-next'
-import type { ProviderDTO, PermissionClaim } from '@/stores/providers'
+import type { ProviderDTO, PermissionClaim, HubAccessRequest, AcceptedHubAccess } from '@/stores/providers'
 
 const props = defineProps<{
   provider: ProviderDTO | null
+  // The caller's roles decide which hub capabilities they may accept: an
+  // org-scoped one needs an org admin, a workspace-scoped one a workspace or
+  // org admin. The hub enforces the same rule; this only avoids offering a
+  // checkbox that can only fail.
+  orgRole?: string
+  workspaceRole?: string
   // Enable is a caller-owned write. Keeping pending/error state in the page
   // that owns the request means a failed write can remain retryable without
   // leaving this modal permanently busy or hiding the error behind it.
@@ -14,7 +20,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
-  confirm: [accept: PermissionClaim[]]
+  confirm: [accept: PermissionClaim[], acceptHubAccess: AcceptedHubAccess[]]
 }>()
 
 // One boolean per claim, indexed by claim key. tenantScoped claims default
@@ -33,6 +39,32 @@ const dismissTitle = computed(() => props.busy
   : 'Close dialog')
 
 const claimKey = (c: PermissionClaim) => `${c.group ?? ''}/${c.resource}`
+const hubKey = (h: HubAccessRequest) => `${h.capability}/${h.scope}`
+
+// One boolean per requested hub capability. Those the caller may accept
+// start accepted (the provider asks for them to work); the rest are shown
+// disabled with who can accept them.
+const acceptedHub = ref<Record<string, boolean>>({})
+
+function canAcceptHub(h: HubAccessRequest): boolean {
+  if (h.scope === 'org') return props.orgRole === 'admin'
+  return props.workspaceRole === 'admin' || props.orgRole === 'admin'
+}
+
+function hubLabel(h: HubAccessRequest): string {
+  switch (`${h.capability}/${h.scope}`) {
+    case 'memberships.read/org':
+      return "Read your organization's member list"
+    case 'memberships.read/workspace':
+      return "Read this workspace's member list"
+    case 'memberships.invite/org':
+      return h.allowInvite
+        ? 'Add people to your organization as members, inviting them by email'
+        : 'Add existing users to your organization as members'
+    default:
+      return `${h.capability} (${h.scope})`
+  }
+}
 
 watch(
   () => props.provider,
@@ -43,9 +75,22 @@ watch(
       next[claimKey(c)] = !!c.tenantScoped
     }
     accepted.value = next
+    const nextHub: Record<string, boolean> = {}
+    for (const h of p.hubAccess ?? []) {
+      nextHub[hubKey(h)] = canAcceptHub(h)
+    }
+    acceptedHub.value = nextHub
   },
   { immediate: true },
 )
+
+const hubAccess = computed(() => props.provider?.hubAccess ?? [])
+
+function toggleHub(h: HubAccessRequest) {
+  if (props.busy || !canAcceptHub(h)) return
+  const k = hubKey(h)
+  acceptedHub.value = { ...acceptedHub.value, [k]: !acceptedHub.value[k] }
+}
 
 const claims = computed(() => props.provider?.permissionClaims ?? [])
 const hasUntrustedAccepted = computed(() =>
@@ -61,7 +106,10 @@ function toggle(c: PermissionClaim) {
 function onConfirm() {
   if (!props.provider || props.busy) return
   const accept = claims.value.filter((c) => accepted.value[claimKey(c)])
-  emit('confirm', accept)
+  const acceptHub = hubAccess.value
+    .filter((h) => canAcceptHub(h) && acceptedHub.value[hubKey(h)])
+    .map((h) => ({ capability: h.capability, scope: h.scope }))
+  emit('confirm', accept, acceptHub)
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -205,6 +253,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             connected to this workspace (background connections through the
             hub's edges-proxy). Removed when you disable the provider.
           </p>
+        </div>
+
+        <div v-if="hubAccess.length" class="mt-3">
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Acting for you in faros</p>
+          <p class="mb-2 text-[10px] text-text-muted">
+            The provider can do these things as the person using it, and never more than that
+            person may. What you leave unchecked is declined; you can change it by enabling the
+            provider again.
+          </p>
+          <ul class="space-y-2">
+            <li
+              v-for="h in hubAccess"
+              :key="hubKey(h)"
+              class="rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
+            >
+              <label class="k-checkbox-hit flex items-start gap-3" :class="canAcceptHub(h) ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'">
+                <input
+                  type="checkbox"
+                  class="k-checkbox mt-1"
+                  :checked="!!acceptedHub[hubKey(h)]"
+                  :disabled="busy || !canAcceptHub(h)"
+                  @change="toggleHub(h)"
+                />
+                <div class="min-w-0 flex-1">
+                  <span class="text-[11px] text-text-primary">{{ hubLabel(h) }}</span>
+                  <p class="mt-0.5 text-[10px] text-text-muted">{{ h.reason }}</p>
+                  <p v-if="h.capability === 'memberships.invite'" class="mt-0.5 text-[10px] text-text-muted">
+                    Only as members, never as admins.
+                  </p>
+                  <p v-if="!canAcceptHub(h)" class="mt-1 text-[10px] text-warning">
+                    {{ h.scope === 'org' ? 'Only an organization admin can decide this; enabling leaves it as it is.' : 'Only a workspace or organization admin can decide this; enabling leaves it as it is.' }}
+                  </p>
+                </div>
+              </label>
+            </li>
+          </ul>
         </div>
 
         <div v-if="hasUntrustedAccepted" class="mt-3 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning">

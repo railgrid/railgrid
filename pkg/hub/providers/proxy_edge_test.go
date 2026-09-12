@@ -50,16 +50,17 @@ type edgeUpstream struct {
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
 // for and hands back a fixed token.
 type recordingIssuer struct {
-	calls    int
-	org, ws  string
-	user     string
-	provider string
-	err      error
+	calls       int
+	org, ws     string
+	user        string
+	provider    string
+	providerOrg string
+	err         error
 }
 
-func (i *recordingIssuer) IssueDelegatedUserToken(_ context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, providerName string) (string, time.Time, error) {
+func (i *recordingIssuer) IssueDelegatedUserToken(_ context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error) {
 	i.calls++
-	i.org, i.ws, i.user, i.provider = orgUUID, wsUUID, user.User, providerName
+	i.org, i.ws, i.user, i.provider, i.providerOrg = orgUUID, wsUUID, user.User, provider.Name, provider.OrgUUID
 	if i.err != nil {
 		return "", time.Time{}, i.err
 	}

@@ -253,7 +253,9 @@ grants against the live catalog. The hub verifies their bearer online with the
 workload audience in the selected tenant workspace and checks the backing
 ServiceAccount. Delegated user identities also require the hub's signed proof.
 Catalog visibility is scoped to the verified organization; this read does not
-grant a membership role, mutation access, or bypass action authorization.
+grant a membership role, mutation access, or bypass action authorization. The
+only hub REST calls a delegated token can make beyond it are the hub-access
+capabilities a tenant accepted for the provider (see *Hub access* below).
 Anonymous callers remain rejected, and human catalog discovery retains its
 optional-organization behavior.
 
@@ -279,6 +281,76 @@ boundary, and verification commands, and
 [cross-provider-simplification.md](./cross-provider-simplification.md) for
 how this pattern generalizes (decision #6's `spec.virtualWorkspace.url` dial
 target is retired in favor of reserved prefixes on `spec.backend.url`).
+
+### Hub access
+
+A provider that receives a delegated user token in place of the caller's bearer
+(always for org-owned providers; for platform providers per
+`--provider-delegated-tokens`) cannot use it on the hub REST surface — except
+for the capabilities it declares in `CatalogEntry.spec.hubAccess` **and** a
+tenant accepted for it. Declaring grants nothing on its own.
+
+```yaml
+spec:
+  hubAccess:
+    - capability: memberships.read     # read the member list
+      scope: org                        # org | workspace
+      reason: "Check who an app is shared with."
+    - capability: memberships.invite    # add someone to the org
+      scope: org                        # org only
+      maxRole: member                   # the only role a provider can grant
+      allowInvite: true                 # may pre-provision an unknown email
+      reason: "Invite the people you share an app with."
+```
+
+The capability set is closed and owned by the hub (`pkg/hub/hubaccess`); a
+provider never names routes. Today it maps to:
+
+| Capability | Scope | Route |
+|---|---|---|
+| `memberships.read` | `org` | `GET /api/orgs/{org}/memberships` |
+| `memberships.read` | `workspace` | `GET /api/orgs/{org}/workspaces/{ws}/memberships` |
+| `memberships.invite` | `org` | `POST /api/orgs/{org}/memberships` |
+
+Removals, role changes, workspace membership writes and org or workspace
+management are not in the set and are refused for delegated tokens.
+
+**Consent.** The Enable dialog lists each requested capability with its
+reason. Accepting an org-scoped one needs an org admin; a workspace-scoped one
+a workspace or org admin. `POST …/providers/{name}/enable` takes the choice as
+`acceptedHubAccess: [{capability, scope}]` and records it in a `Grant`
+(`tenants.faros.sh`, subject kind `Provider`) in `root:faros:system:tenants`,
+which no tenant or provider identity can reach. Each capability the enabler may
+decide is recorded as accepted (ticked) or declined (not); the ones they may
+not decide keep their earlier decision, or stay undecided — so a workspace
+admin enabling a provider never turns off something only an org admin can
+decide. Disable deletes the grant. `GET …/providers/enabled` reports,
+per provider, which capabilities are granted and which are still pending (new
+in its catalog entry, or declined); the Providers page offers *Review access*
+for the latter.
+
+**Enforcement.** A gate in front of the tenant routes admits a delegated call
+only when the route maps to a capability the provider currently declares and
+the grant for that provider in that workspace includes. The narrower of
+declaration and grant wins, so a catalog update never widens access until
+someone accepts it. The call then goes through the normal tenant middleware as
+the person the token stands for — their own role still applies, so a provider
+can never do more than that person — and the membership handler caps the role
+at `member`, never changes an existing member's role, and honours
+`allowInvite`. Invitations are rate-limited per provider and organization, and
+every delegated mutation is logged with provider, person, target and role.
+
+**Provider identity.** The hub's proof on a delegated account covers the
+provider's name and, since proof v2, its owner org, so an org-owned provider
+that shadows a platform provider of the same name never uses the platform
+provider's grant (or vice versa).
+
+**Upgrade default.** `--provider-hub-access-platform-default` (default `true`)
+lets a *platform* provider use a capability it declares that nobody entitled to
+decide it has decided yet, so existing workspaces keep working; a decision
+(accepted or declined) always wins, and org-owned providers always need an
+acceptance. Rollout order: the hub first
+(the CatalogEntry schema gains `hubAccess`), then providers that declare it.
 
 ### Provider assistant skills
 

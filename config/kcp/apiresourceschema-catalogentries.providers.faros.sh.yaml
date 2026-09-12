@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260906-7ea86cf9.catalogentries.providers.faros.sh
+  name: v260912-b0309487.catalogentries.providers.faros.sh
 spec:
   group: providers.faros.sh
   names:
@@ -447,6 +447,67 @@ spec:
                 in the tenant workspace on Enable and removed on Disable; like
                 permission claims, it is surfaced in the portal's Enable dialog.
               type: boolean
+            hubAccess:
+              description: |-
+                HubAccess requests hub REST capabilities the provider may exercise with
+                the delegated user token the hub hands it in place of the caller's
+                bearer. Each entry names a capability from a closed set the hub owns;
+                the hub maps it to concrete routes and enforces its limits, so a
+                provider never declares routes. Nothing here is granted by declaring
+                it: the capabilities are shown in the Enable dialog and apply only once
+                a tenant accepts them, and every call is still authorized as the person
+                the token stands for — a provider can never do more than that person.
+              items:
+                description: ProviderHubAccess is one requested hub capability.
+                properties:
+                  allowInvite:
+                    description: |-
+                      AllowInvite lets the provider add an email that has no account yet,
+                      pre-provisioning a pending User the first matching sign-in adopts.
+                    type: boolean
+                  capability:
+                    description: ProviderHubCapability names one hub REST capability
+                      a provider may request.
+                    enum:
+                    - memberships.read
+                    - memberships.invite
+                    type: string
+                  maxRole:
+                    description: |-
+                      MaxRole is the highest role the provider may grant. Only "member" is
+                      accepted: an admin role is never grantable through a provider.
+                    enum:
+                    - member
+                    type: string
+                  reason:
+                    description: 'Reason is shown in the Enable dialog: why the provider
+                      needs this.'
+                    maxLength: 256
+                    minLength: 1
+                    type: string
+                  scope:
+                    description: ProviderHubAccessScope is where a capability applies.
+                    enum:
+                    - org
+                    - workspace
+                    type: string
+                required:
+                - capability
+                - reason
+                - scope
+                type: object
+                x-kubernetes-validations:
+                - message: memberships.invite is org-scoped
+                  rule: self.capability != 'memberships.invite' || self.scope == 'org'
+                - message: maxRole and allowInvite apply to memberships.invite only
+                  rule: self.capability == 'memberships.invite' || (!has(self.maxRole)
+                    && !has(self.allowInvite))
+              maxItems: 8
+              type: array
+              x-kubernetes-list-map-keys:
+              - capability
+              - scope
+              x-kubernetes-list-type: map
             iconURL:
               description: |-
                 IconURL is a portal-relative path to an icon for the catalog card.

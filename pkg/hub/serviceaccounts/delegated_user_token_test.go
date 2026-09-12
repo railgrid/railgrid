@@ -69,7 +69,7 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	})
 
 	ctx := context.Background()
-	token, expiry, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+	token, expiry, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 	if err != nil {
 		t.Fatalf("IssueDelegatedUserToken: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	// Second issuance for the same tuple after the cache is dropped reuses
 	// the account: nothing accumulates per request.
 	m.delegated = nil
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("IssueDelegatedUserToken (repeat): %v", err)
 	}
 	list, err := cs.CoreV1().ServiceAccounts(Namespace).List(ctx, metav1.ListOptions{})
@@ -145,11 +145,11 @@ func TestIssueDelegatedUserTokenCachesAndRefreshesOnExpiry(t *testing.T) {
 	cs.PrependReactor("create", "serviceaccounts/token", reactor)
 	ctx := context.Background()
 
-	first, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+	first, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 	if err != nil {
 		t.Fatalf("first issue: %v", err)
 	}
-	second, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+	second, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 	if err != nil {
 		t.Fatalf("second issue: %v", err)
 	}
@@ -159,10 +159,10 @@ func TestIssueDelegatedUserTokenCachesAndRefreshesOnExpiry(t *testing.T) {
 
 	// A different user, workspace, or provider is a different identity and
 	// must not share the cache entry.
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, Identity{User: "bob"}, delegatedTestProvider); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, Identity{User: "bob"}, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("issue for bob: %v", err)
 	}
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, "vault"); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider("vault")); err != nil {
 		t.Fatalf("issue for vault: %v", err)
 	}
 	if *mints != 3 {
@@ -172,7 +172,7 @@ func TestIssueDelegatedUserTokenCachesAndRefreshesOnExpiry(t *testing.T) {
 	// Past the cache TTL the token is re-minted even though it has not
 	// expired yet.
 	now = now.Add(DelegatedUserTokenCacheTTL + time.Second)
-	third, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+	third, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 	if err != nil {
 		t.Fatalf("issue after cache TTL: %v", err)
 	}
@@ -192,11 +192,11 @@ func TestIssueDelegatedUserTokenRefreshesBeforeShortExpiry(t *testing.T) {
 	cs.PrependReactor("create", "serviceaccounts/token", reactor)
 	ctx := context.Background()
 
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("first issue: %v", err)
 	}
 	now = now.Add(90 * time.Second)
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("issue near expiry: %v", err)
 	}
 	if *mints != 2 {
@@ -214,24 +214,24 @@ func TestIssueDelegatedUserTokenRejectsOverlongTokenAndBadInput(t *testing.T) {
 		}}, nil
 	})
 	ctx := context.Background()
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err == nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err == nil {
 		t.Fatal("accepted a token longer than policy allows")
 	}
 	for name, call := range map[string]func() error{
 		"empty user": func() error {
-			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, Identity{}, delegatedTestProvider)
+			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, Identity{}, PlatformProvider(delegatedTestProvider))
 			return err
 		},
 		"empty workspace": func() error {
-			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, "", delegatedTestUser, delegatedTestProvider)
+			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, "", delegatedTestUser, PlatformProvider(delegatedTestProvider))
 			return err
 		},
 		"colon in org": func() error {
-			_, _, err := m.IssueDelegatedUserToken(ctx, "org:evil", delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+			_, _, err := m.IssueDelegatedUserToken(ctx, "org:evil", delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 			return err
 		},
 		"empty provider": func() error {
-			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, "")
+			_, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(""))
 			return err
 		},
 	} {
@@ -248,7 +248,7 @@ func TestIssueDelegatedUserTokenRefusesForeignAccountOfSameName(t *testing.T) {
 	// hub's labels: never adopt it, never mint for it.
 	m, _ := managerFor(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: Namespace}})
 	defer resetTestClientset()
-	if _, _, err := m.IssueDelegatedUserToken(context.Background(), delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err == nil {
+	if _, _, err := m.IssueDelegatedUserToken(context.Background(), delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err == nil {
 		t.Fatal("minted a token for a ServiceAccount the hub did not create")
 	}
 }
@@ -261,13 +261,15 @@ func hubMintedDelegatedServiceAccount(t *testing.T, tenantPath string, user Iden
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 		Name: name, Namespace: Namespace, UID: uid,
 		Labels:      map[string]string{LabelWorkloadIdentity: "true", LabelDelegatedUser: "true"},
-		Annotations: delegatedUserAnnotations(tenantPath, delegatedTestOrg, delegatedTestWS, user, delegatedTestProvider),
+		Annotations: delegatedUserAnnotations(tenantPath, delegatedTestOrg, delegatedTestWS, user, PlatformProvider(delegatedTestProvider)),
 	}}
 	key, err := testProofKeySource.DelegatedProofKey(context.Background())
 	if err != nil {
 		t.Fatalf("test proof key: %v", err)
 	}
-	sa.Annotations[AnnotationDelegatedProof] = computeDelegatedProof(key, tenantPath, user, delegatedTestProvider, name, uid)
+	if err := SignDelegatedUserServiceAccount(key, sa, tenantPath, user, delegatedTestProvider); err != nil {
+		t.Fatalf("signing: %v", err)
+	}
 	return sa
 }
 
@@ -330,7 +332,7 @@ func TestDelegatedIdentityRejectsTenantForgedServiceAccount(t *testing.T) {
 		UID:       "uid-attacker-made",
 		Labels:    map[string]string{LabelWorkloadIdentity: "true", LabelDelegatedUser: "true"},
 		Annotations: delegatedUserAnnotations(
-			tenantPath, delegatedTestOrg, delegatedTestWS, victim, delegatedTestProvider),
+			tenantPath, delegatedTestOrg, delegatedTestWS, victim, PlatformProvider(delegatedTestProvider)),
 	}}
 
 	if err := verifyWorkloadServiceAccountAnnotations(ctx, forged, tenantPath, testProofKeySource); err == nil {
@@ -394,7 +396,7 @@ func TestIssueDelegatedUserTokenStampsProofAndReplacesSquatter(t *testing.T) {
 		Name: name, Namespace: Namespace, UID: "uid-squatter",
 		Labels: map[string]string{LabelWorkloadIdentity: "true", LabelDelegatedUser: "true"},
 		Annotations: delegatedUserAnnotations(
-			tenantPath, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider),
+			tenantPath, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)),
 	}}
 	m, cs := managerFor(t, squatter)
 	defer resetTestClientset()
@@ -405,7 +407,7 @@ func TestIssueDelegatedUserTokenStampsProofAndReplacesSquatter(t *testing.T) {
 		}}, nil
 	})
 
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err != nil {
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("IssueDelegatedUserToken: %v", err)
 	}
 	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
@@ -433,7 +435,7 @@ func TestIssueDelegatedUserTokenFailsClosedWithoutProofKey(t *testing.T) {
 	m, _ := managerFor(t)
 	defer resetTestClientset()
 	m.proofKeys = nil
-	if _, _, err := m.IssueDelegatedUserToken(context.Background(), delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider); err == nil {
+	if _, _, err := m.IssueDelegatedUserToken(context.Background(), delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err == nil {
 		t.Fatal("minted a delegated token with no proof key source")
 	}
 }
@@ -471,7 +473,7 @@ func TestIssueDelegatedUserTokenMintsOnceUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tokens[i], _, errs[i] = m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, delegatedTestProvider)
+			tokens[i], _, errs[i] = m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider))
 		}()
 	}
 	// Give every caller time to reach the singleflight before the one that

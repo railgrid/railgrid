@@ -147,6 +147,14 @@ hub:
     # need it. Flipping either way replaces the existing binding (RoleRef is
     # immutable; the hub deletes and recreates it).
     providerWorkspaceClusterAdmin: null
+    # Whether platform providers may use the hub capabilities they declare
+    # (CatalogEntry spec.hubAccess — e.g. App Studio reading member lists and
+    # inviting people) in workspaces where nobody has accepted or declined
+    # them yet. Org-owned providers always need an explicit acceptance in the
+    # Enable dialog. null (default) leaves the binary default, true, which
+    # keeps existing workspaces working across the upgrade; false requires
+    # acceptance for every provider.
+    providerHubAccessPlatformDefault: null
   # -- Extra command-line flags appended to the hub container after the flags
   # the chart renders from the values above, for flags the chart does not
   # model yet (e.g. "--providers=edges,infrastructure"). The chart refuses an

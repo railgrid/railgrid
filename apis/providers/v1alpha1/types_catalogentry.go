@@ -139,6 +139,21 @@ type CatalogEntrySpec struct {
 	// +optional
 	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
 
+	// HubAccess requests hub REST capabilities the provider may exercise with
+	// the delegated user token the hub hands it in place of the caller's
+	// bearer. Each entry names a capability from a closed set the hub owns;
+	// the hub maps it to concrete routes and enforces its limits, so a
+	// provider never declares routes. Nothing here is granted by declaring
+	// it: the capabilities are shown in the Enable dialog and apply only once
+	// a tenant accepts them, and every call is still authorized as the person
+	// the token stands for — a provider can never do more than that person.
+	// +optional
+	// +listType=map
+	// +listMapKey=capability
+	// +listMapKey=scope
+	// +kubebuilder:validation:MaxItems=8
+	HubAccess []ProviderHubAccess `json:"hubAccess,omitempty"`
+
 	// Actions declares the versioned capabilities that this provider exposes
 	// through its action transport. The list is keyed by the canonical action
 	// ID (for example, query_table/v1) so a provider cannot publish duplicate
@@ -293,6 +308,56 @@ type ProviderActionBoundResource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Resource string `json:"resource"`
+}
+
+// ProviderHubCapability names one hub REST capability a provider may request.
+// +kubebuilder:validation:Enum=memberships.read;memberships.invite
+type ProviderHubCapability string
+
+const (
+	// HubCapabilityMembershipsRead reads the membership roster at Scope:
+	// GET /api/orgs/{org}/memberships (org) or
+	// GET /api/orgs/{org}/workspaces/{ws}/memberships (workspace).
+	HubCapabilityMembershipsRead ProviderHubCapability = "memberships.read"
+	// HubCapabilityMembershipsInvite adds a person to the Organization:
+	// POST /api/orgs/{org}/memberships. Org scope only. The hub caps the role
+	// at MaxRole (member), never changes an existing member, and honors
+	// AllowInvite for pre-provisioning an unknown email.
+	HubCapabilityMembershipsInvite ProviderHubCapability = "memberships.invite"
+)
+
+// ProviderHubAccessScope is where a capability applies.
+// +kubebuilder:validation:Enum=org;workspace
+type ProviderHubAccessScope string
+
+const (
+	HubAccessScopeOrg       ProviderHubAccessScope = "org"
+	HubAccessScopeWorkspace ProviderHubAccessScope = "workspace"
+)
+
+// ProviderHubAccess is one requested hub capability.
+// +kubebuilder:validation:XValidation:rule="self.capability != 'memberships.invite' || self.scope == 'org'",message="memberships.invite is org-scoped"
+// +kubebuilder:validation:XValidation:rule="self.capability == 'memberships.invite' || (!has(self.maxRole) && !has(self.allowInvite))",message="maxRole and allowInvite apply to memberships.invite only"
+type ProviderHubAccess struct {
+	Capability ProviderHubCapability `json:"capability"`
+
+	Scope ProviderHubAccessScope `json:"scope"`
+
+	// MaxRole is the highest role the provider may grant. Only "member" is
+	// accepted: an admin role is never grantable through a provider.
+	// +optional
+	// +kubebuilder:validation:Enum=member
+	MaxRole string `json:"maxRole,omitempty"`
+
+	// AllowInvite lets the provider add an email that has no account yet,
+	// pre-provisioning a pending User the first matching sign-in adopts.
+	// +optional
+	AllowInvite bool `json:"allowInvite,omitempty"`
+
+	// Reason is shown in the Enable dialog: why the provider needs this.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Reason string `json:"reason"`
 }
 
 // ProviderActionExecutionMode describes the action's completion model.

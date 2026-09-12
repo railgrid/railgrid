@@ -113,10 +113,10 @@ type fakeIssuer struct {
 	err   error
 }
 
-func (f *fakeIssuer) IssueDelegatedUserToken(_ context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, providerName string) (string, time.Time, error) {
+func (f *fakeIssuer) IssueDelegatedUserToken(_ context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	tuple := strings.Join([]string{orgUUID, wsUUID, user.User, providerName}, "/")
+	tuple := strings.Join([]string{orgUUID, wsUUID, user.User, provider.Name}, "/")
 	f.calls = append(f.calls, tuple)
 	if f.err != nil {
 		return "", time.Time{}, f.err

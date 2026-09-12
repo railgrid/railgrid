@@ -112,6 +112,10 @@ type providerDTO struct {
 	// ServiceAccount proxied access to the workspace's edge clusters (verb
 	// "proxy" on edges) for background connections.
 	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
+	// HubAccess mirrors CatalogEntry.spec.hubAccess: hub REST capabilities
+	// the provider requests, each with the reason the Enable dialog shows.
+	// None applies until the tenant accepts it.
+	HubAccess []providersv1alpha1.ProviderHubAccess `json:"hubAccess,omitempty"`
 	// Builtin is true for first-party providers (those that registered via
 	// providers.RegisterBuiltin) regardless of how they surface their UI
 	// (legacy BuiltinRoute or new LocalUIAssets custom element). The portal
@@ -384,6 +388,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,
 				EdgeProxyAccess:  p.EdgeProxyAccess,
+				HubAccess:        p.HubAccess,
 				Builtin:          isBuiltin,
 				Actions:          actions,
 				AssistantSkills:  assistantSkills,

@@ -52,6 +52,7 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/hubaccess"
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	"github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/hub/tenant"
@@ -198,6 +199,12 @@ type Manager struct {
 	// 501 unless both are set. See org_providers.go.
 	orgProviders  OrgProviderOps
 	providerCreds ProviderCredentialMinter
+	// hubAccess records the hub capabilities a tenant accepts for a
+	// provider on Enable (optional; nil skips recording). platformDefault
+	// mirrors the gate's --provider-hub-access-platform-default so the
+	// enabled listing reports what the gate will actually allow.
+	hubAccess                *hubaccess.Store
+	hubAccessPlatformDefault bool
 }
 
 // NewManager builds a Manager from the userClient (typed faros client
@@ -222,6 +229,15 @@ func (m *Manager) WithKubeconfig(cfg KubeconfigConfig) *Manager {
 // provider wiring for tests / minimal hubs.
 func (m *Manager) WithProviderRegistry(p ProviderLookup) *Manager {
 	m.providers = p
+	return m
+}
+
+// WithHubAccessGrants installs the grant store the Enable flow records hub
+// access in, and whether undecided platform providers get their declared
+// capabilities (the gate's platform default).
+func (m *Manager) WithHubAccessGrants(store *hubaccess.Store, platformDefault bool) *Manager {
+	m.hubAccess = store
+	m.hubAccessPlatformDefault = platformDefault
 	return m
 }
 
@@ -414,6 +430,15 @@ func (h *Handler) requireTenantContext(w http.ResponseWriter, r *http.Request, r
 			return tenant.TenantContext{}, false
 		}
 	}
+	if !requireWorkspace {
+		// Org-scope route: the caller's role is their ORG role. tc.Role is
+		// the role of whichever (org, workspace) pair the headers name, so a
+		// workspace admin sending X-Faros-Workspace would otherwise pass every
+		// org-admin gate — add or promote org members, rename or delete the
+		// org, list every workspace. Handlers read the returned tc.Role, so
+		// rewrite it here once for all of them.
+		tc.Role = tc.OrgRole
+	}
 	if requireAdmin && tc.Role != tenancyv1alpha1.MembershipRoleAdmin {
 		writeStatus(w, http.StatusForbidden, "Forbidden", "this endpoint requires admin role")
 		return tenant.TenantContext{}, false
@@ -556,6 +581,21 @@ func (m *Manager) upsertUMIEntry(ctx context.Context, userName string, want tena
 		idx.Spec.Entries = append(idx.Spec.Entries, want)
 		return true
 	})
+}
+
+// workspaceRoleOf returns the user's live workspace-scope role in (org, ws)
+// from their UMI, and whether they hold one.
+func (m *Manager) workspaceRoleOf(ctx context.Context, userName, orgUUID, wsUUID string) (string, bool) {
+	idx, err := m.client.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
+	if err != nil {
+		return "", false
+	}
+	for _, e := range idx.Spec.Entries {
+		if e.OrgUUID == orgUUID && e.WorkspaceUUID == wsUUID && e.SoftDeletedAt == nil && e.Role != "" {
+			return e.Role, true
+		}
+	}
+	return "", false
 }
 
 // removeUMIEntry drops the (orgUUID, wsUUID) row from the user's UMI.

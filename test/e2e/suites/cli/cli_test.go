@@ -314,6 +314,28 @@ func TestMembershipCommands(t *testing.T) {
 	b.mustFail("403", "workspace", "members", "set-role", bUser, "admin")
 
 	a.run("workspace", "members", "set-role", bUser, "admin", "--org", team.UUID, "--workspace", platform.UUID)
+
+	// Regression for the org-admin escalation: B is now admin of the Platform
+	// workspace but only a member of the org. Sending the workspace header on
+	// an org route must not let B act as an org admin — neither promote
+	// themselves nor add anyone.
+	wsHeaders := map[string]string{"X-Faros-Org": team.UUID, "X-Faros-Workspace": platform.UUID}
+	orgMembersURL := hubURL + "/api/orgs/" + team.UUID + "/memberships"
+	if code, body, err := framework.DoRESTRequest(context.Background(), "POST", orgMembersURL, tokenB, wsHeaders,
+		map[string]any{"user": bUser, "role": "admin"}); err != nil || code != 403 {
+		t.Fatalf("workspace admin self-promotion to org admin: got %d %s (%v), want 403", code, body, err)
+	}
+	if code, body, err := framework.DoRESTRequest(context.Background(), "PATCH", orgMembersURL+"/"+bUser, tokenB, wsHeaders,
+		map[string]any{"role": "admin"}); err != nil || code != 403 {
+		t.Fatalf("workspace admin PATCH of own org role: got %d %s (%v), want 403", code, body, err)
+	}
+	a.runJSON(&members, "org", "members", "--org", team.UUID)
+	for _, m := range members {
+		if m.User == bUser && m.Role != "member" {
+			t.Fatalf("B's org role changed to %q", m.Role)
+		}
+	}
+
 	a.run("workspace", "members", "remove", bUser, "--org", team.UUID, "--workspace", platform.UUID, "--yes")
 	a.runJSON(&wsMembers, "workspace", "members", "--org", team.UUID, "--workspace", platform.UUID)
 	if len(wsMembers) != 1 {

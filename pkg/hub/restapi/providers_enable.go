@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -33,6 +34,9 @@ import (
 
 	"github.com/gorilla/mux"
 
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/hub/hubaccess"
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	"github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/util/identity"
@@ -45,6 +49,19 @@ import (
 // and surfaces the mismatch to the user.
 type EnableProviderRequest struct {
 	AcceptedClaims []AcceptedClaim `json:"acceptedClaims"`
+	// AcceptedHubAccess lists the hub capabilities (CatalogEntry.spec.hubAccess)
+	// the user accepted. Each must be declared by the provider. Accepting an
+	// org-scoped capability requires an org admin; a workspace-scoped one, an
+	// admin of this workspace or of the org. Omitted capabilities are not
+	// granted, and the decision is recorded either way.
+	AcceptedHubAccess []AcceptedHubAccess `json:"acceptedHubAccess,omitempty"`
+}
+
+// AcceptedHubAccess identifies one accepted hub capability by its declared
+// (capability, scope). Limits come from the provider's declaration.
+type AcceptedHubAccess struct {
+	Capability string `json:"capability"`
+	Scope      string `json:"scope"`
 }
 
 // AcceptedClaim identifies one permission claim the user accepted in
@@ -61,6 +78,8 @@ type AcceptedClaim struct {
 // can use it unchanged.
 type EnableProviderResponse struct {
 	BindingName string `json:"bindingName"`
+	// HubAccess is what was granted, when the provider declares any.
+	HubAccess []AcceptedHubAccess `json:"hubAccess,omitempty"`
 }
 
 // enableProvider handles POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable.
@@ -132,6 +151,15 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		accepted[acceptedKey(c.Group, c.Resource)] = true
 	}
 
+	// Hub access: every accepted capability must be declared, and the caller
+	// must be allowed to accept it. Checked before anything is created so a
+	// refused acceptance leaves the workspace untouched.
+	acceptedHubAccess, status, msg := resolveAcceptedHubAccess(prov.HubAccess, req.AcceptedHubAccess, tc.Role, tc.OrgRole)
+	if status != 0 {
+		writeStatus(w, status, http.StatusText(status), msg)
+		return
+	}
+
 	claims := make([]kcp.ProviderClaim, 0, len(prov.PermissionClaims))
 	for _, declared := range prov.PermissionClaims {
 		claims = append(claims, kcp.ProviderClaim{
@@ -190,9 +218,90 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Record the hub-access decisions this caller is entitled to make: each
+	// capability they may decide is accepted (ticked) or declined (not); the
+	// ones they may not decide keep whatever was decided before, or stay
+	// undecided. A provider that declares no hub access gets any stale grant
+	// removed.
+	resp := EnableProviderResponse{BindingName: providerName}
+	if h.mgr.hubAccess != nil {
+		key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
+		if len(prov.HubAccess) > 0 {
+			grant, err := h.mgr.hubAccess.Record(r.Context(), key, func(prev *tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+				return mergeHubAccessDecisions(prov.HubAccess, acceptedHubAccess, prev, tc.Role, tc.OrgRole)
+			}, tc.User)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			if grant != nil {
+				for _, g := range grant.Spec.Capabilities {
+					resp.HubAccess = append(resp.HubAccess, AcceptedHubAccess{Capability: g.Capability, Scope: g.Scope})
+				}
+			}
+		} else if err := h.mgr.hubAccess.Delete(r.Context(), key); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(EnableProviderResponse{BindingName: providerName})
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// resolveAcceptedHubAccess validates the capabilities a user accepted against
+// what the provider declares and what the user may decide, and returns the
+// accepted set keyed "capability/scope". A non-zero status refuses the request.
+func resolveAcceptedHubAccess(declared []providersv1alpha1.ProviderHubAccess, accepted []AcceptedHubAccess, wsRole, orgRole string) (map[string]bool, int, string) {
+	out := make(map[string]bool, len(accepted))
+	for _, a := range accepted {
+		req := hubaccess.Requirement{
+			Capability: providersv1alpha1.ProviderHubCapability(a.Capability),
+			Scope:      providersv1alpha1.ProviderHubAccessScope(a.Scope),
+		}
+		d, ok := hubaccess.Declared(declared, req)
+		if !ok {
+			return nil, http.StatusBadRequest, fmt.Sprintf("hub access %s (%s scope) is not declared by this provider", a.Capability, a.Scope)
+		}
+		if !hubaccess.MayDecide(d.Scope, wsRole, orgRole) {
+			if d.Scope == providersv1alpha1.HubAccessScopeOrg {
+				return nil, http.StatusForbidden, fmt.Sprintf("accepting %s (org scope) requires an organization admin", a.Capability)
+			}
+			return nil, http.StatusForbidden, fmt.Sprintf("accepting %s (workspace scope) requires a workspace or organization admin", a.Capability)
+		}
+		out[a.Capability+"/"+a.Scope] = true
+	}
+	return out, 0, ""
+}
+
+// mergeHubAccessDecisions combines this caller's choices with the stored
+// grant. For every declared capability the caller may decide, it is accepted
+// when ticked and declined when not. A capability the caller may not decide
+// keeps its previous decision — so a workspace admin enabling a provider never
+// overturns (or, by leaving it unticked, "declines") something only an org
+// admin can decide; it stays undecided until one does.
+func mergeHubAccessDecisions(declared []providersv1alpha1.ProviderHubAccess, accepted map[string]bool, prev *tenancyv1alpha1.Grant, wsRole, orgRole string) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+	var outAccepted []tenancyv1alpha1.GrantedCapability
+	var outDeclined []tenancyv1alpha1.CapabilityRef
+	for _, d := range declared {
+		ref := tenancyv1alpha1.CapabilityRef{Capability: string(d.Capability), Scope: string(d.Scope)}
+		if hubaccess.MayDecide(d.Scope, wsRole, orgRole) {
+			if accepted[ref.Capability+"/"+ref.Scope] {
+				outAccepted = append(outAccepted, hubaccess.FromDeclaration(d))
+			} else {
+				outDeclined = append(outDeclined, ref)
+			}
+			continue
+		}
+		switch decision, entry := hubaccess.Decide(prev, hubaccess.Requirement{Capability: d.Capability, Scope: d.Scope}); decision {
+		case hubaccess.Accepted:
+			outAccepted = append(outAccepted, entry)
+		case hubaccess.Declined:
+			outDeclined = append(outDeclined, ref)
+		}
+	}
+	return outAccepted, outDeclined
 }
 
 func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []providers.Dependency) ([]string, error) {
@@ -255,6 +364,17 @@ func (h *Handler) disableProvider(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "remove edge-proxy grant: "+err.Error())
 		return
 	}
+	// The binding is per name, so drop the hub-access grant of whichever copy
+	// (platform or this Org's own) held it.
+	if h.mgr.hubAccess != nil {
+		for _, owner := range []string{"", tc.OrgUUID} {
+			key := hubaccess.GrantKey{OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID, Provider: providerName, ProviderOrgUUID: owner}
+			if err := h.mgr.hubAccess.Delete(r.Context(), key); err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+		}
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -295,12 +415,28 @@ type EnabledProviderDetail struct {
 	// provider's API surface) remains live until that finishes, so the portal
 	// must render this as "disabling", not as enabled or disabled.
 	Terminating bool `json:"terminating,omitempty"`
+	// HubAccess reports the provider's hub capabilities in this workspace:
+	// which are in force and which it declares but nobody accepted yet.
+	// Absent when the provider declares none.
+	HubAccess *HubAccessState `json:"hubAccess,omitempty"`
 	// DeletionBlocked is kcp's explanation of what is holding a terminating
 	// binding open — e.g. "Some content in the workspace has finalizers
 	// remaining: <finalizer> in 3 resource instances". A binding in this state
 	// never finishes disabling on its own; whoever owns the named finalizer has
 	// to act, and this message is the only place the user learns that.
 	DeletionBlocked string `json:"deletionBlocked,omitempty"`
+}
+
+// HubAccessState is one provider's hub-access standing in a workspace.
+type HubAccessState struct {
+	// Granted are the capabilities in force (declared and accepted).
+	Granted []AcceptedHubAccess `json:"granted,omitempty"`
+	// Pending are declared capabilities nobody has accepted: new in the
+	// provider's catalog entry, or declined. Re-enabling offers them again.
+	Pending []AcceptedHubAccess `json:"pending,omitempty"`
+	// Implicit is true when at least one granted capability is in force only
+	// through the platform default (nobody entitled to decide it has yet).
+	Implicit bool `json:"implicit,omitempty"`
 }
 
 // StaleClaim describes one mispointed claim in terms the portal can render
@@ -403,6 +539,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			StaleClaims:     staleClaimsFor(stale[provider], binding.SelfHosted),
 			Terminating:     binding.Terminating,
 			DeletionBlocked: binding.DeletionBlocked,
+			HubAccess:       h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -411,4 +548,36 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		BindingNamesByProvider: names,
 		BindingsByProvider:     details,
 	})
+}
+
+// hubAccessState reports what the hub-access gate will allow the provider
+// bound under name in this workspace. Best-effort: a read failure omits it.
+func (h *Handler) hubAccessState(ctx context.Context, orgUUID, wsUUID, name string) *HubAccessState {
+	if h.mgr.hubAccess == nil || h.mgr.providers == nil {
+		return nil
+	}
+	prov, ok := h.mgr.providers.GetForOrg(orgUUID, name)
+	if !ok || len(prov.HubAccess) == 0 {
+		return nil
+	}
+	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Reading provider hub-access grant", "org", orgUUID, "workspace", wsUUID, "provider", name)
+		return nil
+	}
+	state := &HubAccessState{}
+	for _, d := range prov.HubAccess {
+		entry := AcceptedHubAccess{Capability: string(d.Capability), Scope: string(d.Scope)}
+		_, ok, byDefault := hubaccess.Allowed(grant, d, prov.OrgUUID == "", h.mgr.hubAccessPlatformDefault)
+		switch {
+		case ok:
+			state.Granted = append(state.Granted, entry)
+			if byDefault {
+				state.Implicit = true
+			}
+		default:
+			state.Pending = append(state.Pending, entry)
+		}
+	}
+	return state
 }
