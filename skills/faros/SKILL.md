@@ -88,8 +88,40 @@ call. `MCP_TOKEN` is a long-lived ServiceAccount token.
 
 ## 2. Get connected
 
-Install: `kubectl krew index add faros https://github.com/faroshq/krew-index.git && kubectl krew install faros/faros`,
-`go install github.com/faroshq/faros/cmd/faros@latest`, or a release binary.
+**Check for the CLI first.** Everything below assumes `faros` is on `PATH`.
+`command not found: faros` (or `command -v faros` printing nothing) means it
+is not installed, not that the hub is down. Install it with the curl
+installer, which needs only `curl`, `tar` and `uname` and no sudo:
+
+```bash
+command -v faros >/dev/null || curl -fsSL https://downloads.faros.sh/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"       # the installer's default INSTALL_DIR; add to the shell profile too
+faros version
+```
+
+`FAROS_VERSION=vX.Y.Z` pins a release; `INSTALL_DIR=/usr/local/bin sudo -E sh`
+installs system-wide. Alternatives, when those tools are already present:
+`kubectl krew index add faros https://github.com/faroshq/krew-index.git && kubectl krew install faros/faros`
+(then `kubectl faros …` or `faros …`), `go install github.com/faroshq/faros/cmd/faros@latest`
+(Go 1.26+), or the release tarball `kubectl-faros_<Linux|Darwin>_<x86_64|aarch64|arm64>.tar.gz`
+from `https://github.com/faroshq/faros/releases`, which unpacks a binary
+named `kubectl-faros`: rename it to `faros`. Windows gets
+`kubectl-faros_Windows_<x86_64|arm64>.zip`; the installer script is Linux and macOS only.
+
+**No way to install anything.** The hub is plain HTTPS, so every CLI
+command has a curl equivalent once you hold a bearer; the CLI is only the
+convenient way to get one. On a static-token hub, `POST $HUB/auth/token-login`
+with `Authorization: Bearer <token>` and an empty body provisions your
+user and returns a kubeconfig (`.kubeconfig`, base64 in the JSON), and the same token is your
+`TOKEN` for every `fc` call. On an OIDC hub there is no browser-free login:
+ask someone with the CLI for a workspace service-account token
+(`POST …/serviceaccounts/{uuid}/tokens`, [references/access.md](references/access.md)
+section 6), which works on hub REST, kube REST and MCP, or for the
+workspace MCP connect token, which works on the MCP endpoint only and sees
+no org-owned provider tools. Org, workspace and cluster IDs then come from
+`GET $HUB/api/orgs` and `GET $HUB/api/orgs/$ORG/workspaces` instead of
+`faros env`.
+
 `faros login` writes a kubeconfig context `faros` pointing at
 `<hub>/clusters/<clusterName>`; OIDC logins cache tokens in
 `~/.config/faros/tokens/`. `faros use --org <o> --workspace <w>` switches

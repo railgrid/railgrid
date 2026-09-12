@@ -27,23 +27,52 @@ published as a provider skill.
 
 ## Install
 
-Claude Code (per project; `.claude/` is gitignored in this repo, so link it):
+The skill is this directory: `SKILL.md` plus `references/`. Keep the two
+together; `SKILL.md` links into `references/`. Nothing is hosted anywhere
+else: every install path below reads this repository.
 
-```bash
-mkdir -p .claude/skills && ln -s ../../skills/faros .claude/skills/faros
-# or globally
-mkdir -p ~/.claude/skills && ln -s "$PWD/skills/faros" ~/.claude/skills/faros
+### Claude Code
+
+The repository is a plugin marketplace (`.claude-plugin/marketplace.json`)
+with one plugin, `faros`, whose root is this directory:
+
+```
+/plugin marketplace add faroshq/faros
+/plugin install faros@faros
 ```
 
-Codex: reference it from your `AGENTS.md`, or copy the directory into
-`~/.codex/skills/faros` if your Codex build loads skills from there.
+or from a shell, `claude plugin marketplace add faroshq/faros && claude plugin install faros@faros`.
+Update later with `/plugin update faros@faros`. To load it without the
+plugin system, copy the directory to `.claude/skills/faros` (one project) or
+`~/.claude/skills/faros` (every project); `.claude/` is gitignored here, so
+inside this repo use a symlink: `ln -s ../../skills/faros .claude/skills/faros`.
 
-Cursor and others: point a rule at `skills/faros/SKILL.md`, or paste it into
-the project instructions. The references are plain markdown.
+### Codex
 
-Inside App Studio: a project can ship it as
-`.agents/skills/faros/SKILL.md`; the references directory travels as
-package resources.
+Codex reads `.agents/skills/<name>/SKILL.md` at the repository root and
+`~/.agents/skills/<name>/SKILL.md` for the user. This repository ships
+`.agents/skills/faros` as a symlink to this directory, so Codex picks the
+skill up as soon as you open the repo. For another project or for every
+project:
+
+```bash
+git clone --depth 1 https://github.com/faroshq/faros /tmp/faros
+cp -r /tmp/faros/skills/faros .agents/skills/faros      # this project
+cp -r /tmp/faros/skills/faros ~/.agents/skills/faros    # all projects
+```
+
+Codex's bundled `$skill-installer` can also fetch it; give it
+`https://github.com/faroshq/faros/tree/main/skills/faros`.
+
+### Cursor and others
+
+Point a rule at `skills/faros/SKILL.md`, or paste it into the project
+instructions. The references are plain markdown.
+
+### Inside App Studio
+
+A project can ship it as `.agents/skills/faros/SKILL.md`; the references
+directory travels as package resources.
 
 ## Keeping it honest
 

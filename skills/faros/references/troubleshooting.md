@@ -8,6 +8,11 @@ Exact strings are in backticks; `…` marks elided detail.
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `command not found: faros` / `faros: not found` | The CLI is not installed; nothing to do with the hub | `curl -fsSL https://downloads.faros.sh/install.sh \| sh` (SKILL.md section 2); krew, `go install` or the release tarball otherwise |
+| Installer prints `Installed faros …` but `faros` still isn't found | `~/.local/bin` (the default `INSTALL_DIR`) is not on `PATH` | `export PATH="$HOME/.local/bin:$PATH"` in this shell and the profile, or reinstall with `INSTALL_DIR=/usr/local/bin sudo -E sh` |
+| Installer: `missing required tool: curl\|tar\|uname`, `unsupported OS: …`, `unsupported architecture: …` | The host lacks a prerequisite, or the script doesn't cover it (Linux and Darwin only; x86_64, aarch64/arm64, ppc64le) | Install the tool; on Windows unpack `kubectl-faros_Windows_<arch>.zip` from the releases page; otherwise skip the CLI and use raw REST with a token (SKILL.md section 2, "No way to install anything") |
+| Installer: `could not resolve latest release tag from GitHub` | `api.github.com` unreachable or rate-limited | Set `FAROS_VERSION=vX.Y.Z` so no lookup is needed |
+| `kubectl faros` works but `faros` doesn't (or vice versa) | krew installs the plugin as `kubectl-faros` only; the curl installer installs `faros` only | Either name runs the same binary; symlink one to the other if a script needs it |
 | `no hub configured` | No hub URL | `--hub-url` or `FAROS_HUB_URL` |
 | `no interactive terminal; pass --org and --workspace` | CI / no TTY | Pass both flags to `faros use` |
 | `… (token missing or expired; run 'faros login')` | 401 from the hub; OIDC token expired | `faros login`; re-run `eval "$(faros env)"` for a fresh `TOKEN` |

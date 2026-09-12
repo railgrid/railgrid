@@ -1,0 +1,18 @@
+{
+  "name": "faros",
+  "owner": {
+    "name": "faroshq",
+    "url": "https://github.com/faroshq"
+  },
+  "metadata": {
+    "description": "Skills for using faros from Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "faros",
+      "source": "./skills/faros",
+      "description": "Drive a faros hub as a user: faros CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
+      "category": "productivity"
+    }
+  ]
+}

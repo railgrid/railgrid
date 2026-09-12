@@ -5,7 +5,16 @@ Source citations are repo-relative paths in the faros repository.
 ## 1. CLI command tree
 
 Binary `faros`; krew installs `kubectl-faros`, so `kubectl faros <cmd>` is
-equivalent. Two global flags: `--kubeconfig <path>` (default `$KUBECONFIG`,
+equivalent. Install paths (source: `install.sh`, `.goreleaser.yml`):
+`curl -fsSL https://downloads.faros.sh/install.sh | sh` (latest GitHub
+release, or `FAROS_VERSION`; into `INSTALL_DIR`, default `~/.local/bin`;
+downloads from `downloads.faros.sh/cli/faros/<tag>/` and falls back to the
+GitHub release asset), krew from `github.com/faroshq/krew-index`,
+`go install github.com/faroshq/faros/cmd/faros@latest`, or the tarball
+`kubectl-faros_<OS>_<arch>.tar.gz` named after `uname -s`/`uname -m`
+(`Linux_x86_64`, `Linux_aarch64`, `Linux_ppc64le`, `Darwin_x86_64`,
+`Darwin_arm64`; Windows ships `.zip` for `x86_64` and `arm64`) with a `kubectl-faros_<version>_checksums.txt` beside it.
+`faros version` prints the build tag. Two global flags: `--kubeconfig <path>` (default `$KUBECONFIG`,
 else `~/.kube/config`) and `--insecure-skip-tls-verify`. `faros --help`
 groups commands (getting started, edges, organizations and access, developer
 workflow, agents/hub/dev); the generated per-command reference is

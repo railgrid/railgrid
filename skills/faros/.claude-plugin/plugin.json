@@ -1,0 +1,20 @@
+{
+  "name": "faros",
+  "displayName": "faros",
+  "version": "0.1.0",
+  "description": "Drive a faros hub as a user: faros CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
+  "author": {
+    "name": "faroshq",
+    "url": "https://github.com/faroshq"
+  },
+  "homepage": "https://github.com/faroshq/faros/tree/main/skills/faros",
+  "repository": "https://github.com/faroshq/faros",
+  "license": "Apache-2.0",
+  "keywords": [
+    "faros",
+    "kcp",
+    "mcp",
+    "app-studio",
+    "kubernetes"
+  ]
+}
