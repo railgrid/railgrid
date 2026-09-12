@@ -7,11 +7,20 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "test": "node --test src/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "test": "node --test src/*.test.mjs && vitest run",
+    "typecheck": "vue-tsc --noEmit"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.1.10",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0"
+  },
+  "dependencies": {
+    "lucide-vue-next": "^0.475.0",
+    "vue": "^3.5.13"
   }
 }

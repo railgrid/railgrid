@@ -2751,7 +2751,7 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
-.PHONY: codegen-linear-provider test-linear-provider lint-linear-provider fix-lint-linear-provider build-linear-provider build-linear-provider-portal
+.PHONY: test-linear-portal codegen-linear-provider test-linear-provider lint-linear-provider fix-lint-linear-provider build-linear-provider build-linear-provider-portal
 codegen-linear-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN)
 	@mkdir -p providers/linear/config/crds providers/linear/config/kcp providers/linear/deploy/chart/files/schemas
 	cd providers/linear && $(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && $(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." output:crd:artifacts:config=$(CURDIR)/providers/linear/config/crds
@@ -2763,6 +2763,8 @@ fix-lint-linear-provider: $(GOLANGCI_LINT)
 	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./...
 lint-linear-provider: $(GOLANGCI_LINT)
 	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run ./...
+test-linear-portal:
+	cd providers/linear/portal && npm run typecheck && npm test
 build-linear-provider-portal:
 	cd providers/linear/portal && npm ci --no-audit --no-fund && npm run build
 build-linear-provider: build-linear-provider-portal

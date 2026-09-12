@@ -19,6 +19,15 @@ data:
       ui:
         url: http://{{ include "linear.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
         indexPath: /
+        children:
+          - displayName: Connections
+            builtinRoute: connections
+          - displayName: Issues
+            builtinRoute: issues
+          - displayName: Operations
+            builtinRoute: operations
+          - displayName: Events
+            builtinRoute: events
       backend:
         url: http://{{ include "linear.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
         healthPath: /readyz

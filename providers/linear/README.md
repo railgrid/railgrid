@@ -145,3 +145,17 @@ and [webhook verification](https://linear.app/developers/webhooks).
 ## Brand asset
 
 `portal/public/icon.svg` is the unmodified `linear-icon.svg` from [Linear's official brand assets](https://linear.app/brand), downloaded 2026-09-12. It identifies the Linear integration; Linear owns the mark.
+
+## Portal resource pages
+
+The Linear portal uses shared Vue PortalKit resource layouts with Connections,
+Issues, Operations, and Events sections. Connection and issue creation use
+dedicated routes; issue details expose updates and comments. Credentials remain
+Secret references, and pending or uncertain operations link to their detail page
+without replaying writes. Namespace-qualified links use
+`namespaces/<namespace>/<resource-route>` so opening a detail in a new tab retains
+its namespace. On a fresh load, bare provider routes use the default namespace.
+
+Build with `make build-linear-provider-portal` and verify behavior and types with
+`make test-linear-portal`. The portal still registers `faros-provider-linear` and
+ships the classic-script `main.js` bundle. No backend API changes are required.

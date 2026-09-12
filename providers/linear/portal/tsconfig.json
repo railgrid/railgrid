@@ -13,7 +13,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["vite/client"]
+    "jsx": "preserve",
+    "types": ["vite/client"],
+    "baseUrl": "."
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts"]
 }

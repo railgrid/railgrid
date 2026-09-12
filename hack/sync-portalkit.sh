@@ -16,7 +16,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Vanilla-TS (string-building) portals + files.
 TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
-  "providers/linear/portal"
   "providers/quickstart/portal"
 )
 TS_FILES=(navigation.ts dashboardtile.ts faros-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
@@ -24,6 +23,7 @@ TS_FILES=(navigation.ts dashboardtile.ts faros-ui.css form-select.ts icons.ts ku
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
 VUE_PORTALS=(
+  "providers/linear/portal"
   "portal"
   "providers/agents/portal"
   "providers/app-studio/portal"
@@ -36,6 +36,7 @@ VUE_PORTALS=(
 VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
 VUE_TOAST_FILES=(InlineNotification.vue ToastHost.vue toast.ts)
 VUE_TOAST_PORTALS=(
+  "providers/linear/portal"
   "portal"
   "providers/app-studio/portal"
   "providers/code/portal"
