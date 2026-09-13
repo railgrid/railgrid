@@ -156,7 +156,7 @@ async function render(ctx: FarosContext, navigations: Navigation[] = []): Promis
 }
 
 async function clickText(wrapper: VueWrapper, text: string): Promise<void> {
-  const target = wrapper.findAll('button, a').find(candidate => candidate.text().trim() === text);
+  const target = wrapper.findAll('button, a').find(candidate => candidate.text().trim() === text || candidate.attributes('aria-label') === `${text} page`);
   expect(target, `control ${text}`).toBeTruthy();
   await target!.trigger('click');
   await flushPromises();

@@ -1,6 +1,6 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, type Component } from 'vue'
 import { Check, ChevronDown, Grid2X2, List } from 'lucide-vue-next'
 import { layoutModes, nextLayoutMenuIndex, type LayoutMode } from './layoutPreference'
 import { useAnchoredPopover } from './useAnchoredPopover'
@@ -8,8 +8,11 @@ import { useAnchoredPopover } from './useAnchoredPopover'
 const props = withDefaults(defineProps<{
   modelValue: LayoutMode
   ariaLabel?: string
+  gridLabel?: string
+  gridIcon?: Component
 }>(), {
   ariaLabel: 'Layout',
+  gridLabel: 'Grid',
 })
 
 const emit = defineEmits<{
@@ -31,7 +34,7 @@ const currentLabel = computed(() => labelFor(props.modelValue))
 const triggerLabel = computed(() => `${props.ariaLabel}: ${currentLabel.value}`)
 
 function labelFor(mode: LayoutMode): string {
-  return mode === 'grid' ? 'Grid' : 'List'
+  return mode === 'grid' ? props.gridLabel : 'List'
 }
 
 function menuItems(): HTMLButtonElement[] {
@@ -117,6 +120,8 @@ onMounted(() => {
   document.addEventListener('focusin', closeFromOutsideFocus)
 })
 
+onDeactivated(() => closeMenu());
+
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', closeFromOutsidePointer)
   document.removeEventListener('focusin', closeFromOutsideFocus)
@@ -136,7 +141,7 @@ onBeforeUnmount(() => {
       :aria-controls="menuID"
       @click="toggleMenu"
     >
-      <Grid2X2 v-if="modelValue === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
+      <component :is="gridIcon || Grid2X2" v-if="modelValue === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
       <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
       <ChevronDown class="k-layout-selector__chevron" :stroke-width="1.75" aria-hidden="true" />
     </button>
@@ -164,7 +169,7 @@ onBeforeUnmount(() => {
           tabindex="-1"
           @click="choose(mode)"
         >
-          <Grid2X2 v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
+          <component :is="gridIcon || Grid2X2" v-if="mode === 'grid'" class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
           <List v-else class="k-layout-selector__icon" :stroke-width="1.75" aria-hidden="true" />
           <span>{{ labelFor(mode) }}</span>
           <Check v-if="mode === modelValue" class="k-layout-selector__check" :stroke-width="1.75" aria-hidden="true" />

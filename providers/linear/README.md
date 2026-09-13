@@ -240,3 +240,24 @@ without a compatibility layer or data migration. Development installations
 using the previous schemas must recreate their disposable bindings/resources;
 never resubmit old Operation records as fresh commands. Credential Secrets
 retain their namespace and are referenced explicitly by the new Connection.
+
+## Factory integration in the portal
+
+Team issue boards, issue lists, and issue details discover whether Factory is
+bound to the current workspace before reading its published Task resources.
+When Factory is not enabled, a dismissible banner links to the workspace's
+provider catalog. Dismissal lasts for the browser session and is scoped to the
+workspace and user. Enablement and permissions remain owned by the host catalog.
+
+When enabled, the portal reads tasks in Factory's `default` namespace through
+the caller-scoped Kubernetes proxy. Links match the immutable Linear issue UUID,
+Connection name and UID, and team identity; a replaced Connection cannot inherit
+old task links. Task status links open Factory, while issue links continue to
+open Linear issue details. The detail section includes clarification, attempt
+count, repository, and a validated GitHub implementation PR link when available.
+
+The visible surface refreshes Factory state every 30 seconds and on explicit
+refresh, and cancels reads when leaving the view or changing workspace. Failed
+reads display an unavailable state rather than an enablement prompt. An empty
+task list is shown as no linked work, not proof of missing intake configuration:
+Factory does not currently publish an intake-configuration discovery API.

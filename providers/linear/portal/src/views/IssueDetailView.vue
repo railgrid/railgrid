@@ -5,13 +5,17 @@ import { useTask, useWriteTask } from '../state';
 import ResourcePage from '../portalkit/ResourcePage.vue';
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue';
 import StatusBadge from '../portalkit/StatusBadge.vue';
+import FactoryIntegration from '../components/FactoryIntegration.vue';
+import { useFactory } from '../useFactory';
 import IssueFields from '../components/IssueFields.vue';
 import TaskFeedback from '../components/TaskFeedback.vue';
 import PendingWrite from '../components/PendingWrite.vue';
 const props = defineProps<{ connection: string; id: string }>();
 const read = useTask(); const mutation = useWriteTask(() => writeKey('updateIssue', props.connection, props.id)); const commentsRead = useTask(); const commentTask = useWriteTask(() => writeKey('addComment', props.connection, props.id));
 const busy = computed(() => mutation.state.loading || commentTask.state.loading);
+const factoryRevision = ref(0);
 const issue = ref<Result>(); const comments = ref<Node[]>([]); const nextCursor = ref(''); const hasMore = ref(false);
+const factory = useFactory(() => ({ connection: props.connection, issue: issue.value?.id || props.id }), () => factoryRevision.value);
 const title = ref(''); const description = ref(''); const stateID = ref(''); const body = ref('');
 function load() {
   if (busy.value) return;
@@ -19,7 +23,7 @@ function load() {
     // Refresh the server snapshot without overwriting a local edit.
     if (title.value === (issue.value?.title || '')) title.value = result.title || '';
     if (description.value === (issue.value?.description || '')) description.value = result.description || '';
-    issue.value = result;
+    issue.value = result; factoryRevision.value++;
   });
 }
 function discard() {
@@ -63,6 +67,7 @@ onMounted(load);
     <template #status><StatusBadge v-if="issue?.state?.name" :status="issue.state.name" /></template>
     <div class="linear-detail-content">
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div><dt>Connection</dt><dd>{{ connection }}</dd></div><div><dt>Team</dt><dd>{{ issue?.team?.name || issue?.team?.id || '—' }}</dd></div><div><dt>Issue ID</dt><dd>{{ id }}</dd></div><div><dt>Updated</dt><dd>{{ issue?.updatedAt || '—' }}</dd></div></dl><p class="linear-prose">{{ issue?.description || 'No description.' }}</p></ResourceSectionCard>
+    <FactoryIntegration :integration="factory" detail />
     <ResourceSectionCard title="Update issue" description="Edit the current values. Emptying Description removes it; unchanged fields are preserved.">
       <TaskFeedback :task="mutation.state" />
       <PendingWrite :name="mutation.pending.value" :loading="busy" @resume="mutation.resume(updated)" @separate="mutation.separate" />

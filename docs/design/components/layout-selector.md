@@ -38,14 +38,19 @@ Click, Enter, and Space select. Closed ArrowDown/ArrowUp opens on the first or
 last item; open arrows wrap; Home/End jump; Escape closes and restores trigger
 focus. When Tab is pressed, the teleported menu closes and synchronously returns
 focus to its own trigger before native adjacent focus movement; focus is not
-trapped after that handoff. Pointer or focus movement outside closes the menu.
+trapped after that handoff. Deactivating a cached view closes its teleported
+menu. Pointer or focus movement outside closes the menu.
 `layoutPreference.ts` validates stored values, defaults to `grid`, and treats
 unavailable or failing browser storage as a non-fatal preference miss.
 
 ## Content
 
 The menu has a visible mono-uppercase `Layout` label. Grid and List are the only
-documented choices, and the trigger's accessible name includes the current mode.
+default choices, and the trigger's accessible name includes the current mode.
+For a board presentation, callers may set `gridLabel` (for example, `Board`)
+and `gridIcon`. These change presentation only; emitted values stay `grid` and
+`list`, and callers map them to their own saved preferences. Existing callers
+retain the Grid label and icon.
 
 ## Layout and responsive behavior
 

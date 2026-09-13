@@ -122,6 +122,7 @@ func (c *Client) Team(ctx context.Context, id string) (Team, error) {
 }
 
 type State struct {
+	Type string `json:"type,omitempty"`
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Team Team   `json:"team"`
@@ -165,7 +166,7 @@ type Comment struct {
 	Issue        Issue                `json:"issue"`
 }
 
-const issueFields = `id identifier title description url updatedAt team { id name key } state { id name }`
+const issueFields = `id identifier title description url updatedAt team { id name key } state { id name type }`
 const commentFields = `id body issueId parentId createdAt updatedAt editedAt url user{id name displayName} botActor{id type name subType} externalUser{id}`
 
 func pageVars(first int, after string) map[string]any {
@@ -193,7 +194,7 @@ func (c *Client) States(ctx context.Context, team string, first int, after strin
 	}
 	v := pageVars(first, after)
 	v["id"] = team
-	err := c.query(ctx, `query($id:String!,$first:Int!,$after:String){team(id:$id){states(first:$first,after:$after){nodes{id name team{id}} pageInfo{hasNextPage endCursor}}}}`, v, false, &d)
+	err := c.query(ctx, `query($id:String!,$first:Int!,$after:String){team(id:$id){states(first:$first,after:$after){nodes{id name type team{id}} pageInfo{hasNextPage endCursor}}}}`, v, false, &d)
 	return d.Team.States, err
 }
 func (c *Client) Issues(ctx context.Context, team, query, since string, first int, after string) (Page[Issue], error) {

@@ -45,7 +45,7 @@ async function render(ctx: FarosContext) {
   await flushPromises(); return wrapper;
 }
 async function click(w: VueWrapper, text: string) {
-  const button = w.findAll('button').find(b => b.text() === text);
+  const button = w.findAll('button').find(b => b.text() === text || b.attributes('aria-label') === `${text} page`);
   expect(button, `button ${text}`).toBeTruthy(); await button!.trigger('click'); await flushPromises();
 }
 async function choose(w: VueWrapper, id: string, label: string) {

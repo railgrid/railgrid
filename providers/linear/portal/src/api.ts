@@ -4,7 +4,7 @@ export type FarosContext = ProviderFetchContext & {
   tenant?: string; theme?: string; subPath?: string; basePath?: string;
   orgUUID?: string; workspaceUUID?: string; user?: { sub?: string; email?: string };
 };
-export type Node = { id: string; name?: string; key?: string; identifier?: string; title?: string; description?: string; body?: string; createdAt?: string; editedAt?: string; parentId?: string; user?: { name?: string; displayName?: string }; botActor?: { name?: string; type?: string }; externalUser?: { id: string }; url?: string; updatedAt?: string; team?: Node; state?: Node };
+export type Node = { id: string; type?: string; name?: string; key?: string; identifier?: string; title?: string; description?: string; body?: string; createdAt?: string; editedAt?: string; parentId?: string; user?: { name?: string; displayName?: string }; botActor?: { name?: string; type?: string }; externalUser?: { id: string }; url?: string; updatedAt?: string; team?: Node; state?: Node };
 export type Result = Partial<Node> & { nodes?: Node[]; pageInfo?: { hasNextPage: boolean; endCursor: string } };
 export type Resource = {
   metadata: { name: string; uid?: string; resourceVersion?: string; creationTimestamp?: string; deletionTimestamp?: string };

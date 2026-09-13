@@ -39,3 +39,33 @@ faros-provider-linear .linear-checkbox { display: flex; align-items: center; gap
 faros-provider-linear .linear-team-options { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
 faros-provider-linear .linear-team-options legend { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
 faros-provider-linear .linear-team-options span { overflow-wrap: anywhere; min-width: 0; }
+
+/* Linear workflow composition: shared controls retain their PortalKit styling. */
+faros-provider-linear .linear-issue-board { display: flex; gap: 16px; overflow-x: auto; padding: 4px 2px 16px; max-width: 100%; align-items: stretch; }
+faros-provider-linear .linear-issue-lane { flex: 1 0 260px; min-width: 0; max-width: 340px; background: var(--color-surface-base); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+faros-provider-linear .linear-issue-lane-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+faros-provider-linear .linear-issue-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border-default); border-radius: 4px; color: var(--color-text-primary); text-decoration: none; overflow-wrap: anywhere; }
+faros-provider-linear a.linear-issue-card[href]:hover { border-color: var(--color-accent); background: var(--color-surface-hover); }
+faros-provider-linear a.linear-issue-card[href]:focus-visible,
+faros-provider-linear .linear-issue-board:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+faros-provider-linear .linear-issue-identifier { font-family: var(--font-mono); color: var(--color-text-secondary); font-size: 12px; }
+faros-provider-linear .linear-issue-title { font-size: 13px; line-height: 1.5; }
+
+faros-provider-linear .linear-issue-search { display: grid; gap: 6px; }
+faros-provider-linear .linear-issue-toolbar { display: flex; align-items: flex-end; gap: 16px; }
+faros-provider-linear .linear-issue-query { flex: 1; min-width: 0; }
+faros-provider-linear .linear-issue-query > input { flex: 1 1 160px; min-width: 0; width: auto; }
+
+faros-provider-linear .linear-workflow-icon { flex: none; color: var(--color-text-secondary); }
+faros-provider-linear .linear-workflow-icon--active { color: var(--color-warning); }
+faros-provider-linear .linear-workflow-icon--complete { color: var(--color-success); }
+faros-provider-linear .linear-workflow-icon--triage { color: var(--color-accent); }
+faros-provider-linear .linear-issue-title { display: flex; align-items: baseline; gap: 6px; }
+faros-provider-linear .linear-issue-title > .linear-workflow-icon { align-self: flex-start; margin-top: 3px; }
+
+faros-provider-linear .linear-factory-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+faros-provider-linear .linear-factory-links { display: flex; flex-direction: column; gap: 8px; }
+faros-provider-linear .linear-factory-link { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--color-accent); font-size: 12px; overflow-wrap: anywhere; }
+faros-provider-linear .linear-issue-entry { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+faros-provider-linear .linear-factory-task { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+faros-provider-linear .linear-factory-task + .linear-factory-task { margin-top: 24px; }

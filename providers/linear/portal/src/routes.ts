@@ -29,3 +29,10 @@ export function canonicalPath(value: string): string { return routePath(parseRou
 export const resourcePath = (page: Collection, name: string) => `${page}/detail/${encode(name)}`;
 export const issuePath = (connection: string, id: string) => `issues/detail/${encode(connection)}/${encode(id)}`;
 export const authorityKey = (ctx: import('./api').FarosContext | null) => JSON.stringify([ctx?.basePath, ctx?.tenant, ctx?.orgUUID, ctx?.workspaceUUID, ctx?.user?.sub || ctx?.user?.email]);
+
+/** Preserve native modified-click navigation while routing ordinary clicks in Faros. */
+export function followResourceLink(event: MouseEvent, path: string, navigate: (path: string) => void): void {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  navigate(path);
+}

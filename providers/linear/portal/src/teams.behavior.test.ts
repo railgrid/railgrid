@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import App from './App.vue';
@@ -40,14 +40,19 @@ it('registers selected existing teams with pinned ownership and opens their issu
   await w.get('form').trigger('submit'); await flushPromises(); expect(f.teams.size).toBe(0);
   await w.get('input[value="eng"]').setValue(true); await click(w, 'Load more teams'); expect(w.text()).toContain('Design (DSN)');
   await w.get('#team-search').setValue('Design'); expect(w.find('input[value="eng"]').exists()).toBe(false);
-  await w.get('form').trigger('submit'); await settle();
+  await w.get('form').trigger('submit');
+  await vi.waitFor(() => expect(f.teams.size).toBe(1)); await settle();
   expect(f.teams.size).toBe(1); const team = [...f.teams.values()][0];
   expect(team.spec).toEqual({ connection: 'main', connectionUID: 'connection-uid', teamID: 'eng' });
   expect(team.metadata.ownerReferences[0].uid).toBe('connection-uid');
   expect(w.text()).toContain('ENG-1'); expect(w.find('#linear-connection').exists()).toBe(false);
   const issueRead = f.calls.find(call => call.body?.spec?.action === 'issues'); expect(issueRead?.body.spec).toMatchObject({ connection: 'main', teamID: 'eng' });
   await w.get('#linear-query').setValue('Team'); await w.get('form.linear-fields').trigger('submit'); await settle();
-  await click(w, 'ENG-1'); await w.get('a').trigger('click'); await settle();
+  const readsBeforeRefresh = f.calls.filter(c => c.body?.spec?.action === 'issues').length;
+  await click(w, 'Refresh'); await settle();
+  expect(f.calls.filter(c => c.body?.spec?.action === 'issues')).toHaveLength(readsBeforeRefresh + 1);
+  expect(f.calls.filter(c => c.body?.spec?.action === 'issues').at(-1)?.body.spec.query).toBe('Team');
+  await w.get('.linear-issue-card').trigger('click'); await flushPromises(); await w.get('a').trigger('click'); await settle();
   expect((w.get('#linear-query').element as HTMLInputElement).value).toBe('Team'); expect(f.calls.filter(c => c.body?.spec?.action === 'issues').at(-1)?.body.spec.query).toBe('Team');
   await click(w, 'Create issue'); expect(w.find('#linear-team').exists()).toBe(false); expect(w.text()).toContain('Creating in the selected Team');
   await click(w, 'Cancel'); expect(w.props('ctx')!.subPath).toBe('teams/detail/' + team.metadata.name);

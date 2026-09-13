@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import type { Resource } from '../api';
 import { useSession, useTask } from '../state';
+import RegisteredTeams from '../components/RegisteredTeams.vue';
 import ResourcePage from '../portalkit/ResourcePage.vue';
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue';
 import StatusBadge from '../portalkit/StatusBadge.vue';
@@ -33,7 +34,7 @@ onMounted(load);
     <div class="linear-detail-content">
     <TaskFeedback :task="deletion.state" />
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div v-for="[label, value] in facts" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl></ResourceSectionCard>
-    <ResourceSectionCard v-if="kind === 'connections' && resource" title="Teams"><p class="linear-page-meta">Register existing Linear teams to browse and manage their issues in Faros.</p><button class="k-btn k-btn--primary" @click="session.selection.connection = name; session.navigate('teams/create')">Add teams</button></ResourceSectionCard>
+    <RegisteredTeams v-if="kind === 'connections' && resource" :connection="resource" />
     <button v-if="kind === 'connections' && session.draft.returnToIssue" class="k-btn k-btn--primary" @click="session.navigate('issues/create')">Return to issue draft</button>
     <ResourceSectionCard v-if="resource?.status?.result" title="Result"><pre class="linear-result">{{ JSON.stringify(resource.status.result, null, 2) }}</pre></ResourceSectionCard>
     </div>

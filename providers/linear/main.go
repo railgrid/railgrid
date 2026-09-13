@@ -62,7 +62,11 @@ func serve(ctx context.Context) error {
 	})
 	api := server.Server{Authority: auth, HubURL: os.Getenv("FAROS_HUB_URL"), Insecure: os.Getenv("FAROS_HUB_INSECURE") == "true"}
 	api.Routes(mux)
-	mux.Handle("/mcp", http.MaxBytesHandler(api.MCP(), 32768))
+	mcpHandler, err := api.MCP()
+	if err != nil {
+		return err
+	}
+	mux.Handle("/mcp", http.MaxBytesHandler(mcpHandler, 32768))
 	files, _, err := portalHandler()
 	if err != nil {
 		return err

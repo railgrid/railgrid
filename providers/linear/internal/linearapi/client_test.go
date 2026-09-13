@@ -221,3 +221,38 @@ func TestAddCommentReturnsAttributionMetadata(t *testing.T) {
 		t.Fatalf("comment attribution = %+v", comment)
 	}
 }
+
+func TestWorkflowCategoriesSurviveStateAndIssueReads(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(request.Query, "states(") {
+			if !strings.Contains(request.Query, "nodes{id name type team{id}}") {
+				t.Error("workflow category not requested")
+			}
+			_, _ = w.Write([]byte(`{"data":{"team":{"states":{"nodes":[{"id":"review","name":"Ready for QA","type":"started","team":{"id":"team"}}]}}}}`))
+		} else {
+			if !strings.Contains(request.Query, "state { id name type }") {
+				t.Error("issue workflow category not requested")
+			}
+			_, _ = w.Write([]byte(`{"data":{"issue":{"id":"issue","state":{"id":"review","name":"Ready for QA","type":"started"}}}}`))
+		}
+	}))
+	defer srv.Close()
+	client := New("test-key")
+	client.endpoint = srv.URL
+	states, err := client.States(context.Background(), "team", 25, "")
+	if err != nil || len(states.Nodes) != 1 || states.Nodes[0].Type != "started" {
+		t.Fatalf("states = %+v, %v", states, err)
+	}
+	issue, err := client.Issue(context.Background(), "issue")
+	if err != nil || issue.State.Type != "started" {
+		t.Fatalf("issue = %+v, %v", issue, err)
+	}
+}
