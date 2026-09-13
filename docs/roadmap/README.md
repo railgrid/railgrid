@@ -23,3 +23,4 @@ Conventions:
 | Document | Written | Summary |
 |---|---|---|
 | [provider-authoring-plan.md](provider-authoring-plan.md) | 2026-09-12 | Make creating and installing a provider as smooth as `helm install`: one embedded manifest, an SDK runtime, a library chart, a `faros provider` CLI group, and a first-class SaaS/BYO path. |
+| [console-url-slugs-prd.md](console-url-slugs-prd.md) | 2026-09-13 | Add immutable, human-readable organization and workspace URL slugs while retaining UUID identity, authorization, APIs, and provider context. |
