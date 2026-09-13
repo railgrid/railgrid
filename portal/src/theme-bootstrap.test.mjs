@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
 
 const index = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8')
 const bootstrap = fs.readFileSync(new URL('../public/theme-bootstrap.js', import.meta.url), 'utf8')
@@ -18,8 +19,8 @@ test('the browser color scheme resolves before portal CSS and stays synchronized
 
   assert.match(bootstrap, /scheme\.setAttribute\('content', d\)/)
   assert.match(bootstrap, /style\.colorScheme = d/)
-  assert.match(bootstrap, /scheme\.setAttribute\('content', 'dark'\)/)
-  assert.match(bootstrap, /style\.colorScheme = 'dark'/)
+  assert.match(bootstrap, /scheme\.setAttribute\('content', 'light'\)/)
+  assert.match(bootstrap, /style\.colorScheme = 'light'/)
   assert.doesNotMatch(bootstrap, /backgroundColor/)
 
   assert.match(
@@ -28,6 +29,43 @@ test('the browser color scheme resolves before portal CSS and stays synchronized
   )
   assert.match(themeStore, /document\.documentElement\.style\.colorScheme = resolved/)
   assert.doesNotMatch(themeStore, /backgroundColor/)
+})
+
+// Runs the real bootstrap against a stub document and reports what it applied.
+function runBootstrap({ stored, getItem, matchMedia } = {}) {
+  const meta = { content: 'light dark', setAttribute(_, v) { this.content = v } }
+  const html = { className: '', style: {} }
+  const window = {}
+  if (matchMedia !== undefined) window.matchMedia = matchMedia
+  vm.runInNewContext(bootstrap, {
+    window,
+    document: { documentElement: html, getElementById: () => meta },
+    localStorage: { getItem: getItem ?? (() => stored ?? null) },
+  })
+  assert.equal(html.style.colorScheme, html.className)
+  assert.equal(meta.content, html.className)
+  return html.className
+}
+
+const prefers = (dark) => () => ({ matches: dark })
+
+test('an unset or unreadable preference renders the light theme', () => {
+  assert.match(index, /<html lang="en" class="light">/)
+  assert.equal(runBootstrap({ matchMedia: prefers(true) }), 'light')
+  assert.equal(runBootstrap({ stored: 'bogus', matchMedia: prefers(true) }), 'light')
+  assert.equal(runBootstrap({ getItem: () => { throw new Error('denied') } }), 'light')
+  assert.equal(runBootstrap({ stored: 'system' }), 'light')
+  assert.equal(runBootstrap({ stored: 'system', matchMedia: () => { throw new Error('boom') } }), 'light')
+
+  assert.match(themeStore, /stored === 'system' \? stored : 'light'/)
+  assert.doesNotMatch(themeStore, /return 'dark'/)
+})
+
+test('an explicit preference still wins over the light default', () => {
+  assert.equal(runBootstrap({ stored: 'dark', matchMedia: prefers(false) }), 'dark')
+  assert.equal(runBootstrap({ stored: 'light', matchMedia: prefers(true) }), 'light')
+  assert.equal(runBootstrap({ stored: 'system', matchMedia: prefers(true) }), 'dark')
+  assert.equal(runBootstrap({ stored: 'system', matchMedia: prefers(false) }), 'light')
 })
 
 // The portal CSP is `script-src 'self'` with no 'unsafe-inline'

@@ -6,22 +6,22 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 const STORAGE_KEY = 'faros-theme'
 
 function getSystemTheme(): 'light' | 'dark' {
-  // Dark is the hard fallback (matches the CSS base) when matchMedia is
-  // unavailable or throws.
+  // Light is the hard fallback (matches index.html's `class="light"`) when
+  // matchMedia is unavailable or throws.
   try {
-    if (typeof window.matchMedia !== 'function') return 'dark'
+    if (typeof window.matchMedia !== 'function') return 'light'
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   } catch {
-    return 'dark'
+    return 'light'
   }
 }
 
 function readStoredMode(): ThemeMode {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark'
+    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'light'
   } catch {
-    return 'dark'
+    return 'light'
   }
 }
 
@@ -41,7 +41,7 @@ function applyTheme(resolved: 'light' | 'dark') {
 }
 
 export const useThemeStore = defineStore('theme', () => {
-  // No stored preference is deliberately dark. Following the OS remains an
+  // No stored preference is deliberately light. Following the OS remains an
   // explicit choice in the account menu (`system`), rather than an implicit
   // first-paint dependency.
   const mode = ref<ThemeMode>(readStoredMode())
@@ -56,10 +56,12 @@ export const useThemeStore = defineStore('theme', () => {
     applyTheme(resolved.value)
   }
 
+  // Starts from the default, so the first click always changes what renders
+  // (light → system would be a no-op on a light OS).
   function toggle() {
-    if (mode.value === 'dark') setMode('light')
-    else if (mode.value === 'light') setMode('system')
-    else setMode('dark')
+    if (mode.value === 'light') setMode('dark')
+    else if (mode.value === 'dark') setMode('system')
+    else setMode('light')
   }
 
   // Listen for system theme changes

@@ -17,10 +17,11 @@
 @source "../../../providers/infrastructure/portal/src/**/*.{vue,ts}";
 
 /*
- * Theme tokens — "Violet Circuit". DARK is the base (in @theme) and is what
- * renders in every degraded path (JS off, matchMedia missing). LIGHT is an
- * override applied by theme.ts toggling `html.light`. Exactly one of
- * `.light`/`.dark` is always set.
+ * Theme tokens — "Violet Circuit". DARK is the token base (in @theme); LIGHT
+ * is an override keyed on `html.light`. LIGHT is the default theme and what
+ * renders in every degraded path (JS off, matchMedia missing): index.html
+ * ships `class="light"` and the bootstrap/theme.ts fall back to it. Exactly
+ * one of `.light`/`.dark` is always set.
  *
  * The radius scale is deliberately sharpened: Tailwind's default --radius-*
  * values are overridden here so every scattered `rounded-md/lg/xl` utility in

@@ -1,7 +1,8 @@
 # Faros design knowledge base
 
-Violet Circuit is Faros's shared visual constitution: dark-first, sharp, dense,
-mono-heavy, and lit only where a state is alive. This directory is the
+Violet Circuit is Faros's shared visual constitution: light by default with a
+first-class dark theme, sharp, dense, mono-heavy, and lit only where a state is
+alive. This directory is the
 browsable authority. Use the navigation order below to distinguish an existing
 shared contract from composition guidance, vocabulary, and feature precedent.
 

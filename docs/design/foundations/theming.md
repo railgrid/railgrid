@@ -1,13 +1,14 @@
 ---
-{"schema":1,"id":"design.foundations.theming","title":"Theme and degraded-path mechanics","kind":"policy","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The pre-paint bootstrap, runtime theme store, standalone fallback styles, and fixed-dark Dex stylesheet preserve the dark-first contract."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/theming.md#theme-and-degraded-path-mechanics","role":"design"},{"path":"portal/index.html","role":"implementation"},{"path":"portal/src/stores/theme.ts","role":"implementation"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/dex/web/themes/dark/styles.css","role":"implementation"},{"path":"hack/dex/web/themes/light/styles.css","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[{"id":"design.foundations.colors","relation":"prerequisite","path":"docs/design/foundations/colors.md"},{"id":"design.foundations.provider-integration","relation":"see-also","path":"docs/design/foundations/provider-integration.md"}]}
+{"schema":1,"id":"design.foundations.theming","title":"Theme and degraded-path mechanics","kind":"policy","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The pre-paint bootstrap, runtime theme store, standalone fallback styles, and fixed-dark Dex stylesheet preserve the light-default contract."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/theming.md#theme-and-degraded-path-mechanics","role":"design"},{"path":"portal/index.html","role":"implementation"},{"path":"portal/src/stores/theme.ts","role":"implementation"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/dex/web/themes/dark/styles.css","role":"implementation"},{"path":"hack/dex/web/themes/light/styles.css","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[{"id":"design.foundations.colors","relation":"prerequisite","path":"docs/design/foundations/colors.md"},{"id":"design.foundations.provider-integration","relation":"see-also","path":"docs/design/foundations/provider-integration.md"}]}
 ---
 
 # Theme and degraded-path mechanics
 
 Exactly one of `html.dark` or `html.light` is always set for the portal and
-light-DOM provider surfaces. The pre-paint script in `portal/index.html`
-defaults to dark when preference is unset, and the runtime store in
-`portal/src/stores/theme.ts` cycles `dark → light → system`. No Tailwind `dark:`
+light-DOM provider surfaces. `portal/index.html` ships `class="light"`, the
+pre-paint script in `portal/public/theme-bootstrap.js` defaults to light when
+preference is unset or unreadable, and the runtime store in
+`portal/src/stores/theme.ts` cycles `light → dark → system`. No Tailwind `dark:`
 variant is used; theming is pure CSS-variable flipping. If a variant seems
 necessary, inspect the warning in `main.css` first.
 

@@ -9,13 +9,13 @@ micro-frontends, PortalKit, and the Dex login page. Its one-sentence character
 is near-black violet-tinted ground, hairline borders, sharp corners, dense
 mono-heavy type, and one violet accent that glows only on things that are alive.
 
-1. **Dark is the product.** The portal and provider themes use a dark base
-   (`@theme` in `portal/src/assets/main.css`) with an `html.light` override;
-   both are first-class and every supported component must hold up on both
-   grounds. Dex auth is a separate fixed-dark standalone surface, documented in
-   [theme mechanics](theming.md). Dark is the default and hard fallback in
-   every degraded portal/provider path (JavaScript off, `matchMedia` missing,
-   or storage errors).
+1. **Both themes are first-class.** The portal and provider themes use a dark
+   token base (`@theme` in `portal/src/assets/main.css`) with an `html.light`
+   override; every supported component must hold up on both grounds. Light is
+   the default and hard fallback in every degraded portal/provider path
+   (JavaScript off, `matchMedia` missing, or storage errors). Dex auth is a
+   separate fixed-dark standalone surface, documented in
+   [theme mechanics](theming.md).
 2. **Sharp, not soft.** The [radius law](geometry.md) separates this system
    from template-grade SaaS. Never reintroduce a softer radius for one card.
 3. **Glow means alive.** Light is a signal, not decoration. Only the active nav
