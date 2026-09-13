@@ -50,6 +50,9 @@ Exact strings are in backticks; `…` marks elided detail.
 | `faros sandbox exec` on `<project>-dev` → `… has no source revision; run 'faros sandbox sync …' first` | App Studio changed files but hasn't synced authoritatively yet | `faros app sync <p>`, retry. Don't `faros sandbox sync` an App Studio dev instance — it replaces App Studio's managed files |
 | Production build fails in `npm ci` with `EINTEGRITY … wanted sha512-… got sha512-…` after an assistant turn | The assistant's sandbox `npm install` never reached git and it hand-edited `package-lock.json` | Regenerate the lockfile locally (`npm install`), upload it (`PUT …/files/content`) or `faros commit` it |
 | Binary file 404s / serves the HTML fallback in the dev preview but works in production | The sandbox's dev agent doesn't list `base64` in `syncEncodings`; `sync-development` still reports `Synced` | Verify binaries in production; the provider's operator must roll the sandbox to an agent with base64 sync |
+| A file uploaded with `PUT files/content` 404s (or serves the HTML fallback) in dev **and** production; upload, commit and sync all succeeded | On `application`, the path is outside `web/` and `api/` (e.g. `public/…` at the repo root), so no component serves it | Upload to `web/public/<file>` (served at `/<file>`); on `simple-webapp` use `public/<file>` |
+| `turn.completed` says `completed` but the change is missing or unverified | Tool steps inside the turn failed; the turn status doesn't reflect them | Read `.payload.turn.failedItems` and `.failures[]` (`title`, `message`); `rejectedItems` are denied approvals (SKILL.md 4.4 B) |
+| Assistant turn never finishes, last event `approval.requested` | The approval mode asked (a promote, provisioning or a commit under `on_request`; everything under `always_ask`) | `POST …/turns/{turn}/approval {requestID, decision}`; don't switch to `never`, which denies every write |
 | `create-readiness` → `connection-missing` | No validated code `Connection` | Create one ([code.md](code.md)) |
 | Create → 409 `a code Repository named "<n>" already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name` | An explicit `name` is the repository name and is never suffixed | Adopt with `existingRepositoryRef`, pick another name, or delete the repo |
 | Create → `name must be a valid DNS label` | Explicit `name` is not a DNS label | Lowercase letters, digits, `-` |
@@ -88,7 +91,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | `file "<p>" is too large: N > M bytes` | 2 MiB text / 25 MiB binary per file; 48 MiB, 500 files per commit | Split the commit |
 | `unsupported encoding "<e>": use "utf-8" or "base64"` / `invalid base64 content` | Bad `files[].encoding` or non-canonical base64 (line breaks rejected) | Standard padded base64, one line |
 | `<paths>: binary file(s) not supported: the hub's code provider doesn't support binary files yet …` (`faros commit`) | `code__commit_files` does not declare `files[].encoding` | Drop the binaries from the change |
-| `HEAD does not contain origin/<branch> (it moved upstream); run 'git rebase origin/<branch>' first` | Upstream moved (e.g. the reconciler committed) | `git rebase origin/<branch>`, re-run |
+| `HEAD does not contain origin/<branch> (it moved upstream); run 'git rebase origin/<branch>' first` | Upstream moved: the assistant, the files route or the Code tab committed since you cloned | `git pull --rebase --autostash origin <branch>`, re-run |
 | `recorded <sha>, but origin/<branch>'s tree differs from your HEAD …` | Someone else committed, or a file mode was lost | Reconcile with `git rebase` |
 | Many `Failed` commits with identical messages | The reconciler sends a fresh commit after each `Failed` one (e.g. a rate limit resetting more than 15 min after `startedAt`, a scope error) | Read one commit's Ready condition message and fix that cause |
 
@@ -124,7 +127,10 @@ Exact strings are in backticks; `…` marks elided detail.
 | Private app → 401 `{"error":"invalid_token",…,"tokenEndpoint":…,"instance":{…}}` | Sent a raw hub token or an invalid/expired/other-app `fapp_` token | `POST <hub>/auth/apps/token` with those `instance` coordinates |
 | Private app → 403 `access_denied` | No grant for your account | Ask the owner to share (publishing grants) |
 | Private app → 502 `unavailable` | Gate cannot reach the hub (or hub URL is plain http) and no cached verdict | Retry; operator checks the gate's hub URL |
-| `POST /auth/apps/token` → 401 `invalid bearer token` | Not a hub user credential; ServiceAccount tokens (incl. the MCP connect token) are always refused | Use `$TOKEN` from `faros env` |
+| `POST /auth/apps/token` → 401 `invalid bearer token` | Not a hub user credential; ServiceAccount tokens (incl. the MCP connect token) are always refused | Use `$TOKEN` from `faros env`. For a job or worker there is no token: call the app's in-namespace Service ([infrastructure.md](infrastructure.md) §5 "Machine callers") |
+| A `cron-job`/`worker` gets 302 or 401 from a private/restricted app's URL | The gate admits only people | Call `http://<status.apiServiceRef.name>:<apiPort>` (application) or `http://<appServiceRef.name>:<port>` (simple-webapp) instead; authenticate the route in the app |
+| `cron-job` Instance `Ready`, but did it run? | Runs expose no status, logs or exit codes | Only indirect evidence: have each run write something the app shows; test the image locally first |
+| Need a secret in an `application`/`cron-job` container, no input for it | No template takes a Secret reference; `env` maps are world-readable | [infrastructure.md](infrastructure.md) §4 "Your own secrets" |
 | `POST /auth/apps/token` → 404 `instance has no published host` / 400 `malformed token request` | Not published / bad coordinates or `ttlSeconds` outside 60–900 | Publish first; fix the body |
 
 ### Agents
@@ -132,6 +138,7 @@ Exact strings are in backticks; `…` marks elided detail.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Agent run has no edge tools | Background run; only chat and channel runs get `edges__*` | Use chat/channel runs |
+| Agent output says `This is a private faros app … No content was fetched.` | The app is private/restricted; `web_fetch` is anonymous and stops at the gate's redirect to sign-in | Agents can't mint app tokens: publish the endpoint publicly or pass the data in `task` |
 | Agent MCP tools say "open the agents UI once" | Provider has not seen the workspace over the UI path yet | Open the Agents page once, retry |
 
 ## 2. Latency is not failure
@@ -147,6 +154,8 @@ Decide "not yet" vs "wrong" before acting.
 | Fresh project: repository `Provisioning` | Repository CR still being created | `.repository.ready` turns true |
 | RepositoryCommit `Running`, Ready reason `RateLimited` | Waiting for the GitHub reset | Condition message `GitHub rate limit; retrying in <N>s` |
 | Private URL returns 302 to `/auth/apps/authorize` | The gate wants a browser sign-in | Route and TLS are fine |
+| Anonymous 302 for 10–20 s right after `faros app publish --mode public` | The gate hasn't picked up the access change | `GET …/publishing` already says `public`; retry |
+| `faros app status` prints `Production:   - (promoted; the production instance has not reported yet, …)` | Project status lags the Instance by a few seconds | `kubectl get instance <p>-prod -o jsonpath='{.status.url}'` already has it |
 | `Instance` Ready but no `status.url` | **Not latency**: `exposure: internal` | `kubectl get template <t> -o jsonpath='{.spec.exposure}'` |
 
 Reference timeline for one App Studio project, measured on a dev hub
@@ -160,8 +169,10 @@ Reference timeline for one App Studio project, measured on a dev hub
 | `code__commit_files` → commit recorded | ~7 s |
 | commit → `promotable: true` | 3.2–4.5 min (first sample set) |
 | first promote → prod Ready | 1–1.5 min |
-| first promote → new hostname serves TLS | 0–9 min (thirteen runs: ~0, ~0, 2 m 30 s, 2 m 50 s, ~4, 4 m 10 s, ~5, 5 m 20 s, 5 m 30 s, ~7, 8 m 51 s) |
-| commit → `promotable: true` (second sample set, Node) | 2 m 45 s, 4 m 00 s, 4 m 40 s, 4 m 57 s, 5 m 01 s |
+| first promote → new hostname serves TLS | 0–9 min (runs: ~0, ~0, 2 m 01 s, 2 m 16 s, 2 m 30 s, 2 m 50 s, ~3, ~4, 4 m 10 s, ~5, 5 m 20 s, 5 m 30 s, ~7, 8 m 51 s) |
+| commit → `promotable: true` (second sample set, Node) | 2 m 45 s, 3 m 15 s, 3 m 51 s, 4 m 00 s, 4 m 40 s, 4 m 57 s, 5 m 01 s |
+| promote → prod Ready (third sample set) | ~10 s (simple-webapp), 27 s (application) |
+| assistant follow-up turn (one UI feature) | 58 s, committed 7 s later |
 | commit → `promotable: true` (Go, multi-arch Railpack under QEMU) | 8 m 10 s — `build.status: none` with your SHA the whole time |
 | promote → prod Ready (second sample set) | 42 s, 42 s, 50 s |
 | assistant turn end → reconciler commit | 5–15 s |

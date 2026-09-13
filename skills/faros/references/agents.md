@@ -151,6 +151,12 @@ Schedules: `POST /api/schedules` takes
   grant, no `edges__*` tools, no channel notification, detached from the HTTP
   request. `wait` is capped at 120 s; `PendingApproval` counts as settled
   for waiters.
+- `web_fetch` is anonymous. Its first line is `HTTP <code> <final URL>`, plus
+  `(redirected from <URL>)` after a redirect. A private or restricted faros
+  app answers with the access gate's redirect to `/auth/apps/authorize`;
+  `web_fetch` stops there and returns `This is a private faros app … No
+  content was fetched.` Agents can't mint app tokens (ServiceAccounts are
+  refused), so give an agent public endpoints only or pass the data in `task`.
 - Chat (`/chat`, the portal) and channel messages are **interactive** runs:
   interactive grant plus the aggregate MCP as `edges__<provider>__<tool>`
   (three segments), acting as the calling user.

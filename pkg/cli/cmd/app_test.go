@@ -82,6 +82,16 @@ func TestPrintAppStatus(t *testing.T) {
 		t.Fatalf("commits not newest first:\n%s", out)
 	}
 
+	// Right after a promote the binding exists but has not reported yet.
+	st = appStatus{Project: json.RawMessage(`{"name":"shop"}`), Promotion: json.RawMessage(`{"promotable":true,"build":{"status":"built"},"production":{}}`)}
+	buf.Reset()
+	if err := printAppStatus(&buf, st, now); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "promoted; the production instance has not reported yet") {
+		t.Fatalf("status:\n%s", buf.String())
+	}
+
 	st = appStatus{Project: json.RawMessage(`{"name":"shop"}`), PromotionError: "HTTP 503: busy"}
 	buf.Reset()
 	if err := printAppStatus(&buf, st, now); err != nil {
@@ -166,6 +176,33 @@ func TestAppCommands(t *testing.T) {
 	out, err = runRoot(t, path, "app", "promote", "shop", "--hostname-prefix", "shop")
 	if err != nil || promote.Values["expose"] == nil || !strings.Contains(out, "promoted shop to shop-prod (commit abc, rollout r1)") {
 		t.Fatalf("promote: %v values=%v out=%q", err, promote.Values, out)
+	}
+}
+
+// The POST answers before the production Instance reports the new mode; the
+// command re-reads the state instead of printing a stale "(not ready: Pending)".
+func TestAppPublishSettles(t *testing.T) {
+	oldTimeout, oldInterval := publishSettleTimeout, publishSettleInterval
+	publishSettleTimeout, publishSettleInterval = 2*time.Second, 10*time.Millisecond
+	defer func() { publishSettleTimeout, publishSettleInterval = oldTimeout, oldInterval }()
+
+	hub := newFakeHub(t)
+	path := hub.useKubeconfig("cl-b")
+	hub.handle("POST "+appStudioPrefix+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(w, map[string]any{"published": true, "publication": map[string]any{"mode": "public", "url": "https://shop.example.com", "ready": false, "phase": "Pending"}})
+	})
+	reads := 0
+	hub.handle("GET "+appStudioPrefix+"/shop/publishing", func(w http.ResponseWriter, _ *http.Request) {
+		reads++
+		writeTestJSON(w, map[string]any{"published": true, "publication": map[string]any{"mode": "public", "url": "https://shop.example.com", "ready": reads >= 2, "phase": "Ready"}})
+	})
+
+	out, err := runRoot(t, path, "app", "publish", "shop", "--mode", "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "not ready") || !strings.Contains(out, "shop: public  https://shop.example.com") || reads != 2 {
+		t.Fatalf("publish should settle on the ready state: reads=%d out=%q", reads, out)
 	}
 }
 

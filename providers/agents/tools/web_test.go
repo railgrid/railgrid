@@ -10,6 +10,8 @@ package tools
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -274,6 +276,56 @@ func TestFetchReturnBudget(t *testing.T) {
 				t.Fatalf("fetchReturnBudget(%d) = %d, want %d", tc.request, got, tc.want)
 			}
 		})
+	}
+}
+
+// A private faros app answers an anonymous request with a 302 to the hub's
+// sign-in. Following it used to return the portal's login page as the app's
+// own "HTTP 200", which a model read as a broken endpoint.
+func TestWebFetchReportsFarosSignIn(t *testing.T) {
+	hubHit := false
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hubHit = true
+		_, _ = w.Write([]byte("<title>Faros Portal</title>"))
+	}))
+	defer hub.Close()
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, hub.URL+farosAppSignInPath+"?name=shop-prod", http.StatusFound)
+	}))
+	defer app.Close()
+
+	got, err := webFetchWith(context.Background(), app.Client(), app.URL+"/api/summary", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "HTTP 302 "+app.URL+"/api/summary") {
+		t.Fatalf("want the gate's 302 for the requested URL, got %q", got)
+	}
+	if !strings.Contains(got, "private faros app") || strings.Contains(got, "Faros Portal") {
+		t.Fatalf("want a sign-in explanation instead of the portal page, got %q", got)
+	}
+	if hubHit {
+		t.Fatal("the sign-in redirect must not be followed")
+	}
+}
+
+func TestWebFetchReportsFinalURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/new", http.StatusMovedPermanently)
+			return
+		}
+		_, _ = w.Write([]byte("moved here"))
+	}))
+	defer srv.Close()
+
+	got, err := webFetchWith(context.Background(), srv.Client(), srv.URL+"/old", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "HTTP 200 " + srv.URL + "/new (redirected from " + srv.URL + "/old)\n\nmoved here"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

@@ -34,8 +34,14 @@ status:
   phase: Pending|Ready|Failed
   template, templateVersion, observedGeneration, message
   conditions: Valid (InvalidValues | TemplateNotFound), Ready, ResourcesReady, OIDCConfigured
-  url, host, ready, runtimeNamespace, components, outputs, controlSecretRef, dbConnectionSecretRef, redirectURL   # projected per template
+  url, host, ready, runtimeNamespace, runtimeRef, components, outputs, controlSecretRef, dbConnectionSecretRef, redirectURL   # projected per template
+  apiServiceRef, webServiceRef, databaseReady    # application: {name, namespace} of the in-namespace api/web Services
+  appServiceRef                                  # simple-webapp: its Service
 ```
+
+The `*ServiceRef` names are how other instances in the workspace reach an app
+without the access gate (section 5, "Machine callers"). A `cron-job` status
+has only `phase` and `runtimeRef`: no last-run time, exit code or logs.
 
 Printer columns: Template, Phase, Ready, URL, Age. Finalizer
 `instances.infrastructure.faros.sh/runtime`. Invalid values are admitted and
@@ -66,9 +72,9 @@ kubectl get template application -o jsonpath='{.spec.sampleValues}'
 | Template | Category | Exposure | Dev-capable | What it is |
 |---|---|---|---|---|
 | `simple-webapp` v0.3.0 | Workloads | public | yes (Node.js) | One container, one port, public URL. Values: `name`*, `image`* (prod), `port` (8080), `replicas` 1..10, `env` map, `connections {database, cache}`, `expose.hostnamePrefix`, `access public\|private`. Status: `url`, `host`, `ready`. |
-| `application` v0.1.0 | Workloads | public | yes (Node.js) | `web` + `api` + Postgres on one host; `/api/*` routed to the api container with the path preserved. Values: `name`*, `webImage`*, `apiImage`* (prod), `webPort`, `apiPort` (8080), `database {version "15"\|"16", size small\|medium\|large}` (immutable), `oidc {mode none\|byo}` (dev preview auth only), `access`, `expose.hostnamePrefix`. Contract: bind `0.0.0.0`, honor `$PORT`, api reads `DATABASE_URL` (`postgres://appuser:…@host:5432/appdb`, `sslmode=disable`), DB starts empty, retry first connect, frontend calls `/api/*` same-origin. |
+| `application` v0.1.0 | Workloads | public | yes (Node.js) | `web` + `api` + Postgres on one host; `/api/*` routed to the api container with the path preserved. Values: `name`*, `webImage`*, `apiImage`* (prod), `webPort`, `apiPort` (8080), `webEnv`/`apiEnv` maps, `webReplicas`/`apiReplicas`, `database {version "15"\|"16", size small\|medium\|large}` (immutable), `oidc {mode none\|byo}` (dev preview auth only), `access`, `expose.hostnamePrefix`. **No `connections`**: the api gets only its own `DATABASE_URL` (Secret `<name>-db-credentials`), so it can't use a `redis-cache`. Contract: bind `0.0.0.0`, honor `$PORT`, api reads `DATABASE_URL` (`postgres://appuser:…@host:5432/appdb`, `sslmode=disable`), DB starts empty, retry first connect, frontend calls `/api/*` same-origin. |
 | `worker` v0.2.0 | Workloads | internal | yes | Deployment only, no Service. `replicas` 1..5, `env`, `connections {database, cache}`. Dev component `worker` has sync/logs/restart but no `exec`. |
-| `cron-job` v0.2.0 | Workloads | internal | no | `name`*, `image`*, `schedule` (`"0 * * * *"` UTC), `env`, `connections {database, cache}`. **No `command`/`args`**: the entrypoint does the work; with a public image drive it via `env` (e.g. `node:20-alpine` + `NODE_OPTIONS=--import=data:text/javascript;base64,…`). |
+| `cron-job` v0.2.0 | Workloads | internal | no | `name`*, `image`*, `schedule` (`"0 * * * *"` UTC), `env`, `connections {database, cache}`. **No `command`/`args`**: the entrypoint does the work; with a public image drive it via `env` (e.g. `node:20-alpine` + `NODE_OPTIONS=--import=data:text/javascript;base64,…`: the default `node` command runs the preload, then exits on the empty stdin; use top-level `await` and `process.exit(code)`). **Runs are not observable**: no logs, run times or exit codes anywhere, so test locally and have each run write evidence you can read. |
 | `database` v0.1.0 | Databases | internal | no | Standalone Postgres. `name`* (≤ 50), `version "15"\|"16"` (immutable). Status: `host`, `port`, `ready`, `connectionSecretRef` → Secret `<name>-db-credentials` with `host/port/user/dbname/password/uri`. DB `appdb`, user `appuser`. Consumed via a workload's `connections.database`. |
 | `redis-cache` v0.2.0 | Databases | internal | no | Ephemeral Redis. `name`* (≤ 63), `size small(64Mi)\|medium(256Mi)\|large(1Gi)`, `version "6"\|"7"`. Secret `<name>-credentials`, key `uri` (`redis://:<pw>@<name>:6379`, no TLS). Consumed via `connections.cache`. |
 | `browser` v0.1.0 | Agent tools | optional | no | Headless Chromium + Playwright MCP, reached via data-plane `proxy` verb. |
@@ -78,10 +84,31 @@ kubectl get template application -o jsonpath='{.spec.sampleValues}'
 No bucket, secret, domain, or route templates exist. `env` maps are stored
 world-readable; never put secrets there.
 
+### Your own secrets
+
+No workload template takes a reference to a Secret you create: there is no
+`secretRef`/`envFrom`/`secretEnv` input, and `env`/`webEnv`/`apiEnv` are
+world-readable ConfigMaps. The only Secrets that reach a container are the
+platform's own: the `connections` slots below (`<name>-db-credentials`,
+`<name>-credentials`) and an `application` api's `<name>-db-credentials`.
+So for an app secret (an API key, a shared ingest token):
+
+- Keep it in the app's database and set it through an authenticated route
+  (for a private app, from your shell with an app token).
+- For a secret two workloads must share, derive it from a credential both
+  already receive: e.g. a `cron-job` with `connections.database: <app>-prod`
+  gets the same `DATABASE_URL` as the app's api, so both can compute
+  `HMAC-SHA256(db password, "<purpose>")`. It changes when that credential
+  does.
+
+Never put the value in `env`, a prompt or a commit.
+
 ### Connections
 
 `simple-webapp` (0.3.0), `worker` (0.2.0) and `cron-job` (0.2.0) take
-`connections` — fixed slots, not a list, default `{}` / `""`:
+`connections` — fixed slots, not a list, default `{}` / `""`. `application`
+does not. `connections.database` also accepts an `application` instance's
+name, because that instance's Secret `<name>-db-credentials` exists too:
 
 | Slot | Value | Injected env | From |
 |---|---|---|---|
@@ -134,13 +161,30 @@ world-readable ConfigMap); use the slot.
   of `instances/<name>/access`. Grants are a ClusterRole with two rules
   (the `instances/access` get, and kcp `access` on nonResourceURL `/`)
   plus a ClusterRoleBinding per user (`faros:<email>`). App Studio's
-  publishing routes write these for you.
+  publishing routes write these for you. Workspace admins pass the review
+  without a grant.
+- App Studio's `restricted` publishing mode is `access: private` at the gate
+  plus an invite-only policy recorded on the Project; the gate treats
+  `restricted` and `private` identically.
 - Changing `access` is an in-place patch; no redeploy.
+- **Machine callers.** Only people pass a `private` gate: a browser sign-in,
+  or a `fapp_` token (below) minted from a user's own hub JWT and valid for
+  ≤ 15 min. ServiceAccount tokens can't mint one, so a `cron-job`, `worker`,
+  CI job or hosted agent has no unattended way through the gate. Inside the
+  workspace it doesn't need one: all instances share the runtime namespace
+  `<clusterID>-default` (no NetworkPolicy between them), so a workload calls
+  the app's Service directly and never meets the gate:
+  `application` → `http://<name>-api:<apiPort>` / `http://<name>-web:<webPort>`
+  (`status.apiServiceRef` / `webServiceRef`), `simple-webapp` →
+  `http://<name>:<port>` (`status.appServiceRef`). Such routes are open to
+  every workload in the workspace, so authenticate them in the app. Hosted
+  agents run outside the workspace and can reach only public apps.
 
 ### App access tokens (programmatic access to private apps)
 
-A browser gets a 302 to `/auth/apps/authorize`; a program must trade its
-hub bearer **at the hub** for an app-bound token:
+A browser gets a 302 to `/auth/apps/authorize`; a program acting for a
+signed-in user trades that user's hub bearer **at the hub** for an app-bound
+token (unattended callers: "Machine callers" above):
 
 ```
 POST <hub>/auth/apps/token        Authorization: Bearer <hub token>

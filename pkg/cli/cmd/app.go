@@ -499,6 +499,11 @@ func printAppStatus(w io.Writer, st appStatus, now time.Time) error {
 			prod := "- (never promoted)"
 			if pr.Production != nil {
 				prod = fmt.Sprintf("%s  %s", formatStringOrDash(pr.Production.Phase), formatStringOrDash(pr.Production.URL))
+				if pr.Production.Phase == "" && pr.Production.URL == "" {
+					// The binding exists but its status trails the Instance by
+					// a few seconds after a promote; "-  -" read as a failure.
+					prod = "- (promoted; the production instance has not reported yet, re-run in a few seconds)"
+				}
 			}
 			printRow(tw, "Production:", prod)
 		}
@@ -770,6 +775,34 @@ func buildPromoteRequest(hostnamePrefix, commitSHA string) appPromoteRequest {
 	return req
 }
 
+// publishSettle bounds how long `app publish` re-reads the publishing state
+// after the POST. The POST answers before the production Instance reports the
+// new access mode, so its "(not ready: Pending)" was stale for an app that was
+// already serving. Variables so tests can shorten them.
+var (
+	publishSettleTimeout  = 15 * time.Second
+	publishSettleInterval = 2 * time.Second
+)
+
+// settlePublishing re-reads GET …/publishing until the publication is ready or
+// the timeout passes, and returns the latest view. Read errors keep the last
+// good view: the publish itself already succeeded.
+func settlePublishing(ctx context.Context, s *hubSession, name string, pub appPublishingView) appPublishingView {
+	deadline := time.Now().Add(publishSettleTimeout)
+	for pub.Publication != nil && !pub.Publication.Ready && time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return pub
+		case <-time.After(publishSettleInterval):
+		}
+		var next appPublishingView
+		if err := s.do(ctx, http.MethodGet, projectURL(s, name, "publishing"), nil, &next); err == nil {
+			pub = next
+		}
+	}
+	return pub
+}
+
 func newAppPublishCommand(target *hubTarget) *cobra.Command {
 	var mode, output string
 	cmd := &cobra.Command{
@@ -814,7 +847,11 @@ func newAppPublishCommand(target *hubTarget) *cobra.Command {
 			if mode != "private" && len(raw) > 0 {
 				var pub appPublishingView
 				if err := json.Unmarshal(raw, &pub); err == nil {
+					pub = settlePublishing(ctx, s, args[0], pub)
 					summary = publishingSummary(pub)
+					if mode == "public" && pub.Publication != nil && pub.Publication.Ready {
+						summary += "  (anonymous requests may still be redirected to sign-in for ~20s)"
+					}
 				}
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", args[0], summary)

@@ -294,7 +294,8 @@ current-turn images ≤ 20 MiB. Unbound drafts: 128 MiB and 64 per project.
 size, and a hint to call `import_attachment`); their bytes are never sent.
 
 Binding an attachment to a turn: send `contentParts` —
-`[{"type":"text","text":"Place it at public/logo.png"},{"type":"attachment","attachment":{id,filename,contentType,sizeBytes,sha256,createdAt}}]`
+`[{"type":"text","text":"Place it at web/public/logo.png"},{"type":"attachment","attachment":{id,filename,contentType,sizeBytes,sha256,createdAt}}]`
+(`web/public/` on `application`, `public/` on `simple-webapp`)
 with exactly those six fields copied from the upload receipt (`kind`,
 `draft`, `expiresAt` are rejected: `unknown attachment receipt field`). When
 `contentParts` is present the top-level `content` is ignored, so the
@@ -324,6 +325,38 @@ mode reply is an ordinary `agentMessage`. To list what the assistant did:
 ```bash
 sed -n 's/^data: //p' events.log | jq -r 'select(.type=="item.completed") | .payload.item | select(.type=="dynamicToolCall") | .data | [.status,.kind,.title,(.target|tostring)] | @tsv'
 ```
+
+`turn.completed` with `status: completed` is reported even when tool items
+inside the turn failed. The turn object (in `turn.completed` /
+`turn.failed` / `turn.interrupted` at `.payload.turn`, and in
+`GET …/threads/{t}/turns/{turn}`) carries the step outcome, each field
+omitted when zero:
+
+| Field | Counts |
+|---|---|
+| `failedItems` | tool items that ended failed |
+| `recoveredItems` | failures a linked retry repaired (not in `failedItems`) |
+| `rejectedItems` | steps whose approval was denied (their items read `failed`; not in `failedItems`) |
+| `failures` | up to 5 × `{itemID, title, category, message, referenceID}` |
+
+The detail route computes it from stored items, so it works for older turns
+too.
+
+Approval: the preference is per user and project (`GET|PATCH …/assistant/approval-mode`)
+and each turn reports it as `approvalMode`.
+
+| Mode | Reads, plans, questions | File edits | Runtime effects (`exec_command`, restart, env, `rebuild_project`, `agents__run_agent`) | `promote_project`, `infrastructure__provision` | Commits |
+|---|---|---|---|---|---|
+| `on_request` (default) | allow | allow | allow | ask | ask |
+| `always_ask` | allow | ask | ask | ask | ask |
+| `never` | allow | **deny** | **deny** | **deny** | **deny** |
+
+Under the default, a turn told to deploy pauses before `promote_project`
+until you answer. `never` is fail-closed, not "never prompt". An ask pauses the run and emits
+`approval.requested` (`.payload.requestID`, `.payload.interrupt`); answer with
+`POST …/turns/{turn}/approval {"requestID":…,"decision":"allow"|"deny"}`, and
+`approval.resolved` follows. `input.requested` / `…/input` works the same way
+for `ask_follow_up`.
 
 Turn statuses: `in_progress`, `completed`, `failed`, `interrupted`. A provider
 restart interrupts the active turn; resume from items plus the event stream.
@@ -415,6 +448,13 @@ GET   /api/projects/{p}/publishing/members               workspace members with 
 GET|POST /api/projects/{p}/publishing/grants             POST {user,invite?}   `user` is the stable platform User name (`user-xxxxx`, from members/memberships), not an email — 400 `user must be the stable platform User name; set invite to share with a new email`; `invite` = email pre-provisions a pending User
 POST  /api/projects/{p}/publishing/grants/{grant}        revoke
 ```
+
+`restricted` (aliases `members`, `private` in a POST) writes `access: private`
+plus the Project policy `shared` (invite-only). The gate enforces `restricted`
+and an unpublished `private` app identically: workspace admins and grant
+holders get in, nobody else, and no machine caller
+([infrastructure.md](infrastructure.md) section 5, "Machine callers").
+After `public`, anonymous requests can still get the 302 for 10–20 s.
 
 Mechanics: the prod instance's `spec.access` flips in place; the
 infrastructure access gate enforces it; invitations are a per-app

@@ -40,7 +40,11 @@ faros commit "$(faros app status shop -o json | jq -r .project.repository.ref)"
 faros sandbox exec shop-dev api -- node -e 'fetch("http://127.0.0.1:8080/api/health").then(r=>r.text()).then(console.log)'
 faros app promote shop --hostname-prefix shop   # once `faros app status` says promotable
 faros app publish shop --mode public
+faros app status shop                           # the Production: line is the real URL
 ```
+
+A static site or SPA uses `--template simple-webapp`, whose sandbox component
+is `app`, not `api` (table in 4.2).
 
 The rest of this file calls REST through a small helper and the App Studio
 base URL:
@@ -67,9 +71,16 @@ call. `MCP_TOKEN` is a long-lived ServiceAccount token.
    are the only authority. Tool names are `<provider>__<tool>`.
 6. **Check readiness before promising outcomes.** `exposure: internal` never
    gets a URL; a build is promotable only when every component has an image
-   for the exact faros-recorded commit; a private URL can't be tested with curl.
-7. **Secrets stay out of prompts, logs and commits.** Reference Secrets by name.
-   Template `env` maps are world-readable.
+   for the exact faros-recorded commit; a private or restricted URL answers
+   anonymous curl with 302 (test it with an app token, 4.6), and **jobs and
+   hosted agents cannot pass that gate at all**. Choose the access mode with
+   your machine callers in mind (section 5, "Machine callers").
+7. **Secrets stay out of prompts, logs and commits.** Where an API takes a
+   Secret name (the `connections` slots, pull secrets, agent connections),
+   reference it by name. Template `env` maps are world-readable, and **no
+   workload template takes a reference to a Secret of your own**; patterns for
+   app secrets are in [references/infrastructure.md](references/infrastructure.md)
+   section 4, "Your own secrets".
 8. **Destructive calls need the user's explicit ask**: deleting a project (and
    `?deleteRepository=true`, which deletes the GitHub repo), deleting a code
    `Repository` (deletes the GitHub repo), `delete_instance`, `delete_agent`,
@@ -193,11 +204,15 @@ delete_repo, read:org, admin:public_key, read:packages`, or use the portal's
 
 ### 4.2 Choose a template
 
-| Template | Shape | URL | Dev toolchain |
-|---|---|---|---|
-| `application` | `web/` (Vite) + `api/` + Postgres on one host, `/api/*` → api | yes | Node.js only |
-| `simple-webapp` | one container, one port | yes | Node.js only |
-| `worker` | Deployment, no Service; **dev sandbox only** | no | Node.js |
+| Template | Shape | URL | Sandbox components | Static assets go in | Dev toolchain |
+|---|---|---|---|---|---|
+| `application` | `web/` (Vite) + `api/` + Postgres on one host, `/api/*` → api | yes | `api`, `web` | `web/public/` | Node.js only |
+| `simple-webapp` | one container, one port | yes | `app` | `public/` | Node.js only |
+| `worker` | Deployment, no Service; **dev sandbox only** | no | `worker` (no `exec`) | — | Node.js |
+
+Whatever the template, read its contract before writing code:
+`kubectl get template <t> -o jsonpath='{.spec.agent.usage}'` (the scaffold's
+root `AGENTS.md` repeats it).
 
 The split: **production** accepts any language (Railpack auto-detects Go,
 Python, … — a Go build for arm64 under QEMU took ~8 min to promotable);
@@ -217,9 +232,11 @@ the **dev sandbox** is Node only. A tree without `package.json` makes the
   with a server, or the assistant will refuse to write one.
 
 App with a database → `application` (it provisions Postgres and injects
-`DATABASE_URL`). Read the contract before writing code:
-`kubectl get template application -o jsonpath='{.spec.agent.usage}'`. The
-scaffold's root `AGENTS.md` repeats it: bind `0.0.0.0:$PORT`, same-origin
+`DATABASE_URL`). **`application` has no `connections` input**: its api gets
+only its own `DATABASE_URL`, so it cannot use a `redis-cache` or a second
+database (putting that credential in `apiEnv` would make it world-readable).
+Use an in-process cache, or build on `simple-webapp`, whose production schema
+includes `connections`. The `application` contract: bind `0.0.0.0:$PORT`, same-origin
 `/api/*`, keep `/api/health` answering (CI smoke-tests it), keep both `dev`
 (sandbox) and `start` (Railpack production image) scripts working, no
 Dockerfile, retry the first DB connect **and run migrations inside that
@@ -277,13 +294,29 @@ faros app create shop --template application --display-name Shop --wait
 
 ```bash
 gh repo clone <owner>/<repo> && cd <repo>   # owner/repo = tail of .project.repository.htmlURL in `faros app status -o json`
+git remote set-url --push origin no-push    # a stray `git push` now fails; `faros commit` only fetches
 # edit; run the project's checks locally: npm install && npm run build, then
-# what CI smoke-tests — application: a local postgres:16 + `PORT=<free port>
-# DATABASE_URL=… npm start` and curl /api/health; simple-webapp: `PORT=<free> npm start` and curl /
+# what CI smoke-tests (simple-webapp: `PORT=<free> npm start` and curl /; application: below)
+git pull --rebase --autostash origin main   # only if the assistant, the files route or the Code tab committed since you cloned
 git add -A && git commit -m "Add cart"
 faros commit <repositoryRef>        # ~7 s; resets your clone onto the faros SHA
 faros app sync shop                 # workspace ← git, then sandbox ← workspace; lists skipped files
 ```
+
+The `application` smoke test, with a throwaway Postgres on a random free host
+port. A fixed port may already belong to another local Postgres, and the test
+then talks to the wrong database:
+
+```bash
+docker run -d --rm --name pg-smoke -e POSTGRES_USER=appuser -e POSTGRES_PASSWORD=pw \
+  -e POSTGRES_DB=appdb -p 127.0.0.1::5432 postgres:16
+PGPORT=$(docker port pg-smoke 5432 | head -1 | cut -d: -f2)
+PORT=18081 DATABASE_URL="postgres://appuser:pw@127.0.0.1:$PGPORT/appdb" npm --prefix api start & API_PID=$!
+sleep 5; curl -s localhost:18081/api/health; kill $API_PID; docker stop pg-smoke
+```
+
+Stop local servers by PID, never `pkill -f 'node server.mjs'`: that pattern
+matches every Node server on the machine.
 
 App Studio hydrates and syncs a faros-recorded commit by itself within
 seconds, so `faros app sync` right after `faros commit` usually reports
@@ -310,6 +343,32 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
   (`…/threads/{t}/reviews`).
 - The events stream replays from sequence 1 unless you send `Last-Event-ID`,
   and closes after `turn.completed`, so `curl -N > file` doubles as "wait".
+- **Read the outcome, not the status.** `turn.completed` says `completed` even
+  when steps inside the turn failed. The turn carries the step outcome
+  (`failedItems`, `rejectedItems`, and up to five `failures`, all omitted when
+  zero); print it with the reply:
+
+  ```bash
+  sed -n 's/^data: //p' events.log | jq -r '
+    if .type=="item.completed" and .payload.item.type=="agentMessage" then "MSG: \(.payload.item.content)"
+    elif .type=="turn.completed" then .payload.turn
+      | "TURN: \(.status) failed=\(.failedItems // 0) rejected=\(.rejectedItems // 0)",
+        ((.failures // [])[] | "FAIL: \(.title): \(.message)")
+    else empty end'
+  ```
+
+  `GET …/threads/{t}/turns/{turn}` returns the same summary later.
+  `rejectedItems` are steps whose approval was denied, not failures.
+
+  `stale_source` failures are retried by the assistant itself.
+  `Private preview inspection is unavailable … FAROS_HUB_PUBLIC_URL` means it
+  could not look at the page (an operator setting), so check the UI yourself.
+- Approval mode (`approvalMode` on each turn, default `on_request`): edits and
+  sandbox commands run unasked; `promote_project`, `infrastructure__provision`
+  and commits pause on an `approval.requested` event, so a turn told to deploy
+  waits for your answer. `never` denies every write rather than skipping
+  prompts. Table and the answer route:
+  [references/app-studio.md](references/app-studio.md), "Assistant".
 - **The reconciler commits the assistant's edits by itself** 5–15 s after the
   turn, as `Update N files in <dirs>`. Don't ask the model to commit. The
   `project.committed` event lands *after* the stream closed, so to see the
@@ -329,11 +388,17 @@ with `import_attachment`), let the assistant fetch a **direct file URL** with
 `download_file` (a marketplace listing page is not a file), or use REST:
 
 ```bash
-curl -s -X PUT "$AS/api/projects/shop/files/content?path=public/assets/jeep.glb" \
+curl -s -X PUT "$AS/api/projects/shop/files/content?path=web/public/assets/jeep.glb" \
   -H "Authorization: Bearer $TOKEN" -H "X-Faros-Org: $ORG" -H "X-Faros-Workspace: $WS" \
   -H 'If-None-Match: *' --data-binary @jeep.glb        # 201 {path,size,version,binary}
-fc "$AS/api/projects/shop/files/content?path=public/assets/jeep.glb" | jq '{binary,size,version}'
+fc "$AS/api/projects/shop/files/content?path=web/public/assets/jeep.glb" | jq '{binary,size,version}'
 ```
+
+`path` is relative to the repository root, so put the file where the
+component serves it: `web/public/<file>` on `application` (served at
+`/<file>`), `public/<file>` on `simple-webapp`. On `application`, a file
+outside `web/` and `api/` uploads, commits and syncs without error and is
+never served.
 
 Binary limits: 25 MiB per file, 48 MiB per commit/sync. Written files are
 committed by the reconciler (~45 s) and synced to the sandbox like assistant
@@ -351,7 +416,7 @@ A private preview answers every non-browser request with 302 to
 Test the app from inside instead:
 
 ```bash
-faros sandbox status shop-dev api                    # running, portReachable, sourceRevision
+faros sandbox status shop-dev api     # component per 4.2 table; prints Running:, Port: <n> (reachable=…), Source:, Sync:
 faros sandbox exec shop-dev api -- node -e 'fetch("http://127.0.0.1:8080/api/<new-route>").then(r=>r.text()).then(console.log)'
 faros sandbox logs shop-dev api
 ```
@@ -359,10 +424,11 @@ faros sandbox logs shop-dev api
 Hit something only your change has, so you know the new code is live;
 a sync answers `Synced` even when nothing visible changed, so it proves
 nothing. A sync restarts the process only for the reload rules the template
-declares (`package.json`, lockfiles). Vite reloads its own sources, but a
-plain Node server (`dev: node server.mjs`) keeps serving the old code after
-`Synced … restarted=false` — run `faros sandbox restart <inst> <comp>` and
-probe again. The dev port is the `Port:` line of `faros sandbox status`
+declares (`package.json`, lockfiles). Vite reloads its own sources, and the
+`application` scaffold's api runs `node --watch` (keep that `dev` script), but
+a plain Node server (`dev: node server.mjs`, e.g. one you wrote for
+`simple-webapp`) keeps serving the old code after `Synced … restarted=false`:
+run `faros sandbox restart <inst> <comp>` and probe again. The dev port is the `Port:` line of `faros sandbox status`
 (the template's `development.components.<c>.port` is a symbolic name). Exec is argv-only (use `sh -c` for a shell), ≤ 120 s, each
 argument ≤ 4096 bytes, and does not get the app's environment — name the port
 (8080 unless the template says otherwise) instead of reading `$PORT`.
@@ -376,9 +442,18 @@ replaces App Studio's managed file set); run `faros app sync <p>` and retry
 
 ```bash
 faros app status shop            # waits are yours: promotable ~3–5.5 min after the commit
+faros app status shop -o json | jq -c '.promotion | {promotable, status: .build.status, missing: .build.missing}'   # compact poll
 faros app promote shop --hostname-prefix shop
+HOST=$(kubectl get instance shop-prod -o jsonpath='{.status.host}')   # or the Production: line of `faros app status`
 faros app publish shop --mode public            # or restricted; private = back to default
 ```
+
+The host is `<prefix>-<12 hex>.<apps domain>`, on the platform's apps domain
+rather than the hub's (e.g. `shop-993e49bbfff1.bob.faros.sh` for hub
+`console-dev.faros.sh`). Read it, never build it. For a few seconds after a
+promote `faros app status` prints `Production:   - (promoted; the production
+instance has not reported yet, …)` while the Instance already has its URL;
+re-run it, or read the Instance as above.
 
 `--mode private` unpublishes: the Instance flips to `access: private`,
 anonymous requests get a 302 again and `GET …/publishing` reads
@@ -398,14 +473,23 @@ request, not your token.
   again is fine; a different one → 400 `…is locked after the first
   deployment`). Check `faros app status` for an existing production before
   choosing one. Each promote rolls pods, even for the same commit.
-- Prod Ready ~35 s–1.5 min after the first promote. A new hostname can fail
+- Prod Ready 10 s–1.5 min after the first promote; the certificate is usually
+  the longer wait. A new hostname can fail
   TLS (curl exit 35) for a few minutes while its certificate is issued
   (observed 0–9 min); don't debug before 10. `faros app publish` may be run
-  before prod is Ready; its `(not ready: Pending)` suffix reflects only the
-  POST response — `faros app status` a moment later shows the real state.
-  Wait for the certificate with
+  before prod is Ready: it re-reads the publication for up to 15 s, and a
+  `(not ready: …)` suffix after that means prod itself is not Ready yet
+  (`faros app status` shows its phase). Wait for the certificate with
   `until curl -s -o /dev/null --max-time 15 https://$HOST/; do sleep 15; done`
   (curl exits 35 until it is issued, then the app's own status code).
+- After `--mode public`, anonymous requests can still get the 302 for
+  10–20 s while the gate picks up the change (the CLI's output says so); wait with
+  `until [ "$(curl -s -o /dev/null -w '%{http_code}' https://$HOST/)" = 200 ]; do sleep 5; done`
+  before concluding the publish failed.
+- **`restricted` and `private` are enforced the same way** (the Instance keeps
+  `access: private`): you, other workspace admins, and anyone you add with
+  `POST …/publishing/grants {user}` get in; nobody else does. `restricted`
+  additionally records the app as published, invite-only.
 - A re-promote rolls pods while the instance stays `Ready`, so probe something
   only the new version has to know it rolled out.
 - After the first promote, `GET …/publishing` reads `published: false,
@@ -417,8 +501,11 @@ request, not your token.
   ```bash
   APP=$(fc -X POST "$HUB/auth/apps/token" -H 'Content-Type: application/json' \
     -d '{"cluster":"'$CLUSTER'","group":"infrastructure.faros.sh","resource":"instances","name":"shop-prod"}' | jq -r .token)
-  curl -s -H "Authorization: Bearer $APP" https://<app-host>/api/health
+  curl -s -H "Authorization: Bearer $APP" https://$HOST/api/health
   ```
+
+  The token needs your own login and lasts ≤ 15 min: jobs and agents can't
+  get one (section 5, "Machine callers").
 
 ### 4.7 Delete
 
@@ -456,9 +543,11 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
 ```
 
 - `connections.database` / `connections.cache` (simple-webapp, worker,
-  cron-job) take the `values.name` of a `database` /
+  cron-job; **not** `application`) take the `values.name` of a `database` /
   `redis-cache` instance in the same workspace and inject `DATABASE_URL` /
-  `REDIS_URL`. Unset slots leave the variable unset. A slot naming a missing
+  `REDIS_URL`. `connections.database` also accepts an `application`
+  instance's name (e.g. `shop-prod`), since it reads Secret
+  `<name>-db-credentials`, so a job can share the app's database. Unset slots leave the variable unset. A slot naming a missing
   instance leaves the pod unable to start **while the Instance still reports
   `Ready`** — the only symptom is a Cloudflare 502 from `faros sandbox
   status`/`exec`; double-check the name against `kubectl get instances`. Check the template declares
@@ -478,9 +567,14 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
   `env` verb plus a restart); keep `values.env` in sync so it survives a
   re-render, and never pass secrets this way.
 - **`cron-job` has no `command`/`args` input**: the image entrypoint must do
-  the work. With a public image, drive it through `env` (e.g. `node:20-alpine`
-  with `NODE_OPTIONS=--import=data:text/javascript;base64,…`). Its
-  `connections` inject into every run.
+  the work. With a public image, drive it through `env`: `node:20-alpine` with
+  `NODE_OPTIONS=--import=data:text/javascript;base64,$(base64 < job.mjs | tr -d '\n')`
+  (top-level `await`, end with `process.exit(code)`; the script is
+  world-readable like any `env` value). Its `connections` inject into every run.
+- **A cron-job's runs can't be observed**: no last-run time, exit code or
+  logs anywhere (`faros sandbox logs` is dev-mode only). Test the same image
+  and env locally with `docker run` first, and make each run leave evidence
+  you can read, e.g. a row the app exposes.
 - Values that violate a declared field are admitted and reported as
   `Valid=False/InvalidValues`, but **keys the template doesn't declare are
   accepted silently** with `Valid=True` — check the schema (section 3 table)
@@ -490,6 +584,22 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
   namespace `default`. Never set `expose.fqdn`, `farosCluster`,
   `credentialsSecretName`, `farosRedeployRevision`, `farosNetworkPhase`,
   `farosActions*`.
+
+**Machine callers.** A private or restricted app's gate lets in only people
+(a browser sign-in, or a `fapp_` token minted from a user's own login, ≤ 15
+min). A `cron-job`, `worker` or hosted agent can't pass it. What works:
+
+- **Same workspace:** all of a workspace's instances share one runtime
+  namespace, and a workload can call an app's Service directly, without the
+  gate: `http://<status.apiServiceRef.name>:<apiPort>` (e.g.
+  `http://shop-prod-api:8080`) or `…webServiceRef…` on `application`,
+  `http://<status.appServiceRef.name>:<port>` on `simple-webapp`. Protect such
+  routes in the app itself, e.g. a shared-secret header.
+- **Hosted agents and anything outside the workspace:** no unattended path.
+  Publish the data they need publicly, or pass it in (an agent run's `task`).
+
+For the shared secret itself, see "Your own secrets" in
+[references/infrastructure.md](references/infrastructure.md) section 4.
 
 Details: [references/infrastructure.md](references/infrastructure.md).
 
@@ -511,6 +621,12 @@ fc -X POST "$AG/api/agents/digest/runs" -H 'Content-Type: application/json' --ma
 `idempotencyKey` returns the original run (`reused: true`). Deep research =
 `spawn` + `web`. Approvals are human-only (`/api/inbox`). More:
 [references/agents.md](references/agents.md).
+
+**An agent's `web_fetch` is anonymous.** Pointed at a private or restricted
+faros app, it stops at the gate's redirect and returns `HTTP 302 …` with
+`This is a private faros app … web_fetch cannot sign in. No content was
+fetched.`, and agents can't get an app token. Give an agent public data only,
+or put the data in the run's `task`.
 
 ## 7. Playbook: edges
 
@@ -552,6 +668,7 @@ Identify which one you're looking at before waiting or rebuilding:
 | Repository `Provisioning` > 2 min, `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` empty, no finalizer (`faros app status` prints `not ready for <age> with no status: the code provider is not reconciling`) | **Not latency**: the code provider's controllers are not engaged with kcp. `GET /api/providers` shows `code` `ready: false` and its `/readyz` names the endpoint it is retrying; other fresh Repositories are statusless too | Wait — the provider retries its kcp watch with backoff and catches up by itself; if `ready` stays false for long, the operator checks its logs. Don't recreate the project (409 on the name) |
 | A commit stays `Running`, condition reason `RateLimited` | The GitHub quota behind the code `Connection` is spent; it retries at the reset (up to 15 min) | The condition message names the retry time |
 | Private URL → 302 `/auth/apps/authorize` | The access gate wants a browser | Use an app token (4.6) or `faros sandbox exec` |
+| Agent run output says `This is a private faros app` | **Not latency**: the app is private/restricted and `web_fetch` is anonymous | Section 6: public data or data in `task` |
 | Instance Ready, no `status.url` | **Not latency**: `exposure: internal` | `kubectl get template <t> -o jsonpath='{.spec.exposure}'` |
 
 **403s that aren't about your permissions.**

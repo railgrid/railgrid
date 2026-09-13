@@ -58,6 +58,33 @@ func TestProjectAssistantV2PermissionPolicy(t *testing.T) {
 	}
 }
 
+// on_request lets ordinary runtime effects through but still pauses on the ones
+// that create or replace something outside the dev sandbox — a production
+// deploy most of all.
+func TestProjectAssistantOnRequestRuntimePermission(t *testing.T) {
+	tests := []struct {
+		tool string
+		want projectAssistantPermissionDecision
+	}{
+		{tool: projectToolExecCommand, want: projectAssistantPermissionAllow},
+		{tool: projectToolRestartRuntime, want: projectAssistantPermissionAllow},
+		{tool: projectToolRebuildProject, want: projectAssistantPermissionAllow},
+		{tool: projectToolPromoteProject, want: projectAssistantPermissionAsk},
+		{tool: projectToolInfrastructureProvision, want: projectAssistantPermissionAsk},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			spec := projectAssistantToolSpec{Name: tt.tool, Risk: projectAssistantToolRiskRuntime}
+			if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeOnRequest, nil, nil, false); got != tt.want {
+				t.Fatalf("on_request permission for %s = %q, want %q", tt.tool, got, tt.want)
+			}
+			if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeNever, nil, nil, false); got != projectAssistantPermissionDeny {
+				t.Fatalf("never permission for %s = %q, want deny", tt.tool, got)
+			}
+		})
+	}
+}
+
 func TestProjectAssistantPermissionEditRevalidatesScopeAndEffectiveArguments(t *testing.T) {
 	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
 	original := map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}

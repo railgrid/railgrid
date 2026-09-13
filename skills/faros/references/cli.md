@@ -79,10 +79,10 @@ App Studio REST ([app-studio.md](app-studio.md)) as you.
 |---|---|---|
 | `app list` (alias `ls`) | `-o json` | `GET /api/projects`; table `NAME DISPLAY NAME PHASE TEMPLATE REPOSITORY AGE` |
 | `app create <name>` | `--template`, `--display-name`, `--description`, `--prompt`, `--existing-repository <ref>`, `--wait`, `--timeout` (5m), `-o json` | `POST /api/projects` with `name`. `--template` is required unless `--prompt` is given (then `inferDevelopmentTemplate: true`; the prompt does not start an assistant turn). No flag for `existingRepositoryRef` — adopt through REST ([app-studio.md](app-studio.md)). `--wait` polls every 5 s until `repository.ready` and at least one `Succeeded` commit (the point from which clone and `faros commit` work); timeout error `project <n>: repository not ready with a succeeded commit after <t>; check 'faros app status <n>'`. |
-| `app status <name>` | `-o json` | `GET` project, `promotion`, `publishing`; prints project/phase/template, repository ref + ready + URL (+ message when not ready; after 2 min with no status and no commit it adds `not ready for <age> with no status: the code provider is not reconciling …`), last 3 commits, dev URL, `promotable`/build status/commit/missing, production phase+URL, publishing mode/URL/grants. `-o json` = `{project, promotion, promotionError?, publishing, publishingError?}`. |
+| `app status <name>` | `-o json` | `GET` project, `promotion`, `publishing`; prints project/phase/template, repository ref + ready + URL (+ message when not ready; after 2 min with no status and no commit it adds `not ready for <age> with no status: the code provider is not reconciling …`), last 3 commits, dev URL, `promotable`/build status/commit/missing, production phase+URL (`- (never promoted)` before the first promote; `- (promoted; the production instance has not reported yet, …)` for a few seconds after one), publishing mode/URL/grants. `-o json` = `{project, promotion, promotionError?, publishing, publishingError?}`. |
 | `app sync <name>` | `-o json` | `POST hydrate-workspace {}` then `POST sync-development`; prints the ref and short SHA loaded (written/skipped counts), one line per component (`Synced, N changed, M deleted, restarted, revision R`), and each skipped file with its reason; a `binary-unsupported` skip adds a hint. Use it instead of `faros sandbox sync` for App Studio dev instances. |
 | `app promote <name>` | `--hostname-prefix`, `--commit <sha>`, `-o json` | `POST promote` with `values.expose.hostnamePrefix` and/or `commitSHA`; prints instance, commit, rollout, per-component image. The prefix is locked after the first production deploy: pass it on the first promote, later the same value or nothing. Every promote rolls pods. |
-| `app publish <name>` | `--mode public\|restricted\|private` (required), `-o json` | `public`/`restricted` → `POST publishing {mode}`; `private` → `DELETE publishing` (unpublish, drop grants) and prints `private (unpublished; …)` regardless of the response. `public`/`restricted` are accepted before prod is Ready; their output reflects the POST response only (`(not ready: Pending)`) — re-check with `app status`. |
+| `app publish <name>` | `--mode public\|restricted\|private` (required), `-o json` | `public`/`restricted` → `POST publishing {mode}`; `private` → `DELETE publishing` (unpublish, drop grants) and prints `private (unpublished; …)` regardless of the response. `public`/`restricted` are accepted before prod is Ready; the text output then re-reads `GET publishing` every 2 s for up to 15 s, so a remaining `(not ready: <phase>)` means prod is not Ready yet. A ready `public` line adds `(anonymous requests may still be redirected to sign-in for ~20s)`. `-o json` prints the POST response as is, without waiting. |
 
 Naming: the server uses an explicit name verbatim for the Project and the
 Repository and answers 409 on a collision (see [app-studio.md](app-studio.md)),
@@ -136,7 +136,8 @@ Data plane of a development-mode Instance (`<project>-dev` for App Studio),
 ([infrastructure.md](infrastructure.md) section 8). Production instances
 answer 409. Component paths are relative to the component's
 `workspacePath` (application template: `api/` → component `api`,
-`web/` → `web`).
+`web/` → `web`; simple-webapp: the repo root → component `app`; worker:
+component `worker`).
 
 | Command | Flags | Behavior |
 |---|---|---|

@@ -180,7 +180,20 @@ func searchFanOutHint(d Deps) string {
 		"spawn a worker per part and join the results instead."
 }
 
+// farosAppSignInPath is where a faros app's access gate sends a request that
+// carries no app token. web_fetch is anonymous, so following it only ever
+// lands on the portal's sign-in page, which a model then reads as the app's
+// own "HTTP 200" answer.
+const farosAppSignInPath = "/auth/apps/authorize"
+
+// maxFetchRedirects matches net/http's default redirect limit.
+const maxFetchRedirects = 10
+
 func webFetch(ctx context.Context, raw string, maxChars int) (string, error) {
+	return webFetchWith(ctx, guardedHTTPClient, raw, maxChars)
+}
+
+func webFetchWith(ctx context.Context, client *http.Client, raw string, maxChars int) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("url must be an absolute http(s) URL")
@@ -191,11 +204,38 @@ func webFetch(ctx context.Context, raw string, maxChars int) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "faros-agents/0.1 (+https://github.com/faroshq/faros)")
-	resp, err := guardedHTTPClient.Do(req)
+	// A per-call copy shares the guarded transport; only the redirect policy
+	// differs: stop at a faros sign-in redirect instead of following it.
+	c := *client
+	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if next.URL.Path == farosAppSignInPath {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= maxFetchRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxFetchRedirects)
+		}
+		return nil
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	final := u
+	if resp.Request != nil && resp.Request.URL != nil {
+		final = resp.Request.URL
+	}
+	status := fmt.Sprintf("HTTP %d %s", resp.StatusCode, final.String())
+	if final.String() != u.String() {
+		status += " (redirected from " + u.String() + ")"
+	}
+	if location, err := resp.Location(); err == nil && location.Path == farosAppSignInPath {
+		return status + "\n\nThis is a private faros app: its access gate redirects to sign-in (" +
+			location.Scheme + "://" + location.Host + farosAppSignInPath + "), and web_fetch cannot sign in. " +
+			"No content was fetched. Ask the app's owner to publish it publicly, or to pass the data in the task.", nil
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxBody))
 	if err != nil {
 		return "", err
@@ -204,7 +244,7 @@ func webFetch(ctx context.Context, raw string, maxChars int) (string, error) {
 	if strings.Contains(resp.Header.Get("Content-Type"), "html") {
 		text = htmlToText(text)
 	}
-	return fmt.Sprintf("HTTP %d %s\n\n%s", resp.StatusCode, u.String(), clip(text, maxChars)), nil
+	return fmt.Sprintf("%s\n\n%s", status, clip(text, maxChars)), nil
 }
 
 var (

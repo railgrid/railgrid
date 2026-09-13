@@ -207,9 +207,21 @@ func projectAssistantRevalidatePermissionEdit(
 	return effective, string(before) != string(after), nil
 }
 
+// projectAssistantOnRequestRequiresApproval lists the runtime effects that still
+// pause under on_request: they create or replace something outside the dev
+// sandbox. promote_project deploys to production, which the user must confirm
+// even though the tool's own description asks the model to; that request alone
+// is not a control. Only runtime-risk tools reach this check.
+//
+// Aggregate MCP tools keep their provider prefix: projectToolBaseName strips it
+// ("infrastructure__provision" → "provision"), so they are matched by full
+// name. Matching the base name alone let provisioning run unasked.
 func projectAssistantOnRequestRequiresApproval(name string) bool {
+	if strings.EqualFold(strings.TrimSpace(name), projectToolInfrastructureProvision) {
+		return true
+	}
 	switch projectToolBaseName(name) {
-	case projectToolInfrastructureProvision, projectToolPrepareProjectDeployment:
+	case projectToolPromoteProject:
 		return true
 	default:
 		return false
