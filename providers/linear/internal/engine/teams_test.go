@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/faroshq/provider-linear/internal/actionapi"
+
 	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -89,7 +91,7 @@ func TestNoRegistrationsDenyIssueCreation(t *testing.T) {
 	if err := e.Reconcile(ctx, op); err != nil {
 		t.Fatal(err)
 	}
-	var result api.Operation
+	var result actionapi.Receipt
 	if err := Decode(op, &result); err != nil {
 		t.Fatal(err)
 	}

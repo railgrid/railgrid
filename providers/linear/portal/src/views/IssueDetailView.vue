@@ -10,7 +10,7 @@ import { useFactory } from '../useFactory';
 import IssueFields from '../components/IssueFields.vue';
 import TaskFeedback from '../components/TaskFeedback.vue';
 import PendingWrite from '../components/PendingWrite.vue';
-const props = defineProps<{ connection: string; id: string }>();
+const props = defineProps<{ connection: string; id: string; team: string }>();
 const read = useTask(); const mutation = useWriteTask(() => writeKey('updateIssue', props.connection, props.id)); const commentsRead = useTask(); const commentTask = useWriteTask(() => writeKey('addComment', props.connection, props.id));
 const busy = computed(() => mutation.state.loading || commentTask.state.loading);
 const factoryRevision = ref(0);
@@ -19,7 +19,7 @@ const factory = useFactory(() => ({ connection: props.connection, issue: issue.v
 const title = ref(''); const description = ref(''); const stateID = ref(''); const body = ref('');
 function load() {
   if (busy.value) return;
-  void read.run(api => api.operation(props.connection, { action: 'issue', issueID: props.id }), result => {
+  void read.run(api => api.action(props.connection, { action: 'issue', issueID: props.id, teamID: props.team }), result => {
     // Refresh the server snapshot without overwriting a local edit.
     if (title.value === (issue.value?.title || '')) title.value = result.title || '';
     if (description.value === (issue.value?.description || '')) description.value = result.description || '';
@@ -31,7 +31,7 @@ function discard() {
   mutation.reset();
 }
 function loadComments(more = false) {
-  void commentsRead.run(api => api.operation(props.connection, { action: 'comments', issueID: props.id, first: 25, ...(more ? { after: nextCursor.value } : {}) }), result => {
+  void commentsRead.run(api => api.action(props.connection, { action: 'comments', issueID: props.id, teamID: props.team, first: 25, ...(more ? { after: nextCursor.value } : {}) }), result => {
     comments.value = more ? [...comments.value, ...(result.nodes || [])] : result.nodes || [];
     nextCursor.value = result.pageInfo?.endCursor || ''; hasMore.value = !!result.pageInfo?.hasNextPage;
   });
@@ -45,7 +45,7 @@ function update() {
   if (read.state.loading || busy.value || mutation.pending.value) return;
   const fields = changedFields.value;
   if (!Object.keys(fields).length) return;
-  void mutation.run(api => api.operation(props.connection, { action: 'updateIssue', issueID: props.id, ...fields }), updated);
+  void mutation.run(api => api.action(props.connection, { action: 'updateIssue', issueID: props.id, teamID: props.team, ...fields }), updated);
 }
 function updated(result: Result) {
     issue.value = { ...issue.value, ...result }; title.value = issue.value.title || ''; description.value = issue.value.description || ''; stateID.value = '';
@@ -53,7 +53,7 @@ function updated(result: Result) {
 }
 function comment() {
   if (!body.value.trim() || read.state.loading || busy.value || commentTask.pending.value) return;
-  void commentTask.run(api => api.operation(props.connection, { action: 'addComment', issueID: props.id, body: body.value }), commented);
+  void commentTask.run(api => api.action(props.connection, { action: 'addComment', issueID: props.id, teamID: props.team, body: body.value }), commented);
 }
 function commented() { body.value = ''; commentTask.state.message = 'Comment added.'; commentsRead.cancel(); loadComments();
 }

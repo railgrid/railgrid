@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, provide, reactive, ref, watch } from 'vue';
-import { Plug, Users, Activity, Radio } from 'lucide-vue-next';
+import { Plug, Users } from 'lucide-vue-next';
 import type { FarosContext } from './api';
 import { canonicalPath, type Route } from './routes';
 import { sessionKey } from './state';
@@ -16,7 +16,6 @@ import ResourceDetailView from './views/ResourceDetailView.vue';
 import IssuesView from './views/IssuesView.vue';
 import IssueCreateView from './views/IssueCreateView.vue';
 import IssueDetailView from './views/IssueDetailView.vue';
-import HistoryView from './views/HistoryView.vue';
 const props = defineProps<{ context: () => FarosContext; authoritySignal: AbortSignal; route: Route }>();
 const root = ref<HTMLElement>();
 watch(() => props.route, async () => {
@@ -34,7 +33,7 @@ function href(path: string) {
   return `${prefix}/${scopedPath(path)}`;
 }
 provide(sessionKey, { context: props.context, get signal() { return props.authoritySignal; }, draft, writes, selection, navigate, href });
-const tabs = [{ id: 'connections', label: 'Connections', icon: Plug }, { id: 'teams', label: 'Teams', icon: Users }, { id: 'operations', label: 'Operations', icon: Activity }, { id: 'events', label: 'Events', icon: Radio }];
+const tabs = [{ id: 'connections', label: 'Connections', icon: Plug }, { id: 'teams', label: 'Teams', icon: Users }];
 const backPath = computed(() => props.route.page === 'issues' ? selection.teamResource ? `teams/detail/${encodeURIComponent(selection.teamResource)}` : 'issues' : props.route.page);
 const collection = computed(() => !props.route.name && !props.route.create && !props.route.invalid);
 
@@ -50,13 +49,12 @@ const collection = computed(() => !props.route.name && !props.route.create && !p
         <ConnectionsView v-if="collection && route.page === 'connections'" />
         <TeamsView v-else-if="collection && route.page === 'teams'" />
         <IssuesView v-else-if="collection && route.page === 'issues'" />
-        <HistoryView v-else-if="collection" :key="route.page" :kind="route.page as 'operations' | 'events'" />
       </KeepAlive>
       <ConnectionCreateView v-if="route.create === 'connection'" :key="'connection-create'" />
       <TeamCreateView v-else-if="route.create === 'team'" :key="'team-create'" />
       <IssueCreateView v-else-if="route.create === 'issue'" :key="'issue-create'" />
-      <IssueDetailView v-else-if="route.page === 'issues' && route.name" :key="`${route.connection}:${route.name}`" :connection="route.connection!" :id="route.name" />
-      <ResourceDetailView v-else-if="route.name && route.page !== 'teams'" :key="`${route.page}:${route.name}`" :kind="route.page as 'connections' | 'operations' | 'events'" :name="route.name" />
+      <IssueDetailView v-else-if="route.page === 'issues' && route.name" :key="`${route.connection}:${route.name}`" :connection="route.connection!" :id="route.name" :team="route.team!" />
+      <ResourceDetailView v-else-if="route.name && route.page !== 'teams'" :key="`${route.page}:${route.name}`" :kind="'connections'" :name="route.name" />
       <KeepAlive :max="1"><TeamDetailView v-if="route.page === 'teams' && route.name" :key="`team:${route.name}`" :name="route.name" /></KeepAlive>
     </template>
   </div>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { ArrowUpRight } from 'lucide-vue-next';
 import { computed, onActivated, ref, watch } from 'vue';
 import FactoryTaskLink from './FactoryTaskLink.vue';
 import type { FactoryTask } from '../factory';
 import WorkflowStateIcon from './WorkflowStateIcon.vue';
 import type { Node } from '../api';
 import { useSession, useTask } from '../state';
-import { issuePath, followResourceLink } from '../routes';
+import { issuePath, followResourceLink, linearIssueURL } from '../routes';
 import TaskFeedback from './TaskFeedback.vue';
 const props = defineProps<{ connection: string; team: string; query: string; revision: number; factoryTasks?: Record<string, FactoryTask[]> }>();
 const session = useSession(); const read = useTask();
@@ -24,7 +25,7 @@ function load() {
     const workflow = await api.discover(props.connection, 'states', props.team);
     const nodes: Node[] = []; const seen = new Set<string>(); let after = '';
     do {
-      const page = await api.operation(props.connection, { action: 'issues', teamID: props.team, query: props.query, first: 50, ...(after ? { after } : {}) });
+      const page = await api.action(props.connection, { action: 'issues', teamID: props.team, query: props.query, first: 50, ...(after ? { after } : {}) });
       nodes.push(...(page.nodes || []));
       if (!page.pageInfo?.hasNextPage) break;
       const next = page.pageInfo.endCursor;
@@ -66,12 +67,14 @@ function date(value: string) { const parsed = new Date(value); return Number.isN
       <div class="linear-issue-board" role="region" aria-label="Issues by workflow state" tabindex="0">
         <section v-for="column in columns" :key="column.id" class="linear-issue-lane" :aria-label="column.name">
           <h3 class="linear-issue-lane-heading"><WorkflowStateIcon :type="column.type" /><span>{{ column.name }}</span><span class="linear-page-meta">{{ column.issues.length }}</span></h3>
-          <div v-for="issue in column.issues" :key="issue.id" class="linear-issue-entry"><a class="linear-issue-card" :href="session.href(issuePath(connection, issue.id))" @click="followResourceLink($event, issuePath(connection, issue.id), session.navigate)">
-            <span class="linear-issue-identifier">{{ issue.identifier || issue.id }}</span>
+          <div class="linear-issue-lane-items" role="region" :aria-label="`${column.name} issues`" tabindex="0">
+          <div v-for="issue in column.issues" :key="issue.id" class="linear-issue-entry linear-issue-card"><a class="linear-issue-card-link" :href="linearIssueURL(issue.url) || session.href(issuePath(connection, issue.id, team))" :target="linearIssueURL(issue.url) ? '_blank' : undefined" :rel="linearIssueURL(issue.url) ? 'noopener noreferrer' : undefined" @click="!linearIssueURL(issue.url) && followResourceLink($event, issuePath(connection, issue.id, team), session.navigate)">
+            <span class="linear-issue-identifier">{{ issue.identifier || issue.id }}<ArrowUpRight v-if="linearIssueURL(issue.url)" :size="12" aria-hidden="true" /><span v-if="linearIssueURL(issue.url)" class="linear-sr-only"> (opens in Linear in a new tab)</span></span>
             <span class="linear-issue-title"><WorkflowStateIcon :type="column.type" /><span><span class="linear-sr-only">{{ column.name }}: </span>{{ issue.title || 'Untitled issue' }}</span></span>
             <span v-if="issue.updatedAt" class="linear-page-meta">Updated <time :datetime="issue.updatedAt">{{ date(issue.updatedAt) }}</time></span>
           </a><FactoryTaskLink :tasks="factoryTasks?.[issue.id] || []" /></div>
           <p v-if="!column.issues.length" class="linear-page-meta">No issues</p>
+          </div>
         </section>
       </div>
     </template>

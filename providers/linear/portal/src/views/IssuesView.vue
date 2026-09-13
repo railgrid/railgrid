@@ -5,11 +5,11 @@ import IssueBoard from '../components/IssueBoard.vue';
 import FactoryIntegration from '../components/FactoryIntegration.vue';
 import FactoryTaskLink from '../components/FactoryTaskLink.vue';
 import { useFactory } from '../useFactory';
-import { Columns3 } from 'lucide-vue-next';
+import { Columns3, ArrowUpRight } from 'lucide-vue-next';
 import type { ResourceTableChange } from '../portalkit/table';
 import type { Node } from '../api';
 import { useSession, useTask } from '../state';
-import { issuePath } from '../routes';
+import { issuePath, linearIssueURL } from '../routes';
 import IssueScope from '../components/IssueScope.vue';
 import TaskFeedback from '../components/TaskFeedback.vue';
 import ResourceTable from '../portalkit/ResourceTable.vue';
@@ -35,7 +35,7 @@ const hasConnections = ref(!!props.scope);
 const activeScope = computed(() => props.scope || session.selection);
 const factory = useFactory(() => activeScope.value, () => props.revision || 0);
 let attemptedSearch = { page: 0, query: '' };
-const rows = computed(() => issues.value.map(i => ({ id: i.id, identifier: i.identifier || i.id, title: i.title, state: i.state?.name || '—', updated: i.updatedAt || '—' })));
+const rows = computed(() => issues.value.map(i => ({ id: i.id, url: linearIssueURL(i.url), identifier: i.identifier || i.id, title: i.title, state: i.state?.name || '—', updated: i.updatedAt || '—' })));
 const baseColumns = [{ key: 'identifier', label: 'Issue' }, { key: 'title', label: 'Title', primary: true }, { key: 'state', label: 'State' }, { key: 'updated', label: 'Updated' }];
 const columns = computed(() => factory.tasks.value.length ? [...baseColumns, { key: 'factory', label: 'Factory' }] : baseColumns);
 function search(page = 0, query = activeQuery.value) {
@@ -44,7 +44,7 @@ function search(page = 0, query = activeQuery.value) {
   attemptedRead = true;
   attemptedSearch = { page, query };
   const after = page === 0 ? '' : cursors.value[page];
-  void read.run(api => api.operation(activeScope.value.connection, { action: 'issues', teamID: activeScope.value.team, query, first: 25, ...(after ? { after } : {}) }), result => {
+  void read.run(api => api.action(activeScope.value.connection, { action: 'issues', teamID: activeScope.value.team, query, first: 25, ...(after ? { after } : {}) }), result => {
     issues.value = result.nodes || []; cursor.value = result.pageInfo?.endCursor || ''; hasNext.value = !!result.pageInfo?.hasNextPage;
     activeQuery.value = query; index.value = page; if (!page) cursors.value = [''];
   });
@@ -63,7 +63,7 @@ watch(() => props.revision, () => {
   else { read.cancel(); search(index.value); }
 });
 onMounted(() => { if (props.scope && view.value === 'table') search(); });
-function open(row: Record<string, unknown>) { session.navigate(issuePath(activeScope.value.connection, String(row.id))); }
+function open(row: Record<string, unknown>) { if (row.url) { window.open(String(row.url), '_blank', 'noopener,noreferrer'); return; } session.navigate(issuePath(activeScope.value.connection, String(row.id), activeScope.value.team)); }
 </script>
 <template>
   <section class="linear-page">
@@ -88,7 +88,7 @@ function open(row: Record<string, unknown>) { session.navigate(issuePath(activeS
     <TaskFeedback :task="read.state" error-presented />
     <ResourceTable v-if="read.state.loaded || read.state.loading || read.state.error" :columns="columns" :rows="rows" pagination-mode="server" :page="index + 1" :page-size="25" :page-size-options="[25]" :cursor="cursors[index] || null" :page-info="{ hasNext, nextCursor: cursor || null }" @change="changePage" row-key="id" :loaded="read.state.loaded" :loading="read.state.loading" :error="read.state.error" :stale="read.state.loaded && !!read.state.error" retryable empty-text="No matching issues." aria-label="Linear issues" :row-aria-label="row => `Open issue ${row.identifier}`" @retry="retry" @row-click="open">
       <template #factory="{ row }"><FactoryTaskLink :tasks="factory.byIssue.value[String(row.id)] || []" /><span v-if="!factory.byIssue.value[String(row.id)]" class="linear-page-meta">—</span></template>
-      <template #identifier="{ row }"><button class="k-btn k-btn--ghost k-table-resource-link" @click.stop="open(row)">{{ row.identifier }}</button></template>
+      <template #identifier="{ row }"><a v-if="row.url" class="k-table-resource-link" :href="String(row.url)" target="_blank" rel="noopener noreferrer" @click.stop>{{ row.identifier }}<ArrowUpRight :size="12" aria-hidden="true" /><span class="linear-sr-only"> (opens in Linear in a new tab)</span></a><button v-else class="k-btn k-btn--ghost k-table-resource-link" @click.stop="open(row)">{{ row.identifier }}</button></template>
     </ResourceTable>
     <p v-else class="linear-notice">Select a connection and team, then search for issues.</p>
     </template>

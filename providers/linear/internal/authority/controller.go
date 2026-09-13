@@ -88,8 +88,8 @@ func (c *Controller) runEndpoint(ctx context.Context, endpoint string, ready *at
 		return
 	}
 	var wg sync.WaitGroup
-	states := make([]atomic.Bool, 4)
-	for i, gvr := range []schema.GroupVersionResource{engine.Connections, engine.Operations, engine.Events, engine.Teams} {
+	states := make([]atomic.Bool, 2)
+	for i, gvr := range []schema.GroupVersionResource{engine.Connections, engine.Teams} {
 		wg.Add(1)
 		go func() { defer wg.Done(); c.runResource(ctx, endpoint, gvr, meta, &states[i]) }()
 	}
@@ -102,7 +102,7 @@ func (c *Controller) runEndpoint(ctx context.Context, endpoint string, ready *at
 			ready.Store(false)
 			return
 		case <-ticker.C:
-			ready.Store(states[0].Load() && states[1].Load() && states[2].Load() && states[3].Load())
+			ready.Store(states[0].Load() && states[1].Load())
 		}
 	}
 }

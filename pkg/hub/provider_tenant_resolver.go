@@ -218,6 +218,9 @@ func isServiceAccountIdentity(user string) bool {
 func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (string, string, error) {
 	caller, err := r.verifyWorkloadCaller(req)
 	if err != nil {
+		if providerActionCluster(req) != "" {
+			return r.resolveTenantActionServiceAccount(req)
+		}
 		return "", "", err
 	}
 	return caller.User, caller.TenantPath, nil

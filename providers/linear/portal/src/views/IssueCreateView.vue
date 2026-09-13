@@ -14,11 +14,11 @@ session.draft.returnToIssue = true;
 function submit() {
   if (!session.selection.connection || !session.selection.team || !title.value.trim()) return;
   if (task.pending.value) return;
-  void task.run(api => api.operation(session.selection.connection, { action: 'createIssue', teamID: session.selection.team, ...updateFields(title.value, description.value, stateID.value) }), created);
+  void task.run(api => api.action(session.selection.connection, { action: 'createIssue', teamID: session.selection.team, ...updateFields(title.value, description.value, stateID.value) }), created);
 }
 function created(result: Result) {
     Object.assign(session.draft, { title: '', description: '', stateID: '', returnToIssue: false });
-    if (result.id) session.navigate(issuePath(task.connection.value || session.selection.connection, result.id), true);
+    if (result.id) session.navigate(issuePath(task.connection.value || session.selection.connection, result.id, task.team.value || session.selection.team), true);
     else task.state.message = 'Issue creation succeeded. Search Issues to locate the result.';
 }
 </script>
@@ -34,7 +34,7 @@ function created(result: Result) {
         <IssueScope v-else :disabled="task.state.loading || !!task.pending.value" />
         <IssueFields v-model:title="title" v-model:description="description" v-model:stateID="stateID" :connection="session.selection.connection" :team="session.selection.team" :disabled="task.state.loading || !!task.pending.value" />
       </div>
-      <CreateGuidance title="Create in Linear" description="The issue is created in your selected Team through a tracked Faros operation." :next-steps="['If the outcome is uncertain, inspect the operation before trying again.']" />
+      <CreateGuidance title="Create in Linear" description="The issue is created in your selected Team through a Faros action." :next-steps="['If the outcome is uncertain, check its outcome before trying again.']" />
       </div>
         <div class="k-create-actions"><button class="k-btn k-btn--ghost" type="button" :disabled="task.state.loading" @click="session.navigate(session.selection.teamResource ? 'teams/detail/' + encodeURIComponent(session.selection.teamResource) : 'teams')">Cancel</button><button class="k-btn k-btn--primary" :disabled="task.state.loading || !!task.pending.value || !session.selection.connection || !session.selection.team || !title.trim()">{{ task.state.loading ? 'Creating…' : 'Create issue' }}</button></div>
     </form>

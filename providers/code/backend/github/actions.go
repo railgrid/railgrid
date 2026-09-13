@@ -67,7 +67,7 @@ func (b *Backend) LatestWorkflowRun(ctx context.Context, conn *codev1alpha1.Conn
 		Conclusion: run.GetConclusion(),
 	}
 
-	jobs, resp, err := c.Actions.ListWorkflowJobs(ctx, org, repo.Spec.Name, run.GetID(), &gogithub.ListWorkflowJobsOptions{ListOptions: gogithub.ListOptions{PerPage: 100}})
+	jobs, _, err := c.Actions.ListWorkflowJobs(ctx, org, repo.Spec.Name, run.GetID(), &gogithub.ListWorkflowJobsOptions{ListOptions: gogithub.ListOptions{PerPage: 100}})
 	if err != nil {
 		// Jobs are best-effort detail; the run status itself is still useful.
 		return out, nil
@@ -121,7 +121,7 @@ func jobLogTail(ctx context.Context, c *gogithub.Client, org, repo string, jobID
 	if err != nil {
 		return ""
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(httpResp.Body, workflowJobLogMaxBytes))
 	if err != nil {
 		return ""

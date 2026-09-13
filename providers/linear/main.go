@@ -16,8 +16,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/faroshq/provider-linear/internal/engine"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/metadata"
+
+	"github.com/google/uuid"
 
 	"github.com/faroshq/provider-linear/internal/authority"
 	"github.com/faroshq/provider-linear/internal/server"
@@ -48,19 +56,43 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	cfg.Timeout = 20 * time.Second
+	private, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+	meta, err := metadata.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+	var storageReady atomic.Bool
+	go func() {
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			check, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := meta.Resource(engine.Receipts).List(check, metav1.ListOptions{Limit: 1})
+			cancel()
+			storageReady.Store(err == nil)
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 	auth := authority.Authority{Config: cfg}
 	controller := &authority.Controller{Authority: auth}
 	go controller.Run(ctx)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !controller.Ready.Load() {
+		if !controller.Ready.Load() || !storageReady.Load() {
 			http.Error(w, "provider API reconciliation unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte("ready"))
 	})
-	api := server.Server{Authority: auth, HubURL: os.Getenv("FAROS_HUB_URL"), Insecure: os.Getenv("FAROS_HUB_INSECURE") == "true"}
+	api := server.Server{PrivateReceipts: private, InstanceID: uuid.NewString(), Authority: auth, HubURL: os.Getenv("FAROS_HUB_URL"), Insecure: os.Getenv("FAROS_HUB_INSECURE") == "true"}
 	api.Routes(mux)
 	mcpHandler, err := api.MCP()
 	if err != nil {
@@ -76,7 +108,7 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	hb.CanSend = controller.Ready.Load
+	hb.CanSend = func() bool { return controller.Ready.Load() && storageReady.Load() }
 	go hubclient.RunHeartbeat(ctx, hb)
 	port := os.Getenv("PORT")
 	if port == "" {

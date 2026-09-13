@@ -34,6 +34,7 @@ type OAuthMounter interface {
 
 // Deps bundles everything Server needs.
 type Deps struct {
+	Actions          http.Handler // repository-bound Provider Actions
 	MCP              http.Handler // /mcp + /mcp/sse handler; may be nil
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
@@ -63,6 +64,9 @@ func New(d Deps) *Server {
 	if d.MCP != nil {
 		s.mux.Handle("/mcp", d.MCP)
 		s.mux.Handle("/mcp/sse", d.MCP)
+	}
+	if d.Actions != nil {
+		s.mux.Handle("/actions/", d.Actions)
 	}
 
 	if d.OAuth != nil {

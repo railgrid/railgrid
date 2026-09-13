@@ -107,6 +107,58 @@ lets `?tenant=` / `?token=` stand in for the hub-injected identity headers.
 The token is stored as a Secret in the tenant workspace, **owned by** its
 Connection — deleting the Connection garbage-collects the Secret.
 
+## Repository Provider Actions
+
+Code owns Git-host credentials and transport for consumers such as other Faros
+providers. Repository-bound actions expose branch reads, PR lookup/create/update,
+PR and merge observations, checks/reviews (including inline comments and check
+annotations), issue comments, review replies, and canonical Runner snapshot
+verification/publication. No engineering scheduling or approval policy lives here.
+
+POST an envelope `{ "input": { ... } }` to
+`/services/providers/code/actions/clusters/{cluster}/repositories/{name}/{action}/v1`.
+Every input includes `repository` (canonical owner/name), `repositoryUID`, and
+`connectionUID`. The caller needs Repository `get` and `invoke` on
+`repositories/<action>` for that resource name. Code resolves credentials through
+its provider export only after those checks, pins the recorded upstream repository
+ID, and rejects replacement or redirection. Tenant callers need no Secret access.
+The CatalogEntry advertises the eleven bounded action schemas and their digests.
+
+Git bundles use a separate bounded upload: `stage_snapshot` at the same route
+shape, with its own `invoke` grant, accepts a snapshot containing `baseCommit`,
+`commit`, `tree`, and a base64 `bundle` (25 MiB decoded maximum). This supporting
+artifact endpoint is not advertised as a small JSON action. It returns a
+`bundleRef` scoped to tenant, caller credential, Repository UID, and Connection
+UID. Artifacts expire after one hour and are lazily removed during uploads;
+quotas bound each tenant to 16 artifacts and 256 MiB. Re-upload after expiration
+or credential rotation. The normal `prepare_snapshot` and `publish_snapshot`
+actions accept that handle, not inline bundles. The runtime needs Git and writable
+bundle storage; the image includes Git and uses the existing bundle volume.
+
+Publication verifies the public Runner single-parent snapshot format and uses
+an atomic Git expected-head lease. An empty `expectedHead` requires an absent
+branch. Read the exact branch after a lost response. PR creation and comment
+writes have no automatic retry or shared receipt store: their catalog idempotency
+is `none`. Consumers must retain their own business dispatch fence and reconcile
+uncertain outcomes before issuing another mutation. Code never merges a PR.
+
+### GitHub App Connections
+
+Set a Connection's `spec.type` to `github-app` and point `spec.secretRef` at a tenant
+Secret with `appID`, `installationID`, and `privateKey` data keys. The private key
+must be one PEM RSA key of at least 2048 bits. Code signs a short-lived App JWT and
+exchanges it for an installation token; the private key is never sent to consumers.
+Grant the installation access only to intended repositories: Contents read/write
+for publication, Pull requests read/write for PR collaboration, Issues write for
+issue comments, and Checks read for feedback. PAT and OAuth Connections continue
+to use their configured token key. The portal's existing PAT/OAuth flows remain.
+
+To register a repository whose lifecycle is managed outside Faros, annotate its
+Repository with `code.faros.sh/existing-only: "true"`. Reconciliation requires an
+existing upstream repository; deleting this registration does not delete the
+upstream repository. A recorded upstream repository ID is pinned and a missing
+or replaced repository is never silently recreated.
+
 ## Register with the hub
 
 The CatalogEntry registers the provider with the hub for routing + the portal

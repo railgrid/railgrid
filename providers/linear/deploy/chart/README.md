@@ -1,20 +1,21 @@
 # Linear provider Helm chart
 
-Installs one standalone Linear provider with embedded portal, controller,
-webhook receiver, and MCP endpoint. All durable state lives in tenant KRM
-resources; no additional database or PVC is required. Use the repository root
-as Docker build context: `docker build -f providers/linear/Dockerfile .`.
+Installs Linear's portal, resource reconciliation, Provider Actions and MCP.
+Public tenant resources are Connection and Team. Private write receipts live in
+Linear's provider workspace; no additional database or PVC is required.
 
-Two hosting Secrets must be supplied, each with a `kubeconfig` key:
+Use the Faros repository root as the Docker build context.
+Supply two hosting Secrets, each with a `kubeconfig` key:
 
-- `providerKubeconfig.secretName`: bootstrap identity for the one-shot init.
-- `runtimeKubeconfig.secretName`: provider ServiceAccount identity for export
-  virtual-workspace access and authenticated heartbeats.
+- `providerKubeconfig.secretName`: bootstrap workspace administrator for init.
+- `runtimeKubeconfig.secretName`: the provider's runtime ServiceAccount identity.
 
-Init installs the generated schemas, APIExport, endpoint slice, bind grant and
-CatalogEntry. Enable the provider in a tenant and accept its `secrets/get` claim.
-Keep bootstrap credentials out of the runtime Secret. Existing tenant bindings
-do not silently gain future claims; re-enable or migrate when claims change.
+Init installs the exported Connection/Team schemas, APIExport, endpoint slice,
+bind grant and CatalogEntry. It also installs the non-exported private receipt
+CRD and a narrow provider-local RBAC binding for the `default/provider`
+ServiceAccount. Bootstrap must be authorized to grant this permission. Runtime
+does not mount the bootstrap credential. Enable Linear in the tenant and accept
+its `secrets/get` permission claim.
 
 | Value | Default | Purpose |
 | --- | --- | --- |
@@ -22,7 +23,7 @@ do not silently gain future claims; re-enable or migrate when claims change.
 | `image.tag` | chart appVersion | Explicit image version override. |
 | `image.pullPolicy` | `IfNotPresent` | Image pull behavior. |
 | `workspacePath` | `root:faros:providers:linear` | Fully qualified provider workspace; override for org-owned hosting. |
-| `replicaCount` | `1` | One replica required for bounded event admission. |
+| `replicaCount` | `1` | One replica required for write admission and recovery. |
 | `service.type` / `service.port` | `ClusterIP` / `8092` | HTTP service. |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` | Bootstrap kubeconfig Secret. |
 | `runtimeKubeconfig.secretName` | `linear-runtime-kubeconfig` | Runtime identity Secret. |
@@ -33,34 +34,19 @@ do not silently gain future claims; re-enable or migrate when claims change.
 | `resources` | see values.yaml | Container CPU/memory requests and limits. |
 | `serviceAccount`, `nodeSelector`, `tolerations`, `affinity`, `podLabels`, `podAnnotations` | see values.yaml | Hosting settings. |
 
+
 `/healthz` reports process liveness. `/readyz` requires successful export
-reconciliation. Individual Connection readiness is separate and refreshed once
-per minute; operations fetch credentials afresh and do not trust cached readiness.
+reconciliation. Connection readiness is refreshed once per minute; actions resolve
+credentials and Team bindings again before dispatch.
 
-For Linear deliveries, configure an external HTTPS ingress restricted to
-`/webhooks/`; supply the exact cluster/connection callback path in
-Linear. This chart does not create a public ingress or change Faros hub auth.
-Subscription/signing configuration belongs to the tenant Connection, not Helm
-values. API keys and signing secrets must never be committed or printed.
+The Deployment requires one replica and `strategy.type: Recreate`; upgrades
+briefly interrupt service so write admission and recovery processes cannot
+overlap. New writes require timestamped stable request keys. Confirmed receipts
+are eligible for cleanup after 30 days, while uncertain records are retained.
+The per-tenant receipt cap is 2,000. Reads do not create retained records.
 
-Connections, Operations, and Events are cluster-scoped inside each bound tenant
-workspace. Only credential Secrets remain namespaced; API-key and webhook
-signing references each default their namespace to `default`. Event admission
-is limited to 1,000 retained events per tenant workspace. This experimental
-scope change has no backward-compatible API routes or resource migration.
-
-The Deployment uses `strategy.type: Recreate`. Upgrades briefly interrupt service
-so the old and new provider processes do not overlap; `replicaCount: 1` alone
-would not enforce that admission/recovery requirement with rolling updates.
-The receiver returns HTTP 200 after Event persistence/deduplication, processes
-requests with a four-second deadline, and returns 503 under admission contention.
-
-
-### Team registrations
-
-The export includes cluster-scoped Teams alongside Connections, Operations and
-Events. Re-run provider initialization on upgrade to publish the Team schema and
-updated Connection schema before starting the new controller. No new external
-permission claims are required. All Connections require registered Teams before issue operations can run.
-Team registration is an administrative capability; grant `create` on `teams`
-only to callers allowed to extend workspace Linear access.
+No webhook ingress, subscription or signing secret is required. API-key Secrets
+remain tenant-scoped and namespaced; their default namespace is `default`.
+See the provider README for action routes and `examples/consumer-rbac.yaml` for
+Team/action permissions. Team registration requires administrative `create` on
+Teams; ordinary consumers need only resource reads and selected action verbs.

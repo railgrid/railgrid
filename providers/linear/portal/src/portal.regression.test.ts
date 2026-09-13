@@ -42,7 +42,7 @@ function connection(name: string): Resource {
 
 function fixture(initialConnections: Resource[] = [connection('linear')]) {
   const calls: { path: string; body?: any }[] = [];
-  const operations = new Map<string, Operation>();
+  const outcomes = new Map<string, Record<string, unknown>>();
   let connections = [...initialConnections];
   let issue = { ...firstIssue };
   let pageTwoIssue = { ...secondIssue };
@@ -95,7 +95,7 @@ function fixture(initialConnections: Resource[] = [connection('linear')]) {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ path, body });
 
-      if (path.includes('/teams')) return Response.json({ items: [], nodes: [{ id: 'team', name: 'Engineering' }] });
+      if (path.includes('/teams?')) return Response.json({ items: connections.map(c => ({ metadata: { name: c.metadata.name + '-team', uid: 'team-uid' }, spec: { connection: c.metadata.name, teamID: 'team' }, status: { name: 'Engineering', key: 'ENG' } })) });
       if (path.endsWith('/onboarding/teams')) return Response.json({ nodes: [{ id: 'team', name: 'Engineering' }] });
       if (body?.kind === 'Secret') return Response.json({ metadata: body.metadata });
       if (body?.kind === 'Connection') {
@@ -103,15 +103,13 @@ function fixture(initialConnections: Resource[] = [connection('linear')]) {
         connections = [...connections, created];
         return Response.json(created);
       }
-      if (body?.kind === 'Operation') {
-        operations.set(body.metadata.name, body as Operation);
-        return Response.json(body);
-      }
-
       const name = path.split('/').pop()!;
-      if (path.includes('/operations/')) {
-        const operation = operations.get(name)!;
-        const spec = operation.spec;
+      if (path.includes('/actions/')) {
+        if (!body) return Response.json({ output: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) || { phase: 'Running' } });
+        const verb = path.split('/').at(-2)!;
+        const spec = { ...body.input, action: ({ create_issue: 'createIssue', update_issue: 'updateIssue', add_comment: 'addComment' } as Record<string, string>)[verb] || verb };
+        const operation: Operation = { metadata: { name: body.requestId }, spec };
+        calls[calls.length - 1].body = operation;
         if (spec.action === 'issue' && failIssueRead) {
           failIssueRead = false;
           return new Response('', { status: 503 });
@@ -119,11 +117,11 @@ function fixture(initialConnections: Resource[] = [connection('linear')]) {
         if (spec.action === 'issues' && failIssueList) return new Response('', { status: 503 });
         if (['createIssue', 'updateIssue', 'addComment'].includes(spec.action) && delayMutation) {
           mutationReadStarted = true;
-          return new Promise<Response>(resolve => { releaseMutationRead = () => { delayMutation = false; resolve(Response.json({ ...operation, status: { phase: 'Succeeded', result: operationResult(operation) } })); }; });
+          return new Promise<Response>(resolve => { releaseMutationRead = () => { delayMutation = false; const output = { phase: 'Succeeded', result: operationResult(operation) }; outcomes.set(body.requestId, output); resolve(Response.json({ output })); }; });
         }
         const result = operationResult(operation);
         if (result.__httpError) return new Response('', { status: Number(result.__httpError) });
-        return Response.json({ ...operation, status: { phase: 'Succeeded', result } });
+        const output = { phase: 'Succeeded', result }; if (body.requestId) outcomes.set(body.requestId, output); return Response.json({ output });
       }
       if (path.includes('/connections?')) return Response.json({ items: connections });
       if (path.includes('/connections/')) return Response.json(connections.find(item => item.metadata.name === name) || connection(name));
@@ -285,7 +283,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('keeps comment progress, recovery and completion beside its composer', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1/team' });
     f.delayNextMutation();
     await wrapper.get('#issue-comment').setValue('Review this change');
     const comments = wrapper.findAll('section').find(section => section.find('#issue-comment').exists())!;
@@ -311,7 +309,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('preserves edits on refresh and allows explicitly discarding them without a write', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1/team' });
     const original = (wrapper.get('#issue-title').element as HTMLInputElement).value;
     await wrapper.get('#issue-title').setValue('Unsaved title');
     await wrapper.get('#issue-description').setValue('Unsaved description');
@@ -352,7 +350,7 @@ describe('Linear canonical portal regressions', () => {
   it('uses workspace routes and treats reserved words as explicit resource identities', () => {
     for (const name of ['create', 'detail', 'namespaces', 'conn/name']) {
       expect(parseRoute(resourcePath('connections', name))).toEqual({ page: 'connections', name });
-      expect(parseRoute(issuePath(name, 'issue/id'))).toEqual({ page: 'issues', connection: name, name: 'issue/id' });
+      expect(parseRoute(issuePath(name, 'issue/id', 'team'))).toEqual({ page: 'issues', connection: name, name: 'issue/id', team: 'team' });
     }
     expect(parseRoute('connections/create')).toEqual({ page: 'connections', create: 'connection' });
     expect(parseRoute('issues/create')).toEqual({ page: 'issues', create: 'issue' });
@@ -381,7 +379,7 @@ describe('Linear canonical portal regressions', () => {
     await choose(wrapper, '#linear-team', 'Engineering');
     await searchIssues(wrapper);
     await clickText(wrapper, 'ENG-1');
-    expect(navigations.at(-1)).toEqual({ path: 'issues/detail/linear/issue-1', replace: false });
+    expect(navigations.at(-1)).toEqual({ path: 'issues/detail/linear/issue-1/team', replace: false });
 
     await wrapper.get('a.k-back-action').trigger('click');
     await flushPromises();
@@ -478,7 +476,7 @@ describe('Linear canonical portal regressions', () => {
 
   it('does not expose a detail Retry action that cannot run during a delayed mutation', async () => {
     const f = fixture();
-    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1' });
+    const wrapper = await render({ ...f.ctx, subPath: 'issues/detail/linear/issue-1/team' });
     f.failNextIssueRead();
     await clickText(wrapper, 'Refresh');
     expect(wrapper.find('.k-resource-page__retry').exists()).toBe(true);
@@ -519,18 +517,18 @@ it('recovers creation after navigation without a second submission or changing c
   await choose(wrapper, '#linear-connection', 'other');
   await clickText(wrapper, 'Create issue');
   expect((wrapper.get('#issue-title').element as HTMLInputElement).value).toBe('Keep this intent');
-  expect(wrapper.text()).toContain('Inspect submitted operation');
+  expect(wrapper.text()).toContain('Check outcome');
   expect(wrapper.findAll('button').find(b => b.text() === 'Create issue')!.attributes('disabled')).toBeDefined();
   await wrapper.get('form.k-create-surface').trigger('submit'); await flushPromises();
   expect(f.calls.filter(c => c.body?.spec?.action === 'createIssue')).toHaveLength(1);
   f.releaseMutation(); await flushPromises();
   await clickText(wrapper, 'Check outcome');
-  expect(navigations.at(-1)?.path).toBe(issuePath('linear', 'issue-2'));
+  expect(navigations.at(-1)?.path).toBe(issuePath('linear', 'issue-2', 'team'));
   expect(f.calls.filter(c => c.body?.spec?.action === 'createIssue')).toHaveLength(1);
 });
 
 it.each(['updateIssue', 'addComment'])('restores %s recovery on the issue detail and fences another submission', async action => {
-  const f = fixture(); f.ctx.subPath = issuePath('linear', 'issue-1');
+  const f = fixture(); f.ctx.subPath = issuePath('linear', 'issue-1', 'team');
   const wrapper = await render(f.ctx);
   f.delayNextMutation();
   if (action === 'updateIssue') await wrapper.get('#issue-title').setValue('Updated title');
@@ -539,8 +537,8 @@ it.each(['updateIssue', 'addComment'])('restores %s recovery on the issue detail
   await form.trigger('submit'); await flushPromises();
   expect(f.mutationReadStarted).toBe(true);
   await clickText(wrapper, 'Back to issues');
-  await wrapper.setProps({ ctx: { ...f.ctx, subPath: issuePath('linear', 'issue-1') } }); await flushPromises();
-  expect(wrapper.text()).toContain('Inspect submitted operation');
+  await wrapper.setProps({ ctx: { ...f.ctx, subPath: issuePath('linear', 'issue-1', 'team') } }); await flushPromises();
+  expect(wrapper.text()).toContain('Check outcome');
   const button = wrapper.findAll('button').find(b => b.text() === (action === 'updateIssue' ? 'Update issue' : 'Add comment'))!;
   expect(button.attributes('disabled')).toBeDefined();
   f.releaseMutation(); await flushPromises(); await clickText(wrapper, 'Check outcome');
@@ -559,11 +557,11 @@ it('requires explicit acknowledgment to prepare a separate intent and clears rec
   expect(f.calls.filter(c => c.body?.spec?.action === 'createIssue')).toHaveLength(1);
   expect(wrapper.findAll('button').find(b => b.text() === 'Create issue')!.attributes('disabled')).toBeDefined();
   await clickText(wrapper, 'I checked Linear; prepare a separate write');
-  expect(wrapper.text()).not.toContain('Inspect submitted operation');
+  expect(wrapper.text()).not.toContain('Check outcome');
   await wrapper.get('form.k-create-surface').trigger('submit'); await flushPromises();
   const writes = f.calls.filter(c => c.body?.spec?.action === 'createIssue');
   expect(writes).toHaveLength(2); expect(writes[0].body.metadata.name).not.toBe(writes[1].body.metadata.name);
   await wrapper.setProps({ ctx: { ...f.ctx, user: { sub: 'another-user' } } }); await flushPromises();
-  expect(wrapper.text()).not.toContain('Inspect submitted operation');
+  expect(wrapper.text()).not.toContain('Check outcome');
   expect((wrapper.get('#issue-title').element as HTMLInputElement).value).toBe('');
 });

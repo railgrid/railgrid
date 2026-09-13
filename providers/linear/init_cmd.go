@@ -14,6 +14,13 @@ import (
 	"log"
 	"os"
 
+	"github.com/faroshq/provider-linear/internal/actionapi"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
+
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -33,6 +40,9 @@ func runInitCmd(ctx context.Context) error {
 	config, err := loadInitConfig()
 	if err != nil {
 		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
+	}
+	if err := actionapi.Install(ctx, config); err != nil {
+		return fmt.Errorf("private action storage: %w", err)
 	}
 	// Empty means "the workspace this kubeconfig already points at": kcp
 	// resolves an unset APIExportEndpointSlice export path to the slice's own
@@ -58,8 +68,49 @@ func runInitCmd(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
+	client, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+	if err := restrictPublicExport(ctx, client); err != nil {
+		return err
+	}
 	log.Printf("linear-provider init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", apiExportName, workspacePath, schemasDir, catalogEntryFile)
 	return nil
+}
+
+// The shared installer preserves prior exports by default. Linear's public
+// resource vocabulary is deliberately exactly Connection and Team.
+func restrictPublicExport(ctx context.Context, client dynamic.Interface) error {
+	resource := client.Resource(schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"})
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		export, err := resource.Get(ctx, apiExportName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		items, _, err := unstructured.NestedSlice(export.Object, "spec", "resources")
+		if err != nil {
+			return err
+		}
+		public := []any{}
+		for _, item := range items {
+			entry, ok := item.(map[string]any)
+			if ok && entry["group"] == apiExportName && (entry["name"] == "connections" || entry["name"] == "teams") {
+				public = append(public, item)
+			}
+		}
+		if len(public) != 2 {
+			return fmt.Errorf("linear export requires exactly Connection and Team schemas")
+		}
+		if len(public) == len(items) {
+			return nil
+		}
+		if err := unstructured.SetNestedSlice(export.Object, public, "spec", "resources"); err != nil {
+			return err
+		}
+		_, err = resource.Update(ctx, export, metav1.UpdateOptions{})
+		return err
+	})
 }
 
 // loadInitConfig resolves the workspace-admin kubeconfig for init.

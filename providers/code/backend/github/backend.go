@@ -100,6 +100,20 @@ func (b *Backend) ValidateConnection(ctx context.Context, conn *codev1alpha1.Con
 	if err != nil {
 		return "", nil, err
 	}
+	if conn.Spec.Type == codev1alpha1.CredentialTypeGitHubApp {
+		repos, resp, err := c.Apps.ListRepos(ctx, &gogithub.ListOptions{PerPage: 1})
+		if err != nil {
+			return "", nil, classify(resp, err)
+		}
+		if repos == nil || len(repos.Repositories) == 0 || repos.Repositories[0].GetOwner() == nil {
+			return "", nil, errors.New("github: installation must have access to at least one repository")
+		}
+		login := repos.Repositories[0].GetOwner().GetLogin()
+		if !strings.EqualFold(login, conn.Spec.Owner) {
+			return "", nil, errors.New("github: installation owner differs from Connection owner")
+		}
+		return login, nil, nil
+	}
 	// Empty user => the authenticated user.
 	user, resp, err := c.Users.Get(ctx, "")
 	if err != nil {
@@ -131,6 +145,12 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 	}
 	if resp == nil || resp.StatusCode != http.StatusNotFound {
 		return backend.RepositoryResult{}, classify(resp, err)
+	}
+	if repo.Status.RepoID != "" {
+		return backend.RepositoryResult{}, backend.ErrRepositoryIdentityConflict
+	}
+	if repo.Annotations["code.faros.sh/existing-only"] == "true" {
+		return backend.RepositoryResult{}, errors.New("github: registered repository is unavailable; existing-only registration cannot create it")
 	}
 
 	// Create. When org == the authenticated user, GitHub requires the org
@@ -165,6 +185,9 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 
 // DeleteRepository removes the repository. Idempotent: a missing repo is success.
 func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) error {
+	if repo.Annotations["code.faros.sh/existing-only"] == "true" {
+		return nil
+	}
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
 		return err
@@ -1004,7 +1027,7 @@ func cleanRepositoryPath(raw string) (string, error) {
 	}
 	for _, part := range strings.Split(raw, "/") {
 		if part == ".." {
-			return "", fmt.Errorf("github: file path %q cannot contain ..", raw)
+			return "", fmt.Errorf("github: file path %q cannot contain parent traversal", raw)
 		}
 		if strings.ContainsRune(part, 0) {
 			return "", fmt.Errorf("github: file path %q cannot contain NUL", raw)
@@ -1111,7 +1134,7 @@ func classify(resp *gogithub.Response, err error) error {
 const createOnlyAnnotation = "code.faros.sh/create-only"
 
 func checkRepositoryIdentity(repo *codev1alpha1.Repository, remote *gogithub.Repository) error {
-	if repo.Annotations[createOnlyAnnotation] != "true" {
+	if repo.Status.RepoID == "" && repo.Annotations[createOnlyAnnotation] != "true" {
 		return nil
 	}
 	if repo.Status.RepoID == "" || remote.GetID() == 0 || repo.Status.RepoID != strconv.FormatInt(remote.GetID(), 10) {

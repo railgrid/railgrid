@@ -32,7 +32,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 # 3. Minimal runtime image. The portal assets are baked into the binary; the
 #    APIResourceSchemas the `init` subcommand applies are baked at
 #    /etc/faros/schemas (FAROS_SCHEMAS_DIR).
-FROM gcr.io/distroless/static:nonroot
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates git \
+    && addgroup -g 65532 nonroot \
+    && adduser -D -u 65532 -G nonroot nonroot
 COPY --from=build /out/code-provider /code-provider
 COPY providers/code/deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8083

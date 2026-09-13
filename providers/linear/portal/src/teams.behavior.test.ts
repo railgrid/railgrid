@@ -8,7 +8,7 @@ const wrappers: VueWrapper[] = [];
 afterEach(() => { for (const wrapper of wrappers.splice(0)) wrapper.unmount(); document.body.innerHTML = ''; });
 function fixture() {
   const connection: any = { metadata: { name: 'main', uid: 'connection-uid', resourceVersion: '1' }, spec: {}, status: { ready: true } };
-  const teams = new Map<string, any>(); const operations = new Map<string, any>(); const calls: { path: string; method?: string; body: any }[] = [];
+  const teams = new Map<string, any>(); const calls: { path: string; method?: string; body: any }[] = [];
   const fetch: FarosContext['fetch'] = async (input, init) => {
     const path = String(input), method = init?.method; const body = init?.body ? JSON.parse(String(init.body)) : undefined; calls.push({ path, method, body });
     if (path.includes('/api/connections/main/teams')) return Response.json({ nodes: [{ id: path.includes('after=') ? 'design' : 'eng', name: path.includes('after=') ? 'Design' : 'Engineering', key: path.includes('after=') ? 'DSN' : 'ENG' }], pageInfo: { hasNextPage: !path.includes('after='), endCursor: 'next' } });
@@ -16,12 +16,16 @@ function fixture() {
       if (teams.has(body.metadata.name)) return new Response('', { status: 409 });
       const team = { ...body, metadata: { ...body.metadata, uid: 'team-uid' }, status: { ready: true, name: body.spec.teamID === 'eng' ? 'Engineering' : 'Design', key: 'ENG' } }; teams.set(team.metadata.name, team); return Response.json(team);
     }
+    if (path.includes('/actions/')) {
+      const action = path.split('/').at(-2)!;
+      calls[calls.length - 1].body = { spec: { ...body.input, connection: 'main', teamID: 'eng', action } };
+      const issue = { id: 'issue', identifier: 'ENG-1', title: 'Team issue', team: { id: 'eng' } };
+      return Response.json({ output: { phase: 'Succeeded', result: action === 'issue' ? issue : { nodes: action === 'issues' ? [issue] : [] } } });
+    }
     if (path.includes('/teams/')) { const name = path.split('/').pop()!; if (method === 'DELETE') { teams.delete(name); return new Response(null, { status: 204 }); } return Response.json(teams.get(name)); }
     if (path.includes('/teams?')) return Response.json({ items: [...teams.values()] });
     if (path.includes('/connections/')) return Response.json(connection);
     if (path.includes('/connections?')) return Response.json({ items: [connection] });
-    if (body?.kind === 'Operation') { operations.set(body.metadata.name, body); return Response.json(body); }
-    if (path.includes('/operations/')) { const spec = operations.get(path.split('/').pop()!)?.spec; const issue = { id: 'issue', identifier: 'ENG-1', title: 'Team issue', team: { id: 'eng' } }; return Response.json({ status: { phase: 'Succeeded', result: spec?.action === 'issue' ? issue : { nodes: spec?.action === 'issues' ? [issue] : [] } } }); }
     return Response.json({ items: [] });
   };
   return { ctx: { tenant: 'workspace', user: { sub: 'user' }, fetch } as FarosContext, teams, connection, calls };
@@ -52,7 +56,7 @@ it('registers selected existing teams with pinned ownership and opens their issu
   await click(w, 'Refresh'); await settle();
   expect(f.calls.filter(c => c.body?.spec?.action === 'issues')).toHaveLength(readsBeforeRefresh + 1);
   expect(f.calls.filter(c => c.body?.spec?.action === 'issues').at(-1)?.body.spec.query).toBe('Team');
-  await w.get('.linear-issue-card').trigger('click'); await flushPromises(); await w.get('a').trigger('click'); await settle();
+  await w.get('a.linear-issue-card-link').trigger('click'); await flushPromises(); await w.get('a').trigger('click'); await settle();
   expect((w.get('#linear-query').element as HTMLInputElement).value).toBe('Team'); expect(f.calls.filter(c => c.body?.spec?.action === 'issues').at(-1)?.body.spec.query).toBe('Team');
   await click(w, 'Create issue'); expect(w.find('#linear-team').exists()).toBe(false); expect(w.text()).toContain('Creating in the selected Team');
   await click(w, 'Cancel'); expect(w.props('ctx')!.subPath).toBe('teams/detail/' + team.metadata.name);

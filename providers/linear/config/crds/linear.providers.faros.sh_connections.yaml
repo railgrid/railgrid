@@ -60,37 +60,6 @@ spec:
                 required:
                 - name
                 type: object
-              subscription:
-                properties:
-                  id:
-                    minLength: 1
-                    type: string
-                  organizationID:
-                    minLength: 1
-                    type: string
-                  signingSecretRef:
-                    properties:
-                      key:
-                        default: apiKey
-                        type: string
-                      name:
-                        minLength: 1
-                        type: string
-                      namespace:
-                        default: default
-                        description: Namespace of the Secret in the same tenant workspace.
-                          Defaults to default.
-                        maxLength: 63
-                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                        type: string
-                    required:
-                    - name
-                    type: object
-                required:
-                - id
-                - organizationID
-                - signingSecretRef
-                type: object
             required:
             - apiKeySecretRef
             type: object

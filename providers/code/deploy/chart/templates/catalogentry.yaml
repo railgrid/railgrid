@@ -66,4 +66,492 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+      actions:
+      - id: branch_head/v1
+        displayName: Branch head
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - branch
+          - repository
+          properties:
+            repositoryUID: &id001
+              type: string
+              minLength: 1
+              maxLength: 253
+            connectionUID: *id001
+            branch: &id002
+              type: string
+              minLength: 1
+              maxLength: 255
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:8768bfafae9fb0ef9328ee46a55eeda45558c3ccf66661841990dddb706b74f7
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: find_pull_request/v1
+        displayName: Find pull request
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - head
+          - base
+          - commit
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            head: *id002
+            base: *id002
+            commit: &id003
+              type: string
+              pattern: ^[0-9a-f]{40}$
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
+        schemaDigest: sha256:67cfd5409978bc88be462dfd6e1dc21167c8460512210ad8d987ccb9ed8743bc
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: pull_request/v1
+        displayName: Pull request
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - number
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            number: &id006
+              type: integer
+              minimum: 1
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:5a658622b1e1e7588ecc82f63451c9da9e7266a4e15ac093606871c5f45968a3
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: create_pull_request/v1
+        displayName: Create pull request
+        description: Use the registered Repository and pinned resource identities. A failed
+          response may leave an unconfirmed upstream outcome; inspect before retrying.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - head
+          - base
+          - commit
+          - title
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            head: *id002
+            base: *id002
+            commit: *id003
+            title: &id004
+              type: string
+              minLength: 1
+              maxLength: 256
+            body: &id005
+              type: string
+              maxLength: 32768
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:c389253dd92c08bf664bde0ad72d40ee61e6270919e34f8fa9f47a4b2d3fae12
+        executionMode: sync
+        readOnly: false
+        risk: medium
+        idempotency: none
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: update_pull_request/v1
+        displayName: Update pull request
+        description: Use the registered Repository and pinned resource identities. A failed
+          response may leave an unconfirmed upstream outcome; inspect before retrying.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - head
+          - base
+          - commit
+          - title
+          - number
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            head: *id002
+            base: *id002
+            commit: *id003
+            title: *id004
+            body: *id005
+            number: *id006
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:dffee173b2762eb26cf59ef05d066e850bb3a3553172cf96371b6e8a62bbb88e
+        executionMode: sync
+        readOnly: false
+        risk: medium
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: feedback/v1
+        displayName: Feedback
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - number
+          - commit
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            number: *id006
+            commit: *id003
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:f8f9e0fadc70b1dc91c4a7ed5c6b977480fc5ca9a164d60611880110a40ff9a4
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 2000
+        consent:
+          required: false
+      - id: comments/v1
+        displayName: Comments
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - number
+          - page
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            number: *id006
+            page:
+              type: integer
+              minimum: 1
+              maximum: 20
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:d37ca53e61369da77665f48222732d5bc97de85ad3c69dc85ff667d3b727426e
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: add_comment/v1
+        displayName: Add comment
+        description: Use the registered Repository and pinned resource identities. A failed
+          response may leave an unconfirmed upstream outcome; inspect before retrying.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - number
+          - body
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            number: *id006
+            body: *id005
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:7efaed8cd0871c4e6460ac3302bee9ffb5c48e1a2cd22885a7b44882fcac73cd
+        executionMode: sync
+        readOnly: false
+        risk: medium
+        idempotency: none
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: reply_to_review/v1
+        displayName: Reply to review
+        description: Use the registered Repository and pinned resource identities. A failed
+          response may leave an unconfirmed upstream outcome; inspect before retrying.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - number
+          - parentCommentID
+          - body
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            number: *id006
+            parentCommentID: *id006
+            body: *id005
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:a6b4fdfe076d82a660e83621611da7c46bf69018373e17decbb736581a5c8522
+        executionMode: sync
+        readOnly: false
+        risk: medium
+        idempotency: none
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: prepare_snapshot/v1
+        displayName: Prepare snapshot
+        description: Use the registered Repository and pinned resource identities. Returns
+          current host state.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - bundleRef
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            bundleRef: &id007
+              type: string
+              pattern: ^[a-f0-9]{64}$
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:519de3f8463ccb786602e163f2be51e2ec6718989756954e71f2a3ba4cd3b8fd
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+      - id: publish_snapshot/v1
+        displayName: Publish snapshot
+        description: Use the registered Repository and pinned resource identities. A failed
+          response may leave an unconfirmed upstream outcome; inspect before retrying.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - bundleRef
+          - branch
+          - expectedHead
+          - repository
+          properties:
+            repositoryUID: *id001
+            connectionUID: *id001
+            bundleRef: *id007
+            branch: *id002
+            expectedHead:
+              type: string
+              pattern: ^([a-f0-9]{40})?$
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+          additionalProperties: false
+        outputSchema:
+          type: object
+          additionalProperties: true
+        schemaDigest: sha256:e8feb48580ce282a5fe8243cfc89f32eedd48353e74d542fadd382e40fb2991c
+        executionMode: sync
+        readOnly: false
+        risk: medium
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
 {{- end }}

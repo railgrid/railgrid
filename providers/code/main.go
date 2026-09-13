@@ -31,9 +31,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/faroshq/provider-code/actions"
 	"github.com/faroshq/provider-code/backend"
 	githubbackend "github.com/faroshq/provider-code/backend/github"
 	"github.com/faroshq/provider-code/commitbundle"
@@ -150,7 +152,10 @@ func runServe() {
 	}
 	oauthHandler := oauthgithub.NewHandler(oauthCfg, oauthEnabled && oauthErr == nil)
 
+	codeActions := actions.New(tenantFactory, actions.ExportClient(kcpConfig), backends)
+	codeActions.SnapshotDir = filepath.Join(bundles.Dir(), "git-snapshots")
 	srv := server.New(server.Deps{
+		Actions:          codeActions,
 		MCP:              mcpHandler,
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,

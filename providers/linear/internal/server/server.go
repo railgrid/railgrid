@@ -10,34 +10,25 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
 	"strings"
 
-	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	"github.com/faroshq/provider-linear/internal/authority"
-	"github.com/faroshq/provider-linear/internal/engine"
 	"github.com/faroshq/provider-linear/internal/linearapi"
 	"github.com/faroshq/provider-sdk/tenantaccess"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 type Server struct {
-	Authority authority.Authority
-	HubURL    string
-	Insecure  bool
-}
-type Submit struct {
-	Name string            `json:"name"`
-	Spec api.OperationSpec `json:"spec"`
+	Authority       authority.Authority
+	HubURL          string
+	Insecure        bool
+	InstanceID      string
+	PrivateReceipts dynamic.Interface
 }
 
 func (s Server) Caller(r *http.Request) (dynamic.Interface, error) {
@@ -48,41 +39,11 @@ func (s Server) Caller(r *http.Request) (dynamic.Interface, error) {
 	}
 	return tenantaccess.NewDynamicClient(s.HubURL, cluster, strings.TrimPrefix(auth, "Bearer "), s.Insecure)
 }
-func (s Server) Submit(ctx context.Context, r *http.Request, input Submit) (any, error) {
-	if len(validation.IsDNS1123Subdomain(input.Name)) != 0 {
-		return nil, errors.New("stable operation name required")
-	}
-	client, err := s.Caller(r)
-	if err != nil {
-		return nil, err
-	}
-	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: input.Name}, Spec: input.Spec}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&op)
-	if err != nil {
-		return nil, err
-	}
-	return client.Resource(engine.Operations).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
-}
 func (s Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/connections/{connection}/teams", s.teamDiscovery())
 	mux.Handle("POST /api/onboarding/teams", newOnboardingHandler(s.Caller, func(ctx context.Context, key, after string) (linearapi.Page[linearapi.Team], error) {
 		return linearapi.New(key).Teams(ctx, 50, after)
 	}))
-	mux.HandleFunc("POST /api/operations", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 32768)
-		var input Submit
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, "invalid operation", 400)
-			return
-		}
-		out, err := s.Submit(r.Context(), r, input)
-		if err != nil {
-			http.Error(w, "operation rejected; check workspace permissions and unique operation name", 400)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(202)
-		_ = json.NewEncoder(w).Encode(out)
-	})
-	mux.Handle("POST /webhooks/{cluster}/{connection}", newWebhookHandler(s.Authority.Tenant))
+	mux.HandleFunc("POST /actions/clusters/{cluster}/teams/{team}/{action}/v1", s.actionHandler)
+	mux.HandleFunc("GET /actions/clusters/{cluster}/teams/{team}/{action}/v1", s.actionHandler)
 }

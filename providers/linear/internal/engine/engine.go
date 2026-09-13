@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/faroshq/provider-linear/internal/actionapi"
+
 	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	"github.com/faroshq/provider-linear/internal/linearapi"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,14 +28,15 @@ import (
 )
 
 var Connections = schema.GroupVersionResource{Group: api.GroupName, Version: api.Version, Resource: "connections"}
-var Operations = schema.GroupVersionResource{Group: api.GroupName, Version: api.Version, Resource: "operations"}
-var Events = schema.GroupVersionResource{Group: api.GroupName, Version: api.Version, Resource: "events"}
+var Receipts = schema.GroupVersionResource{Group: "linear.internal.faros.sh", Version: api.Version, Resource: "actionreceipts"}
 var secrets = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 type Engine struct {
-	Client    dynamic.Interface
-	NewClient func(string) *linearapi.Client
-	Now       func() time.Time
+	Client        dynamic.Interface
+	ReceiptClient dynamic.Interface
+	Access        TeamAccess
+	NewClient     func(string) *linearapi.Client
+	Now           func() time.Time
 }
 
 func (e Engine) now() time.Time {
@@ -122,13 +125,13 @@ func (e Engine) Probe(ctx context.Context, u *unstructured.Unstructured) error {
 	_, err = e.Client.Resource(Connections).UpdateStatus(ctx, u, metav1.UpdateOptions{})
 	return err
 }
-func (e Engine) save(ctx context.Context, u *unstructured.Unstructured, s api.OperationStatus) error {
+func (e Engine) save(ctx context.Context, u *unstructured.Unstructured, s actionapi.Outcome) error {
 	v, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&s)
 	if err != nil {
 		return err
 	}
 	u.Object["status"] = v
-	updated, err := e.Client.Resource(Operations).UpdateStatus(ctx, u, metav1.UpdateOptions{})
+	updated, err := e.receiptClient().Resource(Receipts).UpdateStatus(ctx, u, metav1.UpdateOptions{})
 	if err == nil {
 		*u = *updated
 	}
@@ -138,11 +141,11 @@ func mutation(action string) bool {
 	return action == "createIssue" || action == "updateIssue" || action == "addComment"
 }
 func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) error {
-	var op api.Operation
+	var op actionapi.Receipt
 	if err := Decode(u, &op); err != nil {
 		return err
 	}
-	const finalizer = "linear.providers.faros.sh/operation-history"
+	const finalizer = "linear.internal.faros.sh/receipt-history"
 	if op.DeletionTimestamp != nil {
 		if op.Status.Phase == "Running" && mutation(op.Spec.Action) {
 			// A deletion can invalidate the dispatcher's completion update. On
@@ -161,7 +164,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 			}
 		}
 		u.SetFinalizers(finalizers)
-		_, err := e.Client.Resource(Operations).Update(ctx, u, metav1.UpdateOptions{})
+		_, err := e.receiptClient().Resource(Receipts).Update(ctx, u, metav1.UpdateOptions{})
 		return err
 	}
 	if op.Status.Phase == "Succeeded" || op.Status.Phase == "Failed" || op.Status.Phase == "Uncertain" {
@@ -175,7 +178,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	}
 	if !found {
 		u.SetFinalizers(append(u.GetFinalizers(), finalizer))
-		updated, err := e.Client.Resource(Operations).Update(ctx, u, metav1.UpdateOptions{})
+		updated, err := e.receiptClient().Resource(Receipts).Update(ctx, u, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -192,7 +195,11 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	conn, key, err := e.Connection(ctx, op.Spec.Connection)
 	var access TeamAccess
 	if err == nil {
-		access, err = e.effectivePolicy(ctx, conn)
+		if e.Access != nil {
+			access = e.Access
+		} else {
+			access, err = e.effectivePolicy(ctx, conn)
+		}
 	}
 	if err != nil {
 		return e.finish(ctx, u, op.Status, nil, err, false)
@@ -203,7 +210,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	// Persist the one-shot dispatch fence before any external request. Conflicting
 	// controllers cannot both claim a Pending operation. Reads may safely resume.
 	now := metav1.NewTime(e.now())
-	op.Status = api.OperationStatus{Phase: "Running", StartedAt: &now, ConnectionUID: string(conn.UID)}
+	op.Status = actionapi.Outcome{Phase: "Running", StartedAt: &now, ConnectionUID: string(conn.UID)}
 	if err = e.save(ctx, u, op.Status); err != nil {
 		return err
 	}
@@ -212,7 +219,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	uncertain := errors.As(err, &upstream) && upstream.Uncertain
 	return e.finish(ctx, u, op.Status, value, err, uncertain)
 }
-func (e Engine) finish(ctx context.Context, u *unstructured.Unstructured, s api.OperationStatus, value any, err error, uncertain bool) error {
+func (e Engine) finish(ctx context.Context, u *unstructured.Unstructured, s actionapi.Outcome, value any, err error, uncertain bool) error {
 	now := metav1.NewTime(e.now())
 	s.CompletedAt = &now
 	s.Phase = "Succeeded"
@@ -232,9 +239,23 @@ func (e Engine) finish(ctx context.Context, u *unstructured.Unstructured, s api.
 		}
 		s.Result = &runtime.RawExtension{Raw: b}
 	}
-	return e.save(ctx, u, s)
+	if err := e.save(ctx, u, s); err != nil {
+		return err
+	}
+	// Dispatch inputs are no longer needed once the outcome is known. The
+	// action boundary retains their digest for same-key conflict detection.
+	if e.ReceiptClient != nil {
+		spec, _, _ := unstructured.NestedMap(u.Object, "spec")
+		u.Object["spec"] = map[string]any{"connection": spec["connection"], "action": spec["action"], "teamID": spec["teamID"]}
+		updated, err := e.receiptClient().Resource(Receipts).Update(ctx, u, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+		*u = *updated
+	}
+	return nil
 }
-func Execute(ctx context.Context, c *linearapi.Client, access TeamAccess, s api.OperationSpec) (any, error) {
+func Execute(ctx context.Context, c *linearapi.Client, access TeamAccess, s actionapi.Input) (any, error) {
 	if s.First < 0 || s.First > 50 {
 		return nil, errors.New("page size must be 1 to 50")
 	}
@@ -349,4 +370,11 @@ func Execute(ctx context.Context, c *linearapi.Client, access TeamAccess, s api.
 	default:
 		return nil, fmt.Errorf("unsupported operation %q", s.Action)
 	}
+}
+
+func (e Engine) receiptClient() dynamic.Interface {
+	if e.ReceiptClient != nil {
+		return e.ReceiptClient
+	}
+	return e.Client
 }

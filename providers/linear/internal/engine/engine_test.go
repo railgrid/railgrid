@@ -10,10 +10,7 @@ package engine
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,7 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/faroshq/provider-linear/internal/actionapi"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ktesting "k8s.io/client-go/testing"
@@ -63,11 +61,11 @@ func object(t *testing.T, v any) *unstructured.Unstructured {
 func setup(t *testing.T) (Engine, *unstructured.Unstructured) {
 	t.Helper()
 	title := "approved"
-	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}, Subscription: &api.Subscription{ID: "hook", OrganizationID: "organization", SigningSecretRef: api.SecretReference{Name: "key", Key: "signing"}}}}
-	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: "op-1", UID: "op-one"}, Spec: api.OperationSpec{Connection: "linear", Action: "createIssue", TeamID: "allowed", Title: &title}}
+	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}}}
+	op := actionapi.Receipt{TypeMeta: metav1.TypeMeta{APIVersion: "linear.internal.faros.sh/v1alpha1", Kind: "ActionReceipt"}, ObjectMeta: metav1.ObjectMeta{Name: "op-1", UID: "op-one"}, Spec: actionapi.Input{Connection: "linear", Action: "createIssue", TeamID: "allowed", Title: &title}}
 	secret := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "key", "namespace": "default"}, "data": map[string]any{"apiKey": base64.StdEncoding.EncodeToString([]byte("api-key")), "signing": base64.StdEncoding.EncodeToString([]byte("a-long-signing-secret"))}}}
 	u := object(t, &op)
-	cl := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{Events: "EventList", Operations: "OperationList", Connections: "ConnectionList", Teams: "TeamList"}, object(t, &conn), u, secret, object(t, &api.Team{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Team"}, ObjectMeta: metav1.ObjectMeta{Name: "allowed"}, Spec: api.TeamSpec{Connection: "linear", ConnectionUID: "connection-one", TeamID: "allowed"}}))
+	cl := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{Receipts: "ActionReceiptList", Connections: "ConnectionList", Teams: "TeamList"}, object(t, &conn), u, secret, object(t, &api.Team{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Team"}, ObjectMeta: metav1.ObjectMeta{Name: "allowed"}, Spec: api.TeamSpec{Connection: "linear", ConnectionUID: "connection-one", TeamID: "allowed"}}))
 	return Engine{Client: cl}, u
 }
 func TestAmbiguousMutationPersistsAndSurvivesRestartWithoutReplay(t *testing.T) {
@@ -113,11 +111,11 @@ func TestIssueAndStatePolicyBeforeMutation(t *testing.T) {
 	}))
 	defer srv.Close()
 	conn := TeamAccess{"allowed": true}
-	_, err := Execute(ctx, testClient(srv), conn, api.OperationSpec{Action: "addComment", IssueID: "issue", Body: "hi"})
+	_, err := Execute(ctx, testClient(srv), conn, actionapi.Input{Action: "addComment", IssueID: "issue", Body: "hi"})
 	if err == nil || calls != 1 {
 		t.Fatal("foreign team issue mutation was permitted")
 	}
-	_, err = Execute(ctx, testClient(srv), conn, api.OperationSpec{Action: "issues", TeamID: "forbidden"})
+	_, err = Execute(ctx, testClient(srv), conn, actionapi.Input{Action: "issues", TeamID: "forbidden"})
 	if err == nil || calls != 1 {
 		t.Fatal("foreign team list was sent")
 	}
@@ -153,7 +151,7 @@ func TestCommentRepliesBindParentToAuthorizedIssue(t *testing.T) {
 	t.Run("authorized parent", func(t *testing.T) {
 		srv, calls := newServer(t, "allowed", "issue-uuid")
 		defer srv.Close()
-		page, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1", First: 2, After: "cursor-1"})
+		page, err := Execute(context.Background(), testClient(srv), connection, actionapi.Input{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1", First: 2, After: "cursor-1"})
 		if err != nil || calls == nil || *calls != 3 {
 			t.Fatalf("Execute() page=%+v calls=%d error=%v", page, *calls, err)
 		}
@@ -161,7 +159,7 @@ func TestCommentRepliesBindParentToAuthorizedIssue(t *testing.T) {
 	t.Run("parent mismatch", func(t *testing.T) {
 		srv, calls := newServer(t, "allowed", "other-issue")
 		defer srv.Close()
-		_, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
+		_, err := Execute(context.Background(), testClient(srv), connection, actionapi.Input{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
 		if err == nil || !strings.Contains(err.Error(), "outside the requested issue") || *calls != 2 {
 			t.Fatalf("error=%v calls=%d, want parent rejection before children", err, *calls)
 		}
@@ -169,68 +167,22 @@ func TestCommentRepliesBindParentToAuthorizedIssue(t *testing.T) {
 	t.Run("foreign issue team", func(t *testing.T) {
 		srv, calls := newServer(t, "forbidden", "issue-uuid")
 		defer srv.Close()
-		_, err := Execute(context.Background(), testClient(srv), connection, api.OperationSpec{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
+		_, err := Execute(context.Background(), testClient(srv), connection, actionapi.Input{Action: "replies", IssueID: "ENG-1", CommentID: "comment-1"})
 		if err == nil || !strings.Contains(err.Error(), "outside connection policy") || *calls != 1 {
 			t.Fatalf("error=%v calls=%d, want team policy rejection", err, *calls)
 		}
 	})
 }
-func signature(raw []byte) string {
-	m := hmac.New(sha256.New, []byte("a-long-signing-secret"))
-	_, _ = m.Write(raw)
-	return hex.EncodeToString(m.Sum(nil))
-}
-func TestWebhookAuthenticityScopeDedupAndRetention(t *testing.T) {
-	ctx := context.Background()
-	e, _ := setup(t)
-	now := time.Now().UTC()
-	e.Now = func() time.Time { return now }
-	raw := []byte(fmt.Sprintf(`{"action":"create","type":"Issue","organizationId":"organization","webhookId":"hook","webhookTimestamp":%d,"data":{"id":"issue","teamId":"allowed"}}`, now.UnixMilli()))
-	if err := e.Webhook(ctx, "linear", signature(raw), "delivery", raw); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Webhook(ctx, "linear", signature(raw), "different-header", raw); err != nil {
-		t.Fatal(err)
-	}
-	list, err := e.Client.Resource(Events).List(ctx, metav1.ListOptions{})
-	if err != nil || len(list.Items) != 1 {
-		t.Fatalf("events=%v err=%v", list, err)
-	}
-	for _, bad := range [][]byte{[]byte(strings.Replace(string(raw), "allowed", "forbidden", 1)), []byte(strings.Replace(string(raw), "organization\"", "other\"", 1))} {
-		if err := e.Webhook(ctx, "linear", signature(bad), "delivery", bad); err == nil {
-			t.Fatal("accepted foreign event")
-		}
-	}
-	if _, err := Verify(raw, "00", "a-long-signing-secret", now); err == nil {
-		t.Fatal("invalid signature accepted")
-	}
-	if _, err := Verify(raw, signature(raw), "a-long-signing-secret", now.Add(2*time.Minute)); err == nil {
-		t.Fatal("stale event accepted")
-	}
-	e.Now = func() time.Time { return now.Add(8 * 24 * time.Hour) }
-	if err = e.Prune(ctx, &list.Items[0]); err != nil {
-		t.Fatal(err)
-	}
-	list, err = e.Client.Resource(Events).List(ctx, metav1.ListOptions{})
-	if err != nil || len(list.Items) != 0 {
-		t.Fatal("expired event retained")
-	}
-	otherWorkspace := Engine{Client: fake.NewSimpleDynamicClient(runtime.NewScheme())}
-	if _, _, err := otherWorkspace.Connection(ctx, "linear"); err == nil {
-		t.Fatal("connection resolved outside its workspace")
-	}
-}
-
 func TestCompetingDispatchClaimsOnlyPermitOneWrite(t *testing.T) {
 	e, u := setup(t)
 	var claims atomic.Int32
 	var writes atomic.Int32
-	e.Client.(*fake.FakeDynamicClient).PrependReactor("update", "operations", func(action ktesting.Action) (bool, runtime.Object, error) {
+	e.Client.(*fake.FakeDynamicClient).PrependReactor("update", "actionreceipts", func(action ktesting.Action) (bool, runtime.Object, error) {
 		if action.GetSubresource() == "status" {
 			obj := action.(ktesting.UpdateAction).GetObject().(*unstructured.Unstructured)
 			phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 			if phase == "Running" && claims.Add(1) > 1 {
-				return true, nil, apierrors.NewConflict(Operations.GroupResource(), u.GetName(), fmt.Errorf("stale resource version"))
+				return true, nil, apierrors.NewConflict(Receipts.GroupResource(), u.GetName(), fmt.Errorf("stale resource version"))
 			}
 		}
 		return false, nil, nil
@@ -295,7 +247,7 @@ func TestCredentialNamespacesRemainExplicitWithinWorkspace(t *testing.T) {
 
 func TestDeletionDuringDispatchPreservesUncertainWriteWithoutReplay(t *testing.T) {
 	e, u := setup(t)
-	u.SetFinalizers([]string{"linear.providers.faros.sh/operation-history"})
+	u.SetFinalizers([]string{"linear.internal.faros.sh/receipt-history"})
 	now := metav1.Now()
 	u.SetDeletionTimestamp(&now)
 	u.Object["status"] = map[string]any{"phase": "Running"}

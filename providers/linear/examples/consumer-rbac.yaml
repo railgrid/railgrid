@@ -4,11 +4,13 @@ metadata:
   name: linear-consumer
 rules:
   - apiGroups: [linear.providers.faros.sh]
-    resources: [connections, teams, events]
-    verbs: [get, list, watch]
+    resources: [connections, teams]
+    verbs: [get, list]
   - apiGroups: [linear.providers.faros.sh]
-    resources: [operations]
-    verbs: [get, list, watch, create]
-# Bind this ClusterRole with a ClusterRoleBinding in the tenant workspace.
-# Operation creators can use every Connection in that workspace. Workspace
-# administrators manage Connection policy and Secrets. Do not grant consumers status writes.
+    resources: [teams/states, teams/issues, teams/issue, teams/comments, teams/replies]
+    verbs: [invoke]
+  - apiGroups: [linear.providers.faros.sh]
+    resources: [teams/create_issue, teams/update_issue, teams/add_comment]
+    verbs: [invoke]
+# Bind in the tenant workspace. Use resourceNames to restrict actions to specific
+# registered Team names. Omit write actions for read-only consumers.

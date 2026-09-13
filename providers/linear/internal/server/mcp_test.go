@@ -19,26 +19,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestMCPDiscoveryAndTimestampSubmission(t *testing.T) {
+func TestMCPDomainDiscoveryTimestampValidationAndCallerDenial(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/clusters/tenant-one/apis/linear.providers.faros.sh/v1alpha1/operations" || r.Header.Get("Authorization") != "Bearer caller-token" {
+		if r.Method != http.MethodGet || r.URL.Path != "/clusters/tenant-one/apis/linear.providers.faros.sh/v1alpha1/teams/team" || r.Header.Get("Authorization") != "Bearer caller-token" {
 			t.Errorf("incorrect tenant request: %s", r.URL.Path)
 		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-			return
-		}
-		spec := body["spec"].(map[string]any)
-		if spec["since"] != "2026-09-13T12:00:00Z" || spec["connection"] != "main" {
-			t.Errorf("unexpected spec: %v", spec)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(body); err != nil {
-			t.Error(err)
-		}
+		http.Error(w, "forbidden", http.StatusForbidden)
 	}))
 	defer upstream.Close()
 	handler, err := (Server{HubURL: upstream.URL}).MCP()
@@ -67,7 +55,7 @@ func TestMCPDiscoveryAndTimestampSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 2 {
+	if len(list.Tools) != 9 {
 		t.Fatalf("tools: %v", list.Tools)
 	}
 	// Each stateless request builds a server from the shared input schema.
@@ -80,7 +68,7 @@ func TestMCPDiscoveryAndTimestampSubmission(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			if len(tools.Tools) != 2 {
+			if len(tools.Tools) != 9 {
 				t.Errorf("concurrent tool count = %d", len(tools.Tools))
 			}
 		})
@@ -88,7 +76,10 @@ func TestMCPDiscoveryAndTimestampSubmission(t *testing.T) {
 	reads.Wait()
 	var schema map[string]any
 	for _, tool := range list.Tools {
-		if tool.Name == "linear_submit_operation" {
+		if tool.Name == "linear_submit_operation" || tool.Name == "linear_get_operation" {
+			t.Fatalf("retired resource tool exposed: %s", tool.Name)
+		}
+		if tool.Name == "linear_issues" {
 			raw, err := json.Marshal(tool.InputSchema)
 			if err != nil {
 				t.Fatal(err)
@@ -99,20 +90,26 @@ func TestMCPDiscoveryAndTimestampSubmission(t *testing.T) {
 		}
 	}
 	if schema == nil {
-		t.Fatal("submit tool missing")
+		t.Fatal("issue query tool missing")
 	}
-	since := schema["properties"].(map[string]any)["spec"].(map[string]any)["properties"].(map[string]any)["since"].(map[string]any)
+	since := schema["properties"].(map[string]any)["input"].(map[string]any)["properties"].(map[string]any)["since"].(map[string]any)
 	if !reflect.DeepEqual(since["type"], []any{"null", "string"}) || since["format"] != "date-time" {
 		t.Fatalf("timestamp schema: %v", since)
 	}
 	for _, value := range []string{"2026-09-13T12:00:00Z", "not-a-time"} {
-		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "linear_submit_operation", Arguments: map[string]any{"name": "op-stable", "spec": map[string]any{"connection": "main", "action": "reconcile", "since": value}}})
+		before := calls.Load()
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "linear_issues", Arguments: map[string]any{"team": "team", "input": map[string]any{"since": value}}})
 		if value == "not-a-time" {
 			if err == nil && !result.IsError {
 				t.Fatal("invalid timestamp accepted")
 			}
-		} else if err != nil || result.IsError {
-			t.Fatalf("valid timestamp rejected: %v, %+v", err, result)
+			if calls.Load() != before {
+				t.Fatal("invalid timestamp reached tenant API")
+			}
+		} else {
+			if err != nil || result == nil || !result.IsError || calls.Load() != before+1 {
+				t.Fatalf("valid input must reach caller authorization and preserve denial: err=%v result=%+v calls=%d", err, result, calls.Load())
+			}
 		}
 	}
 	if calls.Load() != 1 {

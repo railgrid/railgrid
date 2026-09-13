@@ -35,10 +35,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ConnectionList{},
 		&Team{},
 		&TeamList{},
-		&Operation{},
-		&OperationList{},
-		&Event{},
-		&EventList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

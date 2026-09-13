@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260913-c4007149.connections.linear.providers.faros.sh
+  name: v260913-007fceb7.connections.linear.providers.faros.sh
 spec:
   group: linear.providers.faros.sh
   names:
@@ -55,37 +55,6 @@ spec:
                   type: string
               required:
               - name
-              type: object
-            subscription:
-              properties:
-                id:
-                  minLength: 1
-                  type: string
-                organizationID:
-                  minLength: 1
-                  type: string
-                signingSecretRef:
-                  properties:
-                    key:
-                      default: apiKey
-                      type: string
-                    name:
-                      minLength: 1
-                      type: string
-                    namespace:
-                      default: default
-                      description: Namespace of the Secret in the same tenant workspace.
-                        Defaults to default.
-                      maxLength: 63
-                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                      type: string
-                  required:
-                  - name
-                  type: object
-              required:
-              - id
-              - organizationID
-              - signingSecretRef
               type: object
           required:
           - apiKeySecretRef

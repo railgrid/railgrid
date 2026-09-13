@@ -47,17 +47,17 @@ func TestMetadataHistoryScanOnlyEnqueuesChangesAcrossWorkspaces(t *testing.T) {
 	}
 	var keys []objectKey
 	enqueue := func(key objectKey) { keys = append(keys, key) }
-	seen, err := scanChanges(context.Background(), cl.Resource(engine.Operations), nil, enqueue)
+	seen, err := scanChanges(context.Background(), cl.Resource(engine.Teams), nil, enqueue)
 	if err != nil || len(keys) != 2 || keys[0].cluster == keys[1].cluster {
 		t.Fatalf("keys=%v error=%v", keys, err)
 	}
 	keys = nil
-	seen, err = scanChanges(context.Background(), cl.Resource(engine.Operations), seen, enqueue)
+	seen, err = scanChanges(context.Background(), cl.Resource(engine.Teams), seen, enqueue)
 	if err != nil || len(keys) != 0 {
 		t.Fatalf("unchanged history re-enqueued: %v %v", keys, err)
 	}
 	version = "2"
-	_, err = scanChanges(context.Background(), cl.Resource(engine.Operations), seen, enqueue)
+	_, err = scanChanges(context.Background(), cl.Resource(engine.Teams), seen, enqueue)
 	if err != nil || len(keys) != 2 || scans != 6 {
 		t.Fatalf("changed history missed: %v %v scans=%d", keys, err, scans)
 	}

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	"github.com/faroshq/provider-linear/internal/engine"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -116,17 +115,7 @@ func reconcileObject(ctx context.Context, e engine.Engine, gvr schema.GroupVersi
 			return 0, nil
 		}
 		return time.Minute, e.Probe(ctx, u)
-	case engine.Operations:
-		return 0, e.Reconcile(ctx, u)
-	case engine.Events:
-		var event api.Event
-		if err := engine.Decode(u, &event); err != nil {
-			return 0, err
-		}
-		if delay := time.Until(event.Spec.ExpiresAt.Time); delay > 0 {
-			return delay, nil
-		}
-		return 0, e.Prune(ctx, u)
+
 	}
 	return 0, nil
 }

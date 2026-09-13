@@ -11,7 +11,7 @@ const connection = { metadata: { name: 'linear', resourceVersion: '1' }, spec: {
 const issue = { id: 'issue', identifier: 'ENG-1', title: 'Ship resource pages', description: '<script>not executable</script>', team: { id: 'team', name: 'Engineering' }, state: { id: 'todo', name: 'Todo' } };
 function fixture() {
   const calls: { path: string; body?: any }[] = [];
-  const operations = new Map<string, any>();
+  const outcomes = new Map<string, any>();
   const connections = new Map<string, any>([[connection.metadata.name, connection]]);
   let fail = false;
   let uncertain = false;
@@ -22,16 +22,22 @@ function fixture() {
     if (path.endsWith('/onboarding/teams')) return Response.json({ nodes: [{ id: 'team', name: 'Engineering' }, { id: 'other', name: 'Design' }] });
     if (body?.kind === 'Secret') return Response.json({ metadata: body.metadata });
     if (body?.kind === 'Connection') { const created = { ...body, metadata: { ...body.metadata, uid: 'uid', resourceVersion: '1' } }; connections.set(created.metadata.name, created); return Response.json(created); }
-    if (body?.kind === 'Operation') { operations.set(body.metadata.name, body); return Response.json(body); }
-    const name = path.split('/').pop()!;
-    if (operations.has(name)) {
-      const op = operations.get(name); const s = op.spec;
+    if (path.includes('/teams?')) return Response.json({ items: [{ metadata: { name: 'engineering', uid: 'team-uid' }, spec: { connection: 'linear', teamID: 'team' }, status: { name: 'Engineering', key: 'ENG' } }] });
+    if (path.includes('/actions/')) {
+      if (!body) return Response.json({ output: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) });
+      const verb = path.split('/').at(-2)!;
+      const s = { ...body.input, action: ({ create_issue: 'createIssue', update_issue: 'updateIssue', add_comment: 'addComment' } as Record<string, string>)[verb] || verb };
+      // Normalize captured domain inputs for journey assertions; transport shape
+      // is asserted separately by the API behavior tests.
+      calls[calls.length - 1].body = { spec: s, metadata: { name: body.requestId } };
       const result = s.action === 'teams' ? { nodes: [{ id: 'team', name: 'Engineering', key: 'ENG' }] }
         : s.action === 'states' ? { nodes: [{ id: 'done', name: 'Done' }] }
         : s.action === 'issues' ? { nodes: [s.after ? { ...issue, id: 'second', identifier: 'ENG-2' } : issue], pageInfo: { hasNextPage: !s.after, endCursor: 'next' } }
         : s.action === 'comments' ? { nodes: [{ id: 'comment', body: 'Reviewed', user: { displayName: 'Reviewer' }, createdAt: '2026-09-12T12:00:00Z', editedAt: '2026-09-12T13:00:00Z', parentId: 'parent', url: 'https://linear.app/team/issue/ENG-1#comment' }] }
         : { ...issue, ...(s.title ? { title: s.title } : {}), ...(s.description !== undefined ? { description: s.description } : {}) };
-      return Response.json({ ...op, status: { phase: uncertain ? 'Uncertain' : 'Succeeded', result, message: uncertain ? 'Check Linear before repeating' : '' } });
+      const output = { phase: uncertain ? 'Uncertain' : 'Succeeded', result, message: uncertain ? 'Check Linear before repeating' : '' };
+      if (body.requestId) outcomes.set(body.requestId, output);
+      return Response.json({ output });
     }
     if (path.includes('/connections/')) return Response.json(connection);
     if (path.includes('/connections?')) return Response.json({ items: [...connections.values()] });
@@ -57,9 +63,10 @@ async function choose(w: VueWrapper, id: string, label: string) {
 describe('Linear resource journeys', () => {
   it('routes encoded resource identities and keeps authority stable through token rotation', () => {
     expect(parseRoute('')).toEqual({ page: 'connections' });
-    expect(parseRoute('operations/detail/op-1')).toEqual({ page: 'operations', name: 'op-1' });
+    expect(parseRoute('operations/detail/op-1').invalid).toBe(true);
+    expect(parseRoute('events').invalid).toBe(true);
     expect(parseRoute('connections/create').create).toBe('connection');
-    expect(parseRoute(issuePath('conn/name', 'issue/id'))).toEqual({ page: 'issues', connection: 'conn/name', name: 'issue/id' });
+    expect(parseRoute(issuePath('conn/name', 'issue/id', 'team/id'))).toEqual({ page: 'issues', connection: 'conn/name', name: 'issue/id', team: 'team/id' });
     expect(parseRoute('issues/%oops/x').invalid).toBe(true);
     expect(authorityKey({ tenant: 'a', token: 'old' })).toBe(authorityKey({ tenant: 'a', token: 'new' }));
     expect(updateFields('', '', 'done')).toEqual({ stateID: 'done' });
@@ -99,8 +106,9 @@ describe('Linear resource journeys', () => {
     await w.get('#issue-title').setValue('New issue'); f.setUncertain(); await w.get('form').trigger('submit'); await flushPromises();
     const creates = f.calls.filter(c => c.body?.spec.action === 'createIssue'); expect(creates).toHaveLength(1); expect(creates[0].body.spec.stateID).toBe('done');
     expect(w.text()).not.toContain('Issue creation succeeded');
-    const link = w.findAll('a').find(a => a.text() === 'Inspect operation')!; expect(link.attributes('href')).toContain(creates[0].body.metadata.name);
-    await link.trigger('click'); await flushPromises(); expect(w.text()).toContain('Uncertain');
+    expect(w.text()).toContain('Check outcome');
+    await click(w, 'Check outcome');
+    expect(w.text()).toContain('Check Linear before repeating');
     expect(f.calls.filter(c => c.body?.spec.action === 'createIssue')).toHaveLength(1);
   });
   it('keeps stale rows on refresh failure and clears workspace data', async () => {
@@ -120,7 +128,7 @@ describe('Linear resource journeys', () => {
 });
 
 it('edits populated values, explicitly clears descriptions, and presents comment context', async () => {
-  const f = fixture(); const w = await render({ ...f.ctx, subPath: issuePath('linear', 'issue') });
+  const f = fixture(); const w = await render({ ...f.ctx, subPath: issuePath('linear', 'issue', 'team') });
   expect((w.get('#issue-description').element as HTMLTextAreaElement).value).toBe(issue.description);
   await w.get('#issue-description').setValue(''); await w.findAll('form')[0].trigger('submit'); await flushPromises();
   const sent = f.calls.find(c => c.body?.spec.action === 'updateIssue')!.body.spec;
@@ -146,15 +154,9 @@ it('requires API-key validation before creating a connection', async () => {
   await w.get('form').trigger('submit'); await flushPromises();
   expect(f.calls.filter(c => c.body?.kind === 'Connection')).toHaveLength(0);
 });
-it('loads bounded history pages through shared navigation without eagerly following continuation', async () => {
+it.each(['operations', 'events'])('does not expose or fetch the retired %s collection', async page => {
   const paths: string[] = [];
-  const w = await render({ tenant: 'workspace', subPath: 'operations', fetch: async input => {
-    const path = String(input); paths.push(path);
-    return Response.json({ items: [{ metadata: { name: path.includes('continue=') ? 'op-second' : 'op-first' }, status: { phase: 'Uncertain', message: 'Inspect before retrying' } }], metadata: { continue: path.includes('continue=') ? '' : 'next/cursor' } });
-  } });
-  expect(paths).toHaveLength(1); expect(paths[0]).toContain('limit=10'); expect(w.text()).toContain('op-first');
-  await w.get('button[aria-label="Next page"]').trigger('click'); await flushPromises();
-  expect(paths).toHaveLength(2); expect(paths[1]).toContain('continue=next%2Fcursor'); expect(w.text()).toContain('op-second');
-  await w.get('button[aria-label="Previous page"]').trigger('click'); await flushPromises();
-  expect(paths).toHaveLength(3); expect(paths[2]).not.toContain('continue='); expect(w.text()).toContain('op-first');
+  const w = await render({ tenant: 'workspace', subPath: page, fetch: async path => { paths.push(String(path)); return Response.json({ items: [] }); } });
+  expect(w.text()).toContain('This Linear page was not found.');
+  expect(paths).toEqual([]);
 });

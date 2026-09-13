@@ -42,13 +42,14 @@ faros-provider-linear .linear-team-options span { overflow-wrap: anywhere; min-w
 
 /* Linear workflow composition: shared controls retain their PortalKit styling. */
 faros-provider-linear .linear-issue-board { display: flex; gap: 16px; overflow-x: auto; padding: 4px 2px 16px; max-width: 100%; align-items: stretch; }
-faros-provider-linear .linear-issue-lane { flex: 1 0 260px; min-width: 0; max-width: 340px; background: var(--color-surface-base); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+faros-provider-linear .linear-issue-lane { flex: 1 0 300px; min-width: 0; max-width: 380px; background: var(--color-surface-base); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 faros-provider-linear .linear-issue-lane-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; }
 faros-provider-linear .linear-issue-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border-default); border-radius: 4px; color: var(--color-text-primary); text-decoration: none; overflow-wrap: anywhere; }
-faros-provider-linear a.linear-issue-card[href]:hover { border-color: var(--color-accent); background: var(--color-surface-hover); }
-faros-provider-linear a.linear-issue-card[href]:focus-visible,
+faros-provider-linear .linear-issue-entry:has(> a:hover) { border-color: var(--color-accent); }
+faros-provider-linear .linear-issue-card-link { display: flex; flex-direction: column; gap: 12px; color: inherit; text-decoration: none; }
+faros-provider-linear a.linear-issue-card-link[href]:focus-visible,
 faros-provider-linear .linear-issue-board:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-faros-provider-linear .linear-issue-identifier { font-family: var(--font-mono); color: var(--color-text-secondary); font-size: 12px; }
+faros-provider-linear .linear-issue-identifier { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: var(--font-mono); color: var(--color-text-secondary); font-size: 12px; }
 faros-provider-linear .linear-issue-title { font-size: 13px; line-height: 1.5; }
 
 faros-provider-linear .linear-issue-search { display: grid; gap: 6px; }
@@ -69,3 +70,7 @@ faros-provider-linear .linear-factory-link { display: inline-flex; align-items: 
 faros-provider-linear .linear-issue-entry { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 faros-provider-linear .linear-factory-task { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 faros-provider-linear .linear-factory-task + .linear-factory-task { margin-top: 24px; }
+
+faros-provider-linear .linear-issue-lane-items { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; max-height: 60dvh; overflow-y: auto; scrollbar-gutter: stable; padding: 2px; }
+faros-provider-linear .linear-issue-lane-items > .linear-issue-card { flex-shrink: 0; }
+faros-provider-linear .linear-issue-lane-items:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

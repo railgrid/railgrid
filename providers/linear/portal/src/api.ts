@@ -23,7 +23,7 @@ export class ConnectionError extends Error {
 export class OperationError extends Error {
   constructor(public operationName: string, message: string) { super(`${operationName}: ${message}`); }
 }
-export type WriteIntent = { name: string; connection: string };
+export type WriteIntent = { name: string; connection: string; team: string; teamID: string; action: string };
 export const writeKey = (action: string, connection: string, issueID = '') => action === 'createIssue' ? 'createIssue' : JSON.stringify([action, connection, issueID]);
 export class API {
   private completedWrites = new Set<string>();
@@ -113,7 +113,7 @@ export class API {
     const nodes: Node[] = [];
     let after = '';
     do {
-      const page = await this.operation(connection, { action, teamID, first: 50, ...(after ? { after } : {}) });
+      const page = await this.action(connection, { action, teamID, first: 50, ...(after ? { after } : {}) });
       nodes.push(...(page.nodes || []));
       if (!page.pageInfo?.hasNextPage) break;
       if (!page.pageInfo.endCursor || page.pageInfo.endCursor === after) throw new Error('Discovery pagination did not advance. Retry discovery.');
@@ -143,40 +143,41 @@ export class API {
     try { await this.request(this.path('teams', name), { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } }, 'DELETE'); }
     catch (error) { if (!(error instanceof RequestError && error.status === 404)) throw error; }
   }
-  async operation(connection: string, fields: Record<string, unknown>): Promise<Result> {
+  private actionPath(team: string, action: string) {
+    return `/services/providers/linear/actions/clusters/${encodeURIComponent(this.context.tenant || '')}/teams/${encodeURIComponent(team)}/${action}/v1`;
+  }
+  async action(connection: string, fields: Record<string, unknown>): Promise<Result> {
     this.signal.throwIfAborted();
     const action = String(fields.action);
     const key = ['createIssue', 'updateIssue', 'addComment'].includes(action) ? writeKey(action, connection, String(fields.issueID || '')) : '';
     if (key && this.writes[key]) throw new OperationError(this.writes[key].name, 'A previous write needs inspection. Check its outcome before preparing a separate write.');
-    const name = 'op-' + crypto.randomUUID();
-    if (key) this.writes[key] = { name, connection };
+    const registrations = (await this.list('teams')).items.filter(t => t.spec?.connection === connection && !t.metadata.deletionTimestamp);
+    if (action === 'teams') return { nodes: registrations.map(t => ({ id: String(t.spec?.teamID), name: t.status?.name, key: t.status?.key })) };
+    const candidates = registrations.filter(t => !fields.teamID || t.spec?.teamID === fields.teamID);
+    if (candidates.length !== 1) throw new Error('Choose a registered Team before using this action.');
+    const team = candidates[0].metadata.name;
+    const verb = ({ createIssue: 'create_issue', updateIssue: 'update_issue', addComment: 'add_comment' } as Record<string, string>)[action] || action;
+    const { action: _action, teamID: _teamID, ...input } = fields;
+    const name = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z') + '.' + crypto.randomUUID();
+    if (key) this.writes[key] = { name, connection, team, teamID: String(candidates[0].spec?.teamID), action: verb };
     try {
-      await this.request(this.path('operations'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Operation', metadata: { name }, spec: { connection, ...fields } });
+      const response = await this.request(this.actionPath(team, verb), { ...(key ? { requestId: name } : {}), input });
+      return this.outcome(name, response.output, !!key);
     } catch (error) {
       this.signal.throwIfAborted();
-      if (error instanceof RequestError && [400, 401, 403, 404, 422, 429].includes(error.status)) this.forgetWrite(name);
-      throw new OperationError(name, `submission outcome unknown. Inspect Operations before repeating it. ${error instanceof Error ? error.message : ''}`);
+      if (!key) throw error;
+      throw new OperationError(name, `The write outcome needs confirmation. Use Check outcome before repeating it. ${error instanceof Error ? error.message : ''}`);
     }
-    return this.resumeOperation(name);
   }
-  async resumeOperation(name: string): Promise<Result> {
-    for (let i = 0; i < 30; i++) {
-      let op: Resource;
-      try { op = await this.get('operations', name); }
-      catch (error) {
-        this.signal.throwIfAborted();
-        throw new OperationError(name, `status could not be read. Inspect Operations before repeating it. ${error instanceof Error ? error.message : ''}`);
-      }
-      if (op.status?.phase === 'Succeeded') { this.completedWrites.add(name); return op.status.result || {}; }
-      if (op.status?.phase === 'Failed') this.forgetWrite(name);
-      if (op.status?.phase === 'Failed' || op.status?.phase === 'Uncertain') throw new OperationError(name, `${op.status.message || op.status.phase}. Inspect this operation before submitting another write.`);
-      await new Promise<void>((resolve, reject) => {
-        this.signal.throwIfAborted();
-        const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
-        const timer = setTimeout(() => { this.signal.removeEventListener('abort', abort); resolve(); }, 1000);
-        this.signal.addEventListener('abort', abort, { once: true });
-      });
-    }
-    throw new OperationError(name, 'is still pending. Refresh Operations to inspect it before repeating a write.');
+  private outcome(name: string, outcome: { phase?: string; result?: Result; message?: string }, write: boolean): Result {
+    if (outcome.phase === 'Succeeded') { if (write) this.completedWrites.add(name); return outcome.result || {}; }
+    if (outcome.phase === 'Failed') this.forgetWrite(name);
+    throw new OperationError(name, outcome.message || 'The outcome is not confirmed. Check Linear before starting another write.');
+  }
+  async inspectWrite(name: string): Promise<Result> {
+    const intent = Object.values(this.writes).find(w => w.name === name);
+    if (!intent) throw new Error('Write context unavailable. Check Linear before starting another write.');
+    const response = await this.request(this.actionPath(intent.team, intent.action) + '?requestId=' + encodeURIComponent(name));
+    return this.outcome(name, response.output, true);
   }
 }

@@ -85,3 +85,20 @@ helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider \
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
 
+
+## Repository actions and credential ownership
+
+The chart CatalogEntry includes the Repository Provider Actions contract, matching
+`manifest.yaml`. Consumers receive scoped Repository read/invoke permissions;
+Code keeps Git credentials and performs Git/PR/comment operations. Configure a
+GitHub App Connection with a tenant Secret containing `appID`, `installationID`,
+and `privateKey`, or use the existing PAT/OAuth token Connection. Do not mount
+Git-host keys into consumer providers.
+
+The runtime image includes Git. Snapshot artifacts reuse the writable commit
+bundle storage: uploads are limited to 25 MiB decoded, expire after one hour,
+and are bounded by per-tenant quotas. Only small artifact handles enter the
+catalog-advertised preparation/publication actions. PR creation and comment
+writes are not automatically replayed after an uncertain response. See the
+[provider README](../../README.md#repository-provider-actions) for action routing,
+identity preconditions, grants, and GitHub App permissions.

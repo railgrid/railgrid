@@ -2190,7 +2190,7 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 	@# declaratively by the Provider controller when code-register applies the
 	@# Provider CR — no need to create it here.
 	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
-	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
+	@umask 077; kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --raw --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
 	@CL=$$(kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
 		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
 			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
@@ -2762,6 +2762,7 @@ test-app-studio-portal: ## Run the App Studio portal regression suite
 .PHONY: test-linear-portal codegen-linear-provider test-linear-provider lint-linear-provider fix-lint-linear-provider build-linear-provider build-linear-provider-portal
 codegen-linear-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN)
 	@mkdir -p providers/linear/config/crds providers/linear/config/kcp providers/linear/deploy/chart/files/schemas
+	rm -f providers/linear/config/crds/linear.providers.faros.sh_operations.yaml providers/linear/config/crds/linear.providers.faros.sh_events.yaml providers/linear/deploy/chart/files/schemas/apiresourceschema-operations.linear.providers.faros.sh.yaml providers/linear/deploy/chart/files/schemas/apiresourceschema-events.linear.providers.faros.sh.yaml
 	cd providers/linear && $(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && $(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." output:crd:artifacts:config=$(CURDIR)/providers/linear/config/crds
 	./hack/apigen.sh --input-dir providers/linear/config/crds --output-dir providers/linear/config/kcp
 	cp providers/linear/config/kcp/apiresourceschema-*.yaml providers/linear/deploy/chart/files/schemas/
@@ -2810,3 +2811,8 @@ verify-linear-release: $(GOLANGCI_LINT)
 .PHONY: package-runner-darwin
 package-runner-darwin: build-runner-darwin ## Package Mac runner binaries and the local upgrade manager
 	python3 hack/runner-install/package.py $(BINDIR)
+
+.PHONY: test-provider-action-identity
+test-provider-action-identity:
+	go test -race -count=1 ./pkg/hub/serviceaccounts -run 'ProviderAction|Workload'
+	go test -race -count=1 ./pkg/hub -run 'ProviderAction|TenantResolver|Workload'

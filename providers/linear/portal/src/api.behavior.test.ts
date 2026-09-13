@@ -24,35 +24,62 @@ it('follows resource continuation and discovery cursors without truncating inven
   expect((await api.list('connections')).items.map(r => r.metadata.name)).toEqual(['first', 'second']);
   expect(paths[1]).toContain('continue=next%2Fa%2Bb');
   const pages: Record<string, unknown>[] = [];
-  const discovery = client(async (_input, init) => {
-    if (init?.body) { const op = JSON.parse(String(init.body)); pages.push(op.spec); return Response.json(op); }
-    return Response.json({ status: { phase: 'Succeeded', result: { nodes: [{ id: pages.length === 1 ? 'one' : 'two' }], pageInfo: { hasNextPage: pages.length === 1, endCursor: 'cursor' } } } });
+  const discovery = client(async (path, init) => {
+    if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
+    const input = JSON.parse(String(init?.body)).input; pages.push(input);
+    return Response.json({ output: { phase: 'Succeeded', result: { nodes: [{ id: pages.length === 1 ? 'one' : 'two' }], pageInfo: { hasNextPage: pages.length === 1, endCursor: 'cursor' } } } });
   });
   expect((await discovery.discover('linear', 'states', 'team')).map(n => n.id)).toEqual(['one', 'two']);
-  expect(pages[1]).toMatchObject({ teamID: 'team', after: 'cursor', first: 50 });
+  expect(pages[1]).toEqual({ after: 'cursor', first: 50 });
 });
-it('retains operation identity when polling fails and never resubmits', async () => {
-  let posts = 0; let name = '';
-  const api = client(async (_input, init) => {
-    if (init?.body) { posts++; name = JSON.parse(String(init.body)).metadata.name; return Response.json({}); }
-    throw new Error('offline');
+const registeredTeam = { metadata: { name: 'engineering', uid: 'team-uid' }, spec: { connection: 'linear', teamID: 'team' } };
+it('retains a lost write response and inspects without submitting a second write', async () => {
+  const writes: Record<string, import('./api').WriteIntent> = {};
+  const calls: { path: string; method?: string; body?: any }[] = [];
+  const api = new API({ tenant: 'workspace', fetch: async (path, init) => {
+    const request = { path: String(path), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined }; calls.push(request);
+    if (request.path.includes('/teams?')) return Response.json({ items: [registeredTeam] });
+    if (init?.method === 'POST') throw new Error('lost response');
+    return Response.json({ output: { phase: 'Succeeded', result: { id: 'created' } } });
+  } }, new AbortController().signal, writes);
+  await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toBeInstanceOf(OperationError);
+  const name = writes.createIssue.name;
+  expect(name).toMatch(/^\d{8}T\d{6}Z\./);
+  expect(calls[1].path).toBe('/services/providers/linear/actions/clusters/workspace/teams/engineering/create_issue/v1');
+  expect(calls[1].body).toEqual({ requestId: name, input: { title: 'Draft' } });
+  await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Again' })).rejects.toMatchObject({ operationName: name });
+  expect(await api.inspectWrite(name)).toEqual({ id: 'created' });
+  expect(calls.filter(c => c.method === 'POST')).toHaveLength(1);
+  expect(calls.at(-1)?.path).toContain('?requestId=' + encodeURIComponent(name));
+  expect(writes.createIssue.name).toBe(name);
+  api.acknowledgeWrites(); expect(writes).toEqual({});
+});
+it.each(['Running', 'Uncertain'])('does not claim a %s write succeeded or automatically replay it', async phase => {
+  let posts = 0;
+  const api = client(async (path, init) => {
+    if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
+    if (init?.method === 'POST') posts++;
+    return Response.json({ output: { phase } });
   });
-  const error = await api.operation('linear', { action: 'updateIssue', issueID: 'issue' }).catch(e => e);
-  expect(error).toBeInstanceOf(OperationError); expect(error.operationName).toBe(name); expect(error.message).toContain('status could not be read'); expect(posts).toBe(1);
+  await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toBeInstanceOf(OperationError);
+  expect(posts).toBe(1);
 });
-it('reports a still-pending operation after bounded polling without claiming success', async () => {
-  vi.useFakeTimers(); let posts = 0; let reads = 0;
-  const api = client(async (_input, init) => { if (init?.body) { posts++; return Response.json({}); } reads++; return Response.json({ status: { phase: 'Running' } }); });
-  const result = api.operation('linear', { action: 'createIssue', title: 'Example' }).catch(e => e);
-  await vi.runAllTimersAsync();
-  const error = await result; expect(error).toBeInstanceOf(OperationError); expect(error.message).toContain('still pending'); expect(posts).toBe(1); expect(reads).toBe(30);
-});
-it('stops polling on abort without replaying a write', async () => {
-  vi.useFakeTimers(); const controller = new AbortController(); let posts = 0;
-  const api = client(async (_input, init) => { if (init?.body) posts++; return Response.json({ status: { phase: 'Running' } }); }, controller.signal);
-  const result = api.operation('linear', { action: 'addComment', body: 'Example' }).catch(e => e);
-  await vi.advanceTimersByTimeAsync(0); controller.abort(); await vi.runAllTimersAsync();
-  expect((await result).name).toBe('AbortError'); expect(posts).toBe(1);
+it('retains the resource binding when a write request is aborted', async () => {
+  const controller = new AbortController();
+  const writes: Record<string, import('./api').WriteIntent> = {};
+  let posts = 0;
+  const fetch: FarosContext['fetch'] = async (path, init) => {
+    if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
+    if (init?.method === 'POST') { posts++; controller.abort(); }
+    return Response.json({ output: { phase: 'Succeeded', result: { id: 'created' } } });
+  };
+  const api = new API({ tenant: 'workspace', fetch }, controller.signal, writes);
+  await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toMatchObject({ name: 'AbortError' });
+  expect(writes.createIssue).toMatchObject({ connection: 'linear', team: 'engineering', action: 'create_issue' });
+  const returned = new API({ tenant: 'workspace', fetch }, new AbortController().signal, writes);
+  await expect(returned.action('other', { action: 'createIssue', title: 'Draft' })).rejects.toMatchObject({ operationName: writes.createIssue.name });
+  expect(await returned.inspectWrite(writes.createIssue.name)).toEqual({ id: 'created' });
+  expect(posts).toBe(1);
 });
 
 it('recovers a lost connection response only when the exact named intent matches', async () => {
@@ -65,9 +92,9 @@ it('recovers a lost connection response only when the exact named intent matches
   expect(posts).toBe(1); expect(paths[1]).toMatch(/connections\/linear$/);
   await expect(api.createConnection('linear', 'different')).rejects.toThrow('different settings');
 });
-it('bounds history reads to one page and preserves opaque cursors', async () => {
+it('bounds resource reads to one page and preserves opaque cursors', async () => {
   const paths: string[] = []; const api = client(async input => { paths.push(String(input)); return Response.json({ items: [], metadata: { continue: 'next' } }); });
-  await api.listPage('operations', 10, 'a/b+c'); expect(paths).toHaveLength(1); expect(paths[0]).toContain('limit=10&continue=a%2Fb%2Bc');
+  await api.listPage('teams', 10, 'a/b+c'); expect(paths).toHaveLength(1); expect(paths[0]).toContain('limit=10&continue=a%2Fb%2Bc');
 });
 it('writes workspace resources while keeping credential namespace in the Secret reference', async () => {
   const calls: { path: string; body: any }[] = [];
@@ -76,24 +103,6 @@ it('writes workspace resources while keeping credential namespace in the Secret 
   expect(calls[0].path).toBe('/clusters/workspace/apis/linear.providers.faros.sh/v1alpha1/connections');
   expect(calls[0].body.metadata).toEqual({ name: 'linear' });
   expect(calls[0].body.spec.apiKeySecretRef).toEqual({ name: 'key', namespace: 'credentials', key: 'apiKey' });
-});
-
-it('keeps a submitted write across aborted polling and requires explicit recovery', async () => {
-  const writes: Record<string, import('./api').WriteIntent> = {};
-  const controller = new AbortController(); let posts = 0; let name = '';
-  const fetch: FarosContext['fetch'] = async (_input, init) => {
-    if (init?.body) { posts++; name = JSON.parse(String(init.body)).metadata.name; controller.abort(); }
-    return Response.json({ status: { phase: 'Succeeded', result: { id: 'created' } } });
-  };
-  const first = new API({ tenant: 'workspace', fetch }, controller.signal, writes);
-  await expect(first.operation('original', { action: 'createIssue', title: 'Draft' })).rejects.toMatchObject({ name: 'AbortError' });
-  expect(writes.createIssue).toEqual({ name, connection: 'original' });
-  const returned = new API({ tenant: 'workspace', fetch }, new AbortController().signal, writes);
-  await expect(returned.operation('other', { action: 'createIssue', title: 'Draft' })).rejects.toMatchObject({ operationName: name });
-  expect(posts).toBe(1);
-  expect(await returned.resumeOperation(name)).toEqual({ id: 'created' });
-  expect(writes.createIssue.name).toBe(name); // retained until the view commits success
-  returned.acknowledgeWrites(); expect(writes).toEqual({});
 });
 
 it('saves a caller-scoped credential owned by the connection, never in its spec', async () => {

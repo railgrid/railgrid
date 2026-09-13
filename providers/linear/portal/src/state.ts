@@ -51,13 +51,14 @@ export function useWriteTask(key: () => string) {
   const session = useSession(); const task = useTask();
   const pending = computed(() => session.writes[key()]?.name || '');
   const connection = computed(() => session.writes[key()]?.connection || '');
+  const team = computed(() => session.writes[key()]?.teamID || '');
   function resume(commit: (value: import('./api').Result) => void) {
     const name = pending.value;
-    if (name) void task.run(api => api.resumeOperation(name), commit);
+    if (name) void task.run(api => api.inspectWrite(name), commit);
   }
   function separate() {
     if (task.state.loading) return;
     delete session.writes[key()]; task.reset();
   }
-  return { ...task, pending, connection, resume, separate };
+  return { ...task, pending, connection, team, resume, separate };
 }

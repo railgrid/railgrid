@@ -110,10 +110,6 @@ func ResolveCredential(ctx context.Context, c client.Client, conn *codev1alpha1.
 	if ns == "" {
 		ns = tenant.DefaultCredentialsNamespace()
 	}
-	key := conn.Spec.SecretRef.Key
-	if key == "" {
-		key = tenant.DefaultTokenKey
-	}
 	var secret corev1.Secret
 	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: conn.Spec.SecretRef.Name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -124,9 +120,5 @@ func ResolveCredential(ctx context.Context, c client.Client, conn *codev1alpha1.
 		}
 		return backend.Credential{}, fmt.Errorf("get credential secret %s/%s: %w", ns, conn.Spec.SecretRef.Name, err)
 	}
-	tok, ok := secret.Data[key]
-	if !ok || len(tok) == 0 {
-		return backend.Credential{}, fmt.Errorf("credential secret %s/%s has no non-empty key %q", ns, conn.Spec.SecretRef.Name, key)
-	}
-	return backend.Credential{Token: string(tok)}, nil
+	return (tenant.CredentialResolver{}).Resolve(ctx, conn, secret.Data)
 }

@@ -7,6 +7,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"reflect"
@@ -50,10 +53,28 @@ func TestChartClaimsAndIdentitySeparation(t *testing.T) {
 	}
 	a := manifest["spec"].(map[string]any)
 	b := catalog["spec"].(map[string]any)
-	for _, key := range []string{"displayName", "description", "category", "iconURL", "apiExport"} {
+	for _, key := range []string{"displayName", "description", "category", "iconURL", "apiExport", "actions"} {
 		if !reflect.DeepEqual(a[key], b[key]) {
 			t.Fatalf("manifest/chart drift %s", key)
 		}
+	}
+	actions, ok := a["actions"].([]any)
+	if !ok || len(actions) != 8 {
+		t.Fatalf("expected eight declared actions, got %v", a["actions"])
+	}
+	for _, item := range actions {
+		action := item.(map[string]any)
+		data, err := json.Marshal(map[string]any{"input": action["inputSchema"], "output": action["outputSchema"]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := sha256.Sum256(data)
+		if action["schemaDigest"] != "sha256:"+hex.EncodeToString(hash[:]) {
+			t.Fatalf("schema digest drift: %v", action["id"])
+		}
+	}
+	if !reflect.DeepEqual(a["ui"].(map[string]any)["children"], b["ui"].(map[string]any)["children"]) {
+		t.Fatal("navigation manifest drift")
 	}
 	strategy := deployment["spec"].(map[string]any)["strategy"].(map[string]any)
 	if strategy["type"] != "Recreate" {
@@ -78,7 +99,12 @@ func TestChartClaimsAndIdentitySeparation(t *testing.T) {
 }
 
 func TestGeneratedResourcesAreWorkspaceScoped(t *testing.T) {
-	for _, resource := range []string{"connections", "teams", "operations", "events"} {
+	for _, retired := range []string{"operations", "events", "actionreceipts"} {
+		if _, err := os.Stat("deploy/chart/files/schemas/apiresourceschema-" + retired + ".linear.providers.faros.sh.yaml"); !os.IsNotExist(err) {
+			t.Fatalf("private or retired resource %s must not be exported", retired)
+		}
+	}
+	for _, resource := range []string{"connections", "teams"} {
 		var previousSpec any
 		for _, path := range []string{"config/crds/linear.providers.faros.sh_" + resource + ".yaml", "config/kcp/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml", "deploy/chart/files/schemas/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml"} {
 			raw, err := os.ReadFile(path)
@@ -107,8 +133,10 @@ func TestGeneratedResourcesAreWorkspaceScoped(t *testing.T) {
 				}
 				properties := schema["properties"].(map[string]any)["spec"].(map[string]any)["properties"].(map[string]any)
 				apiKey := properties["apiKeySecretRef"].(map[string]any)
-				signing := properties["subscription"].(map[string]any)["properties"].(map[string]any)["signingSecretRef"].(map[string]any)
-				for _, ref := range []map[string]any{apiKey, signing} {
+				if _, exists := properties["subscription"]; exists {
+					t.Fatal("retired webhook configuration remains in Connection")
+				}
+				for _, ref := range []map[string]any{apiKey} {
 					namespace := ref["properties"].(map[string]any)["namespace"].(map[string]any)
 					if namespace["default"] != "default" {
 						t.Fatalf("%s secret namespace default missing", path)

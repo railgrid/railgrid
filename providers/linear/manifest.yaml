@@ -4,10 +4,10 @@ metadata:
   name: linear
 spec:
   displayName: Linear
-  description: "Workspace-scoped Linear issue operations and verified events."
+  description: "Registered Linear Teams and resource-bound issue actions."
   vendor: faros
   version: "0.1.0"
-  category: Development
+  category: Developer
   iconURL: /ui/providers/linear/icon.svg
   ui:
     url: http://localhost:8092
@@ -17,10 +17,6 @@ spec:
         builtinRoute: connections
       - displayName: Teams
         builtinRoute: teams
-      - displayName: Operations
-        builtinRoute: operations
-      - displayName: Events
-        builtinRoute: events
   backend:
     url: http://localhost:8092
     healthPath: /readyz
@@ -30,6 +26,501 @@ spec:
       - resource: secrets
         verbs: [get]
         tenantScoped: true
+  actions:
+  - id: states/v1
+    displayName: States
+    description: Use a registered Linear Team. Returns a bounded current observation
+      without persistence.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        first:
+          type: integer
+          minimum: 1
+          maximum: 50
+        after:
+          type: string
+          maxLength: 4096
+      additionalProperties: false
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:b2d1cc571e5876da6c4e5319d3e430e2f0ff041de23fd856063b83e2373c1b8c
+    executionMode: sync
+    readOnly: true
+    risk: low
+    idempotency: inherent
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: issues/v1
+    displayName: Issues
+    description: Use a registered Linear Team. Returns a bounded current observation
+      without persistence.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        first:
+          type: integer
+          minimum: 1
+          maximum: 50
+        after:
+          type: string
+          maxLength: 4096
+        query:
+          type: string
+          maxLength: 1000
+        since:
+          type: string
+          format: date-time
+      additionalProperties: false
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:55700073a7e1417e851ba288308f5d5e854728ea93a3a5018c0972a0410c5aaf
+    executionMode: sync
+    readOnly: true
+    risk: low
+    idempotency: inherent
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: issue/v1
+    displayName: Issue
+    description: Use a registered Linear Team. Returns a bounded current observation
+      without persistence.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        issueID:
+          type: string
+          minLength: 1
+          maxLength: 255
+      additionalProperties: false
+      required:
+      - issueID
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:75ed0ea79e4b470d9c6b2dd33be7366868fd70b148cfe9b1df5364bac9646cd0
+    executionMode: sync
+    readOnly: true
+    risk: low
+    idempotency: inherent
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: comments/v1
+    displayName: Comments
+    description: Use a registered Linear Team. Returns a bounded current observation
+      without persistence.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        issueID:
+          type: string
+          minLength: 1
+          maxLength: 255
+        first:
+          type: integer
+          minimum: 1
+          maximum: 50
+        after:
+          type: string
+          maxLength: 4096
+      additionalProperties: false
+      required:
+      - issueID
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:f395fd081cf37551053d1168a8a505db9b3dfce1940d4ae518c503a9baafd99a
+    executionMode: sync
+    readOnly: true
+    risk: low
+    idempotency: inherent
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: replies/v1
+    displayName: Replies
+    description: Use a registered Linear Team. Returns a bounded current observation
+      without persistence.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        issueID:
+          type: string
+          minLength: 1
+          maxLength: 255
+        commentID:
+          type: string
+          minLength: 1
+          maxLength: 255
+        first:
+          type: integer
+          minimum: 1
+          maximum: 50
+        after:
+          type: string
+          maxLength: 4096
+      additionalProperties: false
+      required:
+      - issueID
+      - commentID
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:5e811e27126d15433f3327d866bc68934cc5ff9361cb42e0ae75f6b1fcceee24
+    executionMode: sync
+    readOnly: true
+    risk: low
+    idempotency: inherent
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: create_issue/v1
+    displayName: Create issue
+    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+      uncertain outcomes.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 16000
+        stateID:
+          type: string
+          maxLength: 255
+      additionalProperties: false
+      required:
+      - title
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:4e9268a7fd9522d9f478c99e65d3f4696ad8ba151ef6e8e145d03b27b12f2021
+    executionMode: sync
+    readOnly: false
+    risk: medium
+    idempotency: keyed
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: update_issue/v1
+    displayName: Update issue
+    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+      uncertain outcomes.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        issueID:
+          type: string
+          minLength: 1
+          maxLength: 255
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 16000
+        stateID:
+          type: string
+          maxLength: 255
+      additionalProperties: false
+      required:
+      - issueID
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:631adb552223bf84525adc1198d8074c5ac41bb82450bc98716c03ba7d30a9fd
+    executionMode: sync
+    readOnly: false
+    risk: medium
+    idempotency: keyed
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
+  - id: add_comment/v1
+    displayName: Add comment
+    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+      uncertain outcomes.
+    boundResource:
+      apiVersion: linear.providers.faros.sh/v1alpha1
+      kind: Team
+      resource: teams
+    inputSchema:
+      type: object
+      properties:
+        issueID:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          minLength: 1
+          maxLength: 16000
+      additionalProperties: false
+      required:
+      - issueID
+      - body
+    outputSchema:
+      type: object
+      required:
+      - phase
+      properties:
+        phase:
+          type: string
+          enum:
+          - Running
+          - Succeeded
+          - Failed
+          - Uncertain
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        connectionUID:
+          type: string
+        result:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    schemaDigest: sha256:10864bbdfe91cbc910821cd67d048f5f06aa99ba9a4f405b53c6f92aaa46039e
+    executionMode: sync
+    readOnly: false
+    risk: medium
+    idempotency: keyed
+    limits:
+      timeoutSeconds: 25
+      maxInputBytes: 32768
+      maxOutputBytes: 524288
+      maxResultItems: 50
+    consent:
+      required: false
   selfHosting:
     supported: true
     chart:
