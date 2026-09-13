@@ -104,6 +104,9 @@ func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *tes
 	if detail.Turn.ID != run.ID || detail.Turn.Status != store.AssistantTurnStatusCompleted {
 		t.Fatalf("turn detail turn = %#v", detail.Turn)
 	}
+	if detail.Turn.FailedItems != 0 || len(detail.Turn.Failures) != 0 {
+		t.Fatalf("turn without tool failures reported a failure summary: %#v", detail.Turn)
+	}
 	if detail.EffectiveSettings == nil {
 		t.Fatal("terminal turn omitted effective settings")
 	}

@@ -56,6 +56,10 @@ type assistantThreadMirrorState struct {
 	needsReload        bool
 	terminalItem       bool
 	terminalEvent      bool
+
+	// toolItems spans every assistant segment of the turn (actionStatuses is
+	// reset on steering) and feeds the terminal turn's failure summary.
+	toolItems assistantThreadTurnToolItems
 }
 
 // assistantThreadDynamicToolItemID scopes a provider action ID to the
@@ -176,6 +180,9 @@ func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store
 				if json.Unmarshal(envelope.Item.Data, &action) == nil && action.ID != "" &&
 					event.ItemID == assistantThreadActionItemID(envelope.Item.Type, activeMessageID, action.ID) {
 					state.actionStatuses[event.ItemID] = action.Status
+				}
+				if event.TurnID == turnID {
+					state.toolItems.observe(event.ItemID, envelope.Item)
 				}
 			}
 		}
@@ -715,6 +722,7 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 			return fmt.Errorf("persist assistant thread action %q: %w", action.ID, err)
 		}
 		state.actionStatuses[itemID] = action.Status
+		state.toolItems.observe(itemID, item)
 	}
 
 	if planValue, exists := snapshot.Message.Metadata[projectAssistantMetadataPlan]; exists {
@@ -818,7 +826,7 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 		turn.Error = snapshot.Run.Error
 		terminalType = assistantThreadEventTurnFailed
 	}
-	turnPayload, err := json.Marshal(map[string]any{"turn": turn})
+	turnPayload, err := json.Marshal(map[string]any{"turn": newAssistantThreadTurnView(turn, &state.toolItems)})
 	if err != nil {
 		return fmt.Errorf("encode assistant thread terminal turn: %w", err)
 	}

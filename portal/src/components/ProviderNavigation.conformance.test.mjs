@@ -49,5 +49,5 @@ test('direct-registration provider failures require a page reload', () => {
 // Hash-based providers retain their element when the host sidebar clears a
 // fragment; that transition must publish context even when subPath is empty.
 test('provider context follows host hash-only navigation', () => {
-  assert.match(frame, /props\.subPath, router\.currentRoute\.value\.hash\] as const,[\s\S]*?\(\) => pushContext\(\)/)
+  assert.match(frame, /props\.subPath, router\.currentRoute\.value\.hash\] as const,\s*\(\) => \{[^}]*?pushContext\(\)\s*\}/)
 })

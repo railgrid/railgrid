@@ -107,7 +107,7 @@ type assistantThreadTurnStartResponse struct {
 // read model used by evaluation and recovery clients. The full run audit stays
 // private; only the bounded effective settings snapshot is exposed.
 type assistantThreadTurnDetailResponse struct {
-	Turn              store.AssistantTurn                     `json:"turn"`
+	Turn              assistantThreadTurnView                 `json:"turn"`
 	EffectiveSettings *projectAssistantAuditEffectiveSettings `json:"effectiveSettings,omitempty"`
 }
 
@@ -1107,7 +1107,12 @@ func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	response := assistantThreadTurnDetailResponse{Turn: turn}
+	toolItems, err := s.loadAssistantThreadTurnToolItems(r.Context(), scope, thread.ID, turn.ID)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	response := assistantThreadTurnDetailResponse{Turn: newAssistantThreadTurnView(turn, toolItems)}
 	if assistantRunTerminal(run.Status) && len(run.Audit) > 0 {
 		var audit projectAssistantRunAudit
 		if err := json.Unmarshal(run.Audit, &audit); err != nil {
@@ -1394,7 +1399,7 @@ func (s *Server) reconcileProjectAssistantThreadTurn(ctx context.Context, scope 
 	if state.terminalEvent {
 		return s.store.SaveAssistantTurn(ctx, scope, current)
 	}
-	turnPayload, _ := json.Marshal(map[string]any{"turn": current})
+	turnPayload, _ := json.Marshal(map[string]any{"turn": newAssistantThreadTurnView(current, &state.toolItems)})
 	return s.saveAssistantTurnWithEvent(ctx, scope, current, store.AssistantThreadEvent{ThreadID: turn.ThreadID, TurnID: turn.ID, Type: terminalType, Payload: turnPayload})
 }
 

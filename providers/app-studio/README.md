@@ -249,6 +249,21 @@ reconnection incremental. Closing an SSE connection only removes that
 subscriber; it never cancels the Eino worker. The former `/messages`, latest-run,
 resume, stop, and snapshot-stream routes are no longer public.
 
+A turn's `status` describes the run, not its steps: a turn whose tool steps
+failed still ends `completed`. To read the step outcome without scanning every
+`item.completed` event, use the failure summary that the turn object carries in
+the `turn.completed`, `turn.failed`, and `turn.interrupted` payloads (at
+`.payload.turn`) and in `GET .../threads/{thread}/turns/{turn}`:
+`failedItems` counts the turn's `dynamicToolCall`/`modelInput` items that ended
+`failed`, `recoveredItems` counts failed file updates that a linked
+`recoveryOf` retry then repaired (they are not counted as failed),
+`rejectedItems` counts steps that did not run because their approval was
+denied (their items read `failed`, but they are not counted as failed), and
+`failures` lists up to five failed items as `{itemID, title, category,
+message, referenceID}` taken from each item's diagnostic. All four are omitted
+when zero. The summary is derived from the turn's durable items, so the turn
+detail route also reports it for turns that completed before it existed.
+
 A message submitted while the current run is working is durable steering for
 that same run, not a replacement run. The request names the expected run and is
 accepted only for the actor who started it. The supervisor persists an
