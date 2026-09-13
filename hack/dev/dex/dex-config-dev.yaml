@@ -22,6 +22,10 @@ staticClients:
     name: Faros
     public: true
     redirectURIs:
+      - https://console.127.0.0.1.sslip.io:9443/auth/callback
+      - https://console.127.0.0.1.sslip.io:9443/auth/apps/callback
+      # Pre-sslip.io address, kept for hubs started with an explicit
+      # --hub-external-url=https://localhost:9443.
       - https://localhost:9443/auth/callback
       - http://127.0.0.1:8080/auth/callback
 

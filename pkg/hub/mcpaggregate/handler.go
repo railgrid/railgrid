@@ -26,7 +26,9 @@ limitations under the License.
 // path, verifies the caller's bearer against that tenant (see BearerVerifier),
 // builds a fresh stateless mcp.Server, federates the /mcp endpoint of every
 // Ready provider visible to the verified tenant (see ProviderEnumerator) into
-// it, and serves the MCP protocol over streamable HTTP. Nothing is federated
+// it, and serves the MCP protocol over streamable HTTP. Providers' discovered
+// tools and instructions are cached per caller (see discovery.go), so only the
+// first request of a caller waits on provider discovery. Nothing is federated
 // for a bearer that fails verification.
 package mcpaggregate
 
@@ -91,13 +93,22 @@ type Options struct {
 	// ClientIP derives the address the rate limiter keys on. Defaults to the
 	// host part of RemoteAddr; the hub passes its proxy-header-aware helper.
 	ClientIP func(*http.Request) string
+	// DiscoveryCacheTTL is how long a provider's discovered tools and
+	// instructions are served before a background refresh (see discovery.go).
+	// Defaults to DefaultDiscoveryCacheTTL; negative disables the cache, so
+	// every request discovers every provider afresh.
+	DiscoveryCacheTTL time.Duration
 }
 
 // New returns the http.Handler mounted at apiurl.PathPrefixMCPServer. The
 // handler expects the prefix to have been stripped, so it sees
 // /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
-	h := &handler{opts: opts, verified: make(map[string]verifiedEntry)}
+	h := &handler{
+		opts:      opts,
+		verified:  make(map[string]verifiedEntry),
+		discovery: newDiscoveryCache(opts.DiscoveryCacheTTL),
+	}
 	if h.opts.VerifyCacheTTL <= 0 {
 		h.opts.VerifyCacheTTL = DefaultVerifyCacheTTL
 	}
@@ -112,6 +123,10 @@ type handler struct {
 
 	mu       sync.Mutex
 	verified map[string]verifiedEntry // verification cache key -> entry
+
+	// discovery caches providers' tools and instructions per caller; nil
+	// when disabled.
+	discovery *discoveryCache
 }
 
 // verifiedEntry is one cached verification: the tenant context the verifier
@@ -140,7 +155,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fresh, stateless server per request so a provider that just became
-	// Ready shows up on the very next tools/list.
+	// Ready shows up on the very next tools/list; what each provider offers
+	// comes from the discovery cache.
 	handler := mcp.NewStreamableHTTPHandler(
 		func(req *http.Request) *mcp.Server {
 			return buildServer(req.Context(), buildParams{
@@ -150,6 +166,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				caller:      caller,
 				externalURL: h.opts.ExternalURL,
 				enumerate:   h.opts.Providers,
+				discovery:   h.discovery,
 				log:         h.opts.Logger,
 			})
 		},
@@ -265,6 +282,7 @@ type buildParams struct {
 	caller      Caller
 	externalURL string
 	enumerate   ProviderEnumerator
+	discovery   *discoveryCache
 	log         logr.Logger
 }
 
@@ -287,13 +305,21 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	if p.enumerate != nil {
 		targets = p.enumerate(ctx, p.caller)
 	}
+	p.log.V(1).Info("provider federation: enumerated", "count", len(targets))
+
+	// cluster is the workspace's kcp logical-cluster ID parsed off the
+	// MCPServer URL. It is the tenant's identity towards providers: the
+	// federation client forwards it as BOTH X-Faros-Tenant and X-Faros-Cluster,
+	// the same pair the hub backend proxy injects on /services/providers/*
+	// (this federation path POSTs directly, so it sets them itself).
+	found := p.discovery.discover(ctx, p.log, newProviderMCPClient(p.token, p.cluster), targets)
 
 	// Merge each provider's own instructions (e.g. a Home Assistant Service's
 	// operator-authored entity/room guidance) into the aggregate's instructions,
 	// so that context reaches the model here — not only on the provider's direct
-	// endpoint. Fetched before the server is built (instructions are fixed at
+	// endpoint. Known before the server is built (instructions are fixed at
 	// construction).
-	if extra := FederatedInstructions(ctx, targets, p.token, p.cluster); extra != "" {
+	if extra := mergedInstructions(found); extra != "" {
 		instructions += "\n\n--- Provider guidance ---\n\n" + extra
 	}
 
@@ -307,7 +333,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 		EndpointURL: p.externalURL + apiurl.MCPServerPath(p.cluster, p.name),
 	})
 
-	registerProviderTools(ctx, srv, p.log, targets, p.token, p.cluster)
+	registerProviderTools(srv, p.log, found)
 	return srv
 }
 

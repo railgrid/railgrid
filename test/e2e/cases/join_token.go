@@ -733,9 +733,9 @@ func AgentJoinKubernetes() features.Feature {
 			t.Logf("join token obtained for kubernetes edge %q (len=%d)", edgeName, len(token))
 
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
-			// faros.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			// the hub host resolves to loopback inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path).
+			// clusterEnv.HubURL is always DefaultHubURL (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster agent test")
@@ -862,9 +862,9 @@ func AgentHelmInstall() features.Feature {
 			t.Logf("join token obtained for helm install edge %q (len=%d)", edgeName, len(token))
 
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
-			// faros.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			// the hub host resolves to loopback inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path).
+			// clusterEnv.HubURL is always DefaultHubURL (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster helm test")

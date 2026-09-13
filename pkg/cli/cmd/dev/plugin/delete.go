@@ -17,11 +17,8 @@ limitations under the License.
 package plugin
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"runtime"
-	"strings"
 
 	"sigs.k8s.io/kind/pkg/cluster"
 )
@@ -40,13 +37,18 @@ func (o *DevOptions) RunDelete() error {
 		}
 	}
 
+	// The exported dev CA belongs to the deleted cluster.
+	if err := os.Remove(o.devCAFile()); err != nil && !os.IsNotExist(err) {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove %s: %v\n", o.devCAFile(), err)
+	}
+
 	// Also clean up the edge kubeconfig if it exists
 	edgeKubeconfigPath := "edge-kubeconfig"
 	if err := os.Remove(edgeKubeconfigPath); err != nil && !os.IsNotExist(err) {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove edge kubeconfig file %s: %v\n", edgeKubeconfigPath, err)
 	}
 
-	return o.cleanupHostEntries()
+	return nil
 }
 
 func (o *DevOptions) deleteCluster(clusterName string) error {
@@ -63,51 +65,6 @@ func (o *DevOptions) deleteCluster(clusterName string) error {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove kubeconfig file %s: %v\n", kubeconfigPath, err)
 	} else {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed kubeconfig file %s\n", kubeconfigPath)
-	}
-
-	return nil
-}
-
-func (o *DevOptions) cleanupHostEntries() error {
-	if err := removeHostEntry("faros.localhost"); err != nil {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove host entry: %v\n", err)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically remove host entry. Please run:\n")
-		if runtime.GOOS == "windows" {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Remove '127.0.0.1 faros.localhost' line from C:\\Windows\\System32\\drivers\\etc\\hosts\n")
-		} else {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  sudo sed -i '/127.0.0.1 faros.localhost/d' /etc/hosts\n")
-		}
-	} else {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed host entry faros.localhost\n")
-	}
-	return nil
-}
-
-func removeHostEntry(hostname string) error {
-	hostsPath := getHostsPath()
-
-	file, err := os.Open(hostsPath)
-	if err != nil {
-		return fmt.Errorf("failed to open hosts file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, hostname) || !strings.Contains(line, "127.0.0.1") {
-			lines = append(lines, line)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to read hosts file: %w", err)
-	}
-
-	content := strings.Join(lines, "\n")
-	if err := os.WriteFile(hostsPath, []byte(content), 0600); err != nil {
-		return fmt.Errorf("failed to write hosts file: %w", err)
 	}
 
 	return nil

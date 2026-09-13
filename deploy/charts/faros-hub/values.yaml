@@ -26,6 +26,18 @@ kcp:
     bindAddress: "0.0.0.0"
     # Comma-separated list of batteries to include
     batteriesInclude: "admin,user"
+    # URL embedded kcp advertises for its shard (Shard.spec.externalURL and
+    # Shard.spec.virtualWorkspaceURL). Every APIExportEndpointSlice endpoint
+    # is derived from it, so it is what the hub's own controllers and
+    # in-cluster providers dial to watch their APIExports.
+    # Empty (default) → the pod's stable headless-Service name,
+    # https://<fullname>-0.<fullname>-kcp.<namespace>.svc.cluster.local:<securePort>,
+    # which the kcp serving cert covers. Left to kcp, the value is the pod IP:
+    # after a pod restart the IP changes and kcp does not refresh the
+    # endpoint slices, so every APIExport watch keeps dialing a dead address.
+    # Set this only when consumers outside the cluster must reach kcp's
+    # virtual workspaces directly (see docs/byo-providers.md).
+    shardURL: ""
     # -- TLS configuration for embedded kcp API server.
     # Required to avoid certificate errors when pod IP changes on restart.
     # A headless service provides stable DNS names for the StatefulSet pod.

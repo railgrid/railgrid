@@ -13,12 +13,15 @@ It is a user-facing skill. For developing faros itself, read
 ```
 skills/faros/
   SKILL.md                     orientation, rules, playbooks (start here)
+  .claude-plugin/plugin.json   Claude Code plugin: this skill plus the `faros mcp proxy` MCP server
+  references/cli.md            env, app, commit, sandbox, mcp (proxy, url, claude, codex)
   references/access.md         CLI, auth, org/workspace IDs, hub REST, URL grammar, kube REST by cluster
   references/app-studio.md     App Studio CRDs and every REST route
   references/code.md           GitHub connections, repositories, commits, CI status
   references/infrastructure.md templates, instances, URLs, access gate, dev sandboxes
   references/agents.md         agents, runs, channels, schedules, deep research
-  references/mcp-and-edges.md  aggregate MCP, MCPServer, tool inventory, edges, kuery
+  references/mcp-and-edges.md  aggregate MCP, connecting, MCPServer, tool inventory, edges, kuery
+  references/troubleshooting.md error strings and measured latencies
 ```
 
 The frontmatter uses only `name` and `description`, which is the subset
@@ -60,7 +63,10 @@ with one plugin, `faros`, whose root is this directory:
 ```
 
 or from a shell, `claude plugin marketplace add faroshq/faros && claude plugin install faros@faros`.
-Update later with `/plugin update faros@faros`. To load it without the
+Update later with `/plugin update faros@faros`. The plugin also registers
+the MCP server `faros` (`faros mcp proxy`), so the provider tools appear as
+soon as the `faros` CLI is on `PATH` and logged in; the skill's playbooks use
+them where they exist. To load it without the
 plugin system, copy the directory to `.claude/skills/faros` (one project) or
 `~/.claude/skills/faros` (every project); `.claude/` is gitignored here, so
 inside this repo use a symlink: `ln -s ../../skills/faros .claude/skills/faros`.
@@ -95,7 +101,9 @@ directory travels as package resources.
 ## Keeping it honest
 
 Everything in the skill was read from the faros source and docs on
-2026-09-09, then corrected against a live hub the same day. Route tables,
+2026-09-09, then corrected against a live hub the same day. The MCP-first
+guidance (`faros mcp proxy`, `fmcp`) was checked against a local hub on
+2026-09-13. Route tables,
 CRD fields, and MCP tool names are the parts most likely to drift. When you
 change one of those in the repo, update the matching reference file in the
 same PR. `references/troubleshooting.md` is the list of error strings and
@@ -112,7 +120,7 @@ another list it will trust for too long.
 
 Section 8 of `SKILL.md` and `references/troubleshooting.md` collect what only
 shows up when you actually drive a hub:
-Cloudflare blocking non-browser HTTP clients, calling MCP tools without an
-MCP client, org-scoped providers missing from the aggregate, and the states
-that look like failures but are only latency. Add to it whenever a session
+Cloudflare blocking non-browser HTTP clients, calling MCP tools from a shell
+(`fmcp`), org-scoped providers missing for token-based MCP clients, and the
+states that look like failures but are only latency. Add to it whenever a session
 loses time to something that was not in the code.

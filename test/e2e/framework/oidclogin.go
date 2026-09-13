@@ -195,7 +195,7 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	dexCallbackURL = resolveRelative(formAction, dexCallbackURL)
 
 	// ── Step 6: follow Dex → hub /auth/callback ───────────────────────────────
-	// The Location may point to the hub's public URL (e.g. https://faros.localhost:9443/auth/callback).
+	// The Location may point to the hub's public URL (e.g. https://console.127.0.0.1.sslip.io:9443/auth/callback).
 	// We follow it so the hub can exchange the auth code.
 	hubCallbackReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dexCallbackURL, nil)
 	if err != nil {

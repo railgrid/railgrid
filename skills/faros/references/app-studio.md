@@ -136,7 +136,7 @@ Gate on `repository.ready == true` (and `repository.htmlURL` being populated)
 before the first commit:
 
 ```bash
-until curl -s "$AS/api/projects/$P" -H "$A" $T | jq -e '.repository.ready == true' >/dev/null; do sleep 5; done
+until fc "$AS/api/projects/$P" | jq -e '.repository.ready == true' >/dev/null; do sleep 5; done   # fc: SKILL.md section 0
 ```
 
 Observed on a fresh project, so treat it as a startup race rather than

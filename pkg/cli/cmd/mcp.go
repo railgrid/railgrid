@@ -39,6 +39,9 @@ func newMCPCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newMCPURLCommand())
+	cmd.AddCommand(newMCPClaudeCommand())
+	cmd.AddCommand(newMCPCodexCommand())
+	cmd.AddCommand(newMCPProxyCommand())
 	return cmd
 }
 
@@ -219,6 +222,12 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	fmt.Printf("  codex mcp add %s \\\n", mcpName)
 	fmt.Printf("    --url %s \\\n", shellSingleQuote(mcpURL))
 	fmt.Println("    --bearer-token-env-var FAROS_MCP_TOKEN")
+	if mcpserverName != "" {
+		fmt.Println()
+		fmt.Println("To connect as yourself instead (your own login, refreshed automatically; also")
+		fmt.Println("federates your organization's own providers), run the proxy as a stdio server:")
+		fmt.Printf("  claude mcp add %s -- faros mcp proxy --mcpserver-name %s\n", mcpName, mcpserverName)
+	}
 	return nil
 }
 

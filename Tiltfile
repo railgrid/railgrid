@@ -8,7 +8,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 # allowing a developer to put trusted DNS/TLS in front of the same dynamic
 # virtual-host routing. The public app port may be explicitly empty when the
 # external endpoint uses the normal HTTPS port.
-faros_hub_external_url = os.getenv('FAROS_HUB_EXTERNAL_URL', 'https://localhost:9443')
+faros_hub_external_url = os.getenv('FAROS_HUB_EXTERNAL_URL', 'https://console.127.0.0.1.sslip.io:9443')
 preview_app_base_domain = os.getenv('FAROS_APP_BASE_DOMAIN', 'apps.127.0.0.1.sslip.io')
 preview_gateway_port = os.getenv('PREVIEW_GATEWAY_PORT', '10443')
 preview_app_public_port = os.getenv('FAROS_APP_PUBLIC_PORT', preview_gateway_port)

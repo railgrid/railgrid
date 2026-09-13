@@ -75,6 +75,21 @@ TLS Secret name.
 {{/*
 Whether KCP TLS is enabled (embedded mode only).
 */}}
+{{/*
+URL embedded kcp advertises for its shard (--kcp-shard-external-url and
+--kcp-shard-virtual-workspace-url): kcp.embedded.shardURL, or the StatefulSet
+pod's stable headless-Service DNS name, which survives pod restarts (the pod IP
+does not) and is a SAN on the kcp serving cert.
+*/}}
+{{- define "faros-hub.kcpShardURL" -}}
+{{- if .Values.kcp.embedded.shardURL -}}
+{{- .Values.kcp.embedded.shardURL -}}
+{{- else -}}
+{{- $fullname := include "faros-hub.fullname" . -}}
+{{- printf "https://%s-0.%s-kcp.%s.svc.cluster.local:%v" $fullname $fullname .Release.Namespace .Values.kcp.embedded.securePort -}}
+{{- end -}}
+{{- end }}
+
 {{- define "faros-hub.kcpTlsEnabled" -}}
 {{- if and (not .Values.kcp.external.enabled) (or .Values.kcp.embedded.tls.selfSigned.enabled .Values.kcp.embedded.tls.certManager.enabled .Values.kcp.embedded.tls.existingSecret) -}}
 true

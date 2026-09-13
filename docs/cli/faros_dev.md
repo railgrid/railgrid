@@ -26,6 +26,6 @@ clusters configured for faros.
 
 * [faros](faros.md)	 - faros: an open-source control plane for platform teams
 * [faros dev delete](faros_dev_delete.md)	 - Delete development environment
-* [faros dev init](faros_dev_init.md)	 - Initialize a local faros environment (hub kind cluster + optional workers)
+* [faros dev init](faros_dev_init.md)	 - Initialize a local faros environment (one kind cluster: hub, providers and an edge)
 * [faros dev update](faros_dev_update.md)	 - Upgrade the faros-hub release on an existing local environment
 

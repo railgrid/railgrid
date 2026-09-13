@@ -17,6 +17,13 @@ KCP_VER := v0.30.0
 KCP := $(TOOLSDIR)/kcp-$(KCP_VER)
 KCP_DATA_DIR := .kcp
 
+# Browser/CLI address of every local hub (make run-hub-*, both Tiltfiles,
+# `faros dev init`). Public DNS answers every *.127.0.0.1.sslip.io name with
+# 127.0.0.1, so no /etc/hosts entry is needed, and published apps under
+# apps.127.0.0.1.sslip.io share its site (private-app sign-in cookies stay
+# first-party). certs/apiserver.crt covers *.127.0.0.1.sslip.io.
+DEV_HUB_URL ?= https://console.127.0.0.1.sslip.io:9443
+
 CONTROLLER_GEN_VER := v0.16.5
 CONTROLLER_GEN_BIN := controller-gen
 CONTROLLER_GEN := $(TOOLSDIR)/$(CONTROLLER_GEN_BIN)-$(CONTROLLER_GEN_VER)
@@ -662,10 +669,10 @@ $(KCP):
 	@echo "kcp binary: $(KCP)"
 
 dev-login: build-faros
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url https://localhost:9443 --insecure-skip-tls-verify
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify
 
 dev-login-static: build-faros ## Login using static token auth (for use with run-hub-static)
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
 # Values: kubernetes (default) | server
@@ -680,10 +687,10 @@ dev-run-edge: build-faros ## Run the edge agent: TYPE=kubernetes (default) or TY
 	@test -f .env.edge.$(TYPE) || (echo "Run 'make dev-edge-create TYPE=$(TYPE)' first (expected .env.edge.$(TYPE))"; exit 1)
 ifeq ($(TYPE),server)
 	$(BINDIR)/faros agent run \
-		--hub-url=https://localhost:9443 \
+		--hub-url=$(DEV_HUB_URL) \
 		--hub-insecure-skip-tls-verify \
 		--token=$(FAROS_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:9443 \
+		--tunnel-url=$(DEV_HUB_URL) \
 		--edge-name=$(FAROS_EDGE_NAME) \
 		--cluster=$(FAROS_EDGE_CLUSTER) \
 		--type=server \
@@ -693,10 +700,10 @@ ifeq ($(TYPE),server)
 else
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/faros agent run \
-		--hub-url=https://localhost:9443 \
+		--hub-url=$(DEV_HUB_URL) \
 		--hub-insecure-skip-tls-verify \
 		--token=$(FAROS_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:9443 \
+		--tunnel-url=$(DEV_HUB_URL) \
 		--edge-name=$(FAROS_EDGE_NAME) \
 		--kubeconfig=.kubeconfig-faros-agent \
 		--cluster=$(FAROS_EDGE_CLUSTER) \
@@ -865,7 +872,7 @@ STATIC_AUTH_TOKEN ?= dev-token
 HUB_FLAGS_BASE := \
 	--serving-cert-file=certs/apiserver.crt \
 	--serving-key-file=certs/apiserver.key \
-	--hub-external-url=https://localhost:9443 \
+	--hub-external-url=$(DEV_HUB_URL) \
 	--dev-mode -v 4
 
 # Auth: OIDC via Dex
@@ -1018,7 +1025,7 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TI
 # hub's TTL-driven readiness stays True.
 
 QUICKSTART_PORT ?= 8081
-QUICKSTART_HUB_URL ?= https://localhost:9443
+QUICKSTART_HUB_URL ?= $(DEV_HUB_URL)
 QUICKSTART_TOKEN ?= $(STATIC_AUTH_TOKEN)
 # kcp admin kubeconfig produced by embedded-kcp mode (see HUB_FLAGS_KCP_EMBEDDED).
 QUICKSTART_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
@@ -1039,7 +1046,7 @@ QUICKSTART_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/quickstart-runtime.kubeconfig
 # FAROS_PROVIDER_KUBECONFIG unlike the broker providers.
 EDGES_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 EDGES_KCP_SERVER ?= https://localhost:6443
-EDGES_HUB_URL ?= https://localhost:9443
+EDGES_HUB_URL ?= $(DEV_HUB_URL)
 EDGES_HUB_EXTERNAL_URL ?= $(EDGES_HUB_URL)
 EDGES_TOKEN ?= $(STATIC_AUTH_TOKEN)
 EDGES_PORT ?= 8088
@@ -1196,7 +1203,7 @@ e2e-cli: build-hub build-edges-provider build-faros certs ## Run the faros CLI e
 ## provider registration, the templates catalog/projection, MCP tool federation,
 ## and the per-tenant identity gate. Endpoints override via FAROS_E2E_* env.
 E2E_TILT_TIMEOUT ?= 10m
-E2E_TILT_HUB_URL ?= https://localhost:9443
+E2E_TILT_HUB_URL ?= $(DEV_HUB_URL)
 E2E_TILT_INFRA_URL ?= http://localhost:8082
 E2E_TILT_KCP_KUBECONFIG ?= $(CURDIR)/tilt-frontproxy.kubeconfig
 E2E_TILT_RUNTIME_KUBECONFIG ?= $(CURDIR)/.faros-cluster.kubeconfig
@@ -1458,7 +1465,7 @@ uninstall-provider-quickstart: ## Delete quickstart CatalogEntry + Provider (ful
 # docs/kuery-provider-architecture.md for the phasing.
 
 KUERY_PORT ?= 8084
-KUERY_HUB_URL ?= https://localhost:9443
+KUERY_HUB_URL ?= $(DEV_HUB_URL)
 KUERY_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KUERY_KCP_SERVER ?= https://localhost:6443
@@ -1619,7 +1626,7 @@ uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown
 #   Terminal 3: make run-provider-infrastructure        # tenant: run binary
 #
 KROMC_PORT ?= 8082
-KROMC_HUB_URL ?= https://localhost:9443
+KROMC_HUB_URL ?= $(DEV_HUB_URL)
 KROMC_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KROMC_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 # Same override story as QUICKSTART_KCP_SERVER above — Tiltfile.cluster
@@ -1633,7 +1640,7 @@ KROMC_PROVIDER_MANIFEST ?= providers/infrastructure/provider.yaml
 # checked-in manifest.yaml; the Helm chart's CatalogEntry is for in-cluster
 # self-registration via ConfigMap.
 APP_STUDIO_PORT ?= 8085
-APP_STUDIO_HUB_URL ?= https://localhost:9443
+APP_STUDIO_HUB_URL ?= $(DEV_HUB_URL)
 # Browser-reachable hub origin for private preview authorization. Normal local
 # development uses the same localhost origin; deployments with an internal hub
 # route should override this independently.
@@ -1667,7 +1674,7 @@ APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_ID ?= $(APP_STUDIO_PREVIEW_BRIDGE_DEV_KEY_DIR)
 
 # --- agents provider (long-running personal AI agents) ---
 AGENTS_PORT ?= 8087
-AGENTS_HUB_URL ?= https://localhost:9443
+AGENTS_HUB_URL ?= $(DEV_HUB_URL)
 AGENTS_TOKEN ?= $(STATIC_AUTH_TOKEN)
 AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 AGENTS_KCP_SERVER ?= https://localhost:6443
@@ -2258,7 +2265,7 @@ INFRASTRUCTURE_NAMESPACE ?= infrastructure
 INFRASTRUCTURE_IMAGE ?= faros-infrastructure-provider:dev
 INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
 # Address provider pods in the kind cluster use to reach the hub front-proxy
-# (browsers use https://localhost:9443; host.docker.internal resolves to the
+# (browsers use https://console.127.0.0.1.sslip.io:9443; host.docker.internal resolves to the
 # host from inside kind on Docker Desktop / Colima / OrbStack).
 HUB_INTERNAL_URL ?= https://host.docker.internal:9443
 helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into faros-kro (hub-minted bootstrap)
@@ -2567,20 +2574,20 @@ help-dev: ## Show development environment options
 	@echo "PROVIDER QUICKSTART (after the hub is running):"
 	@echo "  Terminal A: make install-provider-quickstart   - Apply CatalogEntry"
 	@echo "  Terminal B: make run-provider-quickstart       - Run the provider"
-	@echo "  Then open https://localhost:9443/ui/providers (Enable the provider)"
+	@echo "  Then open $(DEV_HUB_URL)/ui/providers (Enable the provider)"
 	@echo ""
 	@echo "APP STUDIO PROVIDER (after the hub is running):"
 	@echo "  Terminal A: make install-provider-app-studio   - Apply CatalogEntry"
 	@echo "  Terminal B: make run-provider-app-studio       - Run the provider"
-	@echo "  Then open https://localhost:9443/ui/providers (Enable the provider)"
+	@echo "  Then open $(DEV_HUB_URL)/ui/providers (Enable the provider)"
 	@echo ""
 	@echo "ENVIRONMENT VARIABLES:"
 	@echo "  STATIC_AUTH_TOKEN  - Token for static auth (default: dev-token)"
 	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
 	@echo "  QUICKSTART_PORT    - Port the quickstart provider listens on (default: 8081)"
-	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: $(DEV_HUB_URL))"
 	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
-	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: $(DEV_HUB_URL))"
 	@echo "  APP_STUDIO_HUB_PUBLIC_URL - Browser-reachable hub origin for private previews (default: APP_STUDIO_HUB_URL)"
 	@echo "  APP_STUDIO_DEV_DATABASE_URL - Local App Studio Postgres DSN (default: postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable)"
 	@echo "  APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true - Force non-durable App Studio message store"
@@ -2784,7 +2791,7 @@ init-provider-linear: build-linear-provider
 	printf 'apiVersion: v1\nkind: Config\ncurrent-context: linear\ncontexts:\n- name: linear\n  context: {cluster: linear, user: linear}\nclusters:\n- name: linear\n  cluster:\n    server: %s/clusters/%s\n    insecure-skip-tls-verify: true\nusers:\n- name: linear\n  user:\n    token: %s\n' "$(LINEAR_KCP_SERVER)" "$(LINEAR_WORKSPACE_PATH)" "$$TOKEN" > $(LINEAR_RUNTIME_KUBECONFIG)
 	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) LINEAR_WORKSPACE_PATH=$(LINEAR_WORKSPACE_PATH) FAROS_SCHEMAS_DIR=$(CURDIR)/providers/linear/deploy/chart/files/schemas FAROS_CATALOGENTRY_FILE=$(CURDIR)/providers/linear/manifest.yaml $(BINDIR)/linear-provider init
 run-provider-linear:
-	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) FAROS_HUB_URL=https://localhost:9443 FAROS_HUB_INSECURE=true PORT=8092 $(BINDIR)/linear-provider serve
+	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) FAROS_HUB_URL=$(DEV_HUB_URL) FAROS_HUB_INSECURE=true PORT=8092 $(BINDIR)/linear-provider serve
 uninstall-provider-linear:
 	kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/root:faros:system:providers --insecure-skip-tls-verify delete -f providers/linear/provider.yaml
 verify-linear-provider: codegen-linear-provider build-linear-provider lint-linear-provider test-linear-provider

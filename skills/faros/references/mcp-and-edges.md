@@ -1,8 +1,8 @@
 # MCP aggregate, MCPServer, edges, kuery reference
 
 Sources: `pkg/hub/mcpaggregate/`, `pkg/apiurl/`, `providers/edges/`,
-`providers/kuery/`. There is no `list_targets` tool; use
-`edges__cluster_list`.
+`providers/kuery/`. There is no `list_targets` tool; with several edges
+connected, `edges__cluster_list` enumerates them.
 
 ## 1. The aggregate endpoint
 
@@ -53,33 +53,57 @@ https://<hub>/services/mcpserver/{clusterName}/apis/faros.sh/v1alpha1/mcpservers
   team workspace gets the org copy if its edge route works, but the
   long-lived connect token, a ServiceAccount, gets **no
   `infrastructure__*` at all** — so MCP clients configured from
-  `faros mcp url` see no org-scoped providers.
+  `faros mcp url` see no org-scoped providers; clients that run
+  `faros mcp proxy` call as you and do.
   Always call `tools/list` with the bearer you will actually use before
   planning a route through a tool; the inventory below is what a provider
   *can* contribute, not what you have.
 
-Get the URL and a token:
+### Connecting
+
+**As yourself: `faros mcp proxy`** (recommended). A stdio MCP server in the
+CLI. Each JSON-RPC line on stdin becomes one POST to the aggregate made with
+your kubeconfig credentials (OIDC refreshed through `faros get-token`, the
+hub CA trusted), and every JSON-RPC message of the reply comes back on
+stdout as one line. A 401 reloads the credentials and retries once; any other
+failure is a JSON-RPC error (code -32000) on the request's id; stderr is its
+log. Flags: `--mcpserver-name` (default `default`), `--org`, `--workspace`;
+without them it serves the `faros` context's workspace as it was when the
+proxy started. The faros Claude Code plugin registers it; elsewhere:
 
 ```bash
-faros mcp url --mcpserver-name default        # long-lived token from the connect endpoint, also on OIDC hubs
-eval "$(faros env)"                           # MCP_URL, MCP_TOKEN (same connect token) plus TOKEN, ORG, WS, …
-curl -s "$HUB/api/orgs/$ORG/workspaces/$WS/mcpservers/default/connect" -H "$A" -H "X-Faros-Org: $ORG" -H "X-Faros-Workspace: $WS"
+claude mcp add faros -- faros mcp proxy
+codex mcp add faros -- faros mcp proxy
+# mcpServers JSON: { "faros": { "command": "faros", "args": ["mcp", "proxy"] } }
+```
+
+The aggregate is stateless, so a shell needs no `initialize` handshake: pipe
+one `tools/call` in and read one JSON line out. That is all `fmcp` (SKILL.md
+section 0) does:
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code__list_repositories","arguments":{}}}' \
+  | faros mcp proxy 2>/dev/null | jq '.result.structuredContent'
+```
+
+**With the workspace's MCP token** (a machine without a faros login). The
+`default` MCPServer's ServiceAccount token does not expire like an OIDC token,
+but it gets no org-owned (BYO) provider tools.
+
+```bash
+faros mcp claude          # or: faros mcp codex — registers URL + token with the client (cli.md)
+faros mcp url --mcpserver-name default        # prints the URL and client snippets with the token
+eval "$(faros env)"                           # MCP_URL, MCP_TOKEN (the same token) plus TOKEN, ORG, WS, …
+fc "$HUB/api/orgs/$ORG/workspaces/$WS/mcpservers/default/connect"
 # {"endpointURL":…,"serverName":"faros","token":…,"tokenReady":true}
 ```
 
-The connect token is the MCPServer's ServiceAccount token: it does not
-expire like an OIDC token, but it gets no org-owned (BYO) provider tools.
-For those, call the endpoint with your own hub bearer (`$TOKEN`).
-
-**Calling it without an MCP client.** The endpoint is plain JSON-RPC over
-HTTP, so `curl` is enough (SKILL.md section 8, "MCP over plain HTTP").
-`Accept` must contain **both** `application/json` and `text/event-stream`,
-or the endpoint answers
+**Raw HTTP.** The endpoint is JSON-RPC over HTTP. `Accept` must contain
+**both** `application/json` and `text/event-stream`, or it answers
 `400 Accept must contain both 'application/json' and 'text/event-stream'`.
-Replies always arrive as SSE (`event: message`, then `data: {…}`), so strip
-the leading `data: ` and parse the last JSON object. A failing tool still
-returns HTTP 200 with the error text in `result.content[].text`, so never
-judge success by status code alone.
+Replies arrive as SSE (`event: message`, then `data: {…}`): strip the leading
+`data: ` and parse the last JSON object. A failing tool still returns HTTP 200
+with `result.isError: true` and the text in `result.content[].text`.
 
 ```bash
 curl -s -X POST "$MCP_URL" -H "Authorization: Bearer $MCP_TOKEN" \
@@ -87,15 +111,10 @@ curl -s -X POST "$MCP_URL" -H "Authorization: Bearer $MCP_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"code__list_repositories","arguments":{}}}'
 ```
 
-Client snippets:
-
-```bash
-claude mcp add --transport http faros "<url>" -H "Authorization: Bearer <token>"
-export FAROS_MCP_TOKEN='<token>'; codex mcp add faros --url '<url>' --bearer-token-env-var FAROS_MCP_TOKEN
-```
-```json
-{ "mcpServers": { "faros": { "url": "<url>", "headers": { "Authorization": "Bearer <token>" } } } }
-```
+The aggregate caches each provider's tools and instructions per bearer: a
+provider that becomes Ready (or stops) shows up on the next request, but a
+change in a Ready provider's own tool list reaches you up to 30 s late, one
+request after that.
 
 ## 2. MCPServer CRD (`faros.sh/v1alpha1`, cluster-scoped, shortName `mcps`)
 
@@ -144,14 +163,19 @@ unavailable")` — use `faros ssh`. Same kube toolset as below without the
 ### `edges__*`
 
 Kube tools from `containers/kubernetes-mcp-server` (toolsets core, config,
-helm), with a `cluster` parameter selecting the edge on the fleet endpoint:
+helm) over the workspace's connected Kubernetes edges. **The multi-edge
+parts appear only with more than one connected edge**: then every tool takes
+a `cluster` parameter naming the edge, and `cluster_list` and
+`configuration_contexts_list` exist. With a single connected edge (verified
+2026-09-13 on a hub with edge `local`) neither exists and every call goes to
+that edge; an extra `cluster` argument is ignored. Tools:
 `pods_list {labelSelector?}`, `pods_list_in_namespace {namespace}`,
 `pods_get`, `pods_delete`, `pods_log`, `pods_exec {namespace, name, command}`,
 `pods_run`, `pods_top`, `resources_list {apiVersion, kind, namespace?}`,
 `resources_get`, `resources_create_or_update {resource}` (apply),
 `resources_delete`, `resources_scale`, `namespaces_list`, `events_list`,
 `nodes_log`, `nodes_stats_summary`, `nodes_top`, `configuration_view`,
-`configuration_contexts_list`, `cluster_list` (enumerates connected edges),
+(multi-edge only: `configuration_contexts_list`, `cluster_list`),
 `helm_install {chart (a `.tgz` URL or `oci://` ref — no repos are
 configured, so `stable/x` does not resolve), name?, namespace?, values?, cluster?}`
 (~1 s for a small chart), `helm_list {namespace?, all_namespaces?, cluster?}`,
@@ -206,15 +230,9 @@ server edges are reached with `faros ssh`.
 
 ### `agents__*`
 
-`run_agent`, `get_run`, `list_runs`, `list_agents`, `get_agent`,
-`create_agent`, `update_agent`, `delete_agent`, `list_model_credentials`,
-`save_model_credential`, `delete_model_credential`, `test_model_credential`,
-`list_connections`, `create_connection`, `update_connection`,
-`delete_connection`, `test_connection`, `list_toolsets`, `create_toolset`,
-`update_toolset`, `delete_toolset`, `list_triggers`, `create_trigger`,
-`update_trigger`, `delete_trigger`, `run_trigger`, `list_schedules`,
-`create_schedule`, `update_schedule`, `delete_schedule`, `run_schedule`,
-`list_tool_families`. Details in [agents.md](agents.md).
+Runs, agents, model credentials, connections, toolsets, schedules and
+triggers (32 tools): inputs and what is deliberately left out in
+[agents.md](agents.md) section 7.
 
 ### `kuery__*`
 

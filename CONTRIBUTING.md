@@ -65,7 +65,7 @@ make build
 ./bin/faros dev init --worker-count 1 --chart-path deploy/charts/faros-hub
 
 # Log in with the static dev token
-./bin/faros login --hub-url https://faros.localhost:9443 \
+./bin/faros login --hub-url https://console.127.0.0.1.sslip.io:9443 \
   --insecure-skip-tls-verify --token dev-token
 
 # Register a dev edge
@@ -77,7 +77,7 @@ make build
 # Run the agent against a kind cluster (writes .kubeconfig-faros-agent)
 hack/scripts/ensure-kind-cluster.sh faros-agent
 ./bin/faros agent run \
-  --hub-url https://faros.localhost:9443 \
+  --hub-url https://console.127.0.0.1.sslip.io:9443 \
   --hub-insecure-skip-tls-verify \
   --token <join-token> \
   --edge-name dev-edge-1 \
@@ -118,7 +118,7 @@ make install-provider-quickstart
 make run-provider-quickstart
 ```
 
-Now open the portal at `https://localhost:9443/ui/providers`, click
+Now open the portal at `https://console.127.0.0.1.sslip.io:9443/ui/providers`, click
 **Enable** on Quickstart, confirm the permission claim dialog, and
 `kubectl get greetings.quickstart.providers.faros.sh` will work in
 your tenant workspace.
@@ -129,7 +129,7 @@ the catalog entry; re-running `install-provider-quickstart` reapplies.
 Override the port/URL/token via env if you're running multiple instances:
 
 ```bash
-QUICKSTART_PORT=8090 QUICKSTART_HUB_URL=https://localhost:9443 \
+QUICKSTART_PORT=8090 QUICKSTART_HUB_URL=https://console.127.0.0.1.sslip.io:9443 \
   make run-provider-quickstart
 ```
 
@@ -143,7 +143,7 @@ go build ./...   # must compile clean
 ### Connecting Claude Code to a local MCP server
 
 The dev hub serves MCP endpoints over HTTPS with a self-signed cert (e.g.
-`https://localhost:9443/services/linux-mcp/.../mcp`). Claude Code's MCP client
+`https://console.127.0.0.1.sslip.io:9443/services/linux-mcp/.../mcp`). Claude Code's MCP client
 will refuse the connection with `SDK auth failed: self signed certificate`.
 
 For local dev, start Claude with TLS verification disabled:

@@ -75,6 +75,10 @@ spec:
             - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
             - --kcp-bind-address={{ .Values.kcp.embedded.bindAddress }}
             - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
+            # Stable shard URL: endpoint slices keep working across pod
+            # restarts (see kcp.embedded.shardURL in values.yaml).
+            - --kcp-shard-external-url={{ include "faros-hub.kcpShardURL" . }}
+            - --kcp-shard-virtual-workspace-url={{ include "faros-hub.kcpShardURL" . }}
             {{- if include "faros-hub.kcpTlsEnabled" . }}
             - --kcp-tls-cert-file=/kcp-tls/tls.crt
             - --kcp-tls-key-file=/kcp-tls/tls.key
@@ -170,7 +174,7 @@ spec:
             refuse those so the modelled value stays the single source of
             truth. Keep this list in step with the flags rendered above.
             */}}
-            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
             {{- if has $flag $modelled }}

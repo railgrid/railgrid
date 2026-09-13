@@ -84,6 +84,7 @@ for the recommended production settings.
 | `kcp.embedded.enabled` | `true` | Run kcp in-process (default) |
 | `kcp.embedded.securePort` | `6443` | kcp API server port |
 | `kcp.embedded.batteriesInclude` | `admin,user` | kcp batteries to load |
+| `kcp.embedded.shardURL` | `""` | Shard URL kcp advertises in APIExportEndpointSlices. Empty uses the pod's headless-Service DNS name, which stays valid across pod restarts |
 | `kcp.embedded.tls.selfSigned.enabled` | `true` | Self-signed cert for embedded kcp |
 | `kcp.embedded.tls.certManager.enabled` | `false` | Use cert-manager for embedded kcp cert |
 

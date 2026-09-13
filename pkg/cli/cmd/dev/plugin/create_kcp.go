@@ -691,7 +691,7 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 	}
 	actionConfig.RegistryClient = registryClient
 
-	hubExternalURL := fmt.Sprintf("https://faros.localhost:%d", o.HubHTTPSPort)
+	hubExternalURL := o.hubExternalURL()
 
 	// Look up kcp's in-cluster Service ClusterIP so we can inject a host
 	// alias into the hub pod. kcp stamps APIExportEndpointSlice URLs using
@@ -712,6 +712,15 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 	}
 	kcpIP := kcpSvc.Spec.ClusterIP
 
+	hubValues := map[string]any{
+		"hubExternalURL": hubExternalURL,
+		// No listenAddr: the chart pins the container port and probes to 9443;
+		// --hub-https-port only moves the Service and host ports.
+		"devMode":          true,
+		"staticAuthTokens": devStaticTokens,
+	}
+	o.hubAdminValues(hubValues)
+
 	values := map[string]any{
 		"image": map[string]any{
 			"hub": map[string]any{
@@ -720,12 +729,7 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 				"pullPolicy": o.ImagePullPolicy,
 			},
 		},
-		"hub": map[string]any{
-			"hubExternalURL":   hubExternalURL,
-			"listenAddr":       fmt.Sprintf(":%d", o.HubHTTPSPort),
-			"devMode":          true,
-			"staticAuthTokens": devStaticTokens,
-		},
+		"hub": hubValues,
 		"kcp": map[string]any{
 			"embedded": map[string]any{
 				"enabled": false,

@@ -36,13 +36,13 @@ This starts two local resources:
    Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
 
 2. **`hub`** — `faros-hub` binary with embedded KCP, static auth, and portal dev proxy  
-   Serves HTTPS on `https://localhost:9443`. The hub depends on the portal resource and rebuilds on Go file changes.
+   Serves HTTPS on `https://console.127.0.0.1.sslip.io:9443` (listening on :9443, so `https://localhost:9443` works too). The hub depends on the portal resource and rebuilds on Go file changes.
 
 ### Smoke test
 
 ```bash
-curl -k https://localhost:9443/healthz   # hub healthz
-curl -k https://localhost:9443/ui/       # portal via hub proxy
+curl -k https://console.127.0.0.1.sslip.io:9443/healthz   # hub healthz
+curl -k https://console.127.0.0.1.sslip.io:9443/ui/       # portal via hub proxy
 curl http://localhost:3000/ui/           # portal direct (Vite dev server)
 ```
 
@@ -310,7 +310,7 @@ The hub deploys kcp's `APIBinding` resources to make the faros CRDs available in
 Static dev tokens (e.g. `dev-token`) are scoped to a specific kcp workspace path. The workspace path appears in the kubeconfig server URL:
 
 ```
-https://faros.localhost:9443/clusters/<workspace-id>/...
+https://console.127.0.0.1.sslip.io:9443/clusters/<workspace-id>/...
 ```
 
 `ClusterNameFromKubeconfig` (in `test/e2e/framework/cluster.go`) extracts the workspace ID from the server URL.

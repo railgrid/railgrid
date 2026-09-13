@@ -80,6 +80,8 @@ data/
 # Dev tools and certs
 hack/tools/
 certs/
+# Per-cluster dev CA exported by `faros dev init` (<hub-cluster-name>-ca.crt)
+*-ca.crt
 dex.db
 .kcp/
 # hack/install state (kubeconfigs, pidfiles, hub-token); e2e uses .faros-install-e2e

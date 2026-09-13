@@ -1,8 +1,11 @@
 # Agents provider reference
 
-REST base `https://<hub>/services/providers/agents` (written `$AG`). Headers as for
-every provider: bearer, `X-Faros-Org`, `X-Faros-Workspace`. MCP tools appear
-on the aggregate as `agents__*`.
+From a coding agent, use the `agents__*` MCP tools (section 7) through
+`faros mcp proxy`. REST base `https://<hub>/services/providers/agents`
+(written `$AG`; headers as for every provider: bearer, `X-Faros-Org`,
+`X-Faros-Workspace`) is the same API plus what MCP leaves out: streaming
+chat, sessions and messages, the inbox, usage and pricing, the event stream,
+run cancellation and `idempotencyKey`.
 
 ## 1. CRDs (`agents.faros.sh/v1alpha1`, cluster-scoped)
 
@@ -196,11 +199,15 @@ channel messages are the user's own turn.
 
 ## 7. MCP tools (`agents__*`)
 
-Runs: `run_agent {agent, task, sessionId?, wait?≤120}`,
+Runs: `run_agent {agent, task, sessionId?, wait?≤120}` (no `idempotencyKey`; use REST when a retry must not start a second run),
 `get_run {runId, wait?≤300}`, `list_runs {agent?, phase?, trigger?, session?, parent?, limit?}`.
 
-Agents: `list_agents`, `get_agent {name}`, `create_agent {name, displayName?, description?, systemPrompt?, autonomy?, modelCredential?, modelFallbacks?, budgetTokens?, budgetUSD?, channels?}`,
-`update_agent {name, …pointer fields…}`, `delete_agent {name}`.
+Agents: `list_agents`, `get_agent {name}`, `create_agent {name, displayName?, description?, systemPrompt?, autonomy?, modelCredential?, modelFallbacks?, budgetTokens?, budgetUSD?, channels?, maxToolTurns?, timeoutSeconds?}`,
+`update_agent {name, …the same fields…, delegates?, interactiveFamilies?, backgroundFamilies?, interactiveToolsets?, backgroundToolsets?, interactiveConnections?, backgroundConnections?}`,
+`delete_agent {name}`. **`create_agent` takes no tool grants**: create, then
+`update_agent` with the families, toolsets and connections. Only fields you
+pass change; list fields replace the stored list, so read with `get_agent`
+before appending.
 
 Credentials: `list_model_credentials`, `save_model_credential {name, model, provider?, baseURL?, apiKey?}`,
 `delete_model_credential`, `test_model_credential`.

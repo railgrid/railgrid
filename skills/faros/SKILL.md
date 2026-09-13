@@ -46,16 +46,24 @@ faros app status shop                           # the Production: line is the re
 A static site or SPA uses `--template simple-webapp`, whose sandbox component
 is `app`, not `api` (table in 4.2).
 
-The rest of this file calls REST through a small helper and the App Studio
-base URL:
+The rest of this file calls hub and provider REST through `fc`, and provider
+MCP tools through `fmcp` (one tool call through the local MCP server,
+section 2). In an MCP client that already lists the faros tools, call those
+tools directly instead of `fmcp`.
 
 ```bash
 fc() { curl -s -H "Authorization: Bearer $TOKEN" -H "X-Faros-Org: $ORG" -H "X-Faros-Workspace: $WS" "$@"; }
 # AS is exported by `faros env`: $HUB/services/providers/app-studio
+fmcp() {  # fmcp <provider__tool> ['<json args>'] → the tool's result; a tool error exits non-zero with its text
+  jq -nc --arg n "$1" --argjson a "${2:-null}" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:($a // {})}}' |
+    faros mcp proxy 2>/dev/null |
+    jq -r 'if .error then error(.error.message) elif (.result.isError // false) then error(.result.content[0].text)
+           else (.result.structuredContent // (.result.content[0].text | (fromjson? // .))) end'
+}
 ```
 
 OIDC tokens are short-lived: re-run `eval "$(faros env)"` in each new shell
-call. `MCP_TOKEN` is a long-lived ServiceAccount token.
+call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
 
 ## 1. Rules that override everything else
 
@@ -68,7 +76,8 @@ call. `MCP_TOKEN` is a long-lived ServiceAccount token.
 4. **Prefer kubectl over `faros apply`/`faros get`** for workspace resources.
 5. **Enumerate, don't trust lists.** Providers, their `scope`, and your MCP
    tools differ per hub and per org: `GET /api/providers` and MCP `tools/list`
-   are the only authority. Tool names are `<provider>__<tool>`.
+   are the only authority. Tool names are `<provider>__<tool>`; an MCP client
+   adds its own prefix (e.g. `mcp__faros__code__list_repositories`).
 6. **Check readiness before promising outcomes.** `exposure: internal` never
    gets a URL; a build is promotable only when every component has an image
    for the exact faros-recorded commit; a private or restricted URL answers
@@ -111,16 +120,12 @@ faros version
 ```
 
 `FAROS_VERSION=vX.Y.Z` pins a release; `INSTALL_DIR=/usr/local/bin sudo -E sh`
-installs system-wide. Once the CLI is present, `faros skills install` fetches
-the current version of this skill from GitHub into `~/.claude/skills` and
-`~/.agents/skills` (`--target`, `--scope project`, `--dir` narrow that), so
-run it when this copy looks stale. Alternatives, when those tools are already present:
-`kubectl krew index add faros https://github.com/faroshq/krew-index.git && kubectl krew install faros/faros`
-(then `kubectl faros …` or `faros …`), `go install github.com/faroshq/faros/cmd/faros@latest`
-(Go 1.26+), or the release tarball `kubectl-faros_<Linux|Darwin>_<x86_64|aarch64|arm64>.tar.gz`
-from `https://github.com/faroshq/faros/releases`, which unpacks a binary
-named `kubectl-faros`: rename it to `faros`. Windows gets
-`kubectl-faros_Windows_<x86_64|arm64>.zip`; the installer script is Linux and macOS only.
+installs system-wide. krew, `go install` and the release archives (Windows
+included; they unpack `kubectl-faros`, rename it to `faros`):
+[references/access.md](references/access.md) section 1. Once the CLI is
+present, `faros skills install` fetches the current version of this skill
+from GitHub into `~/.claude/skills` and `~/.agents/skills`; run it when this
+copy looks stale.
 
 **No way to install anything.** The hub is plain HTTPS, so every CLI
 command has a curl equivalent once you hold a bearer; the CLI is only the
@@ -154,32 +159,65 @@ fc -X POST "$HUB/api/orgs/$ORG/workspaces/$WS/providers/<p>/enable" -H 'Content-
   -d '{"acceptedClaims":[{"group":"","resource":"secrets"}]}'   # accept what the catalog lists
 ```
 
-**MCP.** `faros env` already exports `MCP_URL`/`MCP_TOKEN` (from
-`GET /api/orgs/{org}/workspaces/{ws}/mcpservers/default/connect`).
-To wire a client: `faros mcp url --mcpserver-name default` prints the URL plus
-ready-made `claude mcp add` / Codex / Claude Desktop snippets with a real token.
+**MCP: the provider tools, as you.** `faros mcp proxy` is a local stdio MCP
+server. It forwards every call to the workspace's aggregate MCP endpoint with
+your own faros login (refreshed as it expires, the hub CA taken from the
+kubeconfig), so it offers every provider tool federated for you, your org's
+own providers included.
+
+- **Claude Code with the faros plugin**: already registered as `faros`
+  (`/mcp` shows its state). Nothing to do.
+- **Any other client**: `claude mcp add faros -- faros mcp proxy`,
+  `codex mcp add faros -- faros mcp proxy`, or
+  `{"command": "faros", "args": ["mcp", "proxy"]}` in an `mcpServers` config;
+  then restart or reconnect the client.
+- **A shell or script**: `fmcp` (section 0) starts one proxy per call.
+
+It serves the workspace the `faros` context pointed at when it started:
+after `faros use`, reconnect it (`/mcp` in Claude Code). An older CLI answers
+`unknown command "proxy" for "faros mcp"`: reinstall it. Not logged in yet,
+every call answers `… run 'faros login' first`; log in and call again.
+
+The token-based alternative (`faros mcp url|claude|codex`, and
+`MCP_URL`/`MCP_TOKEN` from `faros env`) uses the workspace's long-lived
+MCPServer ServiceAccount token: meant for machines without a faros login,
+and it gets **no org-owned provider tools**
+([references/mcp-and-edges.md](references/mcp-and-edges.md)).
 
 ## 3. Pick the right surface
 
-| You want to | Use |
-|---|---|
-| Create, inspect, promote, publish an App Studio project | `faros app …` or REST `$AS/api/projects/…` (App Studio has no MCP server) |
-| Record local edits as a promotable commit | `faros commit <repositoryRef>` (wraps `code__commit_files`) |
-| Put a file (incl. binary) into a project without git | Code tab, or `PUT $AS/api/projects/{p}/files/content?path=` |
-| Run a command / sync files in a dev-mode instance | `faros sandbox …` (data plane; works even without `infrastructure__*` MCP tools). `exec` exists only where the template declares it (`application`, `simple-webapp`); a `worker` component has sync, logs and restart but answers `HTTP 404: exec is not declared for component worker` |
-| Workspace resources (instances, templates, repos, agents CRs, secrets) | `kubectl` on the `faros` context |
-| Provision a container/database without App Studio | `Instance` CR (section 5) or `infrastructure__provision` |
-| Hosted agents and runs | REST `$HUB/services/providers/agents/api/…` or `agents__*` |
-| Edge clusters/servers | `faros edge kubeconfig` (file), `faros connect`/`disconnect` (switch kubectl), `faros ssh`, `edges__*` |
-| Fleet-wide reads across edge clusters | `kuery__kuery_query {spec}` or REST `POST $HUB/services/providers/kuery/api/query`, after enabling `kuery` in the workspace ([references/mcp-and-edges.md](references/mcp-and-edges.md)) |
+Provider work (code, infrastructure, agents, edges, kuery) goes through the
+MCP tools when you have them: typed inputs from `tools/list`, readable errors,
+no headers or tokens to carry. The hub itself (orgs, workspaces, members,
+enabling providers), App Studio, git-based commits and YAML you want to keep
+stay on the CLI, kubectl and REST.
 
-**MCP tools exist only for providers federated into your aggregate.** Human
-bearers get platform providers plus their org's own (an org copy shadows the
-platform provider of the same name). **ServiceAccount bearers — including the
-`MCP_TOKEN` from the connect endpoint — get no org-owned providers and no
-shadowed platform copy.** So in an org that self-hosts `infrastructure`,
-`infrastructure__*` is absent for the usual MCP token: use `faros sandbox`,
-kubectl, or REST instead. Check `tools/list` before planning around a tool.
+| You want to | MCP tool (as you) | CLI / kubectl / REST |
+|---|---|---|
+| Create, inspect, promote, publish an App Studio project | none (App Studio has no MCP server) | `faros app …`, REST `$AS/api/projects/…` |
+| Record edits as a promotable commit | `code__commit_files` (files passed inline) | `faros commit <repositoryRef>` from a clone |
+| Put a file (incl. binary) into a project without git | none | `PUT $AS/api/projects/{p}/files/content?path=`, the Code tab |
+| Why a build failed; re-run it | `code__build_status {repositoryRef}`, `code__rebuild` | `faros app status` shows only the promotion state |
+| Sync, run, read logs in a dev-mode instance | `infrastructure__dev_sync`, `dev_exec`, `dev_logs`, `dev_restart` | `faros sandbox …`; App Studio's `<p>-dev` gets files only from git (`faros app sync`) |
+| Provision, change, delete a workload or database without App Studio | `infrastructure__provision`, `update_instance`, `delete_instance` | `Instance` CR with kubectl (section 5) |
+| Read workspace resources | `infrastructure__list_instances`/`get_instance`, `code__list_repositories`, `agents__list_agents` | `kubectl` on the `faros` context (every kind, secrets included) |
+| Hosted agents: create, run, schedule | `agents__*` (section 6) | REST `$HUB/services/providers/agents/api/…`, which adds chat streaming, the inbox and usage |
+| Kubernetes edges | `edges__*` kube tools (with several edges connected, `cluster` names one) | `faros edge kubeconfig`, `faros connect`, kubectl |
+| Linux server edges | none | `faros ssh` |
+| Fleet-wide reads across edges | `kuery__kuery_query {spec}` (enable `kuery` first) | REST `POST $HUB/services/providers/kuery/api/query` |
+| Orgs, workspaces, members, enabling providers | none | `faros` CLI, hub REST (`fc`) |
+
+`exec` exists only where the template declares it (`application`,
+`simple-webapp`); a `worker` component answers
+`HTTP 404: exec is not declared for component worker`.
+
+**`tools/list` is what you can call.** Through `faros mcp proxy` it holds every
+Ready provider of your org's catalog; an org's own copy replaces the platform
+provider of the same name. The ServiceAccount token misses the org-owned
+ones, so in an org that self-hosts `infrastructure`, a token-based client has
+no `infrastructure__*`. A provider you have not enabled still lists its tools
+(calls fail with RBAC or NotFound errors), and kuery answers `{}` until it is
+enabled.
 
 **A self-hosted provider runs whatever release its owner deployed.** When the
 catalog shows `scope: org` for a provider (typically `infrastructure`), its
@@ -330,7 +368,10 @@ after a commit that removes files that could affect the build).
 
 `faros commit` refuses a dirty tree and a HEAD that doesn't contain
 `origin/<branch>`, keeps the message ≤ 512 characters, sends binaries only
-when the code provider supports them, and never pushes.
+when the code provider supports them, and never pushes. Without a clone,
+`code__commit_files {repositoryRef, message, files: [{path, content}], deletePaths}`
+records the same kind of promotable commit from inline content (limits in
+[references/code.md](references/code.md)).
 
 **B. The App Studio assistant.**
 
@@ -471,7 +512,9 @@ request, not your token.
 - `build.status: none` with your SHA = CI or the package crawl hasn't caught up
   (not an error); none with an earlier commit's SHA (or none) = the commit wasn't recorded
   through faros. `incomplete` with one component missing right after green CI
-  is the crawl too.
+  is the crawl too. To see CI itself,
+  `fmcp code__build_status '{"repositoryRef":"<ref>"}'` returns the latest run's
+  conclusion per job and the failing log tail; `code__rebuild` re-runs it.
 - **The hostname prefix is locked by the first promote** (the same prefix
   again is fine; a different one → 400 `…is locked after the first
   deployment`). Check `faros app status` for an existing production before
@@ -545,6 +588,18 @@ EOF
 kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
 ```
 
+The same through the MCP tools:
+
+```bash
+fmcp infrastructure__describe_template '{"name":"simple-webapp"}'   # schema, agent usage, dev contract in one call
+fmcp infrastructure__provision '{"template":"simple-webapp","name":"hello","values":{"name":"hello","image":"ghcr.io/you/hello:v1","port":8080,"access":"public"}}'
+fmcp infrastructure__get_instance '{"name":"hello"}'
+fmcp infrastructure__update_instance '{"name":"hello","values":{"image":"ghcr.io/you/hello:v2"}}'   # RFC 7386 merge patch, in place
+```
+
+`provision` is not idempotent (check `list_instances` first). Prefer the
+kubectl YAML when the definition should live in a repo.
+
 - `connections.database` / `connections.cache` (simple-webapp, worker,
   cron-job; **not** `application`) take the `values.name` of a `database` /
   `redis-cache` instance in the same workspace and inject `DATABASE_URL` /
@@ -558,7 +613,9 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
   the app simply has no `DATABASE_URL`.
 - **Live sandbox, no git loop:** set `farosMode: development` (no image), wait
   ~1 min for Ready, then `faros sandbox sync <inst> app ./dir`,
-  `faros sandbox exec`, `faros sandbox logs`. `simple-webapp`'s dev start runs
+  `faros sandbox exec`, `faros sandbox logs` (or `infrastructure__dev_sync`,
+  `dev_exec`, `dev_logs`; `dev_sync` adds files, `faros sandbox sync`
+  replaces the whole file set). `simple-webapp`'s dev start runs
   `npm run dev -- --host 0.0.0.0 --port $PORT --config …`; a non-Vite `dev`
   script receives those flags, so ignore them and read `process.env.PORT`, and
   `faros sandbox restart` after each source sync (only Vite hot-reloads).
@@ -608,22 +665,25 @@ Details: [references/infrastructure.md](references/infrastructure.md).
 
 ## 6. Playbook: hosted agents
 
-`AG=$HUB/services/providers/agents`. Agents are CRs; runs live in the
-provider's database (REST or MCP only). OpenAI-compatible models only; the
-tenant brings the key.
+Agents are CRs; runs live in the provider's database, reachable only through
+MCP or REST. OpenAI-compatible models only; the tenant brings the key.
 
 ```bash
-fc "$AG/api/credentials"                 # existing model credentials (hasAPIKey)
-fc "$AG/api/agents" | jq '.items[].spec.models.chat'
-fc -X POST "$AG/api/agents" -H 'Content-Type: application/json' -d '{"name":"digest","systemPrompt":"…","autonomy":"auto","modelCredential":"main","backgroundFamilies":["core","web"],"budgetUSD":"2"}'
-fc -X POST "$AG/api/agents/digest/runs" -H 'Content-Type: application/json' --max-time 150 \
-  -d '{"task":"…","wait":120,"idempotencyKey":"d-1"}' | jq -r '.run.output'   # output is under .run
+fmcp agents__list_model_credentials                  # existing credentials, keys redacted
+fmcp agents__create_agent '{"name":"digest","systemPrompt":"…","autonomy":"auto","modelCredential":"main","budgetUSD":"2"}'
+fmcp agents__update_agent '{"name":"digest","backgroundFamilies":["core","web"]}'   # tool grants: update_agent only
+fmcp agents__run_agent '{"agent":"digest","task":"…","wait":120}'                  # then agents__get_run {runId, wait}
 ```
 
-`POST /runs` is a background run (no edge tools); reusing an
-`idempotencyKey` returns the original run (`reused: true`). Deep research =
-`spawn` + `web`. Approvals are human-only (`/api/inbox`). More:
-[references/agents.md](references/agents.md).
+`create_agent` takes no tool grants: set `interactiveFamilies`,
+`backgroundFamilies` and the matching `…Toolsets`/`…Connections` with
+`update_agent` (list fields replace the stored list). A run started this way
+is a background run (no edge tools). REST
+(`AG=$HUB/services/providers/agents`) is the same API plus streaming chat,
+the usage rollups and `idempotencyKey` on runs:
+`fc -X POST "$AG/api/agents/digest/runs" -H 'Content-Type: application/json' -d '{"task":"…","wait":120,"idempotencyKey":"d-1"}' | jq -r .run.output`.
+Deep research = `spawn` + `web`. Approvals are human-only (`/api/inbox`,
+the portal). More: [references/agents.md](references/agents.md).
 
 **An agent's `web_fetch` is anonymous.** Pointed at a private or restricted
 faros app, it stops at the gate's redirect and returns `HTTP 302 …` with
@@ -650,8 +710,11 @@ a `docker-registry` Secret) through `faros edge kubeconfig`. Expose an
 in-cluster Service to the hub with an edges `Service` CR and its `…/proxy`
 route. YAML for both: [references/mcp-and-edges.md](references/mcp-and-edges.md).
 
-On MCP: `edges__cluster_list`, the kubernetes toolset (`edges__pods_list`, …,
-`cluster` parameter) and one bundle per discovered Service. Fleet reads across
+With the MCP tools: the kubernetes toolset (`edges__pods_list`,
+`edges__resources_list`, `edges__pods_log`, …; answers are kubectl-style
+text) and one bundle per discovered Service. With one connected Kubernetes
+edge every call goes to it; only with several do the tools take a `cluster`
+parameter and `edges__cluster_list` appear. Fleet reads across
 clusters: kuery, which must be enabled in the workspace first (it is in the
 catalog and on `tools/list` even when it is not); pass
 `objects.cluster: true` to see which edge each object is on. `faros connect <edge>` makes
@@ -689,14 +752,14 @@ Identify which one you're looking at before waiting or rebuilding:
   reconnect it with a PAT or the code provider's own "Connect with GitHub" app.
   Otherwise only the hourly reset helps.
 
-**MCP over plain HTTP.** `tools/call` is a JSON-RPC POST with
-`Accept: application/json, text/event-stream` (anything else → 400). Replies
-may be SSE (`data: {…}`, take the last). A failing tool is HTTP 200 with
-`result.isError: true` and the reason in `result.content[0].text`; on success
-`isError` is **absent** (test `(.result.isError // false)`) and that text is
-the tool's output — JSON as a string for most tools, plain text for the
-`edges__*` kube tools. In zsh never `echo "$json"`
-(it expands `\n` and breaks jq) — pipe or `printf '%s'`.
+**MCP results.** A failing tool is not an MCP error: the call succeeds with
+`result.isError: true` and the reason in `result.content[0].text` (on success
+`isError` is absent). `fmcp` turns that into a non-zero exit printing
+`jq: error (at <stdin>:1): <the tool's text>`. Most tools answer JSON; the
+`edges__*` kube tools answer kubectl-style text. Calling the endpoint over
+raw HTTP instead: [references/mcp-and-edges.md](references/mcp-and-edges.md).
+In zsh never `echo "$json"` (it expands `\n` and breaks jq) — pipe or
+`printf '%s'`.
 
 Everything else — every error string with its fix, and measured timings — is in
 [references/troubleshooting.md](references/troubleshooting.md).

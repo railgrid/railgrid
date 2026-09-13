@@ -97,13 +97,14 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
           tilt version
 
-      # The kcp front-proxy/shards and the hub are reached on the host via Tilt
+      # The kcp front-proxy/shards are reached on the host via Tilt
       # port-forwards to *.kcp.localhost:8443; the `.localhost` TLD is not
-      # auto-resolved on Linux, so map the hostnames (and the hub vhost) to
-      # loopback. Matches the local-dev /etc/hosts the README documents.
+      # auto-resolved on Linux, so map those hostnames to loopback. The hub
+      # (console.127.0.0.1.sslip.io) resolves through public DNS; it is pinned
+      # too so a DNS hiccup at sslip.io cannot fail the run.
       - name: Map kcp + hub hostnames to loopback
         run: |
-          echo "127.0.0.1 kcp.localhost root.kcp.localhost theseus.kcp.localhost faros.localhost" \
+          echo "127.0.0.1 kcp.localhost root.kcp.localhost theseus.kcp.localhost console.127.0.0.1.sslip.io" \
             | sudo tee -a /etc/hosts
 
       # Bring the stack up. Tiltfile.cluster creates the `kcp-tilt` kind cluster

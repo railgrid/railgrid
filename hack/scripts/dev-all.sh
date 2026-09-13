@@ -53,7 +53,7 @@ echo "==> Starting hub..."
   --idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
-  --hub-external-url=https://localhost:9443 \
+  --hub-external-url=https://console.127.0.0.1.sslip.io:9443 \
   --external-kcp-kubeconfig=.kcp/admin.kubeconfig \
   --dev-mode &
 HUB_PID=$!

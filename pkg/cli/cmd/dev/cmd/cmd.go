@@ -25,20 +25,33 @@ import (
 )
 
 var (
-	devInitExampleUses = `  # Initialize a hub-only local faros environment (default, for end users)
+	devInitExampleUses = `  # One kind cluster running the hub, the edges, infrastructure, code, agents
+  # and App Studio providers, and an agent that joins that same cluster as
+  # the edge "local" (default)
   faros dev init
 
-  # Hub + 1 worker kind cluster (typical developer setup)
+  # Same, with GitHub sign-in for the code provider (register the callback
+  # https://console.127.0.0.1.sslip.io:9443/services/providers/code/oauth/github/callback
+  # on the GitHub OAuth App)
+  GITHUB_OAUTH_CLIENT_ID=... GITHUB_OAUTH_CLIENT_SECRET=... faros dev init
+
+  # Only edges, plus the quickstart provider
+  faros dev init --providers edges,quickstart
+
+  # App Studio (pulls in infrastructure, which it requires)
+  faros dev init --providers app-studio
+
+  # Hub only: no providers, no edge
+  faros dev init --providers "" --with-edge=false
+
+  # Extra plain worker kind clusters to connect by hand
   faros dev init --worker-count 1
 
-  # Hub + 3 worker kind clusters
-  faros dev init --worker-count 3
+  # Use local charts from a faros checkout for the hub and the providers
+  faros dev init --chart-path deploy/charts/faros-hub --provider-chart-repo .
 
-  # Use a local chart for development
-  faros dev init --chart-path ../deploy/charts/faros-hub
-
-  # Pin chart version
-  faros dev init --chart-version 0.1.0`
+  # Pin chart versions
+  faros dev init --chart-version 0.1.31 --provider-chart-version 0.1.19`
 
 	devUpdateExampleUses = `  # Upgrade the faros-hub release on the existing hub cluster
   faros dev update
@@ -88,26 +101,45 @@ func newInitCommand(streams genericclioptions.IOStreams) (*cobra.Command, error)
 	cmd := &cobra.Command{
 		Use:     "init",
 		Aliases: []string{"create"},
-		Short:   "Initialize a local faros environment (hub kind cluster + optional workers)",
-		Long: `Initialize a local faros environment using kind clusters.
+		Short:   "Initialize a local faros environment (one kind cluster: hub, providers and an edge)",
+		Long: `Initialize a local faros environment in a single kind cluster.
 
 This command will:
 
-- Create a hub kind cluster running the faros hub
-- Create N worker (agent) kind clusters when --worker-count > 0
-- Add faros.localhost to /etc/hosts (with sudo prompts if needed)
-- Install the faros-hub Helm chart (default: OCI chart from ghcr.io)
-- Configure necessary port mappings (9443, 8080)
+- Create a hub kind cluster and install the faros-hub Helm chart (default:
+  OCI chart from ghcr.io) with the static token dev-token, served at
+  https://console.127.0.0.1.sslip.io:9443 (public DNS answers every
+  *.127.0.0.1.sslip.io name with 127.0.0.1, so no /etc/hosts entry is needed)
+- Install the providers named by --providers into that same cluster from
+  their published charts (default: edges, infrastructure, code, agents,
+  app-studio; quickstart is also supported), onboarding each one on the hub.
+  A provider's requirements are added (app-studio needs infrastructure);
+  agents and app-studio get their own Postgres; infrastructure runs in
+  operator mode and installs kro into the cluster, with an Envoy Gateway
+  serving published apps at https://<app>.apps.127.0.0.1.sslip.io:10443;
+  code gets GitHub sign-in when GITHUB_OAUTH_CLIENT_ID and
+  GITHUB_OAUTH_CLIENT_SECRET are set
+- Enable every installed provider in the dev user's default workspace
+  (--enable-providers, default on)
+- Join the hub kind cluster itself as a KubernetesCluster edge (--with-edge,
+  default on): the faros-agent runs in the cluster next to the hub, so
+  "faros edge list" shows a Ready edge right after login
+- Create N extra plain worker kind clusters when --worker-count > 0, for
+  connecting more edges by hand
+- Configure necessary port mappings (9443, 8080, 10443)
 
-The default is hub-only (--worker-count 0), suitable for end users who just
-want to run a local faros instance. Developers working on agents should set
---worker-count to the number of edges they want to simulate.
+The provider and edge automation signs in with the static dev token, so
+--with-dex (which disables token login) skips it.
 
 The hub chart can be sourced from:
 
 - OCI registry (default): oci://ghcr.io/faroshq/charts/faros-hub
 - Local filesystem: --chart-path ./deploy/charts/faros-hub
-- Custom OCI registry: --chart-path oci://custom.registry/charts/faros-hub`,
+- Custom OCI registry: --chart-path oci://custom.registry/charts/faros-hub
+
+Provider charts come from --provider-chart-repo: an OCI base (default
+oci://ghcr.io/faroshq/charts, latest published version of each chart) or a
+faros checkout, which uses providers/<name>/deploy/chart.`,
 		Example:      devInitExampleUses,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,

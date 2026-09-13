@@ -28,9 +28,11 @@ package mcpaggregate
 //   2. buildServer calls the enumerator with that verified Caller; it returns
 //      the live Ready set visible to the caller's Org (see RegistryEnumerator)
 //   3. for each provider with an MCP URL:
-//      a. POST tools/list to {MCPURL} — a platform provider with the caller's
-//         bearer; an org-owned provider through its Transport, which carries a
-//         delegated token instead and never the caller's bearer
+//      a. take its instructions + tools from the discovery cache, or POST
+//         initialize + tools/list to {MCPURL} — a platform provider with the
+//         caller's bearer; an org-owned provider through its Transport, which
+//         carries a delegated token instead and never the caller's bearer
+//         (see discovery.go for what is cached and for how long)
 //      b. for each tool, register a proxy tool "<provider>__<original>" whose
 //         handler POSTs tools/call back to {MCPURL} the same way
 //   4. name collisions across providers are prevented by the slug prefix, and
@@ -233,11 +235,7 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 			if instr == "" {
 				return
 			}
-			label := p.DisplayName
-			if label == "" {
-				label = p.Name
-			}
-			parts[i] = fmt.Sprintf("## %s\n%s", label, instr)
+			parts[i] = instructionsBlock(p, instr)
 		}(i, p)
 	}
 	wg.Wait()
@@ -267,69 +265,16 @@ func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string
 	return out.Instructions
 }
 
-// registerProviderTools fetches each Ready provider's tools/list and registers
-// them on srv as proxies. Errors against any one provider are logged + skipped
-// — one broken provider must not poison the whole aggregate. Discovery is
-// fanned out concurrently with a per-provider deadline. The aggregate stays
-// stateless: a fresh server is built per request, so a provider that just
-// became Ready shows up on the very next tools/list from the client.
-func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger, targets []ProviderTarget, bearerToken, cluster string) {
-	log.Info("provider federation: enumerated", "count", len(targets))
-	if len(targets) == 0 {
-		return
-	}
-
-	// cluster is the workspace's kcp logical-cluster ID parsed off the
-	// MCPServer URL. It is the tenant's identity towards providers: the
-	// federation client forwards it as BOTH X-Faros-Tenant and X-Faros-Cluster,
-	// the same pair the hub backend proxy injects on /services/providers/*
-	// (this federation path POSTs directly, so it sets them itself).
-	cli := newProviderMCPClient(bearerToken, cluster)
-
-	results := make([]*providerTools, len(targets))
-	var wg sync.WaitGroup
-	for i := range targets {
-		p := targets[i]
-		if p.MCPURL == "" {
+// registerProviderTools registers the discovered tools on srv as proxies.
+// Registration runs sequentially, in the original provider order, so the
+// aggregate tool list is deterministic across requests. AddTool on a shared
+// server is not guaranteed goroutine-safe, so it stays on one goroutine.
+func registerProviderTools(srv *mcp.Server, log logr.Logger, found []*providerTools) {
+	for _, r := range found {
+		if r == nil || len(r.tools) == 0 {
 			continue
 		}
-		tc, ok := cli.forTarget(p)
-		if !ok {
-			log.V(1).Info("provider federation: org-owned provider has no delegated transport (skipping)", "provider", p.Name, "org", p.OrgUUID)
-			continue
-		}
-		wg.Add(1)
-		go func(i int, p ProviderTarget) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Info("provider federation: discovery panic recovered", "provider", p.Name, "panic", fmt.Sprint(r))
-				}
-			}()
-			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
-			defer cancel()
-			tools, err := tc.listTools(dctx, p.MCPURL)
-			if err != nil {
-				if errors.Is(err, errNoMCPEndpoint) {
-					log.V(2).Info("provider federation: no MCP endpoint (skipping)", "provider", p.Name)
-				} else {
-					log.Info("provider federation: tools/list failed (skipping)", "provider", p.Name, "org", p.OrgUUID, "mcpURL", p.MCPURL, "err", err.Error())
-				}
-				return
-			}
-			results[i] = &providerTools{provider: p, tools: tools, client: tc}
-		}(i, p)
-	}
-	wg.Wait()
-
-	// Register sequentially, in the original provider order, so the aggregate
-	// tool list is deterministic across requests. AddTool on a shared server
-	// is not guaranteed goroutine-safe, so registration stays on this goroutine.
-	for _, r := range results {
-		if r == nil {
-			continue
-		}
-		log.Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
+		log.V(1).Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
 		for _, t := range r.tools {
 			func() {
 				defer func() {
@@ -343,11 +288,34 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 	}
 }
 
-// providerTools is one provider's discovered tool set, carried from the
-// concurrent discovery fan-out to the sequential registration pass.
+// mergedInstructions joins the discovered providers' instructions, in
+// provider order, in the same shape FederatedInstructions returns.
+func mergedInstructions(found []*providerTools) string {
+	var parts []string
+	for _, r := range found {
+		if r != nil && r.instructions != "" {
+			parts = append(parts, instructionsBlock(r.provider, r.instructions))
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// instructionsBlock is one provider's section of the merged instructions.
+func instructionsBlock(p ProviderTarget, instr string) string {
+	label := p.DisplayName
+	if label == "" {
+		label = p.Name
+	}
+	return fmt.Sprintf("## %s\n%s", label, instr)
+}
+
+// providerTools is one provider's discovered tool set and instructions,
+// carried from the concurrent discovery fan-out to the sequential
+// registration pass.
 type providerTools struct {
-	provider ProviderTarget
-	tools    []discoveredTool
+	provider     ProviderTarget
+	tools        []discoveredTool
+	instructions string
 	// client is the per-target federation client discovery used; tools/call
 	// goes out the same way (same transport, same credential rule).
 	client *providerMCPClient

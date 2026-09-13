@@ -88,7 +88,7 @@ const (
 	DefaultAgentClusterName = "faros-e2e-agent"
 	DefaultKindNetwork      = "faros-e2e"
 	DefaultChartPath        = "deploy/charts/faros-hub"
-	DefaultHubURL           = "https://faros.localhost:9443"
+	DefaultHubURL           = "https://console.127.0.0.1.sslip.io:9443"
 
 	// DefaultAgentCount is the number of agent clusters created by the e2e
 	// test suites. All suites create 2 agent clusters so multi-site tests run
@@ -222,6 +222,9 @@ func SetupClusters(workDir string) env.Func {
 
 		args := []string{
 			"dev", "init",
+			// Hub-only: the suites run their own providers and agents, so
+			// keep the default in-cluster providers and self-edge out.
+			"--providers=", "--with-edge=false",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
@@ -297,6 +300,9 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 
 		args := []string{
 			"dev", "init",
+			// Hub-only: the suites run their own providers and agents, so
+			// keep the default in-cluster providers and self-edge out.
+			"--providers=", "--with-edge=false",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
@@ -553,6 +559,9 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 
 		args := []string{
 			"dev", "init",
+			// Hub-only: the suites run their own providers and agents, so
+			// keep the default in-cluster providers and self-edge out.
+			"--providers=", "--with-edge=false",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
@@ -665,8 +674,8 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 // HubNodePortURL returns the hub URL reachable from inside a pod in another
 // kind cluster — i.e. via the hub node's Docker IP on the shared kind network
 // and NodePort 31443.
-// This is needed because faros.localhost resolves only on the CI runner host,
-// not inside pods.
+// This is needed because the hub host (console.127.0.0.1.sslip.io) resolves to
+// loopback, which inside a pod is the pod itself.
 // Returns "" if the Docker IP cannot be determined (caller should skip or fall back).
 func HubNodePortURL() string {
 	out, err := exec.Command("docker", "inspect",
@@ -686,7 +695,7 @@ func HubNodePortURL() string {
 // the hub node's Docker network NodePort address so that in-cluster agents can
 // connect.
 //
-// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path),
+// clusterEnv.HubURL is always DefaultHubURL (no cluster path),
 // so this function reads the cluster path directly from the hub kubeconfig
 // instead of relying on the HubURL field.
 //
@@ -701,7 +710,7 @@ func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	if err != nil {
 		return ""
 	}
-	// cfg.Host is like "https://faros.localhost:9443/clusters/root:faros:user-default"
+	// cfg.Host is like "https://console.127.0.0.1.sslip.io:9443/clusters/root:faros:user-default"
 	parsedCluster, err := url.Parse(cfg.Host)
 	if err != nil {
 		return base
@@ -742,6 +751,9 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 
 		args := []string{
 			"dev", "init",
+			// Hub-only: the suites run their own providers and agents, so
+			// keep the default in-cluster providers and self-edge out.
+			"--providers=", "--with-edge=false",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--worker-count", fmt.Sprintf("%d", agentCount),

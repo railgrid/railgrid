@@ -59,6 +59,9 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
 - [faros commit](faros_commit.md) — Record local git commits through faros (code__commit_files)
 - [faros env](faros_env.md) — Print shell exports for calling the hub as you
 - [faros mcp](faros_mcp.md) — MCP endpoints for AI clients (Claude Code, Cursor, Codex)
+  - [faros mcp claude](faros_mcp_claude.md) — Add the workspace MCP server to Claude Code
+  - [faros mcp codex](faros_mcp_codex.md) — Add the workspace MCP server to Codex
+  - [faros mcp proxy](faros_mcp_proxy.md) — Serve the workspace MCP endpoint over stdio, authenticated as you
   - [faros mcp url](faros_mcp_url.md) — Print the MCP endpoint URL
 - [faros sandbox](faros_sandbox.md) — Drive a development-mode instance: sync, exec, logs, restart, status
   - [faros sandbox env](faros_sandbox_env.md) — Set environment variables on the component's running dev process
@@ -83,7 +86,7 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
   - [faros agent upgrade](faros_agent_upgrade.md) — Upgrade the agent for an edge deployed via 'faros agent join'
 - [faros dev](faros_dev.md) — Manage development environment for faros
   - [faros dev delete](faros_dev_delete.md) — Delete development environment
-  - [faros dev init](faros_dev_init.md) — Initialize a local faros environment (hub kind cluster + optional workers)
+  - [faros dev init](faros_dev_init.md) — Initialize a local faros environment (one kind cluster: hub, providers and an edge)
   - [faros dev update](faros_dev_update.md) — Upgrade the faros-hub release on an existing local environment
 - [faros init](faros_init.md) — Run a faros hub in-process (server side, not a client command)
 - [faros install](faros_install.md) — Install the faros agent

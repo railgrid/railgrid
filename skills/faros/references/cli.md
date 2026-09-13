@@ -1,4 +1,4 @@
-# CLI reference: `env`, `app`, `commit`, `sandbox`, `mcp url`
+# CLI reference: `env`, `app`, `commit`, `sandbox`, `mcp url|claude|codex|proxy`
 
 Sources: `pkg/cli/cmd/{env,app,commit,sandbox,mcp,hubclient,root}.go`. The
 rest of the command tree (login, use, edge, ssh, agent, dev, …) is in
@@ -12,8 +12,8 @@ rest of the command tree (login, use, edge, ssh, agent, dev, …) is in
   (display name, case-insensitive, or UUID), declared as persistent flags on
   the command, so they work after a subcommand too. Default: the workspace
   whose `clusterName` equals the `/clusters/<id>` of the kubeconfig's `faros`
-  context (falls back to the current context). The only root-level flag is
-  `--kubeconfig`.
+  context (falls back to the current context). Root-level flags:
+  `--kubeconfig` and `--insecure-skip-tls-verify`.
 - Errors: `workspace "<w>" matches in N organizations; pass --org (org/workspace: …)`,
   `no workspace matches "<w>"`,
   `cluster <id> (kubeconfig context "<ctx>") is not a workspace of any org you belong to; run 'faros use'`,
@@ -57,19 +57,55 @@ Prints single-quoted `export` lines, in this order:
 - No bearer from the kubeconfig:
   `the kubeconfig credentials for context "<ctx>" do not produce a bearer token; run 'faros login'`.
 
-## 3. `faros mcp url`
+## 3. `faros mcp`
 
-`faros mcp url --mcpserver-name <name>` fetches the MCPServer token from
-the hub's connect endpoint and uses its `endpointURL`, so the Claude Code /
-Claude Desktop / Codex snippets carry a working long-lived token on OIDC
-hubs too. It only does so when the `faros` context targets the same
-workspace as the current context
-(`current context targets <a>, the faros context <b>`). Otherwise, and for
-`--edge`, it falls back to the kubeconfig's static token, and without one
-the snippets show `<your-token>`; notes go to stderr
+`faros mcp proxy [--mcpserver-name default] [--org O] [--workspace W]` is a
+stdio MCP server for clients to launch (`claude mcp add faros -- faros mcp proxy`;
+the faros Claude Code plugin registers it). It relays each JSON-RPC line on
+stdin to the aggregate as one POST made with the kubeconfig's credentials (so
+as you: org-owned providers included, OIDC refreshed, the hub CA trusted, so
+no `--ca-file` or `NODE_EXTRA_CA_CERTS`), writes every JSON-RPC message of the
+reply (JSON or SSE) to stdout, one per line, and logs to stderr. Requests run
+concurrently; `notifications/cancelled` aborts the matching POST; at EOF it
+finishes the requests in flight and exits, so `printf '<tools/call>\n' | faros mcp proxy`
+is a one-shot call. A 401 reloads the kubeconfig and retries once, then
+answers `the hub rejected your credentials (HTTP 401); run 'faros login'`.
+Any other failure is a JSON-RPC error (code -32000) on the request's id.
+
+The other three subcommands hand out the workspace MCPServer's long-lived
+ServiceAccount token instead (no org-owned provider tools; see
+[mcp-and-edges.md](mcp-and-edges.md)).
+
+`faros mcp url --mcpserver-name <name>` fetches that token from the hub's
+connect endpoint and uses its `endpointURL`, so the Claude Code / Claude
+Desktop / Codex snippets it prints carry a working token on OIDC hubs too. It
+only does so when the `faros` context targets the same workspace as the
+current context (`current context targets <a>, the faros context <b>`).
+Otherwise, and for `--edge`, it falls back to the kubeconfig's static token,
+and without one the snippets show `<your-token>`; notes go to stderr
 (`The hub has not minted this MCP server's token yet; re-run shortly.`,
 `Your kubeconfig logs in through OIDC (no static token). 'faros env' prints a current TOKEN; it expires.`).
 The flag is `--mcpserver-name` (there is no `--name`).
+
+`faros mcp claude` and `faros mcp codex` (flags `--mcpserver-name`, default
+`default`; `--name`, default `faros-<mcpserver-name>`; `--ca-file`;
+`--dry-run`; `claude` also `--scope user|local|project`, default `user`)
+register that endpoint with the local client, replacing an entry of the same
+name: `claude mcp add --transport http … --header "Authorization: Bearer <token>"`,
+or `codex mcp add … --url … --bearer-token-env-var FAROS_MCP_TOKEN`. They then
+probe the hub's certificate and print how to start the client:
+
+| Certificate | Claude Code | Codex |
+|---|---|---|
+| Publicly trusted | `claude` | `export FAROS_MCP_TOKEN=…` then `codex` |
+| Signed by `--ca-file` | `NODE_EXTRA_CA_CERTS=<ca> claude` (or the `env` block of `~/.claude/settings.json`) | `CODEX_CA_CERTIFICATE=~/.faros/ca/<host>.pem codex`, a bundle of the system roots plus the CA; Codex 0.129.0+ |
+| Neither | `NODE_TLS_REJECT_UNAUTHORIZED=0 claude`, which disables verification for the whole session | cannot connect: Codex has no skip option, re-run with `--ca-file` |
+
+A local hub from `faros dev init` needs `--ca-file <cluster>-ca.crt`
+(`faros-hub-ca.crt` by default). A `--ca-file` that does not verify the hub
+fails with `--ca-file <f> does not verify <host>`. When the client binary is
+not on PATH the commands are printed and the command exits non-zero with
+`<client> not found on PATH; nothing was configured`.
 
 ## 4. `faros app` (alias `apps`)
 

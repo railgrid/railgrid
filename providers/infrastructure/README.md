@@ -349,7 +349,7 @@ Point `KRO_KUBECONFIG` at the central cluster's kubeconfig:
 
 ```sh
 KRO_KUBECONFIG=/path/to/kro-kubeconfig \
-FAROS_HUB_URL=https://localhost:9443 \
+FAROS_HUB_URL=https://console.127.0.0.1.sslip.io:9443 \
 FAROS_HUB_TOKEN=test \
 FAROS_HUB_INSECURE=true \
 go run .

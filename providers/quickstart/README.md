@@ -69,7 +69,7 @@ Curl the backend through the hub proxy:
 
 ```sh
 curl -sk -H "Authorization: Bearer test" \
-  https://localhost:9443/services/providers/quickstart/api/hello | jq
+  https://console.127.0.0.1.sslip.io:9443/services/providers/quickstart/api/hello | jq
 ```
 
 Expected response:
@@ -89,7 +89,7 @@ Expected response:
 Open the UI in a browser:
 
 ```
-https://localhost:9443/ui/providers/quickstart/
+https://console.127.0.0.1.sslip.io:9443/ui/providers/quickstart/
 ```
 
 You should see the demo HTML page. The "Backend API" section fetches

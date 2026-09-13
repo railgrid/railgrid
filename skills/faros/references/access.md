@@ -51,6 +51,8 @@ that asks for confirmation takes `-y/--yes`; without a TTY it errors with
 | `workspace members [list\|add\|set-role\|remove]` | `--org`, `--workspace`, same flags as the org variants (no `--cascade`) | Workspace-scope memberships; requests carry both tenant headers |
 | `get <resource>` (hidden, deprecated) | | Only `edges`, `workloads` (`vw`), `placements`. Use `edge list` or kubectl. |
 | `apply -f <file>` (hidden, deprecated) | `-f` | Single YAML doc, naive pluralization. Prefer kubectl. |
+| `mcp claude`, `mcp codex` | `--mcpserver-name` (default `default`), `--ca-file`, `--dry-run`, `--scope` (claude) | Registers the aggregate MCP server with the local Claude Code or Codex and prints how to start it so it trusts the hub. Details in [cli.md](cli.md). |
+| `mcp proxy` | `--mcpserver-name` (default `default`), `--org`, `--workspace` | Stdio MCP server that relays the workspace aggregate as you (kubeconfig credentials, OIDC refreshed, hub CA trusted); what the faros Claude Code plugin registers. Details in [cli.md](cli.md). |
 | `mcp url` | `--mcpserver-name <name>` or `--edge <name>` (exactly one) | Prints the endpoint plus Claude Code, Claude Desktop, and Codex snippets. With `--mcpserver-name` it fetches the long-lived MCPServer token from the hub's `…/mcpservers/{name}/connect` (works on OIDC hubs; the faros context must target the same workspace as the current context). Falls back to the kubeconfig `authInfo.token`, and prints a note on stderr when neither exists (OIDC + `--edge`) or the hub has not minted the token yet. |
 | `env` | `--json`, `--no-mcp`, `--org`, `--workspace` | Prints `export` lines for `HUB CLUSTER ORG WS TOKEN AS MCP_URL MCP_TOKEN`: `eval "$(faros env)"`. Details in [cli.md](cli.md). |
 | `app`, `commit`, `sandbox` | see [cli.md](cli.md) | App Studio projects, faros-recorded git commits, and the dev-instance data plane from a terminal. |
@@ -60,7 +62,7 @@ that asks for confirmation takes `-y/--yes`; without a TTY it errors with
 | `version` | | version, commit, build date, go version, platform |
 | `completion bash\|zsh\|fish\|powershell` | | Shell completion; edge names, roles and `-o` values complete. |
 | `docs` (hidden) | `--dir` | Regenerates the markdown reference (`make docs-cli`). |
-| `dev init\|update\|delete` | `--worker-count`, `--chart-path`, ports, `--with-dex`, … | Local kind-based hub at `https://faros.localhost:9443` with static token `dev-token`. Needs `127.0.0.1 faros.localhost` in `/etc/hosts`. |
+| `dev init\|update\|delete` | `--providers`, `--with-edge`, `--edge-name`, `--worker-count`, `--chart-path`, `--provider-chart-repo`, ports, `--with-dex`, … | Local kind-based hub at `https://console.127.0.0.1.sslip.io:9443` with static token `dev-token`; installs the edges, infrastructure, code, agents and App Studio providers into the same cluster and joins that cluster as edge `local` by default. No `/etc/hosts` entry needed: `*.127.0.0.1.sslip.io` resolves to `127.0.0.1`. |
 | `init` | | Runs an in-process hub. Server command, not client. |
 | `kcp-workspace` (hidden, alias `kcp-ws`) | `-i` | kcp `kubectl ws` navigation (`:`, `..`, `-`, `~`, `root:…`). Rewrites the **current** kubeconfig context; `faros disconnect` returns to `faros`. Formerly `faros connect`/`ws`. |
 
@@ -157,14 +159,16 @@ What you send:
 | `Content-Type: application/json` | Bodies |
 
 What the hub injects toward providers, after stripping anything you sent:
-`X-Faros-User`, `X-Faros-Tenant` and `X-Faros-Cluster` (both the kcp cluster ID — tenant identity is never a workspace path)
-(cluster ID), `X-Faros-Base-Path` (UI proxy). Org-owned providers always
+`X-Faros-User`, `X-Faros-Tenant` and `X-Faros-Cluster` (both the kcp
+cluster ID — tenant identity is never a workspace path), `X-Faros-Base-Path`
+(UI proxy). Org-owned providers always
 receive a 10-minute delegated ServiceAccount token instead of your bearer;
 platform providers follow the hub's `--provider-delegated-tokens` policy.
 
 Tokens accepted at the front door: static token, kcp ServiceAccount token,
 OIDC ID token. Provider `/mcp` endpoints and the aggregate additionally
-accept the MCPServer's own ServiceAccount token.
+accept the MCPServer's own ServiceAccount token (`faros mcp proxy` sends your
+own bearer instead).
 
 ## 6. Hub REST surface
 
@@ -289,9 +293,19 @@ Secrets referenced by providers live in namespace `default`.
 
 ## 10. Local development hub
 
-`faros dev init --worker-count 1` creates kind clusters `faros-hub` and
-`faros-agent`, hub at `https://faros.localhost:9443`, static token
-`dev-token`, kubeconfigs written to the current directory. Log in with
-`faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token dev-token`.
-Tear down with `faros dev delete --worker-count 1`. `docs/getting-started.md`
-walks through joining the worker as an edge.
+`faros dev init` creates one kind cluster `faros-hub` running the hub at
+`https://console.127.0.0.1.sslip.io:9443` (static token `dev-token`), the `edges`,
+`infrastructure`, `code`, `agents` and `app-studio` providers (namespace
+`faros-providers`, enabled in the default workspace; `--providers` picks the
+set, `quickstart` is also supported, `app-studio` brings `infrastructure`)
+and a faros-agent that joins the cluster
+itself as edge `local` in the dev user's default workspace (`--with-edge`,
+`--edge-name`). The kubeconfig `faros-hub.kubeconfig` is written to the
+current directory. Apps published by infrastructure templates are served at
+`https://<app>.apps.127.0.0.1.sslip.io:10443` through an in-cluster Envoy Gateway.
+Log in with
+`faros login --hub-url https://console.127.0.0.1.sslip.io:9443 --insecure-skip-tls-verify --token dev-token`;
+`faros edge list` then shows `local` Ready. `--worker-count N` adds plain kind
+clusters (`faros-agent`, …) for joining more edges by hand, as
+`docs/getting-started.md` walks through. Tear down with `faros dev delete`
+(same `--worker-count`).

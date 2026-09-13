@@ -18,7 +18,6 @@ limitations under the License.
 package plugin
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,6 +85,32 @@ type DevOptions struct {
 	// When 0, no agent clusters are created — useful for end users running a
 	// local hub without any edges (`faros dev init --worker-count 0`).
 	AgentCount int
+
+	// Providers lists the providers installed INTO the hub kind cluster from
+	// their published charts (see providers.go). Empty disables.
+	Providers []string
+	// ProviderChartRepo is the oci:// base the provider charts are pulled
+	// from, or a local faros checkout (providers/<name>/deploy/chart).
+	ProviderChartRepo string
+	// ProviderChartVersion pins every provider chart; empty resolves the
+	// latest published version per provider.
+	ProviderChartVersion string
+	// ProviderImageTag overrides the provider image tag (default: the
+	// chart's appVersion).
+	ProviderImageTag string
+	// EnableProviders enables every installed provider in the dev user's
+	// default workspace.
+	EnableProviders bool
+
+	// WithEdge joins the hub kind cluster itself as a KubernetesCluster edge
+	// named EdgeName: the faros-agent runs in the same cluster as the hub
+	// and the edges provider (see edge.go).
+	WithEdge bool
+	EdgeName string
+
+	// AppsHTTPSPort is the host port published apps are served on
+	// (https://<app>.apps.127.0.0.1.sslip.io:<port>, see apps.go).
+	AppsHTTPSPort int
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -121,18 +146,24 @@ type gitHubRelease struct {
 // NewDevOptions creates a new DevOptions
 func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 	return &DevOptions{
-		Streams:          streams,
-		HubClusterName:   "faros-hub",
-		AgentClusterName: "faros-agent",
-		AgentCount:       0,
-		ChartPath:        "oci://ghcr.io/faroshq/charts/faros-hub",
-		AgentChartPath:   "oci://ghcr.io/faroshq/charts/faros-agent",
-		ChartVersion:     fallbackAssetVersion,
-		APIServerPort:    6443,
-		HubHTTPSPort:     9443,
-		HubHTTPPort:      8080,
-		DexHTTPPort:      5554,
-		KCPHTTPSPort:     7443,
+		Streams:           streams,
+		HubClusterName:    "faros-hub",
+		AgentClusterName:  "faros-agent",
+		AgentCount:        0,
+		ChartPath:         "oci://ghcr.io/faroshq/charts/faros-hub",
+		AgentChartPath:    "oci://ghcr.io/faroshq/charts/faros-agent",
+		ChartVersion:      fallbackAssetVersion,
+		APIServerPort:     6443,
+		HubHTTPSPort:      9443,
+		HubHTTPPort:       8080,
+		DexHTTPPort:       5554,
+		KCPHTTPSPort:      7443,
+		Providers:         append([]string(nil), devDefaultProviders...),
+		EnableProviders:   true,
+		ProviderChartRepo: devProviderChartRepo,
+		WithEdge:          true,
+		EdgeName:          "local",
+		AppsHTTPSPort:     devAppsListenerPort,
 	}
 }
 
@@ -158,6 +189,14 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.AgentCount, "worker-count", o.AgentCount, "Number of worker (agent) kind clusters to create. Default 0 = hub-only (local user). Use 1+ for development/tests; >1 names clusters <agent-cluster-name>-1, -2, …")
 	cmd.Flags().IntVar(&o.AgentCount, "agent-count", o.AgentCount, "Number of agent kind clusters to create (deprecated: use --worker-count)")
 	_ = cmd.Flags().MarkDeprecated("agent-count", "use --worker-count")
+	cmd.Flags().StringSliceVar(&o.Providers, "providers", o.Providers, fmt.Sprintf("Providers to install into the hub kind cluster (supported: %s). Pass an empty value to install none", strings.Join(devProviderNames(), ", ")))
+	cmd.Flags().StringVar(&o.ProviderChartRepo, "provider-chart-repo", o.ProviderChartRepo, "OCI repository the provider charts are pulled from, or the path of a faros checkout to use providers/<name>/deploy/chart")
+	cmd.Flags().StringVar(&o.ProviderChartVersion, "provider-chart-version", o.ProviderChartVersion, "Provider chart version for OCI charts (default: latest published version of each chart)")
+	cmd.Flags().StringVar(&o.ProviderImageTag, "provider-image-tag", o.ProviderImageTag, "Provider image tag (default: the chart's appVersion for OCI charts, the latest published release for charts from a checkout)")
+	cmd.Flags().BoolVar(&o.EnableProviders, "enable-providers", o.EnableProviders, "Enable every installed provider in the dev user's default workspace (all declared claims accepted)")
+	cmd.Flags().BoolVar(&o.WithEdge, "with-edge", o.WithEdge, "Join the hub kind cluster itself as a KubernetesCluster edge and run the faros-agent in it (needs the edges provider)")
+	cmd.Flags().StringVar(&o.EdgeName, "edge-name", o.EdgeName, "Name of the edge created by --with-edge")
+	cmd.Flags().IntVar(&o.AppsHTTPSPort, "apps-https-port", o.AppsHTTPSPort, "Host port published apps are served on, as https://<app>.apps.127.0.0.1.sslip.io:<port> (takes effect when the hub cluster is created)")
 }
 
 // Complete completes the options
@@ -226,6 +265,12 @@ func fetchLatestRelease() (string, error) {
 
 // Validate validates the options
 func (o *DevOptions) Validate() error {
+	if _, err := o.selectedProviders(); err != nil {
+		return err
+	}
+	if o.WithEdge && o.EdgeName == "" {
+		return fmt.Errorf("--edge-name must not be empty with --with-edge")
+	}
 	return nil
 }
 
@@ -261,7 +306,11 @@ nodes:
     hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
-%s`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort, extraMappings)
+  - containerPort: %d
+    hostPort: %d
+    protocol: TCP
+    listenAddress: "127.0.0.1"
+%s`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort, devAppsNodePort, o.AppsHTTPSPort, extraMappings)
 }
 
 var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
@@ -304,8 +353,6 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	fmt.Fprintf(o.Streams.ErrOut, "%s faros dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
 	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")         // nolint:errcheck
 
-	hostEntryExists := o.setupHostEntries()
-
 	if err := o.checkFileLimits(); err != nil {
 		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err) // nolint:errcheck
 	}
@@ -313,6 +360,28 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Create hub cluster with faros-hub installed
 	if err := o.createCluster(ctx, o.HubClusterName, o.hubClusterConfig(), true); err != nil {
 		return err
+	}
+
+	// Providers run in the hub cluster; the dev edge joins that same cluster.
+	hubRestConfig, err := loadRestConfigFromFile(fmt.Sprintf("%s.kubeconfig", o.HubClusterName))
+	if err != nil {
+		return err
+	}
+	if err := o.finishHubTLS(ctx, hubRestConfig); err != nil {
+		return err
+	}
+	if err := o.installProviders(ctx, hubRestConfig); err != nil {
+		return err
+	}
+	if err := o.enableProviders(ctx, hubRestConfig); err != nil {
+		return err
+	}
+	edgeRegistered := false
+	if o.devEdgeEnabled() {
+		if err := o.registerDevEdge(ctx, hubRestConfig); err != nil {
+			return fmt.Errorf("registering the dev edge: %w", err)
+		}
+		edgeRegistered = true
 	}
 
 	// Create agent cluster(s) (no faros installed, just plain clusters).
@@ -337,9 +406,23 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprintf(o.Streams.ErrOut, "  faros server URL: https://faros.localhost:%d\n", o.HubHTTPSPort)    // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  faros UI URL:     https://faros.localhost:%d/ui\n", o.HubHTTPSPort) // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                     // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  faros server URL: %s\n", o.hubExternalURL())    // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  faros UI URL:     %s/ui\n", o.hubExternalURL()) // nolint:errcheck
+	if o.appsGatewayEnabled() {
+		fmt.Fprintf(o.Streams.ErrOut, "  Published apps:   https://<app>.%s%s\n", devAppsBaseDomain, o.appsPublicURLSuffix()) // nolint:errcheck
+	}
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                              // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Dev CA:           %s (signs the hub and app certificates)\n", o.devCAFile()) // nolint:errcheck
+	if specs, _ := o.selectedProviders(); len(specs) > 0 && o.providerAutomationEnabled() {
+		names := make([]string, 0, len(specs))
+		for _, s := range specs {
+			names = append(names, s.Name)
+		}
+		fmt.Fprintf(o.Streams.ErrOut, "  Providers (namespace %s): %s\n", devProvidersNS, strings.Join(names, ", ")) // nolint:errcheck
+	}
+	if edgeRegistered {
+		fmt.Fprintf(o.Streams.ErrOut, "  Edge %q: this kind cluster, agent in namespace %s\n", o.EdgeName, devEdgeAgentNamespace) // nolint:errcheck
+	}
 	if hubIP != "" && o.AgentCount > 0 {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}
@@ -350,19 +433,27 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 
 	stepNum := 1
 
-	// Only show /etc/hosts step if entry didn't already exist
-	if !hostEntryExists {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Add to /etc/hosts (if not already done):\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 faros.localhost' | sudo tee -a /etc/hosts"))
-		stepNum++
-	}
-
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Set kubeconfig to access hub cluster:\n", stepNum)
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("export KUBECONFIG=%s.kubeconfig", o.HubClusterName)))
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token=dev-token"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("faros login --hub-url %s --insecure-skip-tls-verify --token=dev-token", o.hubExternalURL())))
+	stepNum++
+
+	if edgeRegistered {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Use the edge (the hub kind cluster joined itself as %q):\n", stepNum, o.EdgeName)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("faros edge list"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("faros edge kubeconfig %s > %s.kubeconfig && kubectl --kubeconfig %s.kubeconfig get nodes", o.EdgeName, o.EdgeName, o.EdgeName)))
+		stepNum++
+	}
+
+	// The workspace's aggregate MCP server, for AI clients. The hub's
+	// certificate comes from the dev CA, so the clients are pointed at it.
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an AI agent to the workspace MCP server:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("faros mcp claude --ca-file %s", o.devCAFile())))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand(fmt.Sprintf("faros mcp codex --ca-file %s", o.devCAFile())))
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Each prints how to start the client so it trusts the local hub.\n\n")
 	stepNum++
 
 	if o.AgentCount > 0 {
@@ -384,7 +475,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
 		if hubIP != "" {
 			// Use hub.url to override the kubeconfig server URL with the correct NodePort address
-			// The kubeconfig has faros.localhost:9443 which works from host, but from within
+			// The kubeconfig has the sslip.io hub host, which resolves to loopback; from within
 			// the Docker network we need to use the hub's IP and NodePort 31443
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
 				"helm install faros-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n faros-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
@@ -398,17 +489,23 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
 		}
 	} else {
-		uiURL := fmt.Sprintf("https://faros.localhost:%d/ui", o.HubHTTPSPort)
+		uiURL := o.hubExternalURL() + "/ui"
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the faros UI in your browser:\n", stepNum)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(uiURL))
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("faros edge list"))
+	if edgeRegistered {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand(fmt.Sprintf("faros edge get %s", o.EdgeName)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig -n %s logs deploy/%s -f", o.HubClusterName, devEdgeAgentNamespace, devEdgeAgentRelease)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Provider logs:    %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig -n %s logs deploy/edges -f", o.HubClusterName, devProvidersNS)))
+	}
 	if o.AgentCount > 0 {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("faros edge get my-edge"))
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n faros-agent -l app.kubernetes.io/name=faros-agent -f", o.AgentClusterName)))
 	}
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  MCP endpoint:     %s\n", blueCommand("faros mcp url --mcpserver-name default"))
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("faros dev delete"))
 
 	return nil
@@ -433,6 +530,9 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 		return fmt.Errorf("loading hub kubeconfig: %w", err)
 	}
 
+	if err := ensureDevCA(ctx, kubeconfigPath); err != nil {
+		return err
+	}
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading faros-hub release on cluster %s...\n", o.HubClusterName)
 	if o.WithExternalKCP {
 		if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
@@ -444,23 +544,16 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 		}
 	}
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "faros-hub upgraded successfully\n")
-	return nil
-}
-
-func (o *DevOptions) setupHostEntries() bool {
-	if err := addHostEntry("faros.localhost"); err != nil {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically add host entry. Please run:\n")
-		if runtime.GOOS == "windows" {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo 127.0.0.1 faros.localhost >> C:\\Windows\\System32\\drivers\\etc\\hosts\n")
-		} else {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo '127.0.0.1 faros.localhost' | sudo tee -a /etc/hosts\n")
-		}
-
-		return false
+	if err := o.finishHubTLS(ctx, restConfig); err != nil {
+		return err
 	}
 
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Host entry exists for faros.localhost\n")
-	return true
+	// Providers ride the same upgrade: their releases are re-rendered with
+	// the current chart/image settings (a no-op when nothing changed).
+	if err := o.installProviders(ctx, restConfig); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installFaros bool) error {
@@ -540,6 +633,9 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			}
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "kcp admin kubeconfig written to %s/%s\n", workDir, kcpExternalKubeconfigFile)
 
+			if err := ensureDevCA(ctx, kubeconfigPath); err != nil {
+				return err
+			}
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing faros-hub with external kcp...\n")
 			if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
 				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install faros-hub Helm chart\n")
@@ -556,9 +652,10 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		}
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "cert-manager ready\n")
 
-		// Create a self-signed ClusterIssuer for KCP TLS.
-		if err := ensureSelfSignedClusterIssuer(ctx, kubeconfigPath); err != nil {
-			return fmt.Errorf("creating self-signed ClusterIssuer: %w", err)
+		// The self-signed ClusterIssuer (kcp TLS, Dex) and the dev CA issuing
+		// the hub and apps certificates (ca.go).
+		if err := ensureDevCA(ctx, kubeconfigPath); err != nil {
+			return err
 		}
 
 		// Deploy Dex FIRST so the hub can be installed once, with IDP settings
@@ -628,7 +725,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	}
 	actionConfig.RegistryClient = regClient
 
-	hubExternalURL := fmt.Sprintf("https://faros.localhost:%d", o.HubHTTPSPort)
+	hubExternalURL := o.hubExternalURL()
 	redirectURI := hubExternalURL + "/auth/callback"
 
 	dexValues := map[string]any{
@@ -786,18 +883,22 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	}
 	actionConfig.RegistryClient = registryClient
 
-	hubExternalURL := fmt.Sprintf("https://faros.localhost:%d", o.HubHTTPSPort)
+	hubExternalURL := o.hubExternalURL()
 
 	hubValues := map[string]any{
 		"hubExternalURL": hubExternalURL,
-		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
-		"devMode":        true,
+		// No listenAddr: the chart pins the container port and probes to 9443;
+		// --hub-https-port only moves the Service and host ports.
+		"devMode": true,
 	}
 	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
 	// authenticates via Dex; mixing both would be confusing and unnecessary.
 	if !withIDP {
 		hubValues["staticAuthTokens"] = devStaticTokens
 	}
+	// In-cluster URL for minted provider kubeconfigs + the admin identity the
+	// provider automation signs in with (see providers.go).
+	o.hubAdminValues(hubValues)
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
 	// See deploy/charts/faros-hub/templates/workload.yaml.
 
@@ -870,6 +971,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			return fmt.Errorf("failed to load local chart: %w", err)
 		}
 	}
+	pinEmbeddedShardURL(chartObj, hubValues)
 
 	histClient := action.NewHistory(actionConfig)
 	histClient.Max = 1
@@ -930,56 +1032,6 @@ func (r *restConfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 			Namespace: r.namespace,
 		},
 	}, nil)
-}
-
-func getHostsPath() string {
-	if runtime.GOOS == "windows" {
-		return `C:\Windows\System32\drivers\etc\hosts`
-	}
-	return "/etc/hosts"
-}
-
-func addHostEntry(hostname string) error {
-	hostsPath := getHostsPath()
-	entry := fmt.Sprintf("127.0.0.1 %s", hostname)
-
-	exists, err := hostEntryExists(hostsPath, hostname)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-
-	file, err := os.OpenFile(hostsPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open hosts file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	if _, err := fmt.Fprintf(file, "\n%s\n", entry); err != nil {
-		return fmt.Errorf("failed to write to hosts file: %w", err)
-	}
-
-	return nil
-}
-
-func hostEntryExists(hostsPath, hostname string) (bool, error) {
-	file, err := os.Open(hostsPath)
-	if err != nil {
-		return false, fmt.Errorf("failed to open hosts file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, hostname) && strings.Contains(line, "127.0.0.1") {
-			return true, nil
-		}
-	}
-
-	return false, scanner.Err()
 }
 
 func (o *DevOptions) checkFileLimits() error {

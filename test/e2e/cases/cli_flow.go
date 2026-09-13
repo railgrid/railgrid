@@ -154,7 +154,7 @@ func AgentCLIFlow() features.Feature {
 //
 //	# Option C — foreground process (dev/containers):
 //	faros agent run \
-//	  --hub-url https://faros.localhost:9443 \
+//	  --hub-url https://console.127.0.0.1.sslip.io:9443 \
 //	  --edge-name my-edge \
 //	  --type kubernetes \
 //	  --token abc123
