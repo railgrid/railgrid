@@ -46,7 +46,7 @@ describe('Edges create guidance', () => {
 
   it('makes edge connection progress semantic while retaining masked token display', () => {
     const wizard = readSource('Wizard.vue')
-    expect(wizard).toMatch(/<ol class="wiz-steps" aria-label="Edge connection progress">/)
+    expect(wizard).toMatch(/<ol class="wiz-steps k-wizard-steps" aria-label="Edge connection progress">/)
     expect(wizard).toMatch(/:aria-current="step === i \+ 1 \? 'step' : undefined"/)
     expect(wizard).toMatch(/role="status" aria-live="polite" aria-atomic="true">\{\{ connectionAnnouncement \}\}/)
     expect(wizard).toMatch(/Generating join token for \$\{trimmed\.value\}/)

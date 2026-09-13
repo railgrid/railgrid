@@ -28,7 +28,7 @@
   --faros-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --faros-ui-core-version: 19;
+  --faros-ui-core-version: 20;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -3002,4 +3002,28 @@ faros-resource-table-filter { display: contents; }
 @media (max-width: 560px) {
   .k-tabs { gap: 2px; padding-bottom: 8px; }
   .k-tab { padding-right: 10px; padding-left: 10px; }
+}
+
+/* Ordered, non-interactive wizard progress; flow state stays caller-owned. */
+.k-wizard-steps {
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  list-style: none;
+  margin: 0;
+  padding: 0 18px;
+}
+.k-wizard-steps > li {
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 10px;
+  padding: 9px 4px 8px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.k-wizard-steps > li[aria-current='step'] {
+  border-bottom-color: var(--color-accent, #8b6bff);
+  color: var(--color-accent, #8b6bff);
 }

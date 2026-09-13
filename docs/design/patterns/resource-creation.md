@@ -21,6 +21,12 @@ A route-owned flow has one back action, one title and description, one principal
 form surface, and a right-aligned **Cancel → primary action** footer. Simple
 forms are constrained; dense provisioning forms may fill the column. Wizards
 keep this skeleton and put progress inside it instead of retaining dialog chrome.
+Use an ordered list with the shared `k-wizard-steps` recipe for progress labels:
+equal-width columns, uppercase mono text, and an accent underline on the item
+with `aria-current="step"`. Give the list an accessible progress label. These
+labels describe progress, rather than acting as navigation. Edges connection and
+Databricks import use this recipe; providers retain ownership of step state and
+route-specific layout.
 
 For an authoritative first-use empty collection, use `FirstRunGuide.vue` (or
 matching vanilla `k-first-run*` markup). It explains the value, offers the

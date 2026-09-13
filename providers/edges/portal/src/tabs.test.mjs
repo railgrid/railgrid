@@ -32,7 +32,11 @@ describe('Edges portal conformance', () => {
     expect(app).not.toMatch(/const selected = ref/)
     expect(services).not.toMatch(/const showCreate = ref/)
     expect(workloads).not.toMatch(/const showCreate = ref/)
-    expect(styles).toMatch(/\.wiz-steps\s*\{[\s\S]*\.wiz-step\s*\{[\s\S]*\.wiz-step\.active\s*\{[\s\S]*\.wiz-step\.done\s*\{/)
+    const sharedStyles = readSource('portalkit/faros-ui.css')
+    expect(readSource('Wizard.vue')).toMatch(/class="wiz-steps k-wizard-steps"/)
+    expect(sharedStyles).toMatch(/\.k-wizard-steps\s*\{[^}]*grid-auto-columns:\s*minmax\(0, 1fr\)/)
+    expect(sharedStyles).toMatch(/\.k-wizard-steps > li\[aria-current='step'\]\s*\{[^}]*border-bottom-color:\s*var\(--color-accent/)
+    expect(styles).not.toMatch(/\.wiz-step\.(active|done)/)
   })
 
   it('keeps header actions intrinsic while descriptive copy wraps', () => {

@@ -3601,7 +3601,11 @@ test('route-owned import is a page while modal mode keeps modal semantics', asyn
   const railStart = wizard.indexOf('<aside v-if="props.routeOwned" class="import-context-rail"', primaryStart)
   assert.ok(primaryStart >= 0 && railStart > primaryStart, 'route workbench places the context rail after the primary column')
   const primary = wizard.slice(primaryStart, railStart)
-  assert.match(primary, /<ol class="import-steps"/)
+  assert.match(primary, /<ol class="import-steps k-wizard-steps"/)
+  for (const html of [routeHTML, modalHTML]) {
+    assert.match(html, /<ol class="import-steps k-wizard-steps" aria-label="Import progress">/)
+    assert.match(html, /<li aria-current="step">Source<\/li>/)
+  }
   assert.match(primary, /<div :class="\['import-body', `import-body--\$\{step\}`\]"/)
   assert.match(primary, /<footer :class="props\.routeOwned \? 'k-create-actions' : 'import-actions'"/)
   assert.match(wizard, /if \(props\.routeOwned\) \{[\s\S]*focusStep\(\)/)

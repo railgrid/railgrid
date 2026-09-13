@@ -622,7 +622,7 @@ onBeforeUnmount(() => {
       <header v-if="!props.routeOwned" class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-icon-action databricks-dialog-close" type="button" data-k-tip="Close import dialog" aria-label="Close import dialog" :disabled="submitting" @click="cancel"><X :stroke-width="1.75" aria-hidden="true" /></button></header>
       <div class="import-workbench">
         <div class="import-primary">
-          <ol class="import-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
+          <ol class="import-steps k-wizard-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
           <div :class="['import-body', `import-body--${step}`]">
             <div v-if="step === 'source'" class="import-stack">
               <div class="field">

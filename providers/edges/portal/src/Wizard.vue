@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
-import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
+import { ArrowLeft, Boxes, Laptop, Server, ArrowRight, Copy, Check, Loader2, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
 import { MACOS_MASKED_JOIN_TOKEN, hubURLForCluster, macosJoinSnippet } from './macos'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
@@ -229,11 +229,10 @@ function fmt(s: number) {
       <p>A Kubernetes cluster, Linux/SSH server, or macOS host you want to manage from this workspace.</p>
     </div>
 
-    <ol class="wiz-steps" aria-label="Edge connection progress">
+    <ol class="wiz-steps k-wizard-steps" aria-label="Edge connection progress">
       <li v-for="(l, i) in stepLabels" :key="l"
-          class="wiz-step" :class="{ done: step > i + 1, active: step === i + 1 }"
           :aria-current="step === i + 1 ? 'step' : undefined">
-        <CircleDot :size="12" aria-hidden="true" /> {{ l }}
+        {{ l }}
       </li>
     </ol>
     <span class="wiz-sr-only" role="status" aria-live="polite" aria-atomic="true">{{ connectionAnnouncement }}</span>
