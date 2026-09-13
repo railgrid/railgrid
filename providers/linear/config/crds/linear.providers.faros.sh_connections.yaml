@@ -91,20 +91,6 @@ spec:
                 - organizationID
                 - signingSecretRef
                 type: object
-              teams:
-                description: Empty allows every team accessible to the key. Workspace
-                  administrators own this policy.
-                items:
-                  properties:
-                    id:
-                      description: Linear team UUID, not its display key.
-                      minLength: 1
-                      type: string
-                  required:
-                  - id
-                  type: object
-                maxItems: 100
-                type: array
             required:
             - apiKeySecretRef
             type: object

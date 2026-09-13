@@ -1273,6 +1273,10 @@ local_resource(
     deps=['providers/linear'],
     ignore=['providers/linear/portal/node_modules', 'providers/linear/portal/dist'],
     trigger_mode=TRIGGER_MODE_AUTO,
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8092, path='/readyz'),
+    ),
     labels=['providers-linear'],
 )
 local_resource(

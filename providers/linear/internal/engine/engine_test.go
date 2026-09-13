@@ -63,11 +63,11 @@ func object(t *testing.T, v any) *unstructured.Unstructured {
 func setup(t *testing.T) (Engine, *unstructured.Unstructured) {
 	t.Helper()
 	title := "approved"
-	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}, Teams: []api.TeamReference{{ID: "allowed"}}, Subscription: &api.Subscription{ID: "hook", OrganizationID: "organization", SigningSecretRef: api.SecretReference{Name: "key", Key: "signing"}}}}
+	conn := api.Connection{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Connection"}, ObjectMeta: metav1.ObjectMeta{Name: "linear", UID: types.UID("connection-one")}, Spec: api.ConnectionSpec{APIKeySecretRef: api.SecretReference{Name: "key", Key: "apiKey"}, Subscription: &api.Subscription{ID: "hook", OrganizationID: "organization", SigningSecretRef: api.SecretReference{Name: "key", Key: "signing"}}}}
 	op := api.Operation{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Operation"}, ObjectMeta: metav1.ObjectMeta{Name: "op-1", UID: "op-one"}, Spec: api.OperationSpec{Connection: "linear", Action: "createIssue", TeamID: "allowed", Title: &title}}
 	secret := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "key", "namespace": "default"}, "data": map[string]any{"apiKey": base64.StdEncoding.EncodeToString([]byte("api-key")), "signing": base64.StdEncoding.EncodeToString([]byte("a-long-signing-secret"))}}}
 	u := object(t, &op)
-	cl := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{Events: "EventList", Operations: "OperationList", Connections: "ConnectionList"}, object(t, &conn), u, secret)
+	cl := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{Events: "EventList", Operations: "OperationList", Connections: "ConnectionList", Teams: "TeamList"}, object(t, &conn), u, secret, object(t, &api.Team{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/v1alpha1", Kind: "Team"}, ObjectMeta: metav1.ObjectMeta{Name: "allowed"}, Spec: api.TeamSpec{Connection: "linear", ConnectionUID: "connection-one", TeamID: "allowed"}}))
 	return Engine{Client: cl}, u
 }
 func TestAmbiguousMutationPersistsAndSurvivesRestartWithoutReplay(t *testing.T) {
@@ -87,12 +87,21 @@ func TestAmbiguousMutationPersistsAndSurvivesRestartWithoutReplay(t *testing.T) 
 	if phase != "Uncertain" || calls != 1 {
 		t.Fatalf("phase=%s calls=%d", phase, calls)
 	}
+	originalMessage, _, _ := unstructured.NestedString(u.Object, "status", "message")
+	e.Client.(*fake.FakeDynamicClient).ClearActions()
 	restarted := e
 	if err := restarted.Reconcile(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatal("replayed uncertain mutation")
+	}
+	if actions := e.Client.(*fake.FakeDynamicClient).Actions(); len(actions) != 0 {
+		t.Fatalf("unchanged uncertainty caused API traffic: %v", actions)
+	}
+	message, _, _ := unstructured.NestedString(u.Object, "status", "message")
+	if message != originalMessage {
+		t.Fatal("recovery erased original diagnostic")
 	}
 }
 func TestIssueAndStatePolicyBeforeMutation(t *testing.T) {
@@ -103,7 +112,7 @@ func TestIssueAndStatePolicyBeforeMutation(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issue": map[string]any{"id": "issue", "team": map[string]any{"id": "forbidden"}}}})
 	}))
 	defer srv.Close()
-	conn := api.Connection{Spec: api.ConnectionSpec{Teams: []api.TeamReference{{ID: "allowed"}}}}
+	conn := TeamAccess{"allowed": true}
 	_, err := Execute(ctx, testClient(srv), conn, api.OperationSpec{Action: "addComment", IssueID: "issue", Body: "hi"})
 	if err == nil || calls != 1 {
 		t.Fatal("foreign team issue mutation was permitted")
@@ -140,7 +149,7 @@ func TestCommentRepliesBindParentToAuthorizedIssue(t *testing.T) {
 		}))
 		return srv, &calls
 	}
-	connection := api.Connection{Spec: api.ConnectionSpec{Teams: []api.TeamReference{{ID: "allowed"}}}}
+	connection := TeamAccess{"allowed": true}
 	t.Run("authorized parent", func(t *testing.T) {
 		srv, calls := newServer(t, "allowed", "issue-uuid")
 		defer srv.Close()
@@ -281,5 +290,28 @@ func TestCredentialNamespacesRemainExplicitWithinWorkspace(t *testing.T) {
 		if action.GetResource().Group == api.GroupName && action.GetNamespace() != "" {
 			t.Fatalf("provider resource used namespace: %s", action.GetNamespace())
 		}
+	}
+}
+
+func TestDeletionDuringDispatchPreservesUncertainWriteWithoutReplay(t *testing.T) {
+	e, u := setup(t)
+	u.SetFinalizers([]string{"linear.providers.faros.sh/operation-history"})
+	now := metav1.Now()
+	u.SetDeletionTimestamp(&now)
+	u.Object["status"] = map[string]any{"phase": "Running"}
+	e.NewClient = func(string) *linearapi.Client { t.Fatal("deleted Running write was replayed"); return nil }
+	if err := e.Reconcile(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
+	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
+	if phase != "Uncertain" || len(u.GetFinalizers()) != 1 {
+		t.Fatalf("lost recovery evidence: %v", u.Object)
+	}
+	e.Client.(*fake.FakeDynamicClient).ClearActions()
+	if err := e.Reconcile(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Client.(*fake.FakeDynamicClient).Actions()) != 0 {
+		t.Fatal("deleted uncertain record did not settle")
 	}
 }

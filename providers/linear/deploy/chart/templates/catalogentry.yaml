@@ -22,8 +22,8 @@ data:
         children:
           - displayName: Connections
             builtinRoute: connections
-          - displayName: Issues
-            builtinRoute: issues
+          - displayName: Teams
+            builtinRoute: teams
           - displayName: Operations
             builtinRoute: operations
           - displayName: Events

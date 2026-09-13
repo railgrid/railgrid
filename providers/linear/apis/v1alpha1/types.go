@@ -24,11 +24,6 @@ type SecretReference struct {
 	// +kubebuilder:default=apiKey
 	Key string `json:"key,omitempty"`
 }
-type TeamReference struct {
-	// Linear team UUID, not its display key.
-	// +kubebuilder:validation:MinLength=1
-	ID string `json:"id"`
-}
 type Subscription struct {
 	// +kubebuilder:validation:MinLength=1
 	ID string `json:"id"`
@@ -38,10 +33,7 @@ type Subscription struct {
 }
 type ConnectionSpec struct {
 	APIKeySecretRef SecretReference `json:"apiKeySecretRef"`
-	// Empty allows every team accessible to the key. Workspace administrators own this policy.
-	// +kubebuilder:validation:MaxItems=100
-	Teams        []TeamReference `json:"teams,omitempty"`
-	Subscription *Subscription   `json:"subscription,omitempty"`
+	Subscription    *Subscription   `json:"subscription,omitempty"`
 }
 type ConnectionStatus struct {
 	Ready              bool         `json:"ready"`

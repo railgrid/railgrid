@@ -9,6 +9,9 @@ metadata:
 {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # Admission and dispatch recovery require no overlapping provider processes.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "linear.selectorLabels" . | nindent 6 }}

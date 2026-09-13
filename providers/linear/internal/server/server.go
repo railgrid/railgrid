@@ -12,19 +12,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
 
 	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	"github.com/faroshq/provider-linear/internal/authority"
 	"github.com/faroshq/provider-linear/internal/engine"
+	"github.com/faroshq/provider-linear/internal/linearapi"
 	"github.com/faroshq/provider-sdk/tenantaccess"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -49,7 +49,7 @@ func (s Server) Caller(r *http.Request) (dynamic.Interface, error) {
 	return tenantaccess.NewDynamicClient(s.HubURL, cluster, strings.TrimPrefix(auth, "Bearer "), s.Insecure)
 }
 func (s Server) Submit(ctx context.Context, r *http.Request, input Submit) (any, error) {
-	if !namePattern.MatchString(input.Name) {
+	if len(validation.IsDNS1123Subdomain(input.Name)) != 0 {
 		return nil, errors.New("stable operation name required")
 	}
 	client, err := s.Caller(r)
@@ -64,7 +64,10 @@ func (s Server) Submit(ctx context.Context, r *http.Request, input Submit) (any,
 	return client.Resource(engine.Operations).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
 }
 func (s Server) Routes(mux *http.ServeMux) {
-	var webhookMu sync.Mutex
+	mux.Handle("GET /api/connections/{connection}/teams", s.teamDiscovery())
+	mux.Handle("POST /api/onboarding/teams", newOnboardingHandler(s.Caller, func(ctx context.Context, key, after string) (linearapi.Page[linearapi.Team], error) {
+		return linearapi.New(key).Teams(ctx, 50, after)
+	}))
 	mux.HandleFunc("POST /api/operations", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 32768)
 		var input Submit
@@ -81,29 +84,5 @@ func (s Server) Routes(mux *http.ServeMux) {
 		w.WriteHeader(202)
 		_ = json.NewEncoder(w).Encode(out)
 	})
-	mux.HandleFunc("POST /webhooks/{cluster}/{connection}", func(w http.ResponseWriter, r *http.Request) {
-		cluster, conn := r.PathValue("cluster"), r.PathValue("connection")
-		if !namePattern.MatchString(cluster) || !namePattern.MatchString(conn) {
-			http.Error(w, "invalid route", 400)
-			return
-		}
-		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256*1024))
-		if err != nil {
-			http.Error(w, "invalid payload", http.StatusRequestEntityTooLarge)
-			return
-		}
-		client, err := s.Authority.Tenant(r.Context(), cluster, conn)
-		if err != nil {
-			http.Error(w, "subscription unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		e := engine.Engine{Client: client}
-		webhookMu.Lock()
-		defer webhookMu.Unlock()
-		if err = e.Webhook(r.Context(), conn, r.Header.Get("Linear-Signature"), r.Header.Get("Linear-Delivery"), raw); err != nil {
-			http.Error(w, "delivery not accepted", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(204)
-	})
+	mux.Handle("POST /webhooks/{cluster}/{connection}", newWebhookHandler(s.Authority.Tenant))
 }

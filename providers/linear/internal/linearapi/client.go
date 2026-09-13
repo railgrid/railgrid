@@ -109,6 +109,18 @@ type Team struct {
 	Name string `json:"name"`
 	Key  string `json:"key"`
 }
+
+func (c *Client) Team(ctx context.Context, id string) (Team, error) {
+	var result struct {
+		Team Team `json:"team"`
+	}
+	err := c.query(ctx, `query($id: String!) { team(id: $id) { id name key } }`, map[string]any{"id": id}, false, &result)
+	if err == nil && result.Team.ID != id {
+		err = errors.New("team unavailable")
+	}
+	return result.Team, err
+}
+
 type State struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`

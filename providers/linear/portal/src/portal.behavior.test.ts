@@ -7,18 +7,21 @@ import type { FarosContext } from './api';
 
 const wrappers: VueWrapper[] = [];
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); document.body.innerHTML = ''; });
-const connection = { metadata: { name: 'linear', resourceVersion: '1' }, spec: { apiKeySecretRef: { name: 'linear-key' }, teams: [{ id: 'team' }] }, status: { ready: true } };
+const connection = { metadata: { name: 'linear', resourceVersion: '1' }, spec: { apiKeySecretRef: { name: 'linear-key' } }, status: { ready: true } };
 const issue = { id: 'issue', identifier: 'ENG-1', title: 'Ship resource pages', description: '<script>not executable</script>', team: { id: 'team', name: 'Engineering' }, state: { id: 'todo', name: 'Todo' } };
 function fixture() {
   const calls: { path: string; body?: any }[] = [];
   const operations = new Map<string, any>();
+  const connections = new Map<string, any>([[connection.metadata.name, connection]]);
   let fail = false;
   let uncertain = false;
   const ctx: FarosContext = { tenant: 'workspace', user: { sub: 'user' }, subPath: '', fetch: async (input, init) => {
     const path = String(input); const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path, body });
     if (fail) return new Response('', { status: 503 });
-    if (body?.kind === 'Connection') return Response.json(body);
+    if (path.endsWith('/onboarding/teams')) return Response.json({ nodes: [{ id: 'team', name: 'Engineering' }, { id: 'other', name: 'Design' }] });
+    if (body?.kind === 'Secret') return Response.json({ metadata: body.metadata });
+    if (body?.kind === 'Connection') { const created = { ...body, metadata: { ...body.metadata, uid: 'uid', resourceVersion: '1' } }; connections.set(created.metadata.name, created); return Response.json(created); }
     if (body?.kind === 'Operation') { operations.set(body.metadata.name, body); return Response.json(body); }
     const name = path.split('/').pop()!;
     if (operations.has(name)) {
@@ -31,7 +34,7 @@ function fixture() {
       return Response.json({ ...op, status: { phase: uncertain ? 'Uncertain' : 'Succeeded', result, message: uncertain ? 'Check Linear before repeating' : '' } });
     }
     if (path.includes('/connections/')) return Response.json(connection);
-    if (path.includes('/connections?')) return Response.json({ items: [connection] });
+    if (path.includes('/connections?')) return Response.json({ items: [...connections.values()] });
     return Response.json({ items: [] });
   } };
   return { ctx, calls, setFail: () => { fail = true; }, setUncertain: () => { uncertain = true; } };
@@ -61,15 +64,18 @@ describe('Linear resource journeys', () => {
     expect(authorityKey({ tenant: 'a', token: 'old' })).toBe(authorityKey({ tenant: 'a', token: 'new' }));
     expect(updateFields('', '', 'done')).toEqual({ stateID: 'done' });
   });
-  it('creates a Secret-reference connection and opens its detail with working back navigation', async () => {
+  it('creates an API-key connection and continues to Team registration with working back navigation', async () => {
     const f = fixture(); const w = await render(f.ctx);
     expect(w.text()).toContain('Connections'); expect(w.text()).toContain('linear');
     await click(w, 'Add connection'); expect(w.find('nav').exists()).toBe(false);
-    await w.get('#connection-name').setValue('new-connection'); await w.get('#connection-secret').setValue('existing-secret'); await w.get('#connection-teams').setValue('team, other');
+    expect(w.text()).not.toContain('Use an existing workspace Secret');
+    await w.get('#connection-name').setValue('new-connection'); await w.get('#connection-api-key').setValue('fixture-key');
+    await click(w, 'Check API key');
+
     await w.get('form').trigger('submit'); await flushPromises();
     const sent = f.calls.find(c => c.body?.kind === 'Connection')!.body;
-    expect(sent.spec).toEqual({ apiKeySecretRef: { name: 'existing-secret', namespace: 'default', key: 'apiKey' }, teams: [{ id: 'team' }, { id: 'other' }] });
-    expect(w.text()).toContain('new-connection'); expect(w.text()).toContain('Secret reference');
+    expect(sent.spec).toEqual({ apiKeySecretRef: { name: expect.stringMatching(/^linear-key-/), namespace: 'default', key: 'apiKey' } });
+    expect(w.text()).toContain('new-connection'); expect(w.text()).toContain('Add teams');
     await w.get('a').trigger('click'); await flushPromises(); expect(w.find('nav').exists()).toBe(true);
   });
   it('discovers teams, searches and pages issues, preserves the collection, updates and comments', async () => {
@@ -109,7 +115,7 @@ describe('Linear resource journeys', () => {
     const w = await render({ tenant: 'one', user: { sub: 'old' }, fetch: () => new Promise(r => { resolve = r; }) });
     await w.setProps({ ctx: { tenant: 'one', user: { sub: 'new' }, fetch: async () => Response.json({ items: [] }) } }); await flushPromises();
     resolve(Response.json({ items: [{ metadata: { name: 'private-old-resource' } }] })); await flushPromises();
-    expect(w.text()).not.toContain('private-old-resource'); expect(w.text()).toContain('Connect Linear');
+    expect(w.text()).not.toContain('private-old-resource'); expect(w.text()).toContain('Connect a Linear account');
   });
 });
 
@@ -134,9 +140,9 @@ it('retains the issue draft across connection setup and fences it on workspace c
   expect((w.get('#issue-title').element as HTMLInputElement).value).toBe('');
 });
 
-it('does not interpret empty comma-separated team IDs as permission to allow all teams', async () => {
+it('requires API-key validation before creating a connection', async () => {
   const f = fixture(); const w = await render({ ...f.ctx, subPath: 'connections/create' });
-  await w.get('#connection-name').setValue('scoped'); await w.get('#connection-secret').setValue('key'); await w.get('#connection-teams').setValue(' , , ');
+  await w.get('#connection-name').setValue('scoped'); await w.get('#connection-api-key').setValue('key');
   await w.get('form').trigger('submit'); await flushPromises();
   expect(f.calls.filter(c => c.body?.kind === 'Connection')).toHaveLength(0);
 });

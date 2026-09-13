@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import type { Node, Result } from '../api';
-import { useTask } from '../state';
+import { writeKey, type Node, type Result } from '../api';
+import { useTask, useWriteTask } from '../state';
 import ResourcePage from '../portalkit/ResourcePage.vue';
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue';
 import StatusBadge from '../portalkit/StatusBadge.vue';
 import IssueFields from '../components/IssueFields.vue';
 import TaskFeedback from '../components/TaskFeedback.vue';
+import PendingWrite from '../components/PendingWrite.vue';
 const props = defineProps<{ connection: string; id: string }>();
-const read = useTask(); const mutation = useTask(); const commentsRead = useTask(); const commentTask = useTask();
+const read = useTask(); const mutation = useWriteTask(() => writeKey('updateIssue', props.connection, props.id)); const commentsRead = useTask(); const commentTask = useWriteTask(() => writeKey('addComment', props.connection, props.id));
 const busy = computed(() => mutation.state.loading || commentTask.state.loading);
 const issue = ref<Result>(); const comments = ref<Node[]>([]); const nextCursor = ref(''); const hasMore = ref(false);
 const title = ref(''); const description = ref(''); const stateID = ref(''); const body = ref('');
@@ -37,17 +38,20 @@ const changedFields = computed(() => ({
   ...(stateID.value ? { stateID: stateID.value } : {}),
 }));
 function update() {
-  if (read.state.loading || busy.value) return;
+  if (read.state.loading || busy.value || mutation.pending.value) return;
   const fields = changedFields.value;
   if (!Object.keys(fields).length) return;
-  void mutation.run(api => api.operation(props.connection, { action: 'updateIssue', issueID: props.id, ...fields }), result => {
-    issue.value = { ...issue.value, ...fields, ...result }; title.value = issue.value.title || ''; description.value = issue.value.description || ''; stateID.value = '';
+  void mutation.run(api => api.operation(props.connection, { action: 'updateIssue', issueID: props.id, ...fields }), updated);
+}
+function updated(result: Result) {
+    issue.value = { ...issue.value, ...result }; title.value = issue.value.title || ''; description.value = issue.value.description || ''; stateID.value = '';
     mutation.state.message = 'Issue updated.';
-  });
 }
 function comment() {
-  if (!body.value.trim() || read.state.loading || busy.value) return;
-  void commentTask.run(api => api.operation(props.connection, { action: 'addComment', issueID: props.id, body: body.value }), () => { body.value = ''; commentTask.state.message = 'Comment added.'; commentsRead.cancel(); loadComments(); });
+  if (!body.value.trim() || read.state.loading || busy.value || commentTask.pending.value) return;
+  void commentTask.run(api => api.operation(props.connection, { action: 'addComment', issueID: props.id, body: body.value }), commented);
+}
+function commented() { body.value = ''; commentTask.state.message = 'Comment added.'; commentsRead.cancel(); loadComments();
 }
 function formatTime(value?: string) { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : 'Time unavailable'; }
 function sourceURL(value?: string) { try { const url = new URL(value || ''); return url.protocol === 'https:' && url.hostname === 'linear.app' ? url.href : undefined; } catch { return undefined; } }
@@ -61,8 +65,9 @@ onMounted(load);
     <ResourceSectionCard title="Details"><dl class="linear-facts"><div><dt>Connection</dt><dd>{{ connection }}</dd></div><div><dt>Team</dt><dd>{{ issue?.team?.name || issue?.team?.id || '—' }}</dd></div><div><dt>Issue ID</dt><dd>{{ id }}</dd></div><div><dt>Updated</dt><dd>{{ issue?.updatedAt || '—' }}</dd></div></dl><p class="linear-prose">{{ issue?.description || 'No description.' }}</p></ResourceSectionCard>
     <ResourceSectionCard title="Update issue" description="Edit the current values. Emptying Description removes it; unchanged fields are preserved.">
       <TaskFeedback :task="mutation.state" />
+      <PendingWrite :name="mutation.pending.value" :loading="busy" @resume="mutation.resume(updated)" @separate="mutation.separate" />
       <p v-if="Object.keys(changedFields).length" class="linear-notice" role="status">Unsaved changes. Refresh keeps your edits; leaving this page discards them.</p>
-      <form class="linear-form" @submit.prevent="update"><IssueFields v-model:title="title" v-model:description="description" v-model:stateID="stateID" :connection="connection" :team="issue?.team?.id || ''" updating :disabled="busy || read.state.loading" /><div class="linear-form-actions"><button v-if="Object.keys(changedFields).length" class="k-btn k-btn--ghost" type="button" :disabled="busy || read.state.loading" @click="discard">Discard changes</button><button class="k-btn k-btn--primary" :disabled="busy || read.state.loading || (!title.trim() || !Object.keys(changedFields).length)">{{ mutation.state.loading ? 'Submitting…' : 'Update issue' }}</button></div></form>
+      <form class="linear-form" @submit.prevent="update"><IssueFields v-model:title="title" v-model:description="description" v-model:stateID="stateID" :connection="connection" :team="issue?.team?.id || ''" updating :disabled="busy || read.state.loading || !!mutation.pending.value" /><div class="linear-form-actions"><button v-if="Object.keys(changedFields).length" class="k-btn k-btn--ghost" type="button" :disabled="busy || read.state.loading" @click="discard">Discard changes</button><button class="k-btn k-btn--primary" :disabled="busy || read.state.loading || !!mutation.pending.value || (!title.trim() || !Object.keys(changedFields).length)">{{ mutation.state.loading ? 'Submitting…' : 'Update issue' }}</button></div></form>
     </ResourceSectionCard>
     <ResourceSectionCard title="Comments">
       <template #actions><button class="k-btn k-btn--ghost" :disabled="commentsRead.state.loading || busy" @click="loadComments()">{{ commentsRead.state.loading ? 'Loading…' : commentsRead.state.loaded ? 'Refresh comments' : 'Read comments' }}</button></template>
@@ -71,7 +76,8 @@ onMounted(load);
       <ul v-else class="linear-comments"><li v-for="c in comments" :key="c.id" class="linear-prose"><div class="linear-comment-meta"><strong>{{ c.user?.displayName || c.user?.name || c.botActor?.name || (c.externalUser ? 'External user' : 'Unknown author') }}</strong><span v-if="c.botActor"> · Bot</span><span> · {{ formatTime(c.createdAt) }}</span><span v-if="c.editedAt"> · Edited {{ formatTime(c.editedAt) }}</span><a v-if="sourceURL(c.url)" :href="sourceURL(c.url)" target="_blank" rel="noopener noreferrer">View in Linear</a></div><p v-if="c.parentId" class="linear-page-meta">Reply to comment {{ c.parentId }}</p><p class="linear-prose">{{ c.body }}</p></li></ul>
       <button v-if="hasMore" class="k-btn k-btn--ghost" :disabled="commentsRead.state.loading || !nextCursor" @click="loadComments(true)">More comments</button>
       <TaskFeedback :task="commentTask.state" />
-      <form class="linear-form" @submit.prevent="comment"><label for="issue-comment">Add comment<textarea id="issue-comment" v-model="body" class="k-input" required maxlength="16000" rows="3" :disabled="busy || read.state.loading" /></label><div class="linear-form-actions"><button class="k-btn k-btn--primary" :disabled="busy || read.state.loading || !body.trim()">{{ commentTask.state.loading ? 'Adding…' : 'Add comment' }}</button></div></form>
+      <PendingWrite :name="commentTask.pending.value" :loading="busy" @resume="commentTask.resume(commented)" @separate="commentTask.separate" />
+      <form class="linear-form" @submit.prevent="comment"><label for="issue-comment">Add comment<textarea id="issue-comment" v-model="body" class="k-input" required maxlength="16000" rows="3" :disabled="busy || read.state.loading || !!commentTask.pending.value" /></label><div class="linear-form-actions"><button class="k-btn k-btn--primary" :disabled="busy || read.state.loading || !!commentTask.pending.value || !body.trim()">{{ commentTask.state.loading ? 'Adding…' : 'Add comment' }}</button></div></form>
     </ResourceSectionCard>
     </div>
   </ResourcePage>

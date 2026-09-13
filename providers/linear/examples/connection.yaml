@@ -7,5 +7,3 @@ spec:
     namespace: default
     name: linear-api
     key: apiKey
-  teams:
-    - id: REPLACE_WITH_TEAM_UUID

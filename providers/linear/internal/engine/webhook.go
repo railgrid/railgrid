@@ -69,53 +69,74 @@ func Verify(raw []byte, signature, key string, now time.Time) (Delivery, error) 
 	}
 	return d, nil
 }
-func (e Engine) Webhook(ctx context.Context, name, signature, deliveryID string, raw []byte) error {
+
+// VerifiedEvent is constructed only after signature, subscription and team validation.
+type VerifiedEvent struct{ event api.Event }
+
+// PrepareWebhook performs authentication and upstream reads outside admission locks.
+func (e Engine) PrepareWebhook(ctx context.Context, name, signature, deliveryID string, raw []byte) (*VerifiedEvent, error) {
 	if len(deliveryID) > 128 {
-		return errors.New("delivery identifier too long")
+		return nil, errors.New("delivery identifier too long")
 	}
-	conn, key, err := e.Connection(ctx, name)
+	conn, err := e.connection(ctx, name)
+	var access TeamAccess
+	if err == nil {
+		access, err = e.effectivePolicy(ctx, conn)
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sub := conn.Spec.Subscription
 	if sub == nil {
-		return errors.New("subscription not configured")
+		return nil, errors.New("subscription not configured")
 	}
 	signing, err := e.Secret(ctx, sub.SigningSecretRef)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	d, err := Verify(raw, signature, signing, e.now())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if d.WebhookID != sub.ID || d.OrganizationID != sub.OrganizationID {
-		return errors.New("subscription identity mismatch")
+		return nil, errors.New("subscription identity mismatch")
 	}
 	team := d.Data.TeamID
 	if d.Type == "Comment" {
+		key, err := e.Secret(ctx, conn.Spec.APIKeySecretRef)
+		if err != nil {
+			return nil, err
+		}
 		issue, err := e.API(key).Issue(ctx, d.Data.IssueID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		team = issue.Team.ID
 	}
-	if !Allowed(conn, team) {
-		return errors.New("event team outside connection policy")
+	if !Allowed(access, team) {
+		return nil, errors.New("event team outside connection policy")
 	}
 	// Hash signed content, excluding delivery timestamp, so header tampering and
 	// timestamp-only retries cannot bypass deduplication.
 	var content map[string]any
 	if err = json.Unmarshal(raw, &content); err != nil {
-		return err
+		return nil, err
 	}
 	delete(content, "webhookTimestamp")
 	canonical, err := json.Marshal(content)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sum := sha256.Sum256(append([]byte(string(conn.UID)+"/"), canonical...))
 	eventName := "e-" + hex.EncodeToString(sum[:])[:48]
+	event := api.Event{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Event"}, ObjectMeta: metav1.ObjectMeta{Name: eventName}, Spec: api.EventSpec{Connection: name, ConnectionUID: string(conn.UID), DeliveryID: deliveryID, Type: d.Type, Action: d.Action, EntityID: d.Data.ID, IssueID: d.Data.IssueID, TeamID: team, ReceivedAt: metav1.NewTime(e.now()), ExpiresAt: metav1.NewTime(e.now().Add(7 * 24 * time.Hour))}}
+	return &VerifiedEvent{event: event}, nil
+}
+
+// PersistWebhook must be serialized per workspace by the receiver. No external API calls occur here.
+func (e Engine) PersistWebhook(ctx context.Context, verified *VerifiedEvent) error {
+	event := verified.event
+	eventName := event.Name
 	existing, err := e.Client.Resource(Events).Get(ctx, eventName, metav1.GetOptions{})
 	if err == nil && existing != nil {
 		return nil
@@ -132,7 +153,6 @@ func (e Engine) Webhook(ctx context.Context, name, signature, deliveryID string,
 	if len(list.Items) >= 1000 || list.GetContinue() != "" {
 		return errors.New("event retention capacity reached")
 	}
-	event := api.Event{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupName + "/" + api.Version, Kind: "Event"}, ObjectMeta: metav1.ObjectMeta{Name: eventName}, Spec: api.EventSpec{Connection: name, ConnectionUID: string(conn.UID), DeliveryID: deliveryID, Type: d.Type, Action: d.Action, EntityID: d.Data.ID, IssueID: d.Data.IssueID, TeamID: team, ReceivedAt: metav1.NewTime(e.now()), ExpiresAt: metav1.NewTime(e.now().Add(7 * 24 * time.Hour))}}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&event)
 	if err != nil {
 		return err
@@ -142,6 +162,15 @@ func (e Engine) Webhook(ctx context.Context, name, signature, deliveryID string,
 		return nil
 	}
 	return err
+}
+
+// Webhook is the sequential engine adapter; concurrent HTTP ingress uses separate preparation and admission.
+func (e Engine) Webhook(ctx context.Context, name, signature, deliveryID string, raw []byte) error {
+	verified, err := e.PrepareWebhook(ctx, name, signature, deliveryID, raw)
+	if err != nil {
+		return err
+	}
+	return e.PersistWebhook(ctx, verified)
 }
 func (e Engine) Prune(ctx context.Context, u *unstructured.Unstructured) error {
 	var event api.Event

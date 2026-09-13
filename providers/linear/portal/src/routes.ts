@@ -1,6 +1,6 @@
-export type Collection = 'connections' | 'issues' | 'operations' | 'events';
-export type Route = { page: Collection; name?: string; connection?: string; create?: 'connection' | 'issue'; invalid?: boolean };
-const collections: Collection[] = ['connections', 'issues', 'operations', 'events'];
+export type Collection = 'connections' | 'teams' | 'issues' | 'operations' | 'events';
+export type Route = { page: Collection; name?: string; connection?: string; create?: 'connection' | 'team' | 'issue'; invalid?: boolean };
+const collections: Collection[] = ['connections', 'teams', 'issues', 'operations', 'events'];
 const invalidRoute = (): Route => ({ page: 'connections', invalid: true });
 const encode = encodeURIComponent;
 
@@ -11,7 +11,7 @@ export function parseRoute(value = ''): Route {
   const page = parts[0] as Collection;
   if (!collections.includes(page)) return invalidRoute();
   if (parts.length === 1) return { page };
-  if (parts.length === 2 && parts[1] === 'create' && (page === 'connections' || page === 'issues')) return { page, create: page === 'connections' ? 'connection' : 'issue' };
+  if (parts.length === 2 && parts[1] === 'create' && (page === 'connections' || page === 'teams' || page === 'issues')) return { page, create: page === 'connections' ? 'connection' : page === 'teams' ? 'team' : 'issue' };
   try {
     if (parts[1] !== 'detail' || parts.slice(2).some(part => !part)) return invalidRoute();
     if (page === 'issues' && parts.length === 4) return { page, connection: decodeURIComponent(parts[2]), name: decodeURIComponent(parts[3]) };

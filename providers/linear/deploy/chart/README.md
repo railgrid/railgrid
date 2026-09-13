@@ -48,3 +48,19 @@ workspace. Only credential Secrets remain namespaced; API-key and webhook
 signing references each default their namespace to `default`. Event admission
 is limited to 1,000 retained events per tenant workspace. This experimental
 scope change has no backward-compatible API routes or resource migration.
+
+The Deployment uses `strategy.type: Recreate`. Upgrades briefly interrupt service
+so the old and new provider processes do not overlap; `replicaCount: 1` alone
+would not enforce that admission/recovery requirement with rolling updates.
+The receiver returns HTTP 200 after Event persistence/deduplication, processes
+requests with a four-second deadline, and returns 503 under admission contention.
+
+
+### Team registrations
+
+The export includes cluster-scoped Teams alongside Connections, Operations and
+Events. Re-run provider initialization on upgrade to publish the Team schema and
+updated Connection schema before starting the new controller. No new external
+permission claims are required. All Connections require registered Teams before issue operations can run.
+Team registration is an administrative capability; grant `create` on `teams`
+only to callers allowed to extend workspace Linear access.

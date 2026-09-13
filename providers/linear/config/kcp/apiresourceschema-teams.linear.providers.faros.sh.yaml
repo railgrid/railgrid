@@ -1,0 +1,87 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260913-c4007149.teams.linear.providers.faros.sh
+spec:
+  group: linear.providers.faros.sh
+  names:
+    kind: Team
+    listKind: TeamList
+    plural: teams
+    singular: team
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      description: Team registers a Linear team in this workspace.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: TeamSpec registers an existing Linear team; it never provisions
+            upstream teams.
+          properties:
+            connection:
+              maxLength: 253
+              minLength: 1
+              type: string
+            connectionUID:
+              description: Pin the credential identity across Connection replacement.
+              maxLength: 128
+              minLength: 1
+              type: string
+            teamID:
+              description: Immutable Linear team ID.
+              maxLength: 128
+              minLength: 1
+              type: string
+          required:
+          - connection
+          - connectionUID
+          - teamID
+          type: object
+          x-kubernetes-validations:
+          - message: team identity is immutable
+            rule: self == oldSelf
+        status:
+          properties:
+            checkedAt:
+              format: date-time
+              type: string
+            key:
+              type: string
+            message:
+              type: string
+            name:
+              type: string
+            ready:
+              type: boolean
+          required:
+          - ready
+          type: object
+      required:
+      - spec
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

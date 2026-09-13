@@ -74,35 +74,29 @@ func (e Engine) Secret(ctx context.Context, ref api.SecretReference) (string, er
 	}
 	return string(b), nil
 }
-func (e Engine) Connection(ctx context.Context, name string) (api.Connection, string, error) {
+func (e Engine) connection(ctx context.Context, name string) (api.Connection, error) {
 	var conn api.Connection
 	u, err := e.Client.Resource(Connections).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return conn, "", errors.New("connection unavailable")
+		return conn, errors.New("connection unavailable")
 	}
 	if err = Decode(u, &conn); err != nil {
-		return conn, "", err
+		return conn, err
 	}
 	if conn.DeletionTimestamp != nil {
-		return conn, "", errors.New("connection is deleting")
+		return conn, errors.New("connection is deleting")
+	}
+	return conn, nil
+}
+func (e Engine) Connection(ctx context.Context, name string) (api.Connection, string, error) {
+	conn, err := e.connection(ctx, name)
+	if err != nil {
+		return conn, "", err
 	}
 	key, err := e.Secret(ctx, conn.Spec.APIKeySecretRef)
 	return conn, key, err
 }
-func Allowed(c api.Connection, team string) bool {
-	if team == "" {
-		return false
-	}
-	if len(c.Spec.Teams) == 0 {
-		return true
-	}
-	for _, t := range c.Spec.Teams {
-		if t.ID == team {
-			return true
-		}
-	}
-	return false
-}
+func Allowed(access TeamAccess, team string) bool { return team != "" && access[team] }
 func (e Engine) Probe(ctx context.Context, u *unstructured.Unstructured) error {
 	var c api.Connection
 	if err := Decode(u, &c); err != nil {
@@ -150,7 +144,14 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	}
 	const finalizer = "linear.providers.faros.sh/operation-history"
 	if op.DeletionTimestamp != nil {
-		if op.Status.Phase == "Running" || op.Status.Phase == "Uncertain" {
+		if op.Status.Phase == "Running" && mutation(op.Spec.Action) {
+			// A deletion can invalidate the dispatcher's completion update. On
+			// recovery retain the evidence, but do not claim the write is still live.
+			op.Status.Phase = "Uncertain"
+			op.Status.Message = "Deletion interrupted outcome recording. Inspect Linear; no automatic replay."
+			return e.save(ctx, u, op.Status)
+		}
+		if op.Status.Phase == "Uncertain" {
 			return nil
 		}
 		finalizers := []string{}
@@ -163,7 +164,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 		_, err := e.Client.Resource(Operations).Update(ctx, u, metav1.UpdateOptions{})
 		return err
 	}
-	if op.Status.Phase == "Succeeded" || op.Status.Phase == "Failed" {
+	if op.Status.Phase == "Succeeded" || op.Status.Phase == "Failed" || op.Status.Phase == "Uncertain" {
 		return nil
 	}
 	found := false
@@ -181,7 +182,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 		*u = *updated
 	}
 
-	if op.Status.Phase == "Running" || op.Status.Phase == "Uncertain" {
+	if op.Status.Phase == "Running" {
 		if mutation(op.Spec.Action) {
 			op.Status.Phase = "Uncertain"
 			op.Status.Message = "A prior write may have reached Linear. Inspect Linear and this operation; no automatic replay."
@@ -189,6 +190,10 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 		}
 	}
 	conn, key, err := e.Connection(ctx, op.Spec.Connection)
+	var access TeamAccess
+	if err == nil {
+		access, err = e.effectivePolicy(ctx, conn)
+	}
 	if err != nil {
 		return e.finish(ctx, u, op.Status, nil, err, false)
 	}
@@ -202,7 +207,7 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	if err = e.save(ctx, u, op.Status); err != nil {
 		return err
 	}
-	value, err := Execute(ctx, e.API(key), conn, op.Spec)
+	value, err := Execute(ctx, e.API(key), access, op.Spec)
 	var upstream *linearapi.Error
 	uncertain := errors.As(err, &upstream) && upstream.Uncertain
 	return e.finish(ctx, u, op.Status, value, err, uncertain)
@@ -229,7 +234,7 @@ func (e Engine) finish(ctx context.Context, u *unstructured.Unstructured, s api.
 	}
 	return e.save(ctx, u, s)
 }
-func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s api.OperationSpec) (any, error) {
+func Execute(ctx context.Context, c *linearapi.Client, access TeamAccess, s api.OperationSpec) (any, error) {
 	if s.First < 0 || s.First > 50 {
 		return nil, errors.New("page size must be 1 to 50")
 	}
@@ -237,7 +242,7 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 		page, err := c.Teams(ctx, s.First, s.After)
 		filtered := make([]linearapi.Team, 0, len(page.Nodes))
 		for _, t := range page.Nodes {
-			if Allowed(conn, t.ID) {
+			if Allowed(access, t.ID) {
 				filtered = append(filtered, t)
 			}
 		}
@@ -257,7 +262,7 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 			return nil, err
 		}
 		team = issue.Team.ID
-		if !Allowed(conn, team) {
+		if !Allowed(access, team) {
 			return nil, errors.New("issue team is outside connection policy")
 		}
 		if s.Action == "issue" {
@@ -273,7 +278,7 @@ func Execute(ctx context.Context, c *linearapi.Client, conn api.Connection, s ap
 			}
 		}
 	}
-	if !Allowed(conn, team) {
+	if !Allowed(access, team) {
 		return nil, errors.New("teamID required and must be allowed by connection")
 	}
 	if s.StateID != nil { // Validate state membership against the same team, including pagination.

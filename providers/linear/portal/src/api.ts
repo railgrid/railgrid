@@ -7,9 +7,9 @@ export type FarosContext = ProviderFetchContext & {
 export type Node = { id: string; name?: string; key?: string; identifier?: string; title?: string; description?: string; body?: string; createdAt?: string; editedAt?: string; parentId?: string; user?: { name?: string; displayName?: string }; botActor?: { name?: string; type?: string }; externalUser?: { id: string }; url?: string; updatedAt?: string; team?: Node; state?: Node };
 export type Result = Partial<Node> & { nodes?: Node[]; pageInfo?: { hasNextPage: boolean; endCursor: string } };
 export type Resource = {
-  metadata: { name: string; resourceVersion?: string; creationTimestamp?: string };
+  metadata: { name: string; uid?: string; resourceVersion?: string; creationTimestamp?: string; deletionTimestamp?: string };
   spec?: Record<string, unknown>;
-  status?: { ready?: boolean; phase?: string; message?: string; checkedAt?: string; startedAt?: string; completedAt?: string; result?: Result };
+  status?: { ready?: boolean; name?: string; key?: string; phase?: string; message?: string; checkedAt?: string; startedAt?: string; completedAt?: string; result?: Result };
 };
 export class RequestError extends Error {
   constructor(public status: number) {
@@ -18,18 +18,24 @@ export class RequestError extends Error {
   }
 }
 export class ConnectionError extends Error {
-  constructor(public connectionName: string, message: string) { super(message); }
+  constructor(public connectionName: string, message: string, public partial = false) { super(message); }
 }
 export class OperationError extends Error {
   constructor(public operationName: string, message: string) { super(`${operationName}: ${message}`); }
 }
+export type WriteIntent = { name: string; connection: string };
+export const writeKey = (action: string, connection: string, issueID = '') => action === 'createIssue' ? 'createIssue' : JSON.stringify([action, connection, issueID]);
 export class API {
-  constructor(private context: FarosContext, private signal: AbortSignal) {}
+  private completedWrites = new Set<string>();
+  constructor(private context: FarosContext, private signal: AbortSignal, private writes: Record<string, WriteIntent> = {}) {}
+  acknowledgeWrites() { for (const name of this.completedWrites) this.forgetWrite(name); }
+  private forgetWrite(name: string) { for (const key of Object.keys(this.writes)) if (this.writes[key].name === name) delete this.writes[key]; }
   async request(path: string, body?: unknown, method = body ? 'POST' : 'GET') {
     this.signal.throwIfAborted();
     const response = await providerFetch(this.context)(path, { method, signal: this.signal, headers: body ? { 'Content-Type': method === 'PATCH' ? 'application/merge-patch+json' : 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
     this.signal.throwIfAborted();
     if (!response.ok) throw new RequestError(response.status);
+    if (response.status === 204) return undefined;
     const value = await response.json();
     this.signal.throwIfAborted();
     return value;
@@ -53,11 +59,16 @@ export class API {
   listPage(resource: string, limit = 10, cursor = ''): Promise<{ items: Resource[]; metadata?: { continue?: string } }> {
     return this.request(this.path(resource) + `?limit=${limit}` + (cursor ? '&continue=' + encodeURIComponent(cursor) : ''));
   }
-  updateTeams(name: string, teams: string[], resourceVersion: string): Promise<Resource> {
-    return this.request(this.path('connections', name), { metadata: { resourceVersion }, spec: { teams: teams.map(id => ({ id })) } }, 'PATCH');
+  async deleteConnection(name: string, uid: string): Promise<void> {
+    if (!uid) throw new Error('Refresh the connection before deleting it.');
+    try {
+      await this.request(this.path('connections', name), { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } }, 'DELETE');
+    } catch (error) {
+      if (!(error instanceof RequestError && error.status === 404)) throw error;
+    }
   }
-  async createConnection(name: string, secret: string, teams: string[], secretNamespace = 'default'): Promise<Resource> {
-    const spec = { apiKeySecretRef: { name: secret, namespace: secretNamespace, key: 'apiKey' }, teams: [...new Set(teams)].map(id => ({ id })) };
+  async createConnection(name: string, secret: string, secretNamespace = 'default'): Promise<Resource> {
+    const spec = { apiKeySecretRef: { name: secret, namespace: secretNamespace, key: 'apiKey' } };
     try {
       return await this.request(this.path('connections'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Connection', metadata: { name }, spec });
     } catch (error) {
@@ -65,12 +76,38 @@ export class API {
       if (error instanceof RequestError && error.status < 500 && error.status !== 409) throw error;
       let existing: Resource;
       try { existing = await this.get('connections', name); }
-      catch { this.signal.throwIfAborted(); throw new ConnectionError(name, 'Creation outcome unknown. Inspect this connection before submitting again.'); }
+      catch { this.signal.throwIfAborted(); throw new ConnectionError(name, 'Creation outcome unknown. Inspect this connection before submitting again.', true); }
       const ref = existing.spec?.apiKeySecretRef as { name?: string; key?: string; namespace?: string } | undefined;
-      const ids = (existing.spec?.teams as { id: string }[] | undefined || []).map(t => t.id).sort();
-      if (ref?.name === secret && (ref.namespace || 'default') === secretNamespace && (ref.key || 'apiKey') === 'apiKey' && JSON.stringify(ids) === JSON.stringify(spec.teams.map(t => t.id).sort())) return existing;
+      if (ref?.name === secret && (ref.namespace || 'default') === secretNamespace && (ref.key || 'apiKey') === 'apiKey') return existing;
       throw new ConnectionError(name, 'A connection with this name exists with different settings. Inspect it or choose another name.');
     }
+  }
+  async previewTeams(apiKey: string, after = ''): Promise<Result> {
+    try { return await this.request('/services/providers/linear/api/onboarding/teams', { apiKey, after }); }
+    catch (error) {
+      this.signal.throwIfAborted();
+      if (error instanceof RequestError && error.status !== 422) throw error;
+      throw new Error('Could not check the API key or retrieve teams. Check the key’s access in Linear and try again.');
+    }
+  }
+  async connectWithKey(name: string, apiKey: string, secret: string): Promise<Resource> {
+    const connection = await this.createConnection(name, secret);
+    if (!connection.metadata.uid) throw new ConnectionError(name, 'Connection identity is unavailable. Inspect the connection before retrying.', true);
+    const path = `/clusters/${encodeURIComponent(this.context.tenant || '')}/api/v1/namespaces/default/secrets`;
+    const owner = { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Connection', name, uid: connection.metadata.uid };
+    try {
+      await this.request(path, { apiVersion: 'v1', kind: 'Secret', metadata: { name: secret, namespace: 'default', ownerReferences: [owner] }, type: 'Opaque', stringData: { apiKey } });
+    } catch (error) {
+      this.signal.throwIfAborted();
+      // Recover a lost response without adopting or overwriting another credential.
+      try {
+        const existing = await this.request(path + '/' + encodeURIComponent(secret));
+        if (existing.metadata?.ownerReferences?.some((ref: typeof owner) => ref.uid === owner.uid && ref.kind === owner.kind && ref.apiVersion === owner.apiVersion) && existing.data?.apiKey === btoa(apiKey)) return connection;
+      } catch { this.signal.throwIfAborted(); }
+      const guidance = error instanceof RequestError ? error.message : 'The credential save outcome is unknown.';
+      throw new ConnectionError(name, `Connection created, but credential storage could not be confirmed. ${guidance} Retry with the same settings or inspect the connection.`, true);
+    }
+    return connection;
   }
   async discover(connection: string, action: 'teams' | 'states', teamID = ''): Promise<Node[]> {
     const nodes: Node[] = [];
@@ -84,14 +121,45 @@ export class API {
     } while (true);
     return nodes;
   }
+  availableTeams(connection: string, after = ''): Promise<Result> {
+    return this.request(`/services/providers/linear/api/connections/${encodeURIComponent(connection)}/teams${after ? '?after=' + encodeURIComponent(after) : ''}`);
+  }
+  async addTeam(connection: Resource, teamID: string): Promise<Resource> {
+    if (!connection.metadata.uid) throw new Error('Refresh the Connection before adding teams.');
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([connection.metadata.uid, teamID])));
+    const name = 'team-' + Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 24);
+    const spec = { connection: connection.metadata.name, connectionUID: connection.metadata.uid, teamID };
+    try { return await this.request(this.path('teams'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Team', metadata: { name, ownerReferences: [{ apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Connection', name: connection.metadata.name, uid: connection.metadata.uid }] }, spec }); }
+    catch (error) {
+      this.signal.throwIfAborted();
+      if (error instanceof RequestError && error.status < 500 && error.status !== 409) throw error;
+      const existing = await this.get('teams', name);
+      if (!existing.metadata.deletionTimestamp && existing.spec?.connection === spec.connection && existing.spec?.connectionUID === spec.connectionUID && existing.spec?.teamID === teamID) return existing;
+      throw new Error('This team registration conflicts with an existing resource. Refresh Teams before retrying.');
+    }
+  }
+  async removeTeam(name: string, uid: string): Promise<void> {
+    if (!uid) throw new Error('Refresh the Team before removing it.');
+    try { await this.request(this.path('teams', name), { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } }, 'DELETE'); }
+    catch (error) { if (!(error instanceof RequestError && error.status === 404)) throw error; }
+  }
   async operation(connection: string, fields: Record<string, unknown>): Promise<Result> {
+    this.signal.throwIfAborted();
+    const action = String(fields.action);
+    const key = ['createIssue', 'updateIssue', 'addComment'].includes(action) ? writeKey(action, connection, String(fields.issueID || '')) : '';
+    if (key && this.writes[key]) throw new OperationError(this.writes[key].name, 'A previous write needs inspection. Check its outcome before preparing a separate write.');
     const name = 'op-' + crypto.randomUUID();
+    if (key) this.writes[key] = { name, connection };
     try {
       await this.request(this.path('operations'), { apiVersion: 'linear.providers.faros.sh/v1alpha1', kind: 'Operation', metadata: { name }, spec: { connection, ...fields } });
     } catch (error) {
       this.signal.throwIfAborted();
+      if (error instanceof RequestError && [400, 401, 403, 404, 422, 429].includes(error.status)) this.forgetWrite(name);
       throw new OperationError(name, `submission outcome unknown. Inspect Operations before repeating it. ${error instanceof Error ? error.message : ''}`);
     }
+    return this.resumeOperation(name);
+  }
+  async resumeOperation(name: string): Promise<Result> {
     for (let i = 0; i < 30; i++) {
       let op: Resource;
       try { op = await this.get('operations', name); }
@@ -99,7 +167,8 @@ export class API {
         this.signal.throwIfAborted();
         throw new OperationError(name, `status could not be read. Inspect Operations before repeating it. ${error instanceof Error ? error.message : ''}`);
       }
-      if (op.status?.phase === 'Succeeded') return op.status.result || {};
+      if (op.status?.phase === 'Succeeded') { this.completedWrites.add(name); return op.status.result || {}; }
+      if (op.status?.phase === 'Failed') this.forgetWrite(name);
       if (op.status?.phase === 'Failed' || op.status?.phase === 'Uncertain') throw new OperationError(name, `${op.status.message || op.status.phase}. Inspect this operation before submitting another write.`);
       await new Promise<void>((resolve, reject) => {
         this.signal.throwIfAborted();

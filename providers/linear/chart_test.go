@@ -55,6 +55,10 @@ func TestChartClaimsAndIdentitySeparation(t *testing.T) {
 			t.Fatalf("manifest/chart drift %s", key)
 		}
 	}
+	strategy := deployment["spec"].(map[string]any)["strategy"].(map[string]any)
+	if strategy["type"] != "Recreate" {
+		t.Fatal("rollout permits overlapping provider processes")
+	}
 	pod := deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	containers := pod["containers"].([]any)
 	runtime := containers[0].(map[string]any)
@@ -74,7 +78,7 @@ func TestChartClaimsAndIdentitySeparation(t *testing.T) {
 }
 
 func TestGeneratedResourcesAreWorkspaceScoped(t *testing.T) {
-	for _, resource := range []string{"connections", "operations", "events"} {
+	for _, resource := range []string{"connections", "teams", "operations", "events"} {
 		var previousSpec any
 		for _, path := range []string{"config/crds/linear.providers.faros.sh_" + resource + ".yaml", "config/kcp/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml", "deploy/chart/files/schemas/apiresourceschema-" + resource + ".linear.providers.faros.sh.yaml"} {
 			raw, err := os.ReadFile(path)

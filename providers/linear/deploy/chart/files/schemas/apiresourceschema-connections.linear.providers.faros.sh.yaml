@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260912-0c922d1f.connections.linear.providers.faros.sh
+  name: v260913-c4007149.connections.linear.providers.faros.sh
 spec:
   group: linear.providers.faros.sh
   names:
@@ -87,20 +87,6 @@ spec:
               - organizationID
               - signingSecretRef
               type: object
-            teams:
-              description: Empty allows every team accessible to the key. Workspace
-                administrators own this policy.
-              items:
-                properties:
-                  id:
-                    description: Linear team UUID, not its display key.
-                    minLength: 1
-                    type: string
-                required:
-                - id
-                type: object
-              maxItems: 100
-              type: array
           required:
           - apiKeySecretRef
           type: object

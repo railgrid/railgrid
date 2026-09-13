@@ -33,6 +33,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&Connection{},
 		&ConnectionList{},
+		&Team{},
+		&TeamList{},
 		&Operation{},
 		&OperationList{},
 		&Event{},
