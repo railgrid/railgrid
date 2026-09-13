@@ -111,7 +111,10 @@ faros version
 ```
 
 `FAROS_VERSION=vX.Y.Z` pins a release; `INSTALL_DIR=/usr/local/bin sudo -E sh`
-installs system-wide. Alternatives, when those tools are already present:
+installs system-wide. Once the CLI is present, `faros skills install` fetches
+the current version of this skill from GitHub into `~/.claude/skills` and
+`~/.agents/skills` (`--target`, `--scope project`, `--dir` narrow that), so
+run it when this copy looks stale. Alternatives, when those tools are already present:
 `kubectl krew index add faros https://github.com/faroshq/krew-index.git && kubectl krew install faros/faros`
 (then `kubectl faros …` or `faros …`), `go install github.com/faroshq/faros/cmd/faros@latest`
 (Go 1.26+), or the release tarball `kubectl-faros_<Linux|Darwin>_<x86_64|aarch64|arm64>.tar.gz`

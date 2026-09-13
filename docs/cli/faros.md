@@ -47,6 +47,7 @@ completion.
 * [faros mcp](faros_mcp.md)	 - MCP endpoints for AI clients (Claude Code, Cursor, Codex)
 * [faros org](faros_org.md)	 - Organizations you belong to, and who is in them
 * [faros sandbox](faros_sandbox.md)	 - Drive a development-mode instance: sync, exec, logs, restart, status
+* [faros skills](faros_skills.md)	 - Install agent skills from the faros repository into Claude Code and Codex
 * [faros ssh](faros_ssh.md)	 - Open an SSH session to a Linux server edge via the hub
 * [faros token](faros_token.md)	 - Print a bearer token for the hub (refreshing it when needed)
 * [faros use](faros_use.md)	 - Switch the active organization and workspace

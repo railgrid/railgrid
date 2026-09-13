@@ -31,6 +31,24 @@ The skill is this directory: `SKILL.md` plus `references/`. Keep the two
 together; `SKILL.md` links into `references/`. Nothing is hosted anywhere
 else: every install path below reads this repository.
 
+### With the faros CLI (Claude Code and Codex at once)
+
+```bash
+faros skills install
+```
+
+fetches `skills/` from this repository on GitHub at that moment (always the
+current `main`, or `--ref <tag|branch|sha>`) and writes every skill to
+`~/.claude/skills/<name>` and `~/.agents/skills/<name>`. Nothing is baked
+into the CLI, so an old binary still installs the latest skill. `--target
+claude|codex` picks one client, `--scope project` writes to `./.claude/skills`
+and `./.agents/skills` instead, `--dir <path>` targets any other directory
+(Cursor, a CI image), and `faros skills list` shows what is available.
+Re-run to update: directories the CLI installed carry a `.faros-skill.json`
+marker (source, commit, file list) and are replaced; anything else is left
+alone unless you pass `--force`. Skills load at session start, so restart
+the client afterwards.
+
 ### Claude Code
 
 The repository is a plugin marketplace (`.claude-plugin/marketplace.json`)

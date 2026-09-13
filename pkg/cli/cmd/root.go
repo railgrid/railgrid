@@ -109,6 +109,7 @@ completion.`,
 		newSandboxCommand(),
 		newEnvCommand(),
 		newMCPCommand(),
+		newSkillsCommand(),
 	)...)
 	cmd.AddCommand(grouped(groupOps,
 		newAgentCommand(),

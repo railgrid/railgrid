@@ -203,7 +203,7 @@ skips them with a warning. `exec` needs a prior sync.
 | `providers/` | The providers listed above, each its own Go module |
 | `deploy/charts` | Helm charts for the hub and the agent |
 | `docs/` | Published docs and design documents |
-| `skills/faros` | Agent skill for using a hub from Claude Code, Codex or Cursor; the repo is a Claude Code plugin marketplace (`/plugin marketplace add faroshq/faros`) and ships it under `.agents/skills` for Codex ([install](skills/faros/README.md#install)) |
+| `skills/faros` | Agent skill for using a hub from Claude Code, Codex or Cursor; `faros skills install` fetches it from GitHub into both clients, the repo is also a Claude Code plugin marketplace (`/plugin marketplace add faroshq/faros`) and ships it under `.agents/skills` for Codex ([install](skills/faros/README.md#install)) |
 
 ## Documentation
 

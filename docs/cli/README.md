@@ -67,6 +67,9 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
   - [faros sandbox restart](faros_sandbox_restart.md) — Restart the component's dev process
   - [faros sandbox status](faros_sandbox_status.md) — Show the instance status, or a component's process state
   - [faros sandbox sync](faros_sandbox_sync.md) — Push a directory into the component workspace (authoritative)
+- [faros skills](faros_skills.md) — Install agent skills from the faros repository into Claude Code and Codex
+  - [faros skills install](faros_skills_install.md) — Install skills for Claude Code and Codex (all skills by default)
+  - [faros skills list](faros_skills_list.md) — List the skills available in the repository
 
 ## Agents, hub and local development
 
