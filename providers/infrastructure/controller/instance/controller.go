@@ -68,6 +68,7 @@ import (
 
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 	"github.com/faroshq/provider-infrastructure/instancespec"
+	"github.com/faroshq/provider-infrastructure/networkpolicy"
 )
 
 // instanceGVK is the flattened tenant-facing kind this controller watches.
@@ -123,6 +124,10 @@ type Config struct {
 	// CodingSandboxEnabled gates the platform-owned universal coding sandbox
 	// even when a manually applied Template bypassed catalog seeding.
 	CodingSandboxEnabled bool
+	// NetworkPolicy configures the ingress NetworkPolicy that isolates each
+	// tenant runtime namespace from other workspaces (networkpolicy.go).
+	// The zero value is disabled.
+	NetworkPolicy networkpolicy.Config
 }
 
 // Controller reconciles Instances across tenant workspaces.
@@ -130,6 +135,12 @@ type Controller struct {
 	cfg       Config
 	mgr       mcmanager.Manager
 	templates dynamic.Interface
+
+	// networkPolicySynced records, per runtime namespace name, which namespace
+	// UID its isolation policy was last converged in and when
+	// (networkPolicySync), so the warm reconcile path skips the extra API
+	// call. Rebuilt with the controller every leadership term.
+	networkPolicySynced sync.Map
 
 	// contracts caches the compiled values contract per Template, keyed by
 	// name and invalidated by resourceVersion. Compilation (structural
@@ -159,6 +170,9 @@ func New(cfg Config) (*Controller, error) {
 	}
 	if cfg.CredentialsNamespace == "" {
 		cfg.CredentialsNamespace = "default"
+	}
+	if err := cfg.NetworkPolicy.Validate(); err != nil {
+		return nil, fmt.Errorf("instance: %w", err)
 	}
 
 	templates, err := dynamic.NewForConfig(cfg.ProviderConfig)

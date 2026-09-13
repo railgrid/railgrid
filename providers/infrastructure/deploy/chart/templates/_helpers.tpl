@@ -157,3 +157,23 @@ bootstrap.enabled=true. Two sources:
 kubeconfig
 {{- end -}}
 {{- end -}}
+
+{{/*
+tenantNetworkPolicyEnv renders tenantNetworkPolicy.* as the
+FAROS_TENANT_NETWORK_POLICY_* env of whichever container runs the Instance
+controller: the legacy serve Deployment, or the operator, which copies them
+onto the serve Deployment it owns.
+*/}}
+{{- define "infrastructure.tenantNetworkPolicyEnv" -}}
+{{- $np := .Values.tenantNetworkPolicy | default dict -}}
+- name: FAROS_TENANT_NETWORK_POLICY_ENABLED
+  value: {{ ternary "true" "false" (eq (toString $np.enabled) "true") | quote }}
+{{- with $np.allowedNamespaces }}
+- name: FAROS_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- with $np.allowedCIDRs }}
+- name: FAROS_TENANT_NETWORK_POLICY_ALLOWED_CIDRS
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- end -}}

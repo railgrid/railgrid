@@ -243,6 +243,52 @@ field `spec.sandbox.runtimeClassName`) to the name of a hardened RuntimeClass
 installed on the runtime cluster, `gvisor` or `kata`, before exposing App
 Studio to untrusted users. Empty keeps the cluster default runtime.
 
+## Tenant network isolation
+
+All workspaces' instances run on one runtime cluster, one namespace per
+workspace and kcp namespace (`<clusterID>-<namespace>`). Without a
+NetworkPolicy that cluster is flat: a pod in one workspace can dial another
+workspace's Services by DNS name and reach its private apps without passing
+their access gate, its Postgres and Redis, or its browser instances. Cluster
+IDs are not secret, so the namespace name protects nothing.
+
+With chart value `tenantNetworkPolicy.enabled=true`
+(`FAROS_TENANT_NETWORK_POLICY_ENABLED=true` on the serve process; in operator
+mode the operator copies the chart's values onto the serve Deployment), the
+Instance controller maintains an Ingress-only NetworkPolicy named
+`faros-tenant-isolation` in every runtime namespace before it writes any
+workload there. It admits:
+
+- pods in the same namespace, so the access gate, cron jobs and
+  `connections.*` keep working;
+- pods in the same workspace's other runtime namespaces (labels
+  `faros.sh/tenant` + `faros.sh/managed-by`, which the provider writes and
+  backfills on namespaces that predate them);
+- pods in the exposure Gateway's namespace (`FAROS_GATEWAY_NAMESPACE`);
+- `tenantNetworkPolicy.allowedNamespaces` and `tenantNetworkPolicy.allowedCIDRs`.
+
+Egress is not restricted, and template-shipped policies (the coding sandbox's
+egress rules) are unaffected. The provider re-reads each policy at least every
+10 minutes and restores hand edits to its spec; turning the switch off deletes
+the policies it labelled as its own. Requirements and caveats:
+
+- The CNI must enforce NetworkPolicy (Calico, Cilium, kindnet ≥ v0.24, …);
+  otherwise the policy is inert.
+- If the Gateway implementation runs its proxies outside the Gateway's
+  namespace, add their namespace to `allowedNamespaces`.
+- The development data plane (`faros sandbox sync/exec/logs/restart/env`, the
+  browser template's proxy) reaches pods through the runtime kube-apiserver's
+  `services/proxy`. When the apiserver does not run on the pod's node
+  (managed control planes, dedicated control-plane nodes, konnectivity), its
+  traffic arrives from an address the policy does not admit: add that range to
+  `allowedCIDRs` (or `kube-system` to `allowedNamespaces` for
+  konnectivity-agent), or those calls time out.
+- The runtime credential needs `networkpolicies` get/create/update/delete and
+  `namespaces` patch. The chart's serve ClusterRole includes them; an
+  explicit runtime kubeconfig must grant them itself. With the policy enabled,
+  a failure to write it fails the Instance's reconcile rather than running
+  workloads without isolation.
+
 ## Env vars
 
 | Var | Default | Purpose |
@@ -259,6 +305,9 @@ Studio to untrusted users. Empty keeps the cluster default runtime.
 | `FAROS_DEV_IMAGE_UNIVERSAL` | `ghcr.io/faroshq/faros-universal-dev:latest` | Platform-selected Node/Go/Python image token; the coding sandbox gate accepts only a digest-pinned override |
 | `FAROS_DEV_AGENT_IMAGE` | release build: `ghcr.io/faroshq/faros-dev-agent:<provider version>`; local build: `ghcr.io/faroshq/faros-dev-agent:latest` | Platform-selected injector and control-token bootstrap image; the coding sandbox gate accepts only a digest-pinned override. The default follows the binary's `-X main.buildVersion` stamp (the Dockerfile's `VERSION` build arg) so a release's sandboxes run that release's agent despite the injector's `IfNotPresent` pull policy |
 | `FAROS_SANDBOX_RUNTIME_CLASS_NAME` | (unset → cluster default runtime) | RuntimeClass (`gvisor` or `kata`) stamped on every synthesized development pod, including the universal coding sandbox; required before serving untrusted users |
+| `FAROS_TENANT_NETWORK_POLICY_ENABLED` | `false` | Maintain the tenant isolation NetworkPolicy in every runtime namespace (see "Tenant network isolation"); `false` removes the provider-owned ones |
+| `FAROS_TENANT_NETWORK_POLICY_ALLOWED_NAMESPACES` | (unset) | Comma-separated extra namespaces admitted by that policy |
+| `FAROS_TENANT_NETWORK_POLICY_ALLOWED_CIDRS` | (unset) | Comma-separated extra CIDRs (canonical form) admitted by that policy |
 | `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Faros-Tenant` (dev only) |
 | `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |
 | `KRO_NAMESPACE_PREFIX` | `faros-tenants-` | Per-tenant namespace prefix |

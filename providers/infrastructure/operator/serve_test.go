@@ -29,6 +29,7 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 
 	v1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/networkpolicy"
 )
 
 // serveRBACConflictClient is a clientset whose serve ClusterRoleBinding
@@ -127,6 +128,42 @@ func TestEnsureProviderServePropagatesPlatformPreviewBridgeJWKS(t *testing.T) {
 		}
 	}
 	t.Error("managed provider Deployment lacks FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS")
+}
+
+// The tenant isolation policy is configured on the operator (chart values),
+// not the CR, and must reach the serve Deployment verbatim; unset variables
+// stay unset so the serve binary keeps its defaults.
+func TestEnsureProviderServePropagatesTenantNetworkPolicy(t *testing.T) {
+	t.Setenv(networkpolicy.EnvEnabled, "true")
+	t.Setenv(networkpolicy.EnvAllowedNamespaces, " kube-system,monitoring ")
+	t.Setenv(networkpolicy.EnvAllowedCIDRs, "")
+	client := fake.NewSimpleClientset()
+	provider := &v1alpha1.InfrastructureProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
+		Spec: v1alpha1.InfrastructureProviderSpec{
+			Provider: v1alpha1.ProviderServeSpec{
+				Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"},
+			},
+		},
+	}
+
+	if err := EnsureProviderServe(context.Background(), client, provider, []byte("provider-kubeconfig"), nil, nil); err != nil {
+		t.Fatalf("EnsureProviderServe: %v", err)
+	}
+	deployment, err := client.AppsV1().Deployments(ServeNamespace).Get(context.Background(), provider.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get managed provider Deployment: %v", err)
+	}
+	got := map[string]string{}
+	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
+		got[env.Name] = env.Value
+	}
+	if got[networkpolicy.EnvEnabled] != "true" || got[networkpolicy.EnvAllowedNamespaces] != "kube-system,monitoring" {
+		t.Errorf("serve env = %v, want the operator's tenant network policy settings", got)
+	}
+	if _, ok := got[networkpolicy.EnvAllowedCIDRs]; ok {
+		t.Errorf("empty %s was propagated", networkpolicy.EnvAllowedCIDRs)
+	}
 }
 
 func TestEnsureProviderServeBindsServeRoleFromEnv(t *testing.T) {

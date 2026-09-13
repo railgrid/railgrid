@@ -14,6 +14,7 @@ package instance
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -176,28 +178,91 @@ func overlayValues(dst, want map[string]any) {
 	}
 }
 
-// ensureNamespace creates the runtime per-tenant namespace if absent.
+// ensureNamespace creates the runtime per-tenant namespace if absent and
+// converges its tenant isolation NetworkPolicy (networkpolicy.go). Every
+// runtime write — the kro CR, bridged Secrets — goes through here first, so the
+// policy is in place before any workload the namespace will hold is created.
 func (c *Controller) ensureNamespace(ctx context.Context, ns, tenant string) error {
-	_, err := c.cfg.Runtime.Resource(namespaceGVR).Get(ctx, ns, metav1.GetOptions{})
+	uid, err := c.ensureRuntimeNamespace(ctx, ns, tenant)
+	if err != nil {
+		return err
+	}
+	return c.ensureTenantNetworkPolicy(ctx, ns, tenant, uid)
+}
+
+// ensureRuntimeNamespace creates the runtime per-tenant namespace if absent,
+// labelled with the tenant hash the isolation policy's same-workspace peer
+// selects on, and returns its UID (the policy cache key; see
+// ensureTenantNetworkPolicy).
+func (c *Controller) ensureRuntimeNamespace(ctx context.Context, ns, tenant string) (types.UID, error) {
+	existing, err := c.cfg.Runtime.Resource(namespaceGVR).Get(ctx, ns, metav1.GetOptions{})
 	if err == nil {
-		return nil
+		if c.cfg.NetworkPolicy.Enabled {
+			if err := c.backfillRuntimeNamespaceLabels(ctx, existing, tenant); err != nil {
+				return "", err
+			}
+		}
+		return existing.GetUID(), nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("get namespace %s: %w", ns, err)
+		return "", fmt.Errorf("get namespace %s: %w", ns, err)
 	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Namespace",
 		"metadata": map[string]any{
-			"name": ns,
-			"labels": map[string]any{
-				kro.LabelManagedBy: kro.ManagedByValue,
-				kro.LabelTenant:    kro.LabelTenantValue(tenant),
-			},
+			"name":   ns,
+			"labels": runtimeNamespaceLabels(tenant),
 		},
 	}}
-	if _, err := c.cfg.Runtime.Resource(namespaceGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create namespace %s: %w", ns, err)
+	created, err := c.cfg.Runtime.Resource(namespaceGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		// A concurrent writer created it between the Get and the Create; its
+		// labels are checked on the next pass.
+		created, err = c.cfg.Runtime.Resource(namespaceGVR).Get(ctx, ns, metav1.GetOptions{})
+	}
+	if err != nil {
+		return "", fmt.Errorf("create namespace %s: %w", ns, err)
+	}
+	return created.GetUID(), nil
+}
+
+func runtimeNamespaceLabels(tenant string) map[string]any {
+	return map[string]any{
+		kro.LabelManagedBy: kro.ManagedByValue,
+		kro.LabelTenant:    kro.LabelTenantValue(tenant),
+	}
+}
+
+// backfillRuntimeNamespaceLabels adds the tenant and managed-by labels to a
+// runtime namespace that lacks them (one created before the provider labelled
+// its namespaces, or by the kro fork ahead of the first sync). Without them
+// the isolation policy of the workspace's other runtime namespaces would not
+// admit this one. A namespace that carries either label with a different value
+// belongs to someone else and is left alone.
+func (c *Controller) backfillRuntimeNamespaceLabels(ctx context.Context, ns *unstructured.Unstructured, tenant string) error {
+	current := ns.GetLabels()
+	missing := map[string]any{}
+	for key, want := range runtimeNamespaceLabels(tenant) {
+		got, ok := current[key]
+		switch {
+		case !ok:
+			missing[key] = want
+		case got != want:
+			klog.FromContext(ctx).Info("runtime namespace carries a foreign label; not labelling it for tenant isolation",
+				"namespace", ns.GetName(), "label", key, "value", got)
+			return nil
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"labels": missing}})
+	if err != nil {
+		return err
+	}
+	if _, err := c.cfg.Runtime.Resource(namespaceGVR).Patch(ctx, ns.GetName(), types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		return fmt.Errorf("label namespace %s for tenant isolation: %w", ns.GetName(), err)
 	}
 	return nil
 }

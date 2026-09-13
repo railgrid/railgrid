@@ -101,6 +101,29 @@ publishing:
 tenantLimitRange:
   enabled: true
 
+# Ingress NetworkPolicy "faros-tenant-isolation" in every tenant runtime
+# namespace ("<clusterID>-<namespace>"). Without it the runtime cluster is flat:
+# a pod in one workspace can dial another workspace's Services directly
+# (private apps behind their access gate, Postgres, Redis, browsers). The
+# policy admits only pods in the same namespace, the same workspace's other
+# runtime namespaces, the exposure Gateway's namespace
+# (publishing.gateway.namespace), and the extra sources below. Egress is not
+# restricted. Disabling it again removes the policies the provider created.
+# Requires a CNI that enforces NetworkPolicy.
+tenantNetworkPolicy:
+  enabled: false
+  # Extra namespaces whose pods may reach tenant pods: a Gateway implementation
+  # that runs its proxies outside the Gateway's namespace, kube-system when the
+  # apiserver reaches pods through konnectivity-agent, a monitoring stack.
+  allowedNamespaces: []
+  # Extra ipBlock sources, in canonical form (10.0.0.0/16, not 10.0.0.1/16).
+  # The development data plane (faros sandbox sync/exec/logs/restart, the
+  # browser template's proxy) reaches pods through the runtime kube-apiserver's
+  # services/proxy. When the apiserver is not on the pod's node (managed
+  # control planes, dedicated control-plane nodes), add the address range its
+  # traffic arrives from, or those calls time out.
+  allowedCIDRs: []
+
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,

@@ -20,8 +20,10 @@ import (
 
 	"github.com/faroshq/provider-sdk/leaderelection"
 
+	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
 	"github.com/faroshq/provider-infrastructure/controller/instance"
 	"github.com/faroshq/provider-infrastructure/install"
+	"github.com/faroshq/provider-infrastructure/networkpolicy"
 )
 
 // startInstanceController starts the cross-tenant Instance controller —
@@ -53,6 +55,25 @@ func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
 
 	baseDomain := os.Getenv("FAROS_APP_BASE_DOMAIN")
 
+	// Tenant runtime-namespace ingress isolation (off unless
+	// FAROS_TENANT_NETWORK_POLICY_ENABLED=true). The exposure Gateway's
+	// namespace is always admitted, resolved exactly as the kro backend
+	// resolves ${faros.gatewayNamespace} so the policy follows the HTTPRoutes.
+	gatewayNamespace := os.Getenv("FAROS_GATEWAY_NAMESPACE")
+	if gatewayNamespace == "" {
+		gatewayNamespace = krobackend.DefaultGatewayNamespace
+	}
+	netpol, err := networkpolicy.FromEnv(gatewayNamespace)
+	if err == nil {
+		err = netpol.Validate()
+	}
+	if err != nil {
+		log.Printf("instance controller: NOT started: %v", err)
+		return
+	}
+	log.Printf("instance controller: tenant network policy enabled=%t gatewayNamespace=%q allowedNamespaces=%q allowedCIDRs=%q",
+		netpol.Enabled, netpol.GatewayNamespace, netpol.AllowedNamespaces, netpol.AllowedCIDRs)
+
 	// Leader-elected: instances own runtime-cluster state (kro CRs, bridged
 	// secrets), so exactly one replica may reconcile them. The controller —
 	// and its manager — is rebuilt fresh each term; a stopped
@@ -69,6 +90,7 @@ func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
 				BaseDomain:           baseDomain,
 				Runtime:              runtimeClient,
 				CodingSandboxEnabled: codingSandboxEnabled(),
+				NetworkPolicy:        netpol,
 			})
 			if err != nil {
 				log.Printf("instance controller: NOT started: %v", err)

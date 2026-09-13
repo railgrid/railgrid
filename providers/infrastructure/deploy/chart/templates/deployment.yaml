@@ -197,6 +197,10 @@ spec:
             - name: FAROS_TENANT_LIMITRANGE
               value: "disabled"
             {{- end }}
+            # Tenant runtime-namespace ingress isolation (tenantNetworkPolicy.*).
+            # The runtime credential needs networkpolicies get/create/update/
+            # delete and namespaces patch.
+            {{- include "infrastructure.tenantNetworkPolicyEnv" . | nindent 12 }}
             {{- with include "infrastructure.devAgentImage" . }}
             # Dev-mode agent injector image (${faros.devAgentImage}):
             # development.agentImage, else this release's faros-dev-agent.

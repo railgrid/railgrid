@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/networkpolicy"
 )
 
 // ServeNamespace is the runtime-cluster namespace the operator deploys the
@@ -160,6 +161,17 @@ func EnsureProviderServe(
 			Name:  "FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS",
 			Value: verificationJWKS,
 		})
+	}
+	// Tenant runtime-namespace isolation policy: platform-global security
+	// configuration like the JWKS above, so it travels on the operator's own
+	// environment (the chart's tenantNetworkPolicy.* values) rather than the CR.
+	// The CRD ships in the chart's crds/ directory, which helm never upgrades:
+	// a new CR field would be pruned on every existing install and silently
+	// leave isolation off.
+	for _, name := range networkpolicy.EnvNames {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			env = append(env, corev1.EnvVar{Name: name, Value: value})
+		}
 	}
 	for _, toolchain := range slices.Sorted(maps.Keys(cr.Spec.Development.Images)) {
 		if image := cr.Spec.Development.Images[toolchain]; image != "" {

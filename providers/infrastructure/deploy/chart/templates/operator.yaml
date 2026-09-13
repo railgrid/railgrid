@@ -162,9 +162,16 @@ rules:
     resources: ["*"]
     verbs: ["*"]
   # Per-tenant runtime namespaces and their default LimitRange (create-only).
+  # patch adds the tenant labels to a runtime namespace that predates them
+  # (tenantNetworkPolicy only).
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # The tenant isolation policy in each runtime namespace. Granted even while
+  # tenantNetworkPolicy is disabled so turning it off removes the policies.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "create", "update", "delete"]
   - apiGroups: [""]
     resources: ["limitranges"]
     verbs: ["get", "create"]
@@ -256,6 +263,7 @@ spec:
             - name: FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS
               value: {{ . | quote }}
             {{- end }}
+            {{- include "infrastructure.tenantNetworkPolicyEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
 {{- end }}
