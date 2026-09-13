@@ -9,9 +9,7 @@ package actions
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -21,6 +19,7 @@ import (
 	api "github.com/faroshq/provider-code/apis/v1alpha1"
 	"github.com/faroshq/provider-code/backend"
 	"github.com/faroshq/provider-code/tenant"
+	"github.com/faroshq/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,16 +37,17 @@ type CallerFactory interface {
 	For(string, string) (dynamic.Interface, error)
 }
 type Server struct {
-	Caller      CallerFactory
-	Authority   func(context.Context, string, string) (dynamic.Interface, error)
-	Backends    *backend.Registry
-	Credentials tenant.CredentialResolver
-	SnapshotDir string
-	slots       chan struct{}
+	Caller        CallerFactory
+	Authority     func(context.Context, string, string) (dynamic.Interface, error)
+	Backends      *backend.Registry
+	Credentials   tenant.CredentialResolver
+	SnapshotDir   string
+	slots         chan struct{}
+	snapshotSlots chan struct{}
 }
 
 func New(caller CallerFactory, authority func(context.Context, string, string) (dynamic.Interface, error), backends *backend.Registry) *Server {
-	return &Server{Caller: caller, Authority: authority, Backends: backends, slots: make(chan struct{}, 8)}
+	return &Server{Caller: caller, Authority: authority, Backends: backends, slots: make(chan struct{}, 8), snapshotSlots: make(chan struct{}, 1)}
 }
 
 type Input struct {
@@ -81,41 +81,58 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repository action scope", http.StatusForbidden)
 		return
 	}
+	envelope := actionwire.New(r, "code", action, actionwire.ResourceRef{APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository", Resource: "repositories", Name: name})
+	w.Header().Set("X-Request-ID", envelope.RequestID)
+	fail := func(status int, code string, retryable bool) {
+		envelope.Failure(w, status, code, strings.ReplaceAll(code, "_", " "), retryable)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
-	case <-ctx.Done():
-		http.Error(w, "action capacity unavailable", http.StatusServiceUnavailable)
+	default:
+		fail(http.StatusServiceUnavailable, "action_capacity_unavailable", false)
 		return
+	}
+	visible, err := s.authorize(ctx, r, cluster, name, action)
+	if err != nil {
+		fail(403, "action_forbidden", false)
+		return
+	}
+	// Snapshot decoding, staging and loading share one memory admission slot.
+	// Keep it until completion, including any Git subprocess using the bundle.
+	if action == "stage_snapshot" || action == "prepare_snapshot" || action == "publish_snapshot" {
+		select {
+		case s.snapshotSlots <- struct{}{}:
+			defer func() { <-s.snapshotSlots }()
+		default:
+			fail(http.StatusServiceUnavailable, "action_capacity_unavailable", false)
+			return
+		}
 	}
 	limit := int64(65536)
 	if action == "stage_snapshot" {
 		limit = MaxInputBytes
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	var request Request
-	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
-		http.Error(w, "invalid action input", 400)
+	request, err := readActionRequest(ctx, w, r, limit, 30*time.Second)
+	if err != nil {
+		fail(400, "invalid_action_input", false)
 		return
 	}
-	// Authenticate and authorize before resolving any provider-held credentials.
-	conn, repo, credential, err := s.resolve(ctx, r, cluster, name, action, request.Input)
+	conn, repo, credential, err := s.resolve(ctx, cluster, name, visible, request.Input)
 	if err != nil {
-		s.failure(w, 403, "action_forbidden", false)
+		fail(403, "action_forbidden", false)
 		return
 	}
 	implementation, ok := s.Backends.Get(string(conn.Spec.Provider))
 	if !ok {
-		s.failure(w, 422, "unsupported_provider", false)
+		fail(422, "unsupported_provider", false)
 		return
 	}
 	collaboration, ok := implementation.(backend.Collaboration)
 	if !ok {
-		s.failure(w, 422, "unsupported_action", false)
+		fail(422, "unsupported_action", false)
 		return
 	}
 	in := request.Input
@@ -146,12 +163,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "prepare_snapshot", "publish_snapshot":
 		publisher, ok := implementation.(backend.SnapshotPublisher)
 		if !ok || in.Snapshot != nil || in.BundleRef == "" {
-			s.failure(w, 422, "invalid_snapshot", false)
+			fail(422, "invalid_snapshot", false)
 			return
 		}
 		snapshot, loadErr := s.loadSnapshot(r, cluster, in)
 		if loadErr != nil {
-			s.failure(w, 422, "snapshot_unavailable", false)
+			fail(422, "snapshot_unavailable", false)
 			return
 		}
 		if action == "prepare_snapshot" {
@@ -163,45 +180,48 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if errors.Is(err, backend.ErrRepositoryIdentityConflict) {
-			s.failure(w, 409, "identity_conflict", false)
+			fail(409, "identity_conflict", false)
 		} else {
-			s.failure(w, 502, "upstream_outcome_unconfirmed", false)
+			fail(502, "upstream_outcome_unconfirmed", false)
 		}
 		return
 	}
-	encoded, err := json.Marshal(map[string]any{"requestId": request.RequestID, "output": output})
+	encoded, err := envelope.Success(output)
 	if err != nil || len(encoded) > MaxOutputBytes {
-		s.failure(w, 502, "result_limit", false)
+		fail(502, "result_limit", false)
 		return
 	}
 	_, _ = w.Write(encoded)
 }
-func (s *Server) failure(w http.ResponseWriter, status int, code string, retryable bool) {
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "retryable": retryable}})
-}
-func (s *Server) resolve(ctx context.Context, r *http.Request, cluster, name, action string, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
-	fail := func() (*api.Connection, *api.Repository, backend.Credential, error) {
-		return nil, nil, backend.Credential{}, errors.New("repository action denied")
-	}
+func (s *Server) authorize(ctx context.Context, r *http.Request, cluster, name, action string) (*unstructured.Unstructured, error) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if s.Caller == nil || s.Authority == nil || token == "" || token == r.Header.Get("Authorization") || input.RepositoryUID == "" || input.ConnectionUID == "" {
-		return fail()
+	if s.Caller == nil || s.Authority == nil || token == "" || token == r.Header.Get("Authorization") {
+		return nil, errors.New("repository action denied")
 	}
 	caller, err := s.Caller.For(cluster, token)
 	if err != nil {
-		return fail()
+		return nil, errors.New("repository action denied")
 	}
 	visible, err := caller.Resource(repositories).Get(ctx, name, metav1.GetOptions{})
-	if err != nil || string(visible.GetUID()) != input.RepositoryUID || visible.GetDeletionTimestamp() != nil {
-		return fail()
+	if err != nil || visible.GetDeletionTimestamp() != nil {
+		return nil, errors.New("repository action denied")
 	}
 	review, err := caller.Resource(schema.GroupVersionResource{Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews"}).Create(ctx, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview", "spec": map[string]any{"resourceAttributes": map[string]any{"group": "code.faros.sh", "resource": "repositories", "name": name, "verb": "invoke", "subresource": action}}}}, metav1.CreateOptions{})
 	if err != nil {
-		return fail()
+		return nil, errors.New("repository action denied")
 	}
 	allowed, _, _ := unstructured.NestedBool(review.Object, "status", "allowed")
 	if !allowed {
+		return nil, errors.New("repository action denied")
+	}
+	return visible, nil
+}
+
+func (s *Server) resolve(ctx context.Context, cluster, name string, visible *unstructured.Unstructured, input Input) (*api.Connection, *api.Repository, backend.Credential, error) {
+	fail := func() (*api.Connection, *api.Repository, backend.Credential, error) {
+		return nil, nil, backend.Credential{}, errors.New("repository action denied")
+	}
+	if input.RepositoryUID == "" || input.ConnectionUID == "" || string(visible.GetUID()) != input.RepositoryUID {
 		return fail()
 	}
 	provider, err := s.Authority(ctx, cluster, name)

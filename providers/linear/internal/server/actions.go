@@ -17,6 +17,7 @@ import (
 	api "github.com/faroshq/provider-linear/apis/v1alpha1"
 	"github.com/faroshq/provider-linear/internal/actionapi"
 	"github.com/faroshq/provider-linear/internal/engine"
+	"github.com/faroshq/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -80,7 +81,7 @@ func (s Server) Action(ctx context.Context, r *http.Request, teamName, action st
 		return out, errActionConflict
 	}
 	e := engine.Engine{Client: tenant, Access: engine.TeamAccess{team.Spec.TeamID: true}}
-	conn, key, err := e.Connection(ctx, team.Spec.Connection)
+	conn, err := e.ConnectionMetadata(ctx, team.Spec.Connection)
 	if err != nil || string(conn.UID) != team.Spec.ConnectionUID {
 		return out, errActionConflict
 	}
@@ -94,6 +95,10 @@ func (s Server) Action(ctx context.Context, r *http.Request, teamName, action st
 	if !write {
 		if inspect {
 			return out, errors.New("reads have no retained outcome")
+		}
+		key, err := e.Secret(ctx, conn.Spec.APIKeySecretRef)
+		if err != nil {
+			return out, err
 		}
 		result, err := engine.Execute(ctx, e.API(key), e.Access, input)
 		if err != nil {
@@ -115,6 +120,8 @@ func (s Server) actionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tenant mismatch", http.StatusForbidden)
 		return
 	}
+	envelope := actionwire.New(r, "linear", r.PathValue("action"), actionwire.ResourceRef{APIVersion: api.GroupName + "/v1alpha1", Kind: "Team", Resource: "teams", Name: r.PathValue("team")})
+	w.Header().Set("X-Request-ID", envelope.RequestID)
 	var req ActionRequest
 	inspect := r.Method == http.MethodGet
 	if inspect {
@@ -124,8 +131,17 @@ func (s Server) actionHandler(w http.ResponseWriter, r *http.Request) {
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&req); err != nil || decoder.Decode(new(any)) != io.EOF {
-			http.Error(w, "invalid action input", 400)
+			envelope.Failure(w, 400, "invalid_input", "invalid action input", false)
 			return
+		}
+	}
+	if !inspect {
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			if req.RequestID != "" && req.RequestID != key {
+				envelope.Failure(w, 400, "invalid_input", "conflicting write keys", false)
+				return
+			}
+			req.RequestID = key
 		}
 	}
 	out, err := s.Action(r.Context(), r, r.PathValue("team"), r.PathValue("action"), req, inspect)
@@ -141,9 +157,13 @@ func (s Server) actionHandler(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, context.DeadlineExceeded):
 			status, code = 503, "outcome_unavailable"
 		}
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "message": err.Error(), "retryable": false}})
+		envelope.Failure(w, status, code, err.Error(), false)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"requestId": req.RequestID, "output": out})
+	data, err := envelope.Success(out)
+	if err != nil || len(data) > 512*1024 {
+		envelope.Failure(w, 502, "result_limit", "action result exceeds limit", false)
+		return
+	}
+	_, _ = w.Write(data)
 }

@@ -27,7 +27,7 @@ it('follows resource continuation and discovery cursors without truncating inven
   const discovery = client(async (path, init) => {
     if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
     const input = JSON.parse(String(init?.body)).input; pages.push(input);
-    return Response.json({ output: { phase: 'Succeeded', result: { nodes: [{ id: pages.length === 1 ? 'one' : 'two' }], pageInfo: { hasNextPage: pages.length === 1, endCursor: 'cursor' } } } });
+    return Response.json({ result: { phase: 'Succeeded', result: { nodes: [{ id: pages.length === 1 ? 'one' : 'two' }], pageInfo: { hasNextPage: pages.length === 1, endCursor: 'cursor' } } } });
   });
   expect((await discovery.discover('linear', 'states', 'team')).map(n => n.id)).toEqual(['one', 'two']);
   expect(pages[1]).toEqual({ after: 'cursor', first: 50 });
@@ -40,7 +40,7 @@ it('retains a lost write response and inspects without submitting a second write
     const request = { path: String(path), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined }; calls.push(request);
     if (request.path.includes('/teams?')) return Response.json({ items: [registeredTeam] });
     if (init?.method === 'POST') throw new Error('lost response');
-    return Response.json({ output: { phase: 'Succeeded', result: { id: 'created' } } });
+    return Response.json({ result: { phase: 'Succeeded', result: { id: 'created' } } });
   } }, new AbortController().signal, writes);
   await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toBeInstanceOf(OperationError);
   const name = writes.createIssue.name;
@@ -59,7 +59,7 @@ it.each(['Running', 'Uncertain'])('does not claim a %s write succeeded or automa
   const api = client(async (path, init) => {
     if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
     if (init?.method === 'POST') posts++;
-    return Response.json({ output: { phase } });
+    return Response.json({ result: { phase } });
   });
   await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toBeInstanceOf(OperationError);
   expect(posts).toBe(1);
@@ -71,7 +71,7 @@ it('retains the resource binding when a write request is aborted', async () => {
   const fetch: FarosContext['fetch'] = async (path, init) => {
     if (String(path).includes('/teams?')) return Response.json({ items: [registeredTeam] });
     if (init?.method === 'POST') { posts++; controller.abort(); }
-    return Response.json({ output: { phase: 'Succeeded', result: { id: 'created' } } });
+    return Response.json({ result: { phase: 'Succeeded', result: { id: 'created' } } });
   };
   const api = new API({ tenant: 'workspace', fetch }, controller.signal, writes);
   await expect(api.action('linear', { action: 'createIssue', teamID: 'team', title: 'Draft' })).rejects.toMatchObject({ name: 'AbortError' });

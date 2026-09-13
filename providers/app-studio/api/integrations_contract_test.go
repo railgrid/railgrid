@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -23,6 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/faroshq/provider-sdk/actionwire"
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -961,5 +963,59 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 	}
 	if !refFound {
 		t.Fatal("template switch/promotion removed the providerReference binding")
+	}
+}
+
+func TestProviderActionForwardingAcceptsSharedProviderEnvelopes(t *testing.T) {
+	for _, provider := range []string{"code", "linear"} {
+		for _, failed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/failure=%v", provider, failed), func(t *testing.T) {
+				ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "bound", APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository", Resource: "repositories"}
+				if provider == "linear" {
+					ref.APIVersion, ref.Kind, ref.Resource = "linear.providers.faros.sh/v1alpha1", "Team", "teams"
+				}
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var payload map[string]json.RawMessage
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Error(err)
+					}
+					if len(payload) != 1 || string(payload["input"]) != `{"title":"Draft"}` || r.Header.Get("Idempotency-Key") != "stable-write-key" {
+						t.Error("gateway changed input or write key")
+					}
+					envelope := actionwire.New(r, provider, "action", actionwire.ResourceRef{APIVersion: ref.APIVersion, Kind: ref.Kind, Resource: ref.Resource, Name: ref.Name})
+					if failed {
+						envelope.Failure(w, 409, "identity_conflict", "Resource changed", false)
+						return
+					}
+					data, err := envelope.Success(map[string]any{"phase": "Succeeded"})
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_, _ = w.Write(data)
+				}))
+				defer upstream.Close()
+				s := &Server{hubBase: upstream.URL, actionsExternalURL: "https://actions.example"}
+				request := httptest.NewRequest("POST", "/", nil)
+				request.Header.Set("X-Request-ID", "correlation")
+				request.Header.Set("Idempotency-Key", "stable-write-key")
+				status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "tenant"}, provider, "action", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{"title":"Draft"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if envelope.RequestID != "correlation" {
+					t.Fatalf("lost request identity: %+v", envelope)
+				}
+				if failed {
+					if status != 409 || envelope.Error == nil || envelope.Error.Retryable {
+						t.Fatalf("changed error: %d %+v", status, envelope)
+					}
+					return
+				}
+				if status != 200 || envelope.Error != nil || string(envelope.Result) != `{"phase":"Succeeded"}` {
+					t.Fatalf("success rejected: %d %+v", status, envelope)
+				}
+			})
+		}
 	}
 }

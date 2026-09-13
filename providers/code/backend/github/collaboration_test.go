@@ -175,3 +175,52 @@ func TestExistingOnlyRegistrationNeverCreatesOrDeletesRemote(t *testing.T) {
 		t.Fatalf("existing-only registration made %d remote calls", calls)
 	}
 }
+
+func TestFindPullRequestFiltersHistoricalBranchUses(t *testing.T) {
+	for _, scenario := range []string{"historical then current", "current then historical", "historical only", "ambiguous"} {
+		t.Run(scenario, func(t *testing.T) {
+			commit := strings.Repeat("a", 40)
+			current := collaborationPR(commit)
+			old := collaborationPR(strings.Repeat("b", 40))
+			old["number"] = 2
+			matches := []any{old, current}
+			switch scenario {
+			case "current then historical":
+				matches = []any{current, old}
+			case "historical only":
+				matches = []any{old}
+			case "ambiguous":
+				matches = []any{current, current}
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/pulls") {
+					_ = json.NewEncoder(w).Encode(matches)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/demo"})
+			}))
+			defer server.Close()
+			conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+			repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+			result, err := New().FindPullRequest(context.Background(), conn, backend.Credential{Token: "test"}, repo, backend.PullRequestInput{Head: "feature", Base: "main", Commit: commit})
+			if scenario == "ambiguous" {
+				if err == nil {
+					t.Fatal("ambiguous exact matches accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "historical only" {
+				if result != nil {
+					t.Fatal("historical PR adopted")
+				}
+				return
+			}
+			if result == nil || result.Commit != commit || result.Number != 1 {
+				t.Fatalf("wrong match: %+v", result)
+			}
+		})
+	}
+}

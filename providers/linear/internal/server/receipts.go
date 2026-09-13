@@ -32,13 +32,19 @@ var activeWrites sync.Map
 
 func (s Server) write(ctx context.Context, r *http.Request, caller dynamic.Interface, team api.Team, conn api.Connection, e engine.Engine, action string, input actionapi.Input, req ActionRequest, inspect bool) (actionapi.Outcome, error) {
 	var out actionapi.Outcome
-	if len(req.RequestID) < 20 || len(req.RequestID) > 160 || strings.ContainsAny(req.RequestID, "/\\ \n\r") {
-		return out, errors.New("timestamped stable requestId required")
+	if len(req.RequestID) < 1 || len(req.RequestID) > 160 || strings.ContainsAny(req.RequestID, "/\\ \t\n\r") {
+		return out, errors.New("stable requestId or Idempotency-Key required")
 	}
 	parts := strings.SplitN(req.RequestID, ".", 2)
-	issued, err := time.Parse("20060102T150405Z", parts[0])
-	if err != nil || len(parts) != 2 || (!inspect && time.Since(issued) > 30*24*time.Hour) || time.Until(issued) > 5*time.Minute {
-		return out, errors.New("requestId expired or invalid; inspect the original outcome before starting a new intent")
+	issued, parseErr := time.Parse("20060102T150405Z", parts[0])
+	// Opaque keys never expire: forgetting one would permit an old write to replay.
+	// They remain subject to the same bounded tenant receipt quota.
+	issuedAnnotation := ""
+	if parseErr == nil && len(parts) == 2 {
+		issuedAnnotation = issued.Format(time.RFC3339)
+		if (!inspect && time.Since(issued) > 30*24*time.Hour) || time.Until(issued) > 5*time.Minute {
+			return out, errors.New("requestId expired or invalid; inspect the original outcome before starting a new intent")
+		}
 	}
 	identity, err := caller.Resource(schema.GroupVersionResource{Group: "authentication.k8s.io", Version: "v1", Resource: "selfsubjectreviews"}).Create(ctx, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "authentication.k8s.io/v1", "kind": "SelfSubjectReview"}}, metav1.CreateOptions{})
 	if err != nil {
@@ -74,7 +80,7 @@ func (s Server) write(ctx context.Context, r *http.Request, caller dynamic.Inter
 			receiptAdmission.Unlock()
 			return out, capacityErr
 		}
-		record := actionapi.Receipt{TypeMeta: metav1.TypeMeta{APIVersion: "linear.internal.faros.sh/v1alpha1", Kind: "ActionReceipt"}, ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{receiptTenantLabel: tenantLabel}, Annotations: map[string]string{"linear.internal.faros.sh/input-digest": hex.EncodeToString(inputHash[:]), receiptIssuedAnnotation: issued.Format(time.RFC3339), "linear.internal.faros.sh/owner": s.InstanceID, "linear.internal.faros.sh/team-uid": string(team.UID), "linear.internal.faros.sh/connection-uid": string(conn.UID)}}, Spec: input, Status: actionapi.Outcome{ConnectionUID: string(conn.UID)}}
+		record := actionapi.Receipt{TypeMeta: metav1.TypeMeta{APIVersion: "linear.internal.faros.sh/v1alpha1", Kind: "ActionReceipt"}, ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{receiptTenantLabel: tenantLabel}, Annotations: map[string]string{"linear.internal.faros.sh/input-digest": hex.EncodeToString(inputHash[:]), receiptIssuedAnnotation: issuedAnnotation, "linear.internal.faros.sh/owner": s.InstanceID, "linear.internal.faros.sh/team-uid": string(team.UID), "linear.internal.faros.sh/connection-uid": string(conn.UID)}}, Spec: input, Status: actionapi.Outcome{ConnectionUID: string(conn.UID)}}
 		data, convertErr := runtime.DefaultUnstructuredConverter.ToUnstructured(&record)
 		if convertErr != nil {
 			receiptAdmission.Unlock()

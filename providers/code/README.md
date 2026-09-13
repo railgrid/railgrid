@@ -122,7 +122,10 @@ Every input includes `repository` (canonical owner/name), `repositoryUID`, and
 `repositories/<action>` for that resource name. Code resolves credentials through
 its provider export only after those checks, pins the recorded upstream repository
 ID, and rejects replacement or redirection. Tenant callers need no Secret access.
-The CatalogEntry advertises the eleven bounded action schemas and their digests.
+Responses use the shared Provider Action envelope: `requestID`, provider/action
+identity, `resourceRef`, and exactly one of `result` or `error`. `X-Request-ID`
+supplies the correlation ID. The CatalogEntry advertises the eleven bounded
+action schemas and their digests.
 
 Git bundles use a separate bounded upload: `stage_snapshot` at the same route
 shape, with its own `invoke` grant, accepts a snapshot containing `baseCommit`,
@@ -481,3 +484,9 @@ Requests are fenced to the current project UID and failed binding; confirmed or
 imported repositories cannot be replaced through recovery. A name match is not
 evidence that Faros created a remote. This contract does not retroactively change
 repositories already attached before create-only intent was introduced.
+
+Action bodies must complete within 30 seconds, after repository read and invoke
+authorization. Each provider process admits eight actions, with at most one
+snapshot action (stage, prepare, or publish) at a time to bound bundle memory.
+Excess concurrent requests receive HTTP 503 before body decoding. The chart
+default memory limit is 512 MiB to leave headroom for JSON buffers and Git.

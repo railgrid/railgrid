@@ -162,7 +162,7 @@ export class API {
     if (key) this.writes[key] = { name, connection, team, teamID: String(candidates[0].spec?.teamID), action: verb };
     try {
       const response = await this.request(this.actionPath(team, verb), { ...(key ? { requestId: name } : {}), input });
-      return this.outcome(name, response.output, !!key);
+      return this.outcome(name, response.result, !!key);
     } catch (error) {
       this.signal.throwIfAborted();
       if (!key) throw error;
@@ -178,6 +178,6 @@ export class API {
     const intent = Object.values(this.writes).find(w => w.name === name);
     if (!intent) throw new Error('Write context unavailable. Check Linear before starting another write.');
     const response = await this.request(this.actionPath(intent.team, intent.action) + '?requestId=' + encodeURIComponent(name));
-    return this.outcome(name, response.output, true);
+    return this.outcome(name, response.result, true);
   }
 }

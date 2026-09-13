@@ -41,8 +41,10 @@ credentials and Team bindings again before dispatch.
 
 The Deployment requires one replica and `strategy.type: Recreate`; upgrades
 briefly interrupt service so write admission and recovery processes cannot
-overlap. New writes require timestamped stable request keys. Confirmed receipts
-are eligible for cleanup after 30 days, while uncertain records are retained.
+overlap. New writes require stable request keys (the `Idempotency-Key` header
+or body `requestId`). Confirmed receipts with timestamped keys are eligible for
+cleanup after 30 days, while uncertain records and opaque-key receipts are
+retained within the tenant quota.
 The per-tenant receipt cap is 2,000. Reads do not create retained records.
 
 No webhook ingress, subscription or signing secret is required. API-key Secrets

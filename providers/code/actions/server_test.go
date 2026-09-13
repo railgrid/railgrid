@@ -16,6 +16,7 @@ import (
 
 	api "github.com/faroshq/provider-code/apis/v1alpha1"
 	"github.com/faroshq/provider-code/backend"
+	"github.com/faroshq/provider-sdk/actionwire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -103,11 +104,28 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/actions/clusters/tenant-id/repositories/product/branch_head/v1", bytes.NewReader(body))
 			request.Header.Set("X-Faros-Cluster", "tenant-id")
 			request.Header.Set("Authorization", "Bearer caller-token")
+			request.Header.Set("X-Request-ID", "sdk-request")
 			if kind == "tenant mismatch" {
 				request.Header.Set("X-Faros-Cluster", "other")
 			}
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
+			var envelope actionwire.Envelope
+			if kind != "tenant mismatch" {
+				if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != "branch_head" || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.faros.sh/v1alpha1" {
+					t.Fatalf("invalid wire identity: %+v", envelope)
+				}
+				if kind == "allowed" {
+					if string(envelope.Result) != `{"head":"1111111111111111111111111111111111111111"}` || envelope.Error != nil {
+						t.Fatalf("invalid result: %+v", envelope)
+					}
+				} else if envelope.Error == nil || envelope.Error.Message == "" || len(envelope.Result) != 0 {
+					t.Fatalf("invalid failure: %+v", envelope)
+				}
+			}
 			if kind == "allowed" {
 				if response.Code != 200 || backendFake.calls != 1 {
 					t.Fatalf("status=%d calls=%d body=%s", response.Code, backendFake.calls, response.Body.String())
@@ -133,10 +151,11 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 	}
 }
 func TestActionRejectsMalformedInputBeforeAuthority(t *testing.T) {
-	server := New(nil, nil, backend.NewRegistry())
+	server := admissionServer(t, true)
 	for _, body := range []string{`{"input":{"unknown":true}}`, `{} {}`, `{`} {
 		request := httptest.NewRequest("POST", "/actions/clusters/tenant-id/repositories/product/branch_head/v1", bytes.NewBufferString(body))
 		request.Header.Set("X-Faros-Cluster", "tenant-id")
+		request.Header.Set("Authorization", "Bearer caller-token")
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 		if response.Code != 400 {

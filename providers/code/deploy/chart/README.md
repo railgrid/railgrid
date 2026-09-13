@@ -73,7 +73,7 @@ helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider \
 | `serviceAccount.name` | `""` |  |
 | `resources` |  |  |
 | `resources.limits.cpu` | `200m` |  |
-| `resources.limits.memory` | `256Mi` |  |
+| `resources.limits.memory` | `512Mi` |  |
 | `resources.requests.cpu` | `50m` |  |
 | `resources.requests.memory` | `64Mi` |  |
 | `envFromSecret` | `""` | Optional name overrides + pod-level scheduling controls. Optional Secret whose keys are injected wholesale as environment variables (GitHub OAuth app credentials and other dev secrets) — the containerized equivalent of sourcing providers/code/.env. |

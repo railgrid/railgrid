@@ -33,7 +33,7 @@ func (s Server) MCP() (http.Handler, error) {
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "faros-linear", Version: "0.1.0"}, nil)
 		for action := range actionNames {
-			mcp.AddTool(srv, &mcp.Tool{Name: "linear_" + action, InputSchema: shape, Description: "Invoke " + action + " on a registered Linear Team. Writes require a stable requestId prefixed with UTC YYYYMMDDTHHMMSSZ.; retain it after uncertainty. Binding fields are derived from Team."}, func(ctx context.Context, _ *mcp.CallToolRequest, input toolInput) (*mcp.CallToolResult, any, error) {
+			mcp.AddTool(srv, &mcp.Tool{Name: "linear_" + action, InputSchema: shape, Description: "Invoke " + action + " on a registered Linear Team. Writes require a stable requestId; a UTC YYYYMMDDTHHMMSSZ. prefix allows confirmed receipts to expire after 30 days. Retain the key after uncertainty. Binding fields are derived from Team."}, func(ctx context.Context, _ *mcp.CallToolRequest, input toolInput) (*mcp.CallToolResult, any, error) {
 				out, err := s.Action(ctx, r, input.Team, action, ActionRequest{RequestID: input.RequestID, Input: input.Input}, false)
 				return nil, out, err
 			})

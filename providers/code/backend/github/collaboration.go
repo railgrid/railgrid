@@ -105,7 +105,7 @@ func (b *Backend) FindPullRequest(ctx context.Context, conn *api.Connection, cre
 		for _, raw := range list {
 			result := pullResult(raw)
 			if !pullMatches(result, conn, repo, in) {
-				return nil, backend.ErrRepositoryIdentityConflict
+				continue
 			}
 			if found != nil {
 				return nil, errors.New("ambiguous pull request identity")

@@ -336,7 +336,7 @@ spec:
       required: false
   - id: create_issue/v1
     displayName: Create issue
-    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+    description: Use a registered Linear Team. Retain the stable write key to inspect
       uncertain outcomes.
     boundResource:
       apiVersion: linear.providers.faros.sh/v1alpha1
@@ -397,7 +397,7 @@ spec:
       required: false
   - id: update_issue/v1
     displayName: Update issue
-    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+    description: Use a registered Linear Team. Retain the stable write key to inspect
       uncertain outcomes.
     boundResource:
       apiVersion: linear.providers.faros.sh/v1alpha1
@@ -462,7 +462,7 @@ spec:
       required: false
   - id: add_comment/v1
     displayName: Add comment
-    description: Use a registered Linear Team. Retain the timestamped requestId to inspect
+    description: Use a registered Linear Team. Retain the stable write key to inspect
       uncertain outcomes.
     boundResource:
       apiVersion: linear.providers.faros.sh/v1alpha1

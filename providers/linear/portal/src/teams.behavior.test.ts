@@ -20,7 +20,7 @@ function fixture() {
       const action = path.split('/').at(-2)!;
       calls[calls.length - 1].body = { spec: { ...body.input, connection: 'main', teamID: 'eng', action } };
       const issue = { id: 'issue', identifier: 'ENG-1', title: 'Team issue', team: { id: 'eng' } };
-      return Response.json({ output: { phase: 'Succeeded', result: action === 'issue' ? issue : { nodes: action === 'issues' ? [issue] : [] } } });
+      return Response.json({ result: { phase: 'Succeeded', result: action === 'issue' ? issue : { nodes: action === 'issues' ? [issue] : [] } } });
     }
     if (path.includes('/teams/')) { const name = path.split('/').pop()!; if (method === 'DELETE') { teams.delete(name); return new Response(null, { status: 204 }); } return Response.json(teams.get(name)); }
     if (path.includes('/teams?')) return Response.json({ items: [...teams.values()] });

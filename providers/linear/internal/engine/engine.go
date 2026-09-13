@@ -77,7 +77,9 @@ func (e Engine) Secret(ctx context.Context, ref api.SecretReference) (string, er
 	}
 	return string(b), nil
 }
-func (e Engine) connection(ctx context.Context, name string) (api.Connection, error) {
+
+// ConnectionMetadata checks the resource identity without resolving credentials.
+func (e Engine) ConnectionMetadata(ctx context.Context, name string) (api.Connection, error) {
 	var conn api.Connection
 	u, err := e.Client.Resource(Connections).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -92,7 +94,7 @@ func (e Engine) connection(ctx context.Context, name string) (api.Connection, er
 	return conn, nil
 }
 func (e Engine) Connection(ctx context.Context, name string) (api.Connection, string, error) {
-	conn, err := e.connection(ctx, name)
+	conn, err := e.ConnectionMetadata(ctx, name)
 	if err != nil {
 		return conn, "", err
 	}
@@ -192,7 +194,17 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 			return e.save(ctx, u, op.Status)
 		}
 	}
-	conn, key, err := e.Connection(ctx, op.Spec.Connection)
+	conn, err := e.ConnectionMetadata(ctx, op.Spec.Connection)
+	if err != nil {
+		return e.finish(ctx, u, op.Status, nil, err, false)
+	}
+	// The API server clears status on create. The receipt annotation is the
+	// durable dispatch binding and must be checked before reading any Secret.
+	expectedUID := op.Annotations["linear.internal.faros.sh/connection-uid"]
+	if expectedUID == "" || expectedUID != string(conn.UID) || (op.Status.ConnectionUID != "" && op.Status.ConnectionUID != expectedUID) {
+		return e.finish(ctx, u, op.Status, nil, errors.New("connection identity missing or replaced"), false)
+	}
+	key, err := e.Secret(ctx, conn.Spec.APIKeySecretRef)
 	var access TeamAccess
 	if err == nil {
 		if e.Access != nil {
@@ -203,9 +215,6 @@ func (e Engine) Reconcile(ctx context.Context, u *unstructured.Unstructured) err
 	}
 	if err != nil {
 		return e.finish(ctx, u, op.Status, nil, err, false)
-	}
-	if op.Status.ConnectionUID != "" && op.Status.ConnectionUID != string(conn.UID) {
-		return e.finish(ctx, u, op.Status, nil, errors.New("connection was replaced"), false)
 	}
 	// Persist the one-shot dispatch fence before any external request. Conflicting
 	// controllers cannot both claim a Pending operation. Reads may safely resume.

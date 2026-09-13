@@ -105,7 +105,7 @@ function fixture(initialConnections: Resource[] = [connection('linear')]) {
       }
       const name = path.split('/').pop()!;
       if (path.includes('/actions/')) {
-        if (!body) return Response.json({ output: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) || { phase: 'Running' } });
+        if (!body) return Response.json({ result: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) || { phase: 'Running' } });
         const verb = path.split('/').at(-2)!;
         const spec = { ...body.input, action: ({ create_issue: 'createIssue', update_issue: 'updateIssue', add_comment: 'addComment' } as Record<string, string>)[verb] || verb };
         const operation: Operation = { metadata: { name: body.requestId }, spec };
@@ -117,11 +117,11 @@ function fixture(initialConnections: Resource[] = [connection('linear')]) {
         if (spec.action === 'issues' && failIssueList) return new Response('', { status: 503 });
         if (['createIssue', 'updateIssue', 'addComment'].includes(spec.action) && delayMutation) {
           mutationReadStarted = true;
-          return new Promise<Response>(resolve => { releaseMutationRead = () => { delayMutation = false; const output = { phase: 'Succeeded', result: operationResult(operation) }; outcomes.set(body.requestId, output); resolve(Response.json({ output })); }; });
+          return new Promise<Response>(resolve => { releaseMutationRead = () => { delayMutation = false; const output = { phase: 'Succeeded', result: operationResult(operation) }; outcomes.set(body.requestId, output); resolve(Response.json({ result: output })); }; });
         }
         const result = operationResult(operation);
         if (result.__httpError) return new Response('', { status: Number(result.__httpError) });
-        const output = { phase: 'Succeeded', result }; if (body.requestId) outcomes.set(body.requestId, output); return Response.json({ output });
+        const output = { phase: 'Succeeded', result }; if (body.requestId) outcomes.set(body.requestId, output); return Response.json({ result: output });
       }
       if (path.includes('/connections?')) return Response.json({ items: connections });
       if (path.includes('/connections/')) return Response.json(connections.find(item => item.metadata.name === name) || connection(name));

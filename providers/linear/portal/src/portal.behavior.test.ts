@@ -24,7 +24,7 @@ function fixture() {
     if (body?.kind === 'Connection') { const created = { ...body, metadata: { ...body.metadata, uid: 'uid', resourceVersion: '1' } }; connections.set(created.metadata.name, created); return Response.json(created); }
     if (path.includes('/teams?')) return Response.json({ items: [{ metadata: { name: 'engineering', uid: 'team-uid' }, spec: { connection: 'linear', teamID: 'team' }, status: { name: 'Engineering', key: 'ENG' } }] });
     if (path.includes('/actions/')) {
-      if (!body) return Response.json({ output: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) });
+      if (!body) return Response.json({ result: outcomes.get(new URL(path, 'https://test').searchParams.get('requestId')!) });
       const verb = path.split('/').at(-2)!;
       const s = { ...body.input, action: ({ create_issue: 'createIssue', update_issue: 'updateIssue', add_comment: 'addComment' } as Record<string, string>)[verb] || verb };
       // Normalize captured domain inputs for journey assertions; transport shape
@@ -37,7 +37,7 @@ function fixture() {
         : { ...issue, ...(s.title ? { title: s.title } : {}), ...(s.description !== undefined ? { description: s.description } : {}) };
       const output = { phase: uncertain ? 'Uncertain' : 'Succeeded', result, message: uncertain ? 'Check Linear before repeating' : '' };
       if (body.requestId) outcomes.set(body.requestId, output);
-      return Response.json({ output });
+      return Response.json({ result: output });
     }
     if (path.includes('/connections/')) return Response.json(connection);
     if (path.includes('/connections?')) return Response.json({ items: [...connections.values()] });

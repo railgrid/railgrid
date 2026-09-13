@@ -48,20 +48,28 @@ CatalogEntry publishes each action's schemas, bounds and retry semantics.
 | `update_issue` | `issueID`, at least one of `title`, `description`, `stateID` |
 | `add_comment` | `issueID`, `body` |
 
-Requests contain `input` and, for writes, a stable `requestId`. For example:
+Requests contain `input`. For writes, send a stable `Idempotency-Key` header
+(the Actions SDK `idempotencyKey` option), or the legacy body `requestId`.
+If both are supplied they must match. For example:
 
 ```json
 {"requestId":"20260913T120000Z.550e8400-e29b-41d4-a716-446655440000","input":{"issueID":"issue-uuid","body":"Ready for review."}}
 ```
 
-Generate the timestamp from the current UTC time when preparing the intent;
+Timestamped keys use the current UTC time when preparing the intent;
 persist the complete key before dispatch. Never select a new key because a
-response was lost. Keys expire after 30 days for new dispatch. A repeated key
-with different input or a replaced Team/Connection is rejected.
+response was lost. Timestamped keys expire after 30 days for new dispatch.
+Opaque keys without a timestamp are also supported; their receipts do not expire
+and count toward the same 2,000-receipt tenant limit. A repeated key with different
+input or a replaced Team/Connection is rejected. `X-Request-ID` is only a response
+correlation ID.
 
-Responses contain `requestId` and `output`, with a `phase` and, on success,
-`result`. `Running` and `Uncertain` are not success. Inspect a write using GET on
+Responses use the shared Provider Action envelope: `requestID`, provider/action
+identity, `resourceRef`, and exactly one of `result` or `error`. The outer `result`
+contains a `phase` and, on success, the upstream data in its own `result` field. `Running` and `Uncertain` are not success. Inspect a write using GET on
 the same action route with `?requestId=...`; inspection never dispatches it.
+Inspection checks current authorization and resource identities but does not
+require the credential Secret to remain available.
 After uncertainty, compare the current issue/comments in Linear before preparing
 another intent. The portal keeps this recovery control beside the issue form.
 
