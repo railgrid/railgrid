@@ -75,6 +75,10 @@ spec:
                 type: integer
               ready:
                 type: boolean
+              workspaceSlug:
+                description: WorkspaceSlug is the URL key observed from the authenticated
+                  Linear workspace.
+                type: string
             required:
             - ready
             type: object

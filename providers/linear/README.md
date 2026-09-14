@@ -120,3 +120,5 @@ make lint-linear-provider
 
 See `deploy/chart/README.md` for hosting values. Historical stage records describe
 older implementations and do not establish acceptance of this action-based flow.
+
+Connection readiness checks also observe `status.workspaceSlug` from the authenticated Linear organization. Consumers can resolve workspace URLs from the Team’s pinned Connection without requesting credentials or asking users to copy a URL key. Failed probes clear the observed slug; consumers must check readiness and observed generation.

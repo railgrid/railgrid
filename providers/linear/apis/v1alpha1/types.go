@@ -27,6 +27,8 @@ type ConnectionSpec struct {
 	APIKeySecretRef SecretReference `json:"apiKeySecretRef"`
 }
 type ConnectionStatus struct {
+	// WorkspaceSlug is the URL key observed from the authenticated Linear workspace.
+	WorkspaceSlug      string       `json:"workspaceSlug,omitempty"`
 	Ready              bool         `json:"ready"`
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
 	CheckedAt          *metav1.Time `json:"checkedAt,omitempty"`

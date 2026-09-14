@@ -267,3 +267,42 @@ func TestDeletionDuringDispatchPreservesUncertainWriteWithoutReplay(t *testing.T
 		t.Fatal("deleted uncertain record did not settle")
 	}
 }
+
+func TestConnectionProbeObservesWorkspaceAndClearsMetadataOnFailure(t *testing.T) {
+	ctx := context.Background()
+	e, _ := setup(t)
+	response := `{"data":{"organization":{"urlKey":"acme"},"teams":{"nodes":[]}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(response)) }))
+	defer srv.Close()
+	e.NewClient = func(string) *linearapi.Client { return testClient(srv) }
+	for _, tc := range []struct {
+		body, slug string
+		ready      bool
+	}{
+		{response, "acme", true},
+		{`{"data":{"organization":{"urlKey":"renamed"},"teams":{"nodes":[]}}}`, "renamed", true},
+		{`{"data":{"organization":null,"teams":{"nodes":[]}}}`, "", false},
+		{`{"errors":[{"message":"secret detail"}]}`, "", false},
+	} {
+		response = tc.body
+		u, err := e.Client.Resource(Connections).Get(ctx, "linear", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Advance the generation so each case requests fresh observed metadata.
+		u.SetGeneration(u.GetGeneration() + 1)
+		if err := e.Probe(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		var got api.Connection
+		if err := Decode(u, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Status.Ready != tc.ready || got.Status.WorkspaceSlug != tc.slug || got.Status.ObservedGeneration != got.Generation {
+			t.Fatalf("unexpected status: %+v", got.Status)
+		}
+		if strings.Contains(got.Status.Message, "secret detail") {
+			t.Fatal("upstream error leaked")
+		}
+	}
+}

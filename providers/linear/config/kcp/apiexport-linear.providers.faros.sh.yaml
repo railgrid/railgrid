@@ -6,7 +6,7 @@ spec:
   resources:
   - group: linear.providers.faros.sh
     name: connections
-    schema: v260913-007fceb7.connections.linear.providers.faros.sh
+    schema: v260914-83a64688.connections.linear.providers.faros.sh
     storage:
       crd: {}
   - group: linear.providers.faros.sh

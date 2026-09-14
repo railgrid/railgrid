@@ -306,3 +306,19 @@ func (c *Client) AddComment(ctx context.Context, id, body string) (Comment, erro
 	}
 	return d.Payload.Comment, err
 }
+
+// WorkspaceSlug reads the workspace URL key using this connection's credentials.
+func (c *Client) WorkspaceSlug(ctx context.Context) (string, error) {
+	var out struct {
+		Organization struct {
+			URLKey string `json:"urlKey"`
+		} `json:"organization"`
+	}
+	if err := c.query(ctx, `query { organization { urlKey } }`, nil, false, &out); err != nil {
+		return "", err
+	}
+	if out.Organization.URLKey == "" {
+		return "", errors.New("linear workspace metadata unavailable")
+	}
+	return out.Organization.URLKey, nil
+}

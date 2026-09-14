@@ -111,11 +111,15 @@ func (e Engine) Probe(ctx context.Context, u *unstructured.Unstructured) error {
 		return nil
 	}
 	key, err := e.Secret(ctx, c.Spec.APIKeySecretRef)
+	var workspaceSlug string
 	if err == nil {
 		_, err = e.API(key).Teams(ctx, 1, "")
 	}
+	if err == nil {
+		workspaceSlug, err = e.API(key).WorkspaceSlug(ctx)
+	}
 	now := metav1.NewTime(e.now())
-	c.Status = api.ConnectionStatus{Ready: err == nil, ObservedGeneration: c.Generation, CheckedAt: &now}
+	c.Status = api.ConnectionStatus{WorkspaceSlug: workspaceSlug, Ready: err == nil, ObservedGeneration: c.Generation, CheckedAt: &now}
 	if err != nil {
 		c.Status.Message = "Credentials unavailable or Linear rejected the readiness check"
 	}
