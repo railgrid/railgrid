@@ -28,7 +28,7 @@ import (
 )
 
 var segment = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}$`)
-var verbs = map[string]bool{"branch_head": true, "find_pull_request": true, "pull_request": true, "create_pull_request": true, "update_pull_request": true, "feedback": true, "comments": true, "add_comment": true, "reply_to_review": true, "prepare_snapshot": true, "publish_snapshot": true}
+var verbs = map[string]bool{"branches": true, "branch_head": true, "find_pull_request": true, "pull_request": true, "create_pull_request": true, "update_pull_request": true, "feedback": true, "comments": true, "add_comment": true, "reply_to_review": true, "prepare_snapshot": true, "publish_snapshot": true}
 
 const MaxInputBytes = 36 << 20
 const MaxOutputBytes = 512 << 10
@@ -140,6 +140,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "stage_snapshot":
 		output, err = s.stage(r, cluster, in)
+	case "branches":
+		lister, ok := implementation.(backend.BranchLister)
+		if !ok {
+			fail(422, "unsupported_action", false)
+			return
+		}
+		output, err = lister.ListBranches(ctx, conn, credential, repo, in.Page)
 	case "branch_head":
 		var head string
 		head, err = collaboration.BranchHead(ctx, conn, credential, repo, in.Branch)

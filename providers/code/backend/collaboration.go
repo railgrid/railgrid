@@ -85,3 +85,12 @@ type CommentPage struct {
 	Comments []Comment `json:"comments"`
 	NextPage int       `json:"nextPage"`
 }
+
+// BranchLister lists a bounded page using the registered repository identity.
+type BranchLister interface {
+	ListBranches(context.Context, *api.Connection, Credential, *api.Repository, int) (*BranchPage, error)
+}
+type BranchPage struct {
+	Branches []string `json:"branches"`
+	NextPage int      `json:"nextPage"`
+}

@@ -340,3 +340,37 @@ func (b *Backend) ReplyToReview(ctx context.Context, conn *api.Connection, cred 
 	}
 	return &backend.Comment{ID: raw.GetID(), URL: raw.GetHTMLURL(), Body: raw.GetBody(), Author: raw.GetUser().GetLogin(), AuthorType: raw.GetUser().GetType(), UpdatedAt: raw.GetUpdatedAt().Time}, nil
 }
+
+func (b *Backend) ListBranches(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, page int) (*backend.BranchPage, error) {
+	if page == 0 {
+		page = 1
+	}
+	if page < 1 || page > 10000 {
+		return nil, errors.New("invalid branch page")
+	}
+	client, err := b.collaborationClient(ctx, conn, cred, repo)
+	if err != nil {
+		return nil, err
+	}
+	branches, response, err := client.Repositories.ListBranches(ctx, owner(conn, repo), repo.Spec.Name, &gh.BranchListOptions{ListOptions: gh.ListOptions{Page: page, PerPage: 50}})
+	if err != nil {
+		return nil, classify(response, err)
+	}
+	if len(branches) > 50 {
+		return nil, errors.New("branch page exceeds limit")
+	}
+	result := &backend.BranchPage{Branches: []string{}}
+	for _, branch := range branches {
+		if branch == nil || !validBranch(branch.GetName()) {
+			return nil, errors.New("invalid branch observation")
+		}
+		result.Branches = append(result.Branches, branch.GetName())
+	}
+	if response != nil {
+		result.NextPage = response.NextPage
+	}
+	if result.NextPage != 0 && (result.NextPage <= page || result.NextPage > 10000) {
+		return nil, errors.New("invalid next branch page")
+	}
+	return result, nil
+}

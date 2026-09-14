@@ -67,6 +67,68 @@ data:
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
       actions:
+      - id: branches/v1
+        displayName: List branches
+        description: List a bounded page of branch names from a registered repository. Uses
+          caller authorization and pinned resource identities.
+        boundResource:
+          apiVersion: code.faros.sh/v1alpha1
+          kind: Repository
+          resource: repositories
+        inputSchema:
+          type: object
+          required:
+          - repositoryUID
+          - connectionUID
+          - repository
+          properties:
+            repositoryUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+            connectionUID:
+              type: string
+              minLength: 1
+              maxLength: 253
+            repository:
+              type: string
+              minLength: 3
+              maxLength: 201
+            page:
+              type: integer
+              minimum: 1
+              maximum: 10000
+          additionalProperties: false
+        outputSchema:
+          type: object
+          required:
+          - branches
+          - nextPage
+          properties:
+            branches:
+              type: array
+              maxItems: 50
+              items:
+                type: string
+                minLength: 1
+                maxLength: 255
+            nextPage:
+              type: integer
+              minimum: 0
+              maximum: 10000
+          additionalProperties: false
+        executionMode: sync
+        readOnly: true
+        risk: low
+        idempotency: inherent
+        limits:
+          timeoutSeconds: 180
+          maxInputBytes: 65536
+          maxOutputBytes: 524288
+          maxResultItems: 50
+        consent:
+          required: false
+        schemaDigest: sha256:83cae0fe851319cfc23544f9c6d202a4355e0878fa18e990bebfad2786d7bfe2
       - id: branch_head/v1
         displayName: Branch head
         description: Use the registered Repository and pinned resource identities. Returns

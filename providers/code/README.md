@@ -490,3 +490,7 @@ authorization. Each provider process admits eight actions, with at most one
 snapshot action (stage, prepare, or publish) at a time to bound bundle memory.
 Excess concurrent requests receive HTTP 503 before body decoding. The chart
 default memory limit is 512 MiB to leave headroom for JSON buffers and Git.
+
+### Branch discovery
+
+The read-only Repository-bound `branches/v1` action returns `branches` (up to 50 names) and `nextPage` (zero when complete). Supply the canonical repository, repository UID, connection UID, and an optional one-based `page`. Each page uses the caller's `repositories/branches` invoke permission and rechecks the registered repository against the Git host. No Git credentials are returned. Consumers must follow `nextPage` with their own bounded traversal and must not interpret a failed or partial read as an empty repository.

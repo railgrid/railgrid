@@ -224,3 +224,62 @@ func TestFindPullRequestFiltersHistoricalBranchUses(t *testing.T) {
 		})
 	}
 }
+
+func TestBranchListingPinsIdentityAndBoundsPages(t *testing.T) {
+	for _, kind := range []string{"page", "replaced repository", "bad branch", "bad cursor", "invalid page"} {
+		t.Run(kind, func(t *testing.T) {
+			listings := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatal("branch discovery must be read only")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/v3/repos/team/demo" {
+					id := 42
+					if kind == "replaced repository" {
+						id = 43
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "full_name": "team/demo"})
+					return
+				}
+				if r.URL.Path != "/api/v3/repos/team/demo/branches" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(404)
+					return
+				}
+				listings++
+				if r.URL.Query().Get("page") != "2" || r.URL.Query().Get("per_page") != "50" {
+					t.Error("pagination bounds lost")
+				}
+				next := "3"
+				if kind == "bad cursor" {
+					next = "2"
+				}
+				w.Header().Set("Link", "<http://example.test/repos/team/demo/branches?page="+next+">; rel=\"next\"")
+				name := "release/v1"
+				if kind == "bad branch" {
+					name = "../invalid"
+				}
+				_ = json.NewEncoder(w).Encode([]map[string]string{{"name": "main"}, {"name": name}})
+			}))
+			defer server.Close()
+			conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
+			repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}, Status: api.RepositoryStatus{RepoID: "42"}}
+			page := 2
+			if kind == "invalid page" {
+				page = -1
+			}
+			result, err := New().ListBranches(context.Background(), conn, backend.Credential{Token: "test-token"}, repo, page)
+			if kind == "page" {
+				if err != nil || result.NextPage != 3 || len(result.Branches) != 2 || result.Branches[1] != "release/v1" {
+					t.Fatalf("result=%#v error=%v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid branch observation accepted")
+			}
+			if (kind == "replaced repository" || kind == "invalid page") && listings != 0 {
+				t.Fatal("invalid identity or page reached branch listing")
+			}
+		})
+	}
+}

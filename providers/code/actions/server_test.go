@@ -65,6 +65,11 @@ func actionObject(t *testing.T, value any) *unstructured.Unstructured {
 	return obj
 }
 func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
+	for _, action := range []string{"branch_head", "branches"} {
+		t.Run(action, func(t *testing.T) { testRepositoryActionAuthority(t, action) })
+	}
+}
+func testRepositoryActionAuthority(t *testing.T, actionName string) {
 	for _, kind := range []string{"allowed", "denied", "repository replaced", "connection replaced", "spec changed", "tenant mismatch"} {
 		t.Run(kind, func(t *testing.T) {
 			repo := &api.Repository{TypeMeta: metav1.TypeMeta{APIVersion: "code.faros.sh/v1alpha1", Kind: "Repository"}, ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo-uid"}, Spec: api.RepositorySpec{ConnectionRef: "git", Name: "product"}, Status: api.RepositoryStatus{RepoID: "123"}}
@@ -73,7 +78,7 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 			caller.PrependReactor("create", "selfsubjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
 				object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
 				attrs, _, _ := unstructured.NestedMap(object.Object, "spec", "resourceAttributes")
-				if attrs["group"] != "code.faros.sh" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["verb"] != "invoke" || attrs["subresource"] != "branch_head" {
+				if attrs["group"] != "code.faros.sh" || attrs["resource"] != "repositories" || attrs["name"] != "product" || attrs["verb"] != "invoke" || attrs["subresource"] != actionName {
 					t.Fatalf("incorrect permission: %#v", attrs)
 				}
 				return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": kind != "denied"}}}, nil
@@ -101,7 +106,7 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 				return provider, nil
 			}, registry)
 			body := []byte(`{"input":{"repository":"example/product","repositoryUID":"repo-uid","connectionUID":"conn-uid","branch":"main"}}`)
-			request := httptest.NewRequest(http.MethodPost, "/actions/clusters/tenant-id/repositories/product/branch_head/v1", bytes.NewReader(body))
+			request := httptest.NewRequest(http.MethodPost, "/actions/clusters/tenant-id/repositories/product/"+actionName+"/v1", bytes.NewReader(body))
 			request.Header.Set("X-Faros-Cluster", "tenant-id")
 			request.Header.Set("Authorization", "Bearer caller-token")
 			request.Header.Set("X-Request-ID", "sdk-request")
@@ -115,11 +120,15 @@ func TestRepositoryActionAuthorityAndReplacementFences(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 					t.Fatal(err)
 				}
-				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != "branch_head" || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.faros.sh/v1alpha1" {
+				if envelope.RequestID != "sdk-request" || envelope.Provider != "code" || envelope.Action != actionName || envelope.ActionVersion != "v1" || envelope.ResourceRef.Name != "product" || envelope.ResourceRef.Kind != "Repository" || envelope.ResourceRef.Resource != "repositories" || envelope.ResourceRef.APIVersion != "code.faros.sh/v1alpha1" {
 					t.Fatalf("invalid wire identity: %+v", envelope)
 				}
 				if kind == "allowed" {
-					if string(envelope.Result) != `{"head":"1111111111111111111111111111111111111111"}` || envelope.Error != nil {
+					expected := `{"head":"1111111111111111111111111111111111111111"}`
+					if actionName == "branches" {
+						expected = `{"branches":["main","release/v1"],"nextPage":0}`
+					}
+					if string(envelope.Result) != expected || envelope.Error != nil {
 						t.Fatalf("invalid result: %+v", envelope)
 					}
 				} else if envelope.Error == nil || envelope.Error.Message == "" || len(envelope.Result) != 0 {
@@ -162,4 +171,12 @@ func TestActionRejectsMalformedInputBeforeAuthority(t *testing.T) {
 			t.Fatalf("malformed input status=%d", response.Code)
 		}
 	}
+}
+
+func (f *backendFixture) ListBranches(_ context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, page int) (*backend.BranchPage, error) {
+	f.calls++
+	if conn.Name != "git" || cred.Token != "provider-secret" || repo.Name != "product" || page != 0 {
+		f.t.Fatal("branch listing lost repository binding")
+	}
+	return &backend.BranchPage{Branches: []string{"main", "release/v1"}}, nil
 }
