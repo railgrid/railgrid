@@ -96,8 +96,9 @@ hub:
   # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
   # Each entry matches a User by name, email, or rbacIdentity (case-insensitive).
   # Empty disables the admin surface entirely (the /bonkers menu item stays hidden).
-  # For OIDC, use the admin's email; for a static token, the synthesized identity
-  # is static-<first8chars>@faros.local.
+  # For OIDC, use the admin's email; for a static token, use its RBAC identity
+  # faros:static:<first 16 hex of sha256("static-token/<token>")>. Static-token
+  # users have no email, so the token never appears in member lists.
   adminUsers: []
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.

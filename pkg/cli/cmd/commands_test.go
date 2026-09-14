@@ -595,6 +595,15 @@ func TestResolveMember(t *testing.T) {
 	if _, err := resolveMember(members, "zed"); err == nil {
 		t.Error("unknown member resolved")
 	}
+
+	// A static-token member has no email; a blank query must not pick it.
+	static := []memberView{{User: "static-user-47b9dce0e91570a1", RBACIdentity: "faros:static:47b9dce0e91570a1", UserDisplayName: "faros:static:47b9dce0e91570a1"}}
+	if m, err := resolveMember(static, "  "); err == nil {
+		t.Errorf("blank query resolved to %s", m.User)
+	}
+	if m, err := resolveMember(static, "static:47b9dce0e91570a1"); err != nil || m.User != "static-user-47b9dce0e91570a1" {
+		t.Errorf("resolveMember(static:<hash>) = %v, %v", m.User, err)
+	}
 }
 
 func TestExecOIDCArgsAndJWT(t *testing.T) {

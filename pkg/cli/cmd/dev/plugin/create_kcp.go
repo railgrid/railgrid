@@ -18,8 +18,6 @@ package plugin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,15 +36,16 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 // devStaticTokens are the static bearer tokens used by the dev setup. The
 // hub and external kcp both need to know these — the hub to accept them in
 // its proxy, kcp+front-proxy to authenticate them natively after the hub
-// forwards them. The user/uid format MUST match pkg/server/proxy/proxy.go's
-// static-token path (sha256("static-token/"+tok) → subHash[:16] →
-// user="faros:static:<…>") and pkg/hub/kcp/embedded.go's token-auth-file
-// writer so RBAC bindings the hub bootstrapper creates line up.
+// forwards them. The user/uid come from identity.NewStaticToken, the same
+// helper the hub proxy and pkg/hub/kcp/embedded.go's token-auth-file writer
+// use, so RBAC bindings the hub bootstrapper creates line up.
 var devStaticTokens = []string{"dev-token"}
 
 // kcpTokenAuthFileName is the filename the kcp chart's built-in tokenAuth
@@ -64,11 +63,8 @@ func buildKCPTokenAuthFileCSV(tokens []string) string {
 		if tok == "" {
 			continue
 		}
-		h := sha256.Sum256([]byte("static-token/" + tok))
-		subHash := hex.EncodeToString(h[:])[:63]
-		user := fmt.Sprintf("faros:static:%s", subHash[:16])
-		uid := subHash[:16]
-		lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", tok, user, uid))
+		id := identity.NewStaticToken(tok)
+		lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", tok, id.RBACIdentity, id.UID))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

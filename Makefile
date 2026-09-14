@@ -887,10 +887,11 @@ HUB_FLAGS_STATIC := \
 	--admin-users=$(ADMIN_USERS)
 
 # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
-# The dev static token "$(STATIC_AUTH_TOKEN)" resolves (proxy.ensureStaticTokenUserOnce)
-# to email static-<first8chars>@faros.local — for dev-token that's
-# static-dev-toke@faros.local. Override for OIDC dev with your real email.
-ADMIN_USERS ?= static-dev-toke@faros.local
+# A static token's user is matched by its RBAC identity,
+# faros:static:<first 16 hex of sha256("static-token/<token>")> (see
+# identity.NewStaticToken) — for dev-token that's faros:static:47b9dce0e91570a1.
+# Override for OIDC dev with your real email.
+ADMIN_USERS ?= faros:static:$(shell printf 'static-token/%s' '$(STATIC_AUTH_TOKEN)' | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
 
 # KCP: External (requires running kcp separately)
 HUB_FLAGS_KCP_EXTERNAL := \

@@ -49,6 +49,7 @@ import (
 	"github.com/faroshq/faros/pkg/browsersession"
 	farosclient "github.com/faroshq/faros/pkg/client"
 	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 // defaultStaticTokenRateLimit is the default number of token-login requests allowed per minute per IP.
@@ -317,12 +318,8 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, token string) {
 	ctx := r.Context()
 
-	// Use token hash as a stable identifier for the static token user.
-	tokenHash := sha256.Sum256([]byte("static-token/" + token))
-	subHash := hex.EncodeToString(tokenHash[:])[:63]
-
 	// Look up or create the user for this static token.
-	user, err := p.ensureStaticTokenUser(ctx, token, subHash)
+	user, err := p.ensureStaticTokenUser(ctx, identity.NewStaticToken(token))
 	if err != nil {
 		p.logger.Error(err, "failed to ensure static token user")
 		w.Header().Set("Content-Type", "application/json")
@@ -374,12 +371,12 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 
 // ensureStaticTokenUser creates or retrieves a User for a static token.
 // It uses retry logic to handle conflicts from concurrent updates.
-func (p *KCPProxy) ensureStaticTokenUser(ctx context.Context, token, subHash string) (*tenancyv1alpha1.User, error) {
+func (p *KCPProxy) ensureStaticTokenUser(ctx context.Context, id identity.StaticToken) (*tenancyv1alpha1.User, error) {
 	const maxRetries = 5
 	var lastErr error
 
 	for i := 0; i < maxRetries; i++ {
-		user, err := p.ensureStaticTokenUserOnce(ctx, token, subHash)
+		user, err := p.ensureStaticTokenUserOnce(ctx, id)
 		if err == nil {
 			return user, nil
 		}
@@ -405,30 +402,126 @@ func isConflictError(err error) bool {
 		strings.Contains(errMsg, "please apply your changes to the latest version")
 }
 
-// sanitizeTokenSlug turns an arbitrary static token into a stable, email-safe
-// slug. Unlike a fixed-length prefix, it preserves the full token, so tokens
-// that share a prefix (e.g. "dev-token" / "dev-token2") map to distinct slugs
-// and therefore distinct users. Characters outside [a-z0-9-] are folded to '-'.
-func sanitizeTokenSlug(token string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(token) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
+// scrubStaticTokenUserSpec makes a static-token User show only its RBAC
+// identity: no email, display name = RBAC identity. Fellow org and workspace
+// members can read both fields from the member list, and hubs before this
+// change wrote the token text into them ("static-<token>@faros.local" /
+// "Static Token User (<token>)"), which handed every co-member a working
+// credential. Returns true when the spec changed and needs writing.
+func scrubStaticTokenUserSpec(user *tenancyv1alpha1.User, id identity.StaticToken) bool {
+	if user.Spec.Email == "" && user.Spec.Name == id.RBACIdentity {
+		return false
+	}
+	user.Spec.Email = ""
+	user.Spec.Name = id.RBACIdentity
+	return true
+}
+
+// legacyStaticTokenUserNamePrefix starts the display name hubs before the
+// scrub gave static-token users, "Static Token User (<token>)".
+const legacyStaticTokenUserNamePrefix = "Static Token User ("
+
+// scrubStaticTokenUser removes the token text from a static-token User and
+// from the default name of its personal Organization, which the organization
+// controller derived from the User's display name ("<name>'s personal", see
+// personalOrgDisplayName) and which that Org's other members see. The Org is
+// renamed first so the User update, which triggers the organization
+// controller, re-syncs the owner's index rows from the new name.
+func (p *KCPProxy) scrubStaticTokenUser(ctx context.Context, user *tenancyv1alpha1.User, id identity.StaticToken) (*tenancyv1alpha1.User, error) {
+	if err := p.scrubStaticTokenPersonalOrg(ctx, user, id); err != nil {
+		return nil, err
+	}
+	if !scrubStaticTokenUserSpec(user, id) {
+		return user, nil
+	}
+	updated, err := p.farosClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("removing token text from user %s: %w", user.Name, err)
+	}
+	p.logger.Info("removed token text from static-token user", "user", user.Name, "rbacIdentity", id.RBACIdentity)
+	return updated, nil
+}
+
+// scrubStaticTokenPersonalOrg renames a static-token User's personal
+// Organization when it still has the token-derived default name, and
+// rewrites the copies of that name in every member's UserMembershipIndex
+// (index rows mirror Organization.spec.displayName at write time and are not
+// refreshed on rename). A name the owner chose is left alone.
+func (p *KCPProxy) scrubStaticTokenPersonalOrg(ctx context.Context, user *tenancyv1alpha1.User, id identity.StaticToken) error {
+	if user.Status.PersonalOrg == "" {
+		return nil
+	}
+	org, err := p.farosClient.Organizations().Get(ctx, user.Status.PersonalOrg, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting personal organization of %s: %w", user.Name, err)
+	}
+	if !org.Spec.Personal || !strings.HasPrefix(org.Spec.DisplayName, legacyStaticTokenUserNamePrefix) {
+		return nil
+	}
+	oldName := org.Spec.DisplayName
+	newName := id.RBACIdentity + "'s personal"
+
+	// Index rows first: if a write fails, the Org keeps the old name and the
+	// next pass (login or hub start) finds and retries it.
+	indices, err := p.farosClient.UserMembershipIndices().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing membership indices: %w", err)
+	}
+	for i := range indices.Items {
+		idx := &indices.Items[i]
+		changed := false
+		for j := range idx.Spec.Entries {
+			if e := &idx.Spec.Entries[j]; e.OrgUUID == org.Name && e.OrgDisplayName == oldName {
+				e.OrgDisplayName = newName
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		if _, err := p.farosClient.UserMembershipIndices().Update(ctx, idx, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("renaming organization %s in membership index %s: %w", org.Name, idx.Name, err)
 		}
 	}
-	s := strings.Trim(b.String(), "-")
-	if s == "" {
-		s = "token"
+
+	org.Spec.DisplayName = newName
+	if _, err := p.farosClient.Organizations().Update(ctx, org, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("renaming personal organization %s: %w", org.Name, err)
 	}
-	return s
+	p.logger.Info("removed token text from static-token user's personal organization", "user", user.Name, "org", org.Name)
+	return nil
+}
+
+// ScrubStaticTokenUsers removes the token text from the Users (and their
+// personal Organizations) of every configured static token; see
+// scrubStaticTokenUser. Login does the same, but a token nobody uses after an
+// upgrade would otherwise stay readable in member lists indefinitely. It only
+// updates Users that exist; it never creates one.
+func (p *KCPProxy) ScrubStaticTokenUsers(ctx context.Context) error {
+	for _, token := range p.staticAuthTokens {
+		if token == "" {
+			continue
+		}
+		id := identity.NewStaticToken(token)
+		users, err := p.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: "tenants.faros.sh/sub=" + id.Sub})
+		if err != nil {
+			return fmt.Errorf("listing static-token users: %w", err)
+		}
+		for i := range users.Items {
+			if _, err := p.scrubStaticTokenUser(ctx, &users.Items[i], id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
-func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash string) (*tenancyv1alpha1.User, error) {
-	labelSelector := fmt.Sprintf("tenants.faros.sh/sub=%s", subHash)
+func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.StaticToken) (*tenancyv1alpha1.User, error) {
+	labelSelector := fmt.Sprintf("tenants.faros.sh/sub=%s", id.Sub)
 	users, err := p.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -438,6 +531,16 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 
 	if len(users.Items) > 0 {
 		user := &users.Items[0]
+
+		// Users created before the email/name stopped being token-derived
+		// still carry the token; rewrite them on their next login. Checked
+		// on the in-memory copy so an already-clean User costs no extra
+		// request. A conflict here is retried by ensureStaticTokenUser.
+		if user.Spec.Email != "" || user.Spec.Name != id.RBACIdentity {
+			if user, err = p.scrubStaticTokenUser(ctx, user, id); err != nil {
+				return nil, err
+			}
+		}
 
 		// Update status with last login (best-effort, ignore conflicts here).
 		user.Status.Active = true
@@ -461,25 +564,20 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 	// AlreadyExists guard never fires and we get duplicate users for one token.
 	// A stable name makes a racing create collide → AlreadyExists → reuse.
 	//
-	// Derive the human-facing email/display slug from the FULL token (sanitized),
-	// not a fixed-length prefix: two tokens that share a prefix (e.g. "dev-token"
-	// and "dev-token2") would otherwise collapse to the same email, which — since
-	// --admin-users matches on email — also leaks admin between distinct users.
-	tokenSlug := sanitizeTokenSlug(token)
-	userName := "static-user-" + subHash[:16]
-
+	// Nothing human-facing is derived from the token text: the email and
+	// display name are readable by every fellow org member, so they carry only
+	// the RBAC identity (a hash), which --admin-users can also match on.
 	user := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: userName,
+			Name: id.UserName,
 			Labels: map[string]string{
-				"tenants.faros.sh/sub":       subHash,
+				"tenants.faros.sh/sub":       id.Sub,
 				"tenants.faros.sh/auth-type": "static-token",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
-			Email:        fmt.Sprintf("static-%s@faros.local", tokenSlug),
-			Name:         fmt.Sprintf("Static Token User (%s)", tokenSlug),
-			RBACIdentity: fmt.Sprintf("faros:static:%s", subHash[:16]),
+			Name:         id.RBACIdentity,
+			RBACIdentity: id.RBACIdentity,
 		},
 	}
 	user.APIVersion = "tenants.faros.sh/v1alpha1"
@@ -489,7 +587,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 	if err != nil {
 		// Concurrent login won the race — reuse the existing user by name.
 		if apierrors.IsAlreadyExists(err) {
-			existing, getErr := p.farosClient.Users().Get(ctx, userName, metav1.GetOptions{})
+			existing, getErr := p.farosClient.Users().Get(ctx, id.UserName, metav1.GetOptions{})
 			if getErr != nil {
 				return nil, fmt.Errorf("getting user after create conflict: %w", getErr)
 			}
@@ -780,9 +878,7 @@ func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, er
 	// Static token branch first — constant-time compare per ServeHTTP.
 	for _, staticToken := range p.staticAuthTokens {
 		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
-			tokenHash := sha256.Sum256([]byte("static-token/" + token))
-			subHash := hex.EncodeToString(tokenHash[:])[:63]
-			user, err := p.ensureStaticTokenUser(r.Context(), token, subHash)
+			user, err := p.ensureStaticTokenUser(r.Context(), identity.NewStaticToken(token))
 			if err != nil {
 				return browsersession.Identity{}, fmt.Errorf("%w: resolving static-token user: %w", ErrUserRecordUnavailable, err)
 			}
@@ -917,12 +1013,8 @@ func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Use token hash as a stable identifier for the static token user.
-	tokenHash := sha256.Sum256([]byte("static-token/" + token))
-	subHash := hex.EncodeToString(tokenHash[:])[:63]
-
 	// Ensure user and workspace exist.
-	user, err := p.ensureStaticTokenUser(ctx, token, subHash)
+	user, err := p.ensureStaticTokenUser(ctx, identity.NewStaticToken(token))
 	if err != nil {
 		p.logger.Error(err, "failed to ensure static token user")
 		w.Header().Set("Content-Type", "application/json")

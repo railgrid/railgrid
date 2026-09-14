@@ -56,7 +56,7 @@ go build -o bin/faros-hub ./cmd/faros-hub
   --dev-mode -v 4 \
   --static-auth-token=dev-token \
   --static-auth-token=dev-token2 \
-  --admin-users=static-dev-token@faros.local \
+  --admin-users=faros:static:47b9dce0e91570a1 \
   --embedded-kcp \
   --kcp-root-dir=.kcp \
   --kcp-secure-port=6443 \

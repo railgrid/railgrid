@@ -591,6 +591,21 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
 		logger.Info("kcp API proxy enabled")
+		if len(s.opts.StaticAuthTokens) > 0 {
+			// Best-effort: strip token text that older hubs wrote into
+			// static-token Users' email and display name. Login rewrites a
+			// User too; this covers tokens nobody uses after the upgrade.
+			go func() {
+				if err := runStartupStepWithRetry(ctx, startupRetryPolicy{
+					Name:      "remove token text from static-token users",
+					Interval:  5 * time.Second,
+					Timeout:   5 * time.Minute,
+					Retryable: isRetriableKCPBootstrapError,
+				}, kcpProxy.ScrubStaticTokenUsers); err != nil {
+					logger.Error(err, "Failed to remove token text from static-token users; they are rewritten on next login")
+				}
+			}()
+		}
 		kcpProxy.SetBrowserSessionStore(browserSessionStore)
 		kcpProxy.SetTrustedProxies(trustedProxies)
 		authRateLimit := authHandler.RateLimitMiddleware()
@@ -850,10 +865,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// identities pass. Onboards providers (workspace + SA + kubeconfig)
 			// and surfaces users / orgs / providers / root identities.
 			if len(s.opts.AdminUsers) > 0 {
-				adminSet := make(map[string]struct{}, len(s.opts.AdminUsers))
-				for _, a := range s.opts.AdminUsers {
-					adminSet[strings.ToLower(strings.TrimSpace(a))] = struct{}{}
-				}
+				adminSet := buildAdminSet(logger, s.opts.AdminUsers)
 				adminResolver := admin.UserResolverFunc(func(r *http.Request) (string, error) {
 					return kcpProxy.IdentifyUser(r)
 				})
@@ -1264,3 +1276,24 @@ func (d *delegatingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the dedicated per-kind CRDs were collapsed into the MCPServer
 // aggregate. Per-tenant default MCPServer creation lives in
 // pkg/hub/kcp/bootstrap.go (EnsureDefaultMCPServer).
+
+// buildAdminSet normalizes --admin-users into the lower-cased set the admin
+// checker matches User names, emails and RBAC identities against.
+func buildAdminSet(logger klog.Logger, entries []string) map[string]struct{} {
+	adminSet := make(map[string]struct{}, len(entries))
+	for _, a := range entries {
+		a = strings.ToLower(strings.TrimSpace(a))
+		// An empty entry (e.g. a trailing comma) would match every User
+		// without an email, which includes every static-token user.
+		if a == "" {
+			continue
+		}
+		// The retired form embeds the token, so the entry itself is
+		// deliberately not logged.
+		if strings.HasPrefix(a, "static-") && strings.HasSuffix(a, "@faros.local") {
+			logger.Error(nil, "--admin-users entry uses the retired static-token email form (static-<token>@faros.local) and matches no user; use the token's RBAC identity (faros:static:<hash>) instead")
+		}
+		adminSet[a] = struct{}{}
+	}
+	return adminSet
+}

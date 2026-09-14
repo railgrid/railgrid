@@ -184,7 +184,7 @@ func TestHubAdminValues(t *testing.T) {
 	if hub["internalURL"] != "https://faros-hub.faros-system.svc.cluster.local:9443" {
 		t.Fatalf("internalURL = %v", hub["internalURL"])
 	}
-	if !reflect.DeepEqual(hub["adminUsers"], []string{devStaticAdminUser}) {
+	if !reflect.DeepEqual(hub["adminUsers"], []string{devStaticAdminUser()}) {
 		t.Fatalf("adminUsers = %v", hub["adminUsers"])
 	}
 	// The hub's certificate comes from the dev CA (stable across re-runs),
@@ -205,10 +205,14 @@ func TestHubAdminValues(t *testing.T) {
 }
 
 // The identity the hub synthesizes for a static token must match what the
-// automation puts on --admin-users, or every /api/admin call is refused.
+// automation puts on --admin-users, or every /api/admin call is refused. It
+// must not contain the token: --admin-users ends up in the hub's Helm values.
 func TestDevStaticAdminUserMatchesToken(t *testing.T) {
-	if want := "static-" + devStaticToken() + "@faros.local"; devStaticAdminUser != want {
-		t.Fatalf("devStaticAdminUser = %q, want %q (see sanitizeTokenSlug in pkg/server/proxy)", devStaticAdminUser, want)
+	if got, want := devStaticAdminUser(), "faros:static:47b9dce0e91570a1"; got != want {
+		t.Fatalf("devStaticAdminUser() = %q, want %q (see identity.NewStaticToken)", got, want)
+	}
+	if strings.Contains(devStaticAdminUser(), devStaticToken()) {
+		t.Fatalf("devStaticAdminUser() = %q contains the token", devStaticAdminUser())
 	}
 }
 

@@ -125,6 +125,10 @@ func (sc membershipScope) list(ctx context.Context, s *hubSession) ([]memberView
 // display name (case-insensitive), so users can type what they see.
 func resolveMember(members []memberView, query string) (memberView, error) {
 	q := strings.TrimSpace(query)
+	// Static-token members have no email; an empty query would match them.
+	if q == "" {
+		return memberView{}, fmt.Errorf("member is required")
+	}
 	var hits []memberView
 	for _, m := range members {
 		if m.User == q {

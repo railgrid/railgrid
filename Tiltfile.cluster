@@ -860,13 +860,13 @@ hub_sso_values = [
     'idp.clientID=faros',
     'idp.caSecretName=%s' % dex_secret_name,
     'idp.caSecretKey=ca.crt',
-    'hub.adminUsers={admin@test.faros.local,static-dev-token@faros.local}',
+    'hub.adminUsers={admin@test.faros.local,faros:static:47b9dce0e91570a1}',
 ] if sso_enabled else [
-    # /bonkers admin access for the first dev static token (resolves to
-    # static-dev-token@faros.local — see proxy.ensureStaticTokenUserOnce).
-    # dev-token2 is intentionally left off the allowlist so it acts as a
-    # plain, non-admin second user for membership/user-adding tests.
-    'hub.adminUsers={static-dev-token@faros.local}',
+    # /bonkers admin access for the first dev static token: its RBAC
+    # identity (see identity.NewStaticToken). dev-token2 is intentionally left
+    # off the allowlist so it acts as a plain, non-admin second user for
+    # membership/user-adding tests.
+    'hub.adminUsers={faros:static:47b9dce0e91570a1}',
 ]
 k8s_yaml(helm(
     'deploy/charts/faros-hub',

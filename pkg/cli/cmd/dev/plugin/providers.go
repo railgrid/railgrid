@@ -42,6 +42,7 @@ import (
 	"helm.sh/helm/v3/pkg/registry"
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/util/identity"
 	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
@@ -68,12 +69,6 @@ const (
 	// devProviderChartRepo is the OCI base every provider chart is published
 	// under (see .github/workflows/provider-release.yaml).
 	devProviderChartRepo = "oci://ghcr.io/faroshq/charts"
-
-	// devStaticAdminUser is the identity the hub synthesizes for the first
-	// dev static token: static-<sanitized token>@faros.local (see
-	// sanitizeTokenSlug in pkg/server/proxy). --admin-users matches on it,
-	// which is what lets `faros dev init` call /api/admin/* with dev-token.
-	devStaticAdminUser = "static-dev-token@faros.local"
 
 	// Provider images are large (App Studio ships a browser) and the
 	// infrastructure operator installs kro before its serve pods start, so a
@@ -365,7 +360,7 @@ func (o *DevOptions) hubAdminValues(hubValues map[string]any) {
 	hubValues["internalURL"] = o.hubInternalURL()
 	// Serving certificate from the dev CA (ca.go), valid for the browser host.
 	hubValues["tls"] = devHubTLSValues()
-	admins := []string{devStaticAdminUser}
+	admins := []string{devStaticAdminUser()}
 	if o.WithDex {
 		admins = append(admins, "admin@test.faros.local")
 	}
@@ -997,4 +992,11 @@ func pollUntil(ctx context.Context, interval, timeout time.Duration, cond func(c
 // signs in with and what provider heartbeats carry.
 func devStaticToken() string {
 	return devStaticTokens[0]
+}
+
+// devStaticAdminUser is the RBAC identity the hub gives the first dev static
+// token (faros:static:<hash>). --admin-users matches on it, which is what
+// lets `faros dev init` call /api/admin/* with dev-token.
+func devStaticAdminUser() string {
+	return identity.NewStaticToken(devStaticToken()).RBACIdentity
 }

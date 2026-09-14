@@ -39,7 +39,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | `hub.listenAddr` | `:9443` | Hub TLS listen address |
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
-| `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token the identity is `static-<first8chars>@faros.local`. |
+| `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token use its RBAC identity, `faros:static:<first 16 hex of sha256("static-token/<token>")>` (static-token users have no email, so the token never appears in member lists). |
 | `hub.resources` | see values | CPU/memory requests and limits (includes embedded kcp overhead) |
 | `hub.extraArgs` | `[]` | Extra hub command-line flags appended after the flags the chart renders, for flags the chart does not model yet (e.g. `--providers=edges,infrastructure`). The chart refuses an entry that repeats a flag it renders from a value — set the value instead. |
 

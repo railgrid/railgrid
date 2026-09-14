@@ -243,8 +243,9 @@ The hub cluster is configured with:
 - Port mappings: `localhost:9443` -> hub service
 - NodePort service on port 31443
 - Self-signed TLS certificate
-- Static auth token: `dev-token`, whose user (`static-dev-token@faros.local`)
-  is on `--admin-users` so the CLI can drive the admin API
+- Static auth token: `dev-token`, whose user (RBAC identity
+  `faros:static:47b9dce0e91570a1`) is on `--admin-users` so the CLI can drive
+  the admin API
 - `hub.internalURL` set to the in-cluster Service, so minted provider
   kubeconfigs stay inside the cluster
 - Dev mode enabled (relaxed security)

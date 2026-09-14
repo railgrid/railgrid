@@ -18,8 +18,6 @@ package kcp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -36,6 +34,8 @@ import (
 	kcpfeatures "github.com/kcp-dev/kcp/pkg/features"
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
+
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
@@ -182,14 +182,11 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 			if token == "" {
 				continue
 			}
-			// Use the same hash scheme as the proxy (pkg/server/proxy) so
-			// the kcp-side identity is consistent.
-			h := sha256.Sum256([]byte("static-token/" + token))
-			subHash := hex.EncodeToString(h[:])[:63]
-			user := fmt.Sprintf("faros:static:%s", subHash[:16])
-			uid := subHash[:16]
+			// Same identity the proxy (pkg/server/proxy) gives the User, so
+			// the kcp-side username matches its RBAC bindings.
+			id := identity.NewStaticToken(token)
 			// Format: token,user,uid,"group1,group2"
-			lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", token, user, uid))
+			lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", token, id.RBACIdentity, id.UID))
 		}
 		if len(lines) > 0 {
 			if err := os.WriteFile(tokenFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
