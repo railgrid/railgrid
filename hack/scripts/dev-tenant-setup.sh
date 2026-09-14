@@ -8,7 +8,7 @@
 # into the checked-in manifests.
 #
 # Provider ordering is intentional. Tilt makes code-init and
-# databricks-init prerequisites of this resource, and this script additionally
+# Code prerequisites of this resource, and this script additionally
 # waits for both tenant APIBindings to be Bound before creating Connections.
 
 set -euo pipefail
@@ -58,8 +58,13 @@ require_value() {
 require_value FAROS_BOOTSTRAP_GITHUB_OWNER
 require_value FAROS_BOOTSTRAP_GITHUB_TOKEN
 require_value FAROS_BOOTSTRAP_LLM_API_KEY
-require_value FAROS_BOOTSTRAP_DATABRICKS_HOST
-require_value FAROS_BOOTSTRAP_DATABRICKS_TOKEN
+# Optional external provider; public Faros bootstrap needs only Code.
+DATABRICKS_ENABLED=false
+if [[ -n "${FAROS_BOOTSTRAP_DATABRICKS_HOST:-}" || -n "${FAROS_BOOTSTRAP_DATABRICKS_TOKEN:-}" ]]; then
+  require_value FAROS_BOOTSTRAP_DATABRICKS_HOST
+  require_value FAROS_BOOTSTRAP_DATABRICKS_TOKEN
+  DATABRICKS_ENABLED=true
+fi
 
 GITHUB_CONNECTION_NAME="${FAROS_BOOTSTRAP_GITHUB_CONNECTION_NAME:-github}"
 GITHUB_SECRET_NAME="${FAROS_BOOTSTRAP_GITHUB_SECRET_NAME:-${GITHUB_CONNECTION_NAME}-credentials}"
@@ -203,7 +208,9 @@ write_protected_file "${LLM_PROVIDER_FILE}" "${LLM_PROVIDER}"
 write_protected_file "${LLM_BASE_URL_FILE}" "${LLM_BASE_URL}"
 write_protected_file "${LLM_MODEL_FILE}" "${LLM_MODEL}"
 write_protected_file "${LLM_API_KEY_FILE}" "${FAROS_BOOTSTRAP_LLM_API_KEY}"
-write_protected_file "${DATABRICKS_TOKEN_FILE}" "${FAROS_BOOTSTRAP_DATABRICKS_TOKEN}"
+if [[ "${DATABRICKS_ENABLED}" == true ]]; then
+  write_protected_file "${DATABRICKS_TOKEN_FILE}" "${FAROS_BOOTSTRAP_DATABRICKS_TOKEN}"
+fi
 
 CURL_COMMON_ARGS=(
   --silent
@@ -474,10 +481,12 @@ wait_for_provider_binding \
   code \
   root:faros:providers:code \
   code.providers.faros.sh || exit 1
+if [[ "${DATABRICKS_ENABLED}" == true ]]; then
 wait_for_provider_binding \
   databricks \
   root:faros:providers:databricks \
   databricks.providers.faros.sh || exit 1
+fi
 
 echo "Applying provider-code GitHub credential and Connection..."
 apply_secret_from_file "${GITHUB_SECRET_NAME}" token "${GITHUB_TOKEN_FILE}"
@@ -510,6 +519,7 @@ kubectl --kubeconfig="${TENANT_KUBECONFIG}" create secret generic faros-projects
   --dry-run=client -o yaml |
   kubectl --kubeconfig="${TENANT_KUBECONFIG}" apply -f - >/dev/null
 
+if [[ "${DATABRICKS_ENABLED}" == true ]]; then
 echo "Applying Databricks credential and Connection..."
 apply_secret_from_file "${DATABRICKS_SECRET_NAME}" token "${DATABRICKS_TOKEN_FILE}"
 
@@ -530,4 +540,6 @@ jq -n \
 chmod 600 "${DATABRICKS_CONNECTION_MANIFEST}"
 apply_connection_manifest databricks "${DATABRICKS_CONNECTION_MANIFEST}"
 
-echo "Tenant setup applied with Code and Databricks APIBindings Bound. Controllers will validate the credentials asynchronously."
+fi
+
+echo "Tenant setup applied with requested provider APIBindings Bound. Controllers will validate the credentials asynchronously."

@@ -31,6 +31,8 @@ grep -Fq -- 'FAROS_BOOTSTRAP_HUB_URL must be an HTTPS URL' "${SCRIPT}"
 grep -Fq -- 'wait_for_provider_binding' "${SCRIPT}"
 grep -Fq -- 'FAROS_BOOTSTRAP_INSECURE_TLS=true' "${ENV_EXAMPLE}"
 grep -Fq -- 'FAROS_BOOTSTRAP_CA_CERT=' "${ENV_EXAMPLE}"
-grep -Fq -- "resource_deps=['faros-hub', 'code-init', 'databricks-init']" "${TILTFILE}"
+grep -Fq -- "resource_deps=['faros-hub', 'code-init']" "${TILTFILE}"
 
 echo "dev tenant setup static checks passed"
+
+grep -Fq 'DATABRICKS_ENABLED=false' "${SCRIPT}"

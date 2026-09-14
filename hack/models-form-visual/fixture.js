@@ -22,7 +22,6 @@ await document.fonts.ready
 await Promise.all([
   import('faros-app-main'),
   import('faros-agents-main'),
-  import('faros-databricks-main'),
 ])
 
 const params = new URLSearchParams(location.search)
@@ -137,15 +136,6 @@ function agentsFetch(input, init = {}) {
   return Promise.resolve(json({ message: `fixture did not mock ${path}` }, 404))
 }
 
-function databricksFetch(input, init = {}) {
-  const url = new URL(String(input), location.origin)
-  const path = url.pathname
-  calls.push({ provider: 'databricks', path, method: init.method || 'GET', headers: hostHeaders(init) })
-  if (path === '/services/providers/databricks/api/v1/connections') return Promise.resolve(json({ items: [] }))
-  if (path === '/services/providers/databricks/api/v1/warehouses') return Promise.resolve(json({ items: [] }))
-  if (path === '/services/providers/databricks/api/v1/tables') return Promise.resolve(json({ items: [] }))
-  return Promise.resolve(json({ message: `fixture did not mock ${path}` }, 404))
-}
 
 function updateContext(element, context, path) {
   const normalized = String(path || '').replace(/^#\/?/, '').replace(/^\//, '')
@@ -155,9 +145,7 @@ function updateContext(element, context, path) {
 
 const tag = provider === 'agents'
   ? 'faros-provider-agents'
-  : provider === 'databricks'
-    ? 'faros-provider-databricks'
-    : 'faros-provider-app-studio'
+  : 'faros-provider-app-studio'
 const element = document.createElement(tag)
 const context = {
   token: 'test-token',
@@ -168,7 +156,7 @@ const context = {
   subPath: route,
   theme,
   user: { sub: 'visual-user' },
-  fetch: provider === 'agents' ? agentsFetch : provider === 'databricks' ? databricksFetch : appFetch,
+  fetch: provider === 'agents' ? agentsFetch : appFetch,
 }
 
 element.addEventListener('faros-navigate', event => {

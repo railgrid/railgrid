@@ -70,14 +70,12 @@ jobs:
           - { module: providers/agents, race: -race }
           - { module: providers/app-studio, race: -race }
           - { module: providers/code, race: -race }
-          - { module: providers/databricks, race: -race }
           # edges: TestSSHSessionTeardown races on its own `serverConn`
           # (internal/ssh/ssh_teardown_test.go:175 vs :191, a test-only bug).
           # Re-enable -race once that test synchronises the handler write.
           - { module: providers/edges, race: "" }
           - { module: providers/infrastructure, race: -race }
           - { module: providers/kuery, race: -race }
-          - { module: providers/linear, race: -race }
           - { module: providers/quickstart, race: -race }
     steps:
     - uses: actions/checkout@v4
@@ -137,11 +135,9 @@ jobs:
           - providers/agents
           - providers/app-studio
           - providers/code
-          - providers/databricks
           - providers/edges
           - providers/infrastructure
           - providers/kuery
-          - providers/linear
           - providers/quickstart
     steps:
     - uses: actions/checkout@v4

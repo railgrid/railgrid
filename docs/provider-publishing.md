@@ -33,18 +33,11 @@ fast-forward.
 | `providers/infrastructure`  | `faroshq/provider-infrastructure`  | `INFRA_DEPLOY_KEY`      | [`split-infrastructure.yaml`](../.github/workflows/split-infrastructure.yaml) |
 | `providers/app-studio`      | `faroshq/provider-app-studio`      | `APP_STUDIO_DEPLOY_KEY` | [`split-app-studio.yaml`](../.github/workflows/split-app-studio.yaml) |
 | `providers/kuery`           | `faroshq/provider-kuery`           | `KUERY_DEPLOY_KEY`      | [`split-kuery.yaml`](../.github/workflows/split-kuery.yaml) |
-| `providers/databricks`      | `faroshq/provider-databricks`      | `DATABRICKS_DEPLOY_KEY` | [`split-databricks.yaml`](../.github/workflows/split-databricks.yaml) |
 
 Each provider has its own workflow (identical except for the provider prefix,
 mirror target, trigger paths, and `secrets.*` reference) and its own deploy key — a GitHub deploy key is
 scoped to a single repo, so the keys **cannot** be shared across mirrors. See
 [Adding another provider](#adding-another-provider) for the generic pattern.
-
-Databricks follows the same source-only split. Its provider release tag,
-`providers/databricks/vX.Y.Z`, is consumed by `provider-release.yaml`, which
-passes that version into the image build and Helm `appVersion`. The deployed
-chart injects the same value into `FAROS_PROVIDER_VERSION`, so the Databricks
-heartbeat, image, and CatalogEntry all identify one release version.
 
 ## When it runs
 
@@ -95,7 +88,7 @@ For each package:
    authoring contract and operational evidence remain reviewable.
 
 The Databricks provider's shipped example is
-[`databricks-app-integration`](../providers/databricks/skills/databricks-app-integration/SKILL.md).
+[`databricks-app-integration`](https://github.com/faroshq/providers/blob/main/providers/databricks/skills/databricks-app-integration/SKILL.md).
 
 ## One-time setup per mirror
 
@@ -232,3 +225,28 @@ provider modules. When wiring up a new provider mirror, set its `go.mod` module
 to the mirror URL (e.g. `github.com/faroshq/provider-code`) before the first
 split, and fix up the provider's own in-repo imports of that module path
 accordingly (`code` and `infrastructure` each had ~17 self-imports to rewrite).
+
+## Private Linear and Databricks providers
+
+Source and release automation moved to
+[faroshq/providers](https://github.com/faroshq/providers). The old Databricks source
+mirror is retired after cutover; no source synchronization remains in Faros.
+Existing public history and previous releases remain available.
+
+Both providers remain platform-installable in Faros hubs, using administrator
+onboarding, chart bootstrap, CatalogEntry registration and workspace Enable.
+Self-hosting is optional. Install the versioned OCI charts
+`oci://ghcr.io/faroshq/charts/faros-linear-provider` and
+`oci://ghcr.io/faroshq/charts/faros-databricks-provider`; their images remain
+`ghcr.io/faroshq/faros-linear-provider` and
+`ghcr.io/faroshq/faros-databricks-provider`. Supply the existing chart kubeconfig
+and hub settings. Private source access is not required to install artifacts.
+
+Their `providers/<name>/vX.Y.Z` tags are now created in the private repository,
+which verifies before publishing images/charts. The public Faros release command
+no longer offers those providers. Package Actions access must be granted to the
+private repository before its first release without changing package visibility.
+
+The App Studio–Databricks integration suite and dedicated fixtures moved into the
+private provider's `test/deferred` directory. Cross-repository adaptation and
+execution are deferred; public Faros CI does not execute or claim that coverage.

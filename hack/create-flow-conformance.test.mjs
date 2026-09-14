@@ -82,7 +82,6 @@ test('PortalKit defines shared first-run and guided-create widgets', async () =>
 
 test('provider create journeys adopt the shared first-run and guidance vocabulary', async () => {
   const vueProviders = [
-    ['Databricks', 'providers/databricks/portal/src/components/DatabricksEmptyState.vue', 'providers/databricks/portal/src/components/ManualCreateGuidance.vue'],
     ['Code', 'providers/code/portal/src/views/ConnectionsView.vue', 'providers/code/portal/src/views/ConnectionCreateView.vue'],
     ['Edges', 'providers/edges/portal/src/EdgeCollection.vue', 'providers/edges/portal/src/ServiceCreate.vue'],
   ]
@@ -104,10 +103,6 @@ test('Vue route-owned create flows use the shared skeleton', async () => {
     ['MCP', ['portal/src/pages/MCPPage.vue'], false],
     ['Code connection', ['providers/code/portal/src/views/ConnectionCreateView.vue'], false],
     ['Code repository', ['providers/code/portal/src/views/RepositoryCreateView.vue'], false],
-    ['Databricks connection', ['providers/databricks/portal/src/views/CreateConnectionView.vue'], false],
-    ['Databricks warehouse', ['providers/databricks/portal/src/views/CreateWarehouseView.vue'], false],
-    ['Databricks table', ['providers/databricks/portal/src/views/CreateTableView.vue'], true],
-    ['Databricks import', ['providers/databricks/portal/src/ResourceImportWizard.vue'], true],
     ['Edges service', ['providers/edges/portal/src/ServiceCreate.vue'], true],
     ['Edges workload', ['providers/edges/portal/src/WorkloadCreate.vue'], true],
     ['Infrastructure provision', ['providers/infrastructure/portal/src/views/ProvisionPage.vue'], true],
@@ -152,8 +147,3 @@ test('App Studio removes collection tabs and nested settings chrome from model c
   assert.match(settings, /<template v-if="!routePage && !creationRoute" #before-name>[\s\S]*<div class="flex flex-wrap items-start/)
 })
 
-test('route-owned Databricks import removes modal close chrome', async () => {
-  const wizard = await source('providers/databricks/portal/src/ResourceImportWizard.vue')
-  assert.match(wizard, /v-if="!props\.routeOwned" class="import-head"/)
-  assert.match(wizard, /v-if="props\.routeOwned" class="k-btn k-btn--ghost k-back-action"/)
-})

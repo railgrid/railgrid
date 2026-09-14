@@ -23,12 +23,10 @@ TS_FILES=(navigation.ts dashboardtile.ts faros-ui.css form-select.ts icons.ts ku
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
 VUE_PORTALS=(
-  "providers/linear/portal"
   "portal"
   "providers/agents/portal"
   "providers/app-studio/portal"
   "providers/code/portal"
-  "providers/databricks/portal"
   "providers/edges/portal"
   "providers/infrastructure/portal"
   "providers/kuery/portal"
@@ -36,11 +34,9 @@ VUE_PORTALS=(
 VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
 VUE_TOAST_FILES=(InlineNotification.vue ToastHost.vue toast.ts)
 VUE_TOAST_PORTALS=(
-  "providers/linear/portal"
   "portal"
   "providers/app-studio/portal"
   "providers/code/portal"
-  "providers/databricks/portal"
   "providers/edges/portal"
   "providers/infrastructure/portal"
   "providers/kuery/portal"

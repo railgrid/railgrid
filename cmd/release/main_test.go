@@ -15,27 +15,6 @@ import (
 	"testing"
 )
 
-func TestDatabricksComponentReleaseContract(t *testing.T) {
-	component, ok := components["databricks"]
-	if !ok {
-		t.Fatal("databricks component is not registered")
-	}
-	if component.prefix != "providers/databricks/v" {
-		t.Fatalf("databricks tag prefix = %q, want providers/databricks/v", component.prefix)
-	}
-	if component.triggers == "" {
-		t.Fatal("databricks release contract has no downstream trigger description")
-	}
-	for i, name := range componentOrder {
-		if name == "databricks" {
-			return
-		}
-		if i == len(componentOrder)-1 {
-			t.Fatal("databricks component is not in componentOrder")
-		}
-	}
-}
-
 // TestTagSet covers the shapes git actually emits: `git tag -l` prints bare
 // names, `git ls-remote --tags` prints "<sha>\trefs/tags/<name>" and repeats
 // annotated tags with a "^{}" suffix for the dereferenced commit.
@@ -118,18 +97,15 @@ func TestMultipleComponentTargets(t *testing.T) {
 	}
 }
 
-func TestLinearReleaseComponent(t *testing.T) {
-	component, ok := components["linear"]
-	if !ok || component.prefix != "providers/linear/v" {
-		t.Fatalf("linear release component: %+v exists=%v", component, ok)
-	}
-	found := false
-	for _, name := range componentOrder {
-		if name == "linear" {
-			found = true
+func TestPrivateProvidersAreNotReleasedHere(t *testing.T) {
+	for _, name := range []string{"linear", "databricks"} {
+		if _, ok := components[name]; ok {
+			t.Fatalf("private provider %s is released by Faros", name)
 		}
-	}
-	if !found {
-		t.Fatal("linear absent from release component order")
+		for _, component := range componentOrder {
+			if component == name {
+				t.Fatalf("private provider %s remains in release order", name)
+			}
+		}
 	}
 }

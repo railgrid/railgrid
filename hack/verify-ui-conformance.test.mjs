@@ -236,9 +236,6 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
   for (const relative of [
     '../providers/code/portal/src/views/ConnectionDetailView.vue',
     '../providers/code/portal/src/views/RepoDetailView.vue',
-    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
-    '../providers/databricks/portal/src/views/TableDetailView.vue',
-    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
     '../providers/edges/portal/src/Detail.vue',
     '../providers/edges/portal/src/ServiceEdit.vue',
     '../providers/infrastructure/portal/src/views/InstanceDetailPage.vue',
@@ -283,9 +280,6 @@ test('keeps the ResourcePage title-first metadata and actions contract canonical
   for (const relative of [
     '../providers/code/portal/src/views/ConnectionDetailView.vue',
     '../providers/code/portal/src/views/RepoDetailView.vue',
-    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
-    '../providers/databricks/portal/src/views/TableDetailView.vue',
-    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
     '../providers/edges/portal/src/Detail.vue',
     '../providers/edges/portal/src/ServiceEdit.vue',
     '../providers/infrastructure/portal/src/views/InstanceDetailPage.vue',
@@ -314,9 +308,6 @@ test('keeps ResourcePage read-state announcements centralized and resilient', ()
 
   for (const relative of [
     '../providers/code/portal/src/views/ConnectionDetailView.vue',
-    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
-    '../providers/databricks/portal/src/views/TableDetailView.vue',
-    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
   ]) {
     const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8')
     assert.doesNotMatch(source, /class="sr-only"[^>]*role="status"[^>]*aria-live="polite"[^>]*>Updating(?: connection)?…<\/span>/)

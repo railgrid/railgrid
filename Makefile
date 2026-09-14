@@ -1,7 +1,7 @@
 .PHONY: sync-portalkit verify-portalkit verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -291,45 +291,6 @@ build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + 
 build-code-provider: build-code-provider-portal ## Build the code provider binary (portal embedded)
 	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
 
-build-databricks-provider-portal: ## Build the Databricks provider's micro-frontend (Vite + TS → portal/dist)
-	cd providers/databricks/portal && npm install --no-audit --no-fund && npm run test:portal && npm run typecheck && npm run build
-
-build-databricks-provider: build-databricks-provider-portal ## Build the Databricks provider binary (portal embedded)
-	cd providers/databricks && go build $(GOFLAGS) -ldflags "-X main.buildVersion=$(VERSION)" -o $(CURDIR)/$(BINDIR)/databricks-provider .
-
-test-databricks-provider-chart: ## Lint and render both supported Databricks bootstrap modes
-	@set -eu; \
-		tmp_parent="$${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"; \
-		mkdir -p "$$tmp_parent"; \
-		tmp_dir="$$(mktemp -d "$$tmp_parent/faros-databricks-chart.XXXXXX")"; \
-		cleanup() { rm -rf -- "$$tmp_dir"; }; \
-		trap cleanup EXIT HUP INT TERM; \
-		helm lint providers/databricks/deploy/chart; \
-		helm template databricks providers/databricks/deploy/chart >"$$tmp_dir/default.yaml"; \
-		grep -q 'path: /healthz' "$$tmp_dir/default.yaml"; \
-		grep -q 'path: /readyz' "$$tmp_dir/default.yaml"; \
-		grep -q 'healthPath: "/readyz"' "$$tmp_dir/default.yaml"; \
-		helm template databricks providers/databricks/deploy/chart --set mcp.enabled=false --set mcp.disableLocalhostProtection=true --set-string 'allowedHostSuffixes[0]=workspace.private.example' >"$$tmp_dir/config.yaml"; \
-		grep -q 'name: DATABRICKS_MCP_ENABLED' "$$tmp_dir/config.yaml"; \
-		grep -q 'value: "false"' "$$tmp_dir/config.yaml"; \
-		grep -q 'name: DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION' "$$tmp_dir/config.yaml"; \
-		grep -q 'name: DATABRICKS_ALLOWED_HOST_SUFFIXES' "$$tmp_dir/config.yaml"; \
-		grep -q 'workspace.private.example' "$$tmp_dir/config.yaml"; \
-		helm template databricks providers/databricks/deploy/chart --set bootstrap.enabled=false --set catalogEntry.enabled=false >"$$tmp_dir/external.yaml"; \
-		if grep -q 'initContainers:' "$$tmp_dir/external.yaml" || grep -q 'kind: CatalogEntry' "$$tmp_dir/external.yaml"; then \
-			echo "external bootstrap rendered an init container or CatalogEntry"; exit 1; \
-		fi; \
-		helm template databricks providers/databricks/deploy/chart --set bootstrap.mode=external --set catalogEntry.enabled=false >"$$tmp_dir/explicit-external.yaml"; \
-		if grep -q 'initContainers:' "$$tmp_dir/explicit-external.yaml" || grep -q 'kind: CatalogEntry' "$$tmp_dir/explicit-external.yaml"; then \
-			echo "explicit external bootstrap rendered an init container or CatalogEntry"; exit 1; \
-		fi; \
-		if helm template databricks providers/databricks/deploy/chart --set bootstrap.mode=invalid >/dev/null 2>&1; then \
-			echo "invalid bootstrap mode unexpectedly rendered"; exit 1; \
-		fi; \
-		if helm template databricks providers/databricks/deploy/chart --set bootstrap.enabled=false --set catalogEntry.enabled=true >/dev/null 2>&1; then \
-			echo "external bootstrap unexpectedly rendered a CatalogEntry"; exit 1; \
-		fi
-
 test-hub-chart: ## Lint and render the faros-hub chart's provider hardening values
 	@set -eu; \
 		tmp_parent="$${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"; \
@@ -454,19 +415,6 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 	   providers/app-studio/deploy/chart/files/schemas/studios.ai.faros.sh.yaml
 	./hack/ensure-boilerplate.sh
 
-codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the Databricks provider's local API (+ manifest + chart schemas)
-	@mkdir -p providers/databricks/config/crds providers/databricks/config/kcp providers/databricks/deploy/chart/files/schemas
-	cd providers/databricks && \
-		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
-		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
-			output:crd:artifacts:config=$(CURDIR)/providers/databricks/config/crds
-	./hack/apigen.sh --input-dir providers/databricks/config/crds --output-dir providers/databricks/config/kcp
-	@for r in connections warehouses tables; do \
-		cp providers/databricks/config/kcp/apiresourceschema-$$r.databricks.faros.sh.yaml \
-		   providers/databricks/deploy/chart/files/schemas/$$r.databricks.faros.sh.yaml; \
-	done
-	./hack/ensure-boilerplate.sh
-
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
@@ -549,7 +497,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds codegen-linear-provider codegen-code-provider codegen-app-studio-provider codegen-databricks-provider codegen-infrastructure-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
+codegen: crds codegen-code-provider codegen-app-studio-provider codegen-infrastructure-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
@@ -1129,28 +1077,13 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 ## invoking the action through the hub. FAROS_E2E_KEEP_DATA=true preserves
 ## logs and source/readiness/interaction evidence under the suite temp dir.
 E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
-.PHONY: e2e-provider-actions e2e-provider-actions-live e2e-provider-actions-npm
-e2e-provider-actions: build-hub build-app-studio-provider build-databricks-provider ## Run local generated-app provider-actions E2E
-	@test -z "$$(lsof -ti :19463 :16463 :18085 :18086 :25063 :2380 2>/dev/null)" || { \
-		echo "ports 19463/16463/18085/18086/25063/2380 are in use; stop the provider-actions E2E processes first"; \
-		exit 1; \
-	}
-	go test ./test/e2e/suites/provideractions/... -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
-
+.PHONY:
 ## Optional bounded smoke against an already-running local hub/provider setup.
 ## Set FAROS_E2E_PROVIDER_ACTIONS_LIVE=true plus FAROS_LIVE_HUB_URL,
 ## FAROS_LIVE_PROJECT, and FAROS_LIVE_ACTIONS_TOKEN_FILE.
-e2e-provider-actions-live: ## Run the opt-in live generated-app provider-actions smoke
-	FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true FAROS_E2E_PROVIDER_ACTIONS_LIVE=true \
-		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalLiveProviderActionSDK$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
-
 ## Optional registry-backed package smoke. The live-only flag keeps TestMain
 ## from starting the full hub/provider stack; set FAROS_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
 ## to use a non-default registry mirror.
-e2e-provider-actions-npm: ## Verify the published Actions SDK alias with a clean npm install
-	FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true FAROS_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true \
-		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalPublishedActionsSDKCleanInstall$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
-
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
 ## provisioning + CatalogEntry Ready, the /api/providers DTO, tenant Enable via
@@ -2202,57 +2135,6 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---
-DATABRICKS_PORT ?= 8086
-DATABRICKS_MANIFEST ?= providers/databricks/manifest.yaml
-DATABRICKS_PROVIDER_MANIFEST ?= providers/databricks/provider.yaml
-DATABRICKS_WORKSPACE_PATH ?= root:faros:providers:databricks
-DATABRICKS_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/databricks-runtime.kubeconfig
-
-run-provider-databricks: build-databricks-provider ## Run the Databricks provider (requires: make run-hub-embedded-static + make install-provider-databricks)
-	@echo "Starting Databricks provider on :$(DATABRICKS_PORT) (hub $(KROMC_HUB_URL))"
-	PORT=$(DATABRICKS_PORT) \
-	FAROS_HUB_URL=$(KROMC_HUB_URL) \
-	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=databricks \
-	DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION=true \
-	FAROS_PROVIDER_KUBECONFIG=$$( [ -f "$(DATABRICKS_RUNTIME_KUBECONFIG)" ] && echo "$(DATABRICKS_RUNTIME_KUBECONFIG)" ) \
-		$(BINDIR)/databricks-provider serve
-
-install-provider-databricks: ## Apply the Databricks Provider + CatalogEntry into root:faros:providers
-	@test -f $(KROMC_KCP_KUBECONFIG) || { \
-		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
-		echo "start the hub first with: make run-hub-embedded-static"; \
-		exit 1; \
-	}
-	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
-		--insecure-skip-tls-verify \
-		apply -f $(DATABRICKS_PROVIDER_MANIFEST) -f $(DATABRICKS_MANIFEST)
-
-uninstall-provider-databricks: ## Delete the Databricks CatalogEntry + Provider
-	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
-		--insecure-skip-tls-verify \
-		delete -f $(DATABRICKS_MANIFEST) -f $(DATABRICKS_PROVIDER_MANIFEST)
-
-init-provider-databricks: build-databricks-provider ## Bootstrap Databricks APIExport + write dev provider kubeconfig
-	@test -f $(KROMC_KCP_KUBECONFIG) || { \
-		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
-		echo "start the hub first with: make run-hub-embedded-static"; \
-		exit 1; \
-	}
-	@mkdir -p $(KCP_DATA_DIR)
-	@echo "Writing dev kubeconfig $(DATABRICKS_RUNTIME_KUBECONFIG) (workspace $(DATABRICKS_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
-	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(DATABRICKS_RUNTIME_KUBECONFIG)
-	@CL=$$(kubectl --kubeconfig=$(DATABRICKS_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
-		kubectl --kubeconfig=$(DATABRICKS_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
-			--server=$(KROMC_KCP_SERVER)/clusters/$(DATABRICKS_WORKSPACE_PATH) \
-			--insecure-skip-tls-verify=true >/dev/null
-	FAROS_PROVIDER_KUBECONFIG=$(DATABRICKS_RUNTIME_KUBECONFIG) \
-	DATABRICKS_WORKSPACE_PATH=$(DATABRICKS_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=$(CURDIR)/providers/databricks/deploy/chart/files/schemas \
-		$(BINDIR)/databricks-provider init
 
 # --- Experimental: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of a host binary. Exercises the full hub-minted
@@ -2760,55 +2642,9 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
-.PHONY: test-linear-portal codegen-linear-provider test-linear-provider lint-linear-provider fix-lint-linear-provider build-linear-provider build-linear-provider-portal
-codegen-linear-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN)
-	@mkdir -p providers/linear/config/crds providers/linear/config/kcp providers/linear/deploy/chart/files/schemas
-	rm -f providers/linear/config/crds/linear.providers.faros.sh_operations.yaml providers/linear/config/crds/linear.providers.faros.sh_events.yaml providers/linear/deploy/chart/files/schemas/apiresourceschema-operations.linear.providers.faros.sh.yaml providers/linear/deploy/chart/files/schemas/apiresourceschema-events.linear.providers.faros.sh.yaml
-	cd providers/linear && $(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && $(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." output:crd:artifacts:config=$(CURDIR)/providers/linear/config/crds
-	./hack/apigen.sh --input-dir providers/linear/config/crds --output-dir providers/linear/config/kcp
-	cp providers/linear/config/kcp/apiresourceschema-*.yaml providers/linear/deploy/chart/files/schemas/
-test-linear-provider:
-	cd providers/linear && go test -race -count=1 ./...
-fix-lint-linear-provider: $(GOLANGCI_LINT)
-	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./...
-lint-linear-provider: $(GOLANGCI_LINT)
-	cd providers/linear && $(CURDIR)/$(GOLANGCI_LINT) run ./...
-test-linear-portal:
-	cd providers/linear/portal && npm run typecheck && npm test
-build-linear-provider-portal:
-	cd providers/linear/portal && npm ci --no-audit --no-fund && npm run build
-build-linear-provider: build-linear-provider-portal
-	cd providers/linear && go build -o ../../bin/linear-provider .
-
-LINEAR_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
-LINEAR_KCP_SERVER ?= https://localhost:6443
-LINEAR_WORKSPACE_PATH ?= root:faros:providers:linear
-LINEAR_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/linear-runtime.kubeconfig
-.PHONY: install-provider-linear init-provider-linear run-provider-linear uninstall-provider-linear verify-linear-provider
-install-provider-linear:
-	kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/root:faros:system:providers --insecure-skip-tls-verify apply -f providers/linear/provider.yaml
-init-provider-linear: build-linear-provider
-	@umask 077; TOKEN=$$(kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/$(LINEAR_WORKSPACE_PATH) --insecure-skip-tls-verify get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
-	test -n "$$TOKEN"; \
-	printf 'apiVersion: v1\nkind: Config\ncurrent-context: linear\ncontexts:\n- name: linear\n  context: {cluster: linear, user: linear}\nclusters:\n- name: linear\n  cluster:\n    server: %s/clusters/%s\n    insecure-skip-tls-verify: true\nusers:\n- name: linear\n  user:\n    token: %s\n' "$(LINEAR_KCP_SERVER)" "$(LINEAR_WORKSPACE_PATH)" "$$TOKEN" > $(LINEAR_RUNTIME_KUBECONFIG)
-	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) LINEAR_WORKSPACE_PATH=$(LINEAR_WORKSPACE_PATH) FAROS_SCHEMAS_DIR=$(CURDIR)/providers/linear/deploy/chart/files/schemas FAROS_CATALOGENTRY_FILE=$(CURDIR)/providers/linear/manifest.yaml $(BINDIR)/linear-provider init
-run-provider-linear:
-	FAROS_PROVIDER_KUBECONFIG=$(LINEAR_RUNTIME_KUBECONFIG) FAROS_HUB_URL=$(DEV_HUB_URL) FAROS_HUB_INSECURE=true PORT=8092 $(BINDIR)/linear-provider serve
-uninstall-provider-linear:
-	kubectl --kubeconfig=$(LINEAR_KCP_KUBECONFIG) --server=$(LINEAR_KCP_SERVER)/clusters/root:faros:system:providers --insecure-skip-tls-verify delete -f providers/linear/provider.yaml
-verify-linear-provider: codegen-linear-provider build-linear-provider lint-linear-provider test-linear-provider
-	cd providers/linear/portal && npm run typecheck && npm test
-	helm lint --strict providers/linear/deploy/chart
-
-.PHONY: image-linear-provider verify-linear-release fix-lint-linear-release
-image-linear-provider:
-	docker build -f providers/linear/Dockerfile -t faros-linear-provider:stage4 .
-fix-lint-linear-release: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) run --fix ./cmd/release
-verify-linear-release: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) run ./cmd/release
-	go test -count=1 ./cmd/release
-
+.PHONY:
+.PHONY:
+.PHONY:
 .PHONY: package-runner-darwin
 package-runner-darwin: build-runner-darwin ## Package Mac runner binaries and the local upgrade manager
 	python3 hack/runner-install/package.py $(BINDIR)

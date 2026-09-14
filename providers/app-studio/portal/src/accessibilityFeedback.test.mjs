@@ -22,7 +22,6 @@ const farosUIDestinations = await Promise.all([
   '../../../agents/portal/src/portalkit/faros-ui.css',
   './portalkit/faros-ui.css',
   '../../../code/portal/src/portalkit/faros-ui.css',
-  '../../../databricks/portal/src/portalkit/faros-ui.css',
   '../../../edges/portal/src/portalkit/faros-ui.css',
   '../../../infrastructure/portal/src/portalkit/faros-ui.css',
   '../../../kuery/portal/src/portalkit/faros-ui.css',
@@ -93,6 +92,7 @@ test('uses semantic overlay layers for tooltips and annotation editing', () => {
 test('keeps the shared muted fallback readable in standalone providers', () => {
   assert.match(canonicalFarosUI, /var\(--color-text-muted, #8587a1\)/)
   assert.doesNotMatch(canonicalFarosUI, /#5d5f78/)
-  assert.equal(farosUIDestinations.length, 10)
+  // Databricks parity is verified in the private providers repository.
+  assert.equal(farosUIDestinations.length, 9)
   for (const destination of farosUIDestinations) assert.equal(destination, canonicalFarosUI)
 })

@@ -352,12 +352,12 @@ These are verification commands; this document does not claim that a current
 deterministic or live run has passed.
 
 Implementation anchors: [CatalogEntry action types](../apis/providers/v1alpha1/types_catalogentry.go),
-[data-plane action handler and route grammar](../providers/databricks/actions/actions.go),
-[two-gate caller authorization (visibility + verb SSAR)](../providers/databricks/tenant/action.go),
+[data-plane action handler and route grammar](https://github.com/faroshq/providers/blob/main/providers/databricks/actions/actions.go),
+[two-gate caller authorization (visibility + verb SSAR)](https://github.com/faroshq/providers/blob/main/providers/databricks/tenant/action.go),
 [hub-only proxy reservations](../pkg/hub/providers/proxy.go),
 [hub workload exchange](../pkg/hub/workloadidentity/workloadidentity.go),
 [action-grant RBAC materialization](../pkg/hub/serviceaccounts/workload_identity.go),
 [App Studio grant verification and invoke-time digest re-check](../providers/app-studio/api/provider_action_catalog.go),
 [App Studio forwarding](../providers/app-studio/api/integrations.go),
-[Databricks backend error normalization](../providers/databricks/backend/backend.go), and
+[Databricks backend error normalization](https://github.com/faroshq/providers/blob/main/providers/databricks/backend/backend.go), and
 [server-only SDK](../provider-sdk/actions-node/index.mjs).

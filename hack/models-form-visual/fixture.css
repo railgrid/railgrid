@@ -5,7 +5,6 @@
 @import "../../portal/src/assets/main.css";
 @source "../../providers/app-studio/portal/src/**/*.{vue,ts}";
 @source "../../providers/agents/portal/src/**/*.{vue,ts}";
-@source "../../providers/databricks/portal/src/**/*.{vue,ts}";
 
 html,
 body {
@@ -27,7 +26,6 @@ body {
  * same boundary while leaving the page available for full-page screenshots. */
 faros-provider-app-studio,
 faros-provider-agents,
-faros-provider-databricks {
   display: block;
   width: 100%;
   min-width: 0;

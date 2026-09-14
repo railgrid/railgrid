@@ -272,62 +272,9 @@ local_resource(
     labels=['providers-code'],
 )
 
-# --- providers-databricks (Databricks table access) ---
-local_resource(
-    'databricks',
-    cmd='make build-databricks-provider',
-    serve_cmd='make run-provider-databricks',
-    deps=[
-        'providers/databricks/main.go',
-        'providers/databricks/assets.go',
-        'providers/databricks/backend',
-        'providers/databricks/init_cmd.go',
-        'providers/databricks/mcpserver',
-        'providers/databricks/queryapi',
-        'providers/databricks/tenant',
-        'providers/databricks/apis',
-        'providers/databricks/portal/src',
-        'providers/databricks/portal/public',
-        'providers/databricks/portal/package.json',
-        'providers/databricks/portal/vite.config.ts',
-        'providers/databricks/go.mod',
-        'providers/databricks/go.sum',
-        '.kcp/databricks-runtime.kubeconfig',
-    ],
-    resource_deps=['hub'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8086, path='/healthz'),
-    ),
-    labels=['providers-databricks'],
-)
 
-local_resource(
-    'databricks-register',
-    cmd='make install-provider-databricks',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub'],
-    labels=['providers-databricks'],
-)
 
-local_resource(
-    'databricks-init',
-    cmd='make init-provider-databricks',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub', 'databricks-register'],
-    labels=['providers-databricks'],
-)
 
-local_resource(
-    'databricks-unregister',
-    cmd='make uninstall-provider-databricks',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub'],
-    labels=['providers-databricks'],
-)
 
 # --- providers-app-studio ---
 local_resource(
@@ -1266,32 +1213,3 @@ local_resource(
 )
 
 # Linear rebuilds automatically; registration and initialization remain opt-in.
-local_resource(
-    'linear',
-    cmd='make build-linear-provider',
-    serve_cmd='make run-provider-linear',
-    deps=['providers/linear'],
-    ignore=['providers/linear/portal/node_modules', 'providers/linear/portal/dist'],
-    trigger_mode=TRIGGER_MODE_AUTO,
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8092, path='/readyz'),
-    ),
-    labels=['providers-linear'],
-)
-local_resource(
-    'linear-register',
-    cmd='make install-provider-linear',
-    resource_deps=['hub'],
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-linear'],
-)
-local_resource(
-    'linear-init',
-    cmd='make init-provider-linear',
-    resource_deps=['hub', 'linear-register'],
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-linear'],
-)

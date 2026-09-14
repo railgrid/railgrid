@@ -1047,7 +1047,6 @@ INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = ("sed 's|http://localhost:8082|htt
 APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml', 'app-studio', 8085)
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml', 'code', 8083)
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml', 'kuery', 8084)
-DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml', 'databricks', 8086)
 AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml', 'agents', 8087)
 EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml', 'edges', 8088)
 
@@ -2031,50 +2030,11 @@ local_resource(
     labels=['providers-code'],
 )
 
-# --- providers-databricks (Databricks table access) ---
 # At REPLICA_COUNT=2: serving resolves tenant clusters through the slice-backed
 # authority on every replica; the controllers are leader-elected.
-provider_kubeconfig_sync('databricks', '.kcp/databricks-runtime.kubeconfig', ['providers-databricks'])
-provider_pod(
-    'databricks', 8086,
-    chart_extra=['replicaCount=%s' % replica_count],
-    resource_deps=['databricks-secrets'],
-)
 
-local_resource(
-    'databricks-register',
-    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
-         'DATABRICKS_MANIFEST={mf} make install-provider-databricks').format(
-             rewrite=DATABRICKS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
-             sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['faros-hub'],
-    labels=['providers-databricks'],
-)
 
-local_resource(
-    'databricks-init',
-    cmd=('KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
-         'make init-provider-databricks').format(
-             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['faros-hub', 'databricks-register'],
-    labels=['providers-databricks'],
-)
 
-local_resource(
-    'databricks-unregister',
-    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
-         'DATABRICKS_MANIFEST={mf} make uninstall-provider-databricks').format(
-             rewrite=DATABRICKS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
-             sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['faros-hub'],
-    labels=['providers-databricks'],
-)
 
 # --- tenant development setup -----------------------------------------------
 # One manual action for the credentials and tenant objects needed by the
@@ -2092,7 +2052,7 @@ local_resource(
     ],
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['faros-hub', 'code-init', 'databricks-init'],
+    resource_deps=['faros-hub', 'code-init'],
     labels=['bootstrap'],
 )
 

@@ -1,9 +1,0 @@
-{
-  "name": "faros-provider-actions-generated-app",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=20" },
-  "dependencies": {
-    "@faros/actions-node": "npm:@crwilhit/faros-actions-node@0.1.0"
-  }
-}

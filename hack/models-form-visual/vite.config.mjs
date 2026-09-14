@@ -36,7 +36,6 @@ export default defineConfig({
       '@fontsource/ibm-plex-mono/500.css': `${fontRoot}/@fontsource/ibm-plex-mono/500.css`,
       'faros-app-main': resolve(repo, 'providers/app-studio/portal/src/main.ts'),
       'faros-agents-main': resolve(repo, 'providers/agents/portal/src/main.ts'),
-      'faros-databricks-main': resolve(repo, 'providers/databricks/portal/src/main.ts'),
     },
     dedupe: ['vue'],
   },

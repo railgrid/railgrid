@@ -16,11 +16,6 @@
       "typecheck": false
     },
     {
-      "provider": "databricks",
-      "test": true,
-      "typecheck": true
-    },
-    {
       "provider": "edges",
       "test": true,
       "typecheck": true
@@ -32,11 +27,6 @@
     },
     {
       "provider": "kuery",
-      "test": true,
-      "typecheck": true
-    },
-    {
-      "provider": "linear",
       "test": true,
       "typecheck": true
     },
@@ -68,20 +58,12 @@
       "image": "faros/app-studio-provider"
     },
     {
-      "name": "databricks",
-      "image": "faros-databricks-provider"
-    },
-    {
       "name": "agents",
       "image": "faros-agents-provider"
     },
     {
       "name": "edges",
       "image": "faros-edges-provider"
-    },
-    {
-      "name": "linear",
-      "image": "faros-linear-provider"
     },
     {
       "name": "infrastructure/dev-agent",

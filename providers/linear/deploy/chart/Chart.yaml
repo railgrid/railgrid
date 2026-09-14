@@ -1,6 +1,0 @@
-apiVersion: v2
-name: faros-linear-provider
-description: Registered Linear Teams and resource-bound issue actions.
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

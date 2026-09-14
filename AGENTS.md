@@ -63,7 +63,7 @@ go.work               Workspace: root + standalone provider modules
 ```
 
 `go.work` members: `.`, `provider-sdk`, every provider module under
-`providers/` (`agents`, `app-studio`, `code`, `databricks`, `edges`,
+`providers/` (`agents`, `app-studio`, `code`, `edges`,
 `infrastructure`, `kuery`, `quickstart`), and the external `contrib-metering`
 checkout. Every provider is
 standalone with its own `go.mod`; none compile into the hub binary any more
@@ -311,7 +311,7 @@ the manifest; see `provider-sdk/agentkit/README.md` for the import mapping.
     native dialogs).
   - `tenant.ts` — see below.
 - **`provider-sdk/portalkit-vue/`** — kit for the **Vue SFC** portals (`agents`,
-  `code`, `databricks`, `edges`, `app-studio`, `infrastructure`, `kuery`, root
+  `code`, `edges`, `app-studio`, `infrastructure`, `kuery`, root
   `portal`):
   - `confirm.ts` + `ConfirmDialog.vue` — promise `confirmDialog()` (mount one
     `<ConfirmDialog />` at the app root).
@@ -368,7 +368,7 @@ lives hub-side in `pkg/hub/mcpaggregate/`; `projects` was folded into
 | `edges` | `edges.providers.faros.sh` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Single-replica (process-global dialer map). |
 | `infrastructure` | `infrastructure.providers.faros.sh` | Application Templates via kro: template catalog, instance provisioning, data plane (exec/logs/etc.), app hosting + access gate |
 | `code` | `code.providers.faros.sh` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
-| `databricks` | `databricks.providers.faros.sh` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; narrowest claims posture in the repo (the model citizen) |
+| `databricks` | `databricks.providers.faros.sh` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; private source in faroshq/providers; platform installation supported |
 | `agents` | `agents.faros.sh` | Long-running personal AI agents: chat, schedules, triggers, approvals, budgets, memory, multi-channel (Slack/Telegram/Discord/SMTP). Needs hub + Postgres only |
 | `app-studio` | `ai.faros.sh` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills) |
 | `kuery` | `kuery.providers.faros.sh` | Fleet-wide object query, relationship traversal, impact analysis across connected edges + MCP tools |
@@ -612,3 +612,8 @@ faros runs on kcp; some symptoms that look like faros bugs are actually upstream
 - `docs/hub-proxy-workspace-access.md` — the hub kcp proxy's membership-gated
   per-workspace access (`/clusters/{cluster}`).
 - `CONTRIBUTING.md` — contribution workflow.
+
+Linear and Databricks implementation, build, codegen, portal copies and release
+automation live in `faroshq/providers`. Do not recreate their source directories
+or add private-repository access to public CI. They remain hub-managed provider
+installations; source ownership does not imply self-hosting-only support.

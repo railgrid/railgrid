@@ -477,7 +477,7 @@ credential, **X** = external credential owned by the tenant connection.
 | C9 | infra imagePullSecret bridge (`<instance>-registry` name convention → runtime SA) | **M8** string contract across 2 providers | [bridge.go:53](../providers/infrastructure/controller/instance/bridge.go) |
 | C10 | infra OIDC client-secret bridge into runtime namespace | M8, finalizer-guarded | [bridge.go:59](../providers/infrastructure/controller/instance/bridge.go) |
 | C11 | infra Gateway/HTTPRoute emission against the shared platform Gateway | M8, RGD-validated | [kro/rgd.go:209](../providers/infrastructure/backend/kro/rgd.go) |
-| C12 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](../providers/databricks/manifest.yaml) |
+| C12 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](https://github.com/faroshq/providers/blob/main/providers/databricks/manifest.yaml) |
 
 ---
 
@@ -488,4 +488,4 @@ Implementation anchors for the healthy patterns this design generalizes:
 [CatalogEntry action validation](../apis/providers/v1alpha1/actions.go),
 [workload identity minter](../pkg/hub/serviceaccounts/workload_identity.go),
 [edges consumer authorization](../providers/edges/internal/tunnel/auth.go),
-[shared databricks executor](../providers/databricks/tenant/action.go).
+[shared databricks executor](https://github.com/faroshq/providers/blob/main/providers/databricks/tenant/action.go).

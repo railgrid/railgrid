@@ -40,7 +40,6 @@ ALL_MODULES=(
   providers/agents
   providers/app-studio
   providers/code
-  providers/databricks
   providers/edges
   providers/infrastructure
   providers/kuery
