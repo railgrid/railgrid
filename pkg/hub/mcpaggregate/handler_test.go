@@ -428,3 +428,35 @@ func TestFederatesReadyProvider(t *testing.T) {
 		t.Fatalf("tools/call did not proxy through; got %s", callResult)
 	}
 }
+
+// TestPublicHostOverLoopbackIsServed is the regression test for hubs fronted
+// by a same-host proxy (cloudflared, kubectl port-forward) or reached as
+// console.127.0.0.1.sslip.io: the request arrives on a loopback socket with
+// the public Host, which the MCP SDK's DNS-rebinding guard rejected with 403
+// "invalid Host header". httptest.NewRequest carries no local address, so it
+// takes a real listener to exercise the guard.
+func TestPublicHostOverLoopbackIsServed(t *testing.T) {
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }, Verifier: allowAll})
+	srv := httptest.NewServer(h) // listens on 127.0.0.1
+	defer srv.Close()
+
+	for _, host := range []string{"localhost:9443", "console.127.0.0.1.sslip.io:9443", "faros.example.com"} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer t")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Host %q over loopback: status = %d (%s), want 200", host, resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+	}
+}

@@ -106,7 +106,10 @@ Never put the value in `env`, a prompt or a commit.
 ### Connections
 
 `simple-webapp` (0.3.0), `worker` (0.2.0) and `cron-job` (0.2.0) take
-`connections` — fixed slots, not a list, default `{}` / `""`. `application`
+`connections` — fixed slots, not a list, default `{}` / `""`. Earlier versions
+of those templates have no `connections` input and hubs still ship them, on
+platform providers too: read `spec.version` and `spec.schema.properties` of
+the live Template before relying on it. `application`
 does not. `connections.database` also accepts an `application` instance's
 name, because that instance's Secret `<name>-db-credentials` exists too:
 
@@ -350,10 +353,10 @@ Seed/mutate cap: 512 managed files.
 | `get_instance` | `name` | Full instance with conditions and child status |
 | `update_instance` | `name`, `values` (RFC 7386 merge patch) | Roll a new image, scale, change env or schedule. Rejected for immutable fields. |
 | `delete_instance` | `name` | Destructive, idempotent |
-| `dev_sync` | `instance`, `files[{path,content,encoding?}]`, `restart? auto\|none` | Plain (non-authoritative) sync: adds and overwrites files, never removes any. Not for App Studio's `<project>-dev`, whose files come from git (`faros app sync`). `encoding` `utf-8`\|`base64`; ≤ 500 files, 48 MiB decoded, 25 MiB per binary. Base64 files are checked first against every target component's `syncEncodings`; if any lacks `base64`, nothing is synced (`nothing was synced — component "<c>" cannot receive binary files (…): <paths>. …`). Components with no routed files are not called. Paths must fall under a declared component `workspacePath`; toolchain manifest validated (a node component needs `package.json`) |
+| `dev_sync` | `instance`, `files[{path,content,encoding?}]`, `restart? auto\|none` | Plain (non-authoritative) sync: adds and overwrites files, never removes any. Not for App Studio's `<project>-dev`, whose files come from git (`faros app sync`). `encoding` `utf-8`\|`base64`; ≤ 500 files, 48 MiB decoded, 25 MiB per binary. Base64 files are checked first against every target component's `syncEncodings`; if any lacks `base64`, nothing is synced (`nothing was synced — component "<c>" cannot receive binary files (…): <paths>. …`). Components with no routed files are not called. Paths must fall under a declared component `workspacePath`; toolchain manifest validated only for a component with no applied source and no running process (a fresh node component needs `package.json` in the call; a partial sync into a working sandbox does not). Older providers checked every call and answered `component "<c>" runs a node development sandbox but … has no package.json`: resend `package.json` with the change there |
 | `dev_exec` | `instance`, `component?` (omit when the template has one), `argv[]`, `workdir?`, `timeoutSeconds?` (≤ 120), `idempotencyKey?` | Data-plane `run` against the applied revision (no revision sent). Returns `{instance, component, sessionID, requestID, state, exitCode, stdout, stderr, truncated, sourceRevision, sourceDigest, hint?}`; non-terminal after ~90 s → `hint` says to repeat the same call with `idempotencyKey` = the returned `requestID`. Env: `PORT`, `FAROS_COMPONENT`, not the app's env. |
 | `dev_logs` | `instance`, `component`, `maxBytes?` (65536, max 262144) | Tail |
-| `dev_restart` | `instance`, `component` | |
+| `dev_restart` | `instance`, `component` | Older providers did the restart and still answered `validating tool output: … want one of "null, array"` (same for `dev_sync`): the call worked; confirm with `dev_logs` |
 
 Provider-direct endpoint: `https://<hub>/services/providers/infrastructure/mcp`.
 An org-scoped (BYO) `infrastructure` appears on the aggregate only for human

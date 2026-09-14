@@ -241,6 +241,25 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 
 	switch subresource {
 	case "proxy":
+		if rest == "" {
+			// ".../proxy" with no trailing slash: the agent routes only /svc/…,
+			// so this answered a bare 404. Like the Kubernetes service proxy,
+			// send a browser to ".../proxy/" so the page's relative links
+			// resolve under the proxy; other methods go to the service root.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				// Relative on purpose, and set by hand: http.Redirect would
+				// absolutize it against r.URL.Path, which the hub and the
+				// /edgeproxy mount have already stripped their prefixes from.
+				target := "proxy/"
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				w.Header().Set("Location", target)
+				w.WriteHeader(http.StatusMovedPermanently)
+				return
+			}
+			rest = "/"
+		}
 		p.serviceHTTPProxy(ctx, w, r, cluster, token, svc, dialer, rest)
 	case "mcp":
 		p.buildServiceMCPHandler(cluster, name, token, svc, dialer).ServeHTTP(w, r)

@@ -15,6 +15,10 @@ cluster edge and 'faros ssh' opens a shell on a server edge.
   faros edge kubeconfig my-cluster -o ./my-cluster.kubeconfig
   faros edge delete my-vps
 
+```
+faros edge [flags]
+```
+
 ### Options
 
 ```

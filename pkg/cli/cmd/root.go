@@ -131,7 +131,26 @@ completion.`,
 		newApplyCommand(),
 	)
 
+	rejectUnknownSubcommands(cmd)
 	return cmd
+}
+
+// rejectUnknownSubcommands makes every command group below the root (a
+// command with subcommands and no action of its own) fail on an argument that
+// names none of its subcommands. Cobra checks that only on the root: below
+// it, a group printed its help and exited 0, so 'faros mcp proxy' on a CLI
+// without the proxy looked like success to scripts and MCP clients.
+func rejectUnknownSubcommands(parent *cobra.Command) {
+	for _, c := range parent.Commands() {
+		rejectUnknownSubcommands(c)
+		if !c.HasSubCommands() || c.Runnable() {
+			continue
+		}
+		if c.Args == nil {
+			c.Args = cobra.NoArgs // unknown command "<arg>" for "<group>"
+		}
+		c.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
+	}
 }
 
 // newListCommand keeps 'faros list' / 'faros ls' as a hidden shorthand for

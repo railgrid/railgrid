@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -726,4 +727,38 @@ func TestEdgeListMacOSAndMissingKinds(t *testing.T) {
 	none := newFakeHub(t)
 	nonePath := none.useKubeconfig("cl-b")
 	mustFail(t, nonePath, "edges provider is not enabled", "edge", "list")
+}
+
+// An unknown subcommand below the root is an error, not the group's help with
+// exit 0 — which is what an older CLI did for 'faros mcp proxy', so scripts
+// and MCP clients mistook a missing command for success. A bare group still
+// prints its help.
+func TestCommandGroupsRejectUnknownSubcommands(t *testing.T) {
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	for _, args := range [][]string{{"mcp", "nosuch"}, {"app", "nosuch"}, {"edge", "nosuch"}, {"org", "members", "nosuch"}} {
+		_, err := runRoot(t, kc, args...)
+		want := `unknown command "nosuch" for "faros ` + strings.Join(args[:len(args)-1], " ") + `"`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("faros %s: err = %v, want %q", strings.Join(args, " "), err, want)
+		}
+	}
+	out, err := runRoot(t, kc, "mcp")
+	if err != nil || !strings.Contains(out, "Available Commands") || !strings.Contains(out, "proxy") {
+		t.Errorf("faros mcp: err = %v, output %q; want the group's help listing proxy", err, out)
+	}
+
+	var groups []string
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			if sub.HasSubCommands() && !sub.Runnable() {
+				groups = append(groups, sub.CommandPath())
+			}
+			walk(sub)
+		}
+	}
+	walk(NewRootCommand())
+	if len(groups) > 0 {
+		t.Errorf("command groups that would print help and exit 0 on an unknown subcommand: %v", groups)
+	}
 }

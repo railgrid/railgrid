@@ -137,6 +137,56 @@ func TestMacOSServiceProxyUsesTheMacTunnelAndHostLoopback(t *testing.T) {
 	}
 }
 
+// ".../proxy" without the trailing slash used to reach the agent as "/svc",
+// which it does not route (bare 404). A browser is redirected to ".../proxy/"
+// (relative, so it survives the hub's path prefix); other methods are sent to
+// the service root.
+func TestServiceProxyWithoutTrailingSlash(t *testing.T) {
+	t.Run("GET redirects to the slash form", func(t *testing.T) {
+		s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
+		req := httptest.NewRequest(http.MethodGet,
+			"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy?tab=1", nil)
+		rr := httptest.NewRecorder()
+
+		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
+
+		if rr.Code != http.StatusMovedPermanently {
+			t.Fatalf("status = %d (body %q), want 301", rr.Code, rr.Body.String())
+		}
+		if got, want := rr.Header().Get("Location"), "proxy/?tab=1"; got != want {
+			t.Errorf("Location = %q, want %q", got, want)
+		}
+		if dialer.dialed {
+			t.Error("a redirect dialed the edge agent")
+		}
+	})
+
+	t.Run("POST reaches the service root", func(t *testing.T) {
+		s, dialer := newServiceProxyTestServer(t, macOSServerKind, "mac-1")
+		// No body: the in-memory agent answers without reading one, and
+		// net.Pipe is unbuffered.
+		req := httptest.NewRequest(http.MethodPost,
+			"/clusters/tenant-a/apis/edges.faros.sh/v1alpha1/services/mac-service/proxy", nil)
+		rr := httptest.NewRecorder()
+
+		s.serveService(rr, req, "caller-token", "tenant-a", "mac-service", "proxy", "")
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d (body %q), want 200", rr.Code, rr.Body.String())
+		}
+		select {
+		case err := <-dialer.errors:
+			t.Fatalf("edge-agent request: %v", err)
+		case agentReq := <-dialer.request:
+			if got, want := agentReq.URL.Path, "/svc/"; got != want {
+				t.Errorf("agent path = %q, want %q", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the edge-agent request")
+		}
+	})
+}
+
 func TestServiceProxyRejectsUnknownEdgeKindBeforeDialing(t *testing.T) {
 	s, dialer := newServiceProxyTestServer(t, "UnexpectedKind", "mac-1")
 	req := httptest.NewRequest(http.MethodGet,

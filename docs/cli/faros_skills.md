@@ -21,6 +21,10 @@ directories you wrote yourself are left alone unless you pass --force.
 Skills load when an agent session starts, so restart Claude Code or Codex
 after installing.
 
+```
+faros skills [flags]
+```
+
 ### Options
 
 ```

@@ -344,7 +344,9 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionTrue, "WarnOnly",
 			"spec.host is outside the edge agent's --svc-allow-cidr; it was dialed under --svc-policy=warn and will be refused under enforce")
 	} else {
-		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionTrue, "Allowed", "the edge agent accepts spec.host")
+		// Name the host actually dialed: a targetRef Service has no spec.host,
+		// and "accepts spec.host" sent readers looking for a field they never set.
+		setCondition(&es.Status.Conditions, "HostAllowed", metav1.ConditionTrue, "Allowed", "the edge agent accepts the service target "+target.Host)
 	}
 
 	mode := def.ProbeMode

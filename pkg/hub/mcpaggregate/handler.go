@@ -170,7 +170,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log:         h.opts.Logger,
 			})
 		},
-		&mcp.StreamableHTTPOptions{Stateless: true},
+		&mcp.StreamableHTTPOptions{
+			Stateless: true,
+			// The SDK's DNS-rebinding guard answers 403 "invalid Host
+			// header" to any request that arrives on a loopback socket with
+			// a non-loopback Host — which is every request to a hub fronted
+			// by a proxy on the same host or pod (cloudflared, kubectl
+			// port-forward, a sidecar) and to a local hub reached as
+			// console.127.0.0.1.sslip.io. The guard protects unauthenticated
+			// local servers from pages that rebind a name to 127.0.0.1; this
+			// endpoint has already verified a bearer above, which such a
+			// page cannot attach, so the guard only breaks real clients.
+			DisableLocalhostProtection: true,
+		},
 	)
 	handler.ServeHTTP(w, r)
 }

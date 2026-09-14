@@ -6,6 +6,10 @@ MCP endpoints for AI clients (Claude Code, Cursor, Codex)
 
 Commands for interacting with the faros MCP endpoint.
 
+```
+faros mcp [flags]
+```
+
 ### Options
 
 ```

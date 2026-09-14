@@ -174,8 +174,8 @@ func TestPushDevSyncCallsOnlyComponentsWithFiles(t *testing.T) {
 	if _, called := out["backend"]; called || out["frontend"].Files != 1 {
 		t.Fatalf("sync output = %+v, want only frontend with 1 file", out)
 	}
-	if !strings.Contains(string(out["frontend"].Response), `"sourceRevision":3`) {
-		t.Errorf("frontend response = %s, want the agent's sync evidence passed through", out["frontend"].Response)
+	if resp, ok := out["frontend"].Response.(map[string]any); !ok || resp["sourceRevision"] != float64(3) {
+		t.Errorf("frontend response = %#v, want the agent's sync evidence passed through as an object", out["frontend"].Response)
 	}
 }
 
@@ -278,6 +278,91 @@ func TestDevExecToolIsRegisteredAsDestructive(t *testing.T) {
 	t.Fatal("dev_exec is not registered")
 }
 
+// The dev agent answers sync and restart with a JSON object. When the output
+// field was json.RawMessage the reflected schema said {"type":["null","array"]},
+// so every successful dev_sync / dev_restart failed output validation.
+func TestDevToolOutputSchemasAcceptAgentObjects(t *testing.T) {
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	registerDevTools(srv, Deps{}, identity{})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, tool := range tools.Tools {
+		if tool.Name != "dev_sync" && tool.Name != "dev_restart" {
+			continue
+		}
+		raw, err := json.Marshal(tool.OutputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatal(err)
+		}
+		responses := findPropertySchemas(schema, "response")
+		if len(responses) == 0 {
+			t.Fatalf("%s output schema has no response property: %s", tool.Name, raw)
+		}
+		for _, response := range responses {
+			if m, ok := response.(map[string]any); ok && m["type"] != nil {
+				t.Errorf("%s output schema constrains response to type %v, want any JSON value: %s", tool.Name, m["type"], raw)
+			}
+		}
+		checked++
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d dev tool schemas, want dev_sync and dev_restart", checked)
+	}
+
+	for body, want := range map[string]any{
+		`{"phase":"Synced","restarted":true}`: map[string]any{"phase": "Synced", "restarted": true},
+		"  restarted\n":                       "restarted",
+		"":                                    nil,
+	} {
+		got, _ := json.Marshal(devAgentResponse([]byte(body)))
+		exp, _ := json.Marshal(want)
+		if string(got) != string(exp) {
+			t.Errorf("devAgentResponse(%q) = %s, want %s", body, got, exp)
+		}
+	}
+}
+
+// findPropertySchemas returns every schema declared for property name at any
+// depth of a decoded JSON schema.
+func findPropertySchemas(schema any, name string) []any {
+	var out []any
+	switch v := schema.(type) {
+	case map[string]any:
+		if props, ok := v["properties"].(map[string]any); ok {
+			if s, ok := props[name]; ok {
+				out = append(out, s)
+			}
+		}
+		for _, child := range v {
+			out = append(out, findPropertySchemas(child, name)...)
+		}
+	case []any:
+		for _, child := range v {
+			out = append(out, findPropertySchemas(child, name)...)
+		}
+	}
+	return out
+}
+
 func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 	h := &captureHandler{}
 	_, _, err := callDataPlane(context.Background(), h, identity{token: "tok"}, http.MethodGet, "simplewebapps", "x", "app", "log", nil, nil)
@@ -320,6 +405,7 @@ func TestTemplateDevelopmentFromSpec(t *testing.T) {
 }
 
 func TestValidateDevSyncToolchains(t *testing.T) {
+	fresh := func(string) bool { return false }
 	node := map[string]kro.TemplateDevelopmentComponent{
 		"backend": {WorkspacePath: "api", Toolchain: "node", StartCommand: "npm run dev || npm start"},
 	}
@@ -327,7 +413,7 @@ func TestValidateDevSyncToolchains(t *testing.T) {
 	// The failure this guard exists for: correct directory, wrong runtime.
 	err := validateDevSyncToolchains(map[string][]devSyncFile{
 		"backend": {{Path: "main.go"}, {Path: "go.mod"}, {Path: "Dockerfile"}},
-	}, node)
+	}, node, fresh)
 	if err == nil {
 		t.Fatal("validateDevSyncToolchains = nil, want an error for Go source in a node component")
 	}
@@ -339,14 +425,14 @@ func TestValidateDevSyncToolchains(t *testing.T) {
 
 	if err := validateDevSyncToolchains(map[string][]devSyncFile{
 		"backend": {{Path: "package.json"}, {Path: "server.js"}},
-	}, node); err != nil {
+	}, node, fresh); err != nil {
 		t.Errorf("matching source rejected: %v", err)
 	}
 
 	// A nested manifest does not make the component runnable.
 	if err := validateDevSyncToolchains(map[string][]devSyncFile{
 		"backend": {{Path: "vendor/x/package.json"}},
-	}, node); err == nil {
+	}, node, fresh); err == nil {
 		t.Error("nested package.json accepted, want rejection")
 	}
 
@@ -355,11 +441,56 @@ func TestValidateDevSyncToolchains(t *testing.T) {
 		"backend": {{Path: "main.ex"}},
 	}, map[string]kro.TemplateDevelopmentComponent{
 		"backend": {WorkspacePath: "api", Toolchain: "elixir"},
-	}); err != nil {
+	}, fresh); err != nil {
 		t.Errorf("unknown toolchain blocked the sync: %v", err)
 	}
-	if err := validateDevSyncToolchains(map[string][]devSyncFile{}, node); err != nil {
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{}, node, fresh); err != nil {
 		t.Errorf("empty component blocked the sync: %v", err)
+	}
+
+	// dev_sync is incremental: a partial sync (only server.mjs) into a
+	// component that already runs applied source keeps its package.json.
+	var asked []string
+	running := func(component string) bool { asked = append(asked, component); return true }
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "server.mjs"}},
+	}, node, running); err != nil {
+		t.Errorf("partial sync into an established component rejected: %v", err)
+	}
+	if len(asked) != 1 || asked[0] != "backend" {
+		t.Errorf("established consulted for %v, want only backend", asked)
+	}
+	// A sync that carries its manifest never needs the status lookup.
+	asked = nil
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "package.json"}},
+	}, node, running); err != nil || len(asked) != 0 {
+		t.Errorf("manifest sync = %v with status lookups %v, want no lookup", err, asked)
+	}
+}
+
+func TestDevSyncEstablishedComponentFromAgentStatus(t *testing.T) {
+	ident := identity{tenant: "root:orgs:acme", clusterID: "abc", token: "tok"}
+	for name, tc := range map[string]struct {
+		response *scriptedResponse
+		want     bool
+	}{
+		"applied source":   {&scriptedResponse{http.StatusOK, `{"configured":true,"running":false,"sourceRevision":3}`}, true},
+		"running process":  {&scriptedResponse{http.StatusOK, `{"configured":true,"running":true}`}, true},
+		"fresh sandbox":    {&scriptedResponse{http.StatusOK, `{"configured":true,"running":false}`}, false},
+		"status unhealthy": {&scriptedResponse{http.StatusBadGateway, "runtime supervisor unavailable"}, false},
+		"no status verb":   {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dp := &verbDataPlane{responses: map[string]scriptedResponse{}}
+			if tc.response != nil {
+				dp.responses["app/process"] = *tc.response
+			}
+			agent, _, ok := readDevAgentStatus(context.Background(), dp, ident, "instances", "my-app", "app")
+			if got := ok && (agent.SourceRevision > 0 || agent.Running); got != tc.want {
+				t.Errorf("established = %v, want %v (status %+v, ok %v)", got, tc.want, agent, ok)
+			}
+		})
 	}
 }
 

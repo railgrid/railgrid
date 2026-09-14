@@ -15,6 +15,10 @@ Manage App Studio projects through the App Studio REST API, as you.
 Develop with 'faros sandbox' against <project>-dev and record commits with
 'faros commit <repository ref>' (the ref is shown by 'faros app status').
 
+```
+faros app [flags]
+```
+
 ### Options
 
 ```

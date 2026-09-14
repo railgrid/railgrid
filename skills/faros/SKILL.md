@@ -174,9 +174,13 @@ own providers included.
 - **A shell or script**: `fmcp` (section 0) starts one proxy per call.
 
 It serves the workspace the `faros` context pointed at when it started:
-after `faros use`, reconnect it (`/mcp` in Claude Code). An older CLI answers
-`unknown command "proxy" for "faros mcp"`: reinstall it. Not logged in yet,
-every call answers `… run 'faros login' first`; log in and call again.
+after `faros use`, reconnect it (`/mcp` in Claude Code). It needs CLI v0.1.33
+or later: check that `faros mcp --help` lists `proxy`. An older CLI does not
+fail on `faros mcp proxy`, it prints the `faros mcp` help and exits 0, so
+`fmcp` reports a jq parse error and an MCP client reports the server failed
+to start; reinstall the CLI. Not logged in yet, every call answers
+`… run 'faros login' first`; log in and call again. `HTTP 403: Forbidden:
+invalid Host header "<hub>"` is the hub, not your login (section 8).
 
 The token-based alternative (`faros mcp url|claude|codex`, and
 `MCP_URL`/`MCP_TOKEN` from `faros env`) uses the workspace's long-lived
@@ -219,14 +223,16 @@ no `infrastructure__*`. A provider you have not enabled still lists its tools
 (calls fail with RBAC or NotFound errors), and kuery answers `{}` until it is
 enabled.
 
-**A self-hosted provider runs whatever release its owner deployed.** When the
-catalog shows `scope: org` for a provider (typically `infrastructure`), its
-templates, sandbox agent and data plane can lag the rest of the hub. Probe the
-capability you need instead of assuming it:
+**Any provider can run an older release than this skill describes**, platform
+providers included; an org's own copy (`scope: org`) lags most often. Its
+templates, sandbox agent and data plane are whatever that release shipped.
+Probe the capability you need instead of assuming it, and when it is missing,
+change the design or stop and tell the user. Never route around a missing
+input (for example a credential in `env`).
 
 | Before relying on | Check |
 |---|---|
-| A template input (e.g. `connections`) | `kubectl get template <t> -o jsonpath='{.spec.version} {.spec.schema.properties.<input>}'` — undeclared keys are accepted silently (`Valid=True`) and do nothing |
+| A template input (e.g. `connections`) | `kubectl get template <t> -o jsonpath='{.spec.version} {.spec.schema.properties.<input>}'` — undeclared keys are accepted silently (`Valid=True`) and do nothing. `connections` needs `simple-webapp` ≥ 0.3.0, `worker`/`cron-job` ≥ 0.2.0 |
 | Binary files in a dev sandbox | `faros sandbox status <inst> <comp>` — `Sync: utf-8 only (binary files are not synced …)` means binaries are skipped there |
 | An MCP tool | `tools/list` |
 
@@ -426,6 +432,21 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
   and upload it with the files route if needed.
 - A small app in one turn: ~3 min; a follow-up feature: ~1 min.
 
+**When git integration is down.** The code provider is unavailable when
+`faros app sync` fails with `checkout repository: provider MCP error -32602:
+unknown tool "code__checkout_repository"`, `faros commit` or `fmcp` answers
+`unknown tool "code__…"`, and `GET $HUB/api/providers` shows `code`
+`ready: false` (section 8). You can still run your code in the dev sandbox:
+upload each changed file with `PUT $AS/api/projects/<p>/files/content?path=<path>`
+(route C below). The upload schedules a dev sync; `POST $AS/api/projects/<p>/sync-development`
+forces one and reports each component. This reaches the workspace and the
+sandbox only: no commit is recorded and nothing becomes promotable. The
+uploaded paths stay marked uncommitted, and the reconciler commits them once
+the code provider is back. Wait for that commit in `faros app status`, then
+`git pull --rebase` your clone before the next `faros commit`. Until then,
+don't run `faros app sync`: its hydrate step writes the repository's older
+files over your uploads.
+
 **C. Files and binary assets.** Upload in the Code tab (button
 or drag-and-drop), attach any file ≤ 25 MiB in chat (the assistant places it
 with `import_attachment`), let the assistant fetch a **direct file URL** with
@@ -609,8 +630,12 @@ kubectl YAML when the definition should live in a repo.
   instance leaves the pod unable to start **while the Instance still reports
   `Ready`** — the only symptom is a Cloudflare 502 from `faros sandbox
   status`/`exec`; double-check the name against `kubectl get instances`. Check the template declares
-  `connections` first (section 3): where it doesn't, the value is ignored and
-  the app simply has no `DATABASE_URL`.
+  `connections` first (section 3; `simple-webapp` 0.3.0 and
+  `worker`/`cron-job` 0.2.0 added it, and hubs still ship older catalogs):
+  where it doesn't, the value is ignored and the app simply has no
+  `DATABASE_URL`. A job that must share an `application`'s database then has
+  no clean route: run it inside the app's api (for example an in-process
+  scheduler) instead of a `cron-job`.
 - **Live sandbox, no git loop:** set `farosMode: development` (no image), wait
   ~1 min for Ready, then `faros sandbox sync <inst> app ./dir`,
   `faros sandbox exec`, `faros sandbox logs` (or `infrastructure__dev_sync`,
@@ -703,12 +728,14 @@ cat deploy.sh | faros ssh my-vps -- "cat > /tmp/deploy.sh"   # stdin is forwarde
 ```
 
 To run something on several edges at once, a `Workload` (spread by
-`edgeSelector`) fans out one `Placement` per edge — but it always renders into
-namespace `default` on the edge and `simple` mode cannot pull private images;
-for a namespace of your own or a private ghcr image, apply a Deployment (plus
-a `docker-registry` Secret) through `faros edge kubeconfig`. Expose an
-in-cluster Service to the hub with an edges `Service` CR and its `…/proxy`
-route. YAML for both: [references/mcp-and-edges.md](references/mcp-and-edges.md).
+`edgeSelector`) fans out one `Placement` per edge. It renders into
+`spec.targetNamespace` on the edge (default `default`), and a private image
+needs `spec.simple.imagePullSecrets` naming a `docker-registry` Secret you
+created in that namespace on every selected edge first (through
+`faros edge kubeconfig`). Expose an in-cluster Service to the hub with an
+edges `Service` CR and its `…/proxy/` route (keep the trailing slash: older
+edges providers answer a bare 404 without it). YAML for both:
+[references/mcp-and-edges.md](references/mcp-and-edges.md).
 
 With the MCP tools: the kubernetes toolset (`edges__pods_list`,
 `edges__resources_list`, `edges__pods_log`, …; answers are kubectl-style
@@ -731,13 +758,21 @@ Identify which one you're looking at before waiting or rebuilding:
 | New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–9 min) | An existing app on the same domain serves; `openssl s_client -connect <host>:443 -servername <host> </dev/null \| openssl x509 -noout -subject` prints `Could not find certificate from <stdin>` — that output *is* the "no cert yet" signal |
 | `build.status: none`, SHA is yours | CI or the package crawl hasn't caught up | `code__build_status`; the crawl runs every 30 s for 10 min after a commit, else every 2 min |
 | New project's repository `Provisioning` for under 2 min | Repository still being created | Poll `.repository.ready` |
-| Repository `Provisioning` > 2 min, `kubectl get repositories.code.faros.sh <n> -o jsonpath='{.status}'` empty, no finalizer (`faros app status` prints `not ready for <age> with no status: the code provider is not reconciling`) | **Not latency**: the code provider's controllers are not engaged with kcp. `GET /api/providers` shows `code` `ready: false` and its `/readyz` names the endpoint it is retrying; other fresh Repositories are statusless too | Wait — the provider retries its kcp watch with backoff and catches up by itself; if `ready` stays false for long, the operator checks its logs. Don't recreate the project (409 on the name) |
+| Repository `Provisioning` > 2 min with an empty status and no finalizer (`faros app status` prints `not ready for <age> with no status: the code provider is not reconciling`), or `unknown tool "code__…"` | **Not latency**: the code provider is not watching tenant workspaces. `GET $HUB/api/providers` shows `code` `ready: false` with `readinessReason` `BackendUnhealthy` (its watch is down) or `HeartbeatStale` (process down). The hub answers `…/services/providers/code/readyz` with its own `provider not ready: code`, not the provider's detail | Give it up to 10 min: sometimes the watch recovers on its own, sometimes (after a kcp outage) only a restart helps. Still `ready: false` → hand the `readinessReason` to the operator; nothing client-side fixes it. Don't recreate the project (409 on the name). Keep working in the sandbox: 4.4, "When git integration is down" |
 | A commit stays `Running`, condition reason `RateLimited` | The GitHub quota behind the code `Connection` is spent; it retries at the reset (up to 15 min) | The condition message names the retry time |
 | Private URL → 302 `/auth/apps/authorize` | The access gate wants a browser | Use an app token (4.6) or `faros sandbox exec` |
 | Agent run output says `This is a private faros app` | **Not latency**: the app is private/restricted and `web_fetch` is anonymous | Section 6: public data or data in `task` |
 | Instance Ready, no `status.url` | **Not latency**: `exposure: internal` | `kubectl get template <t> -o jsonpath='{.spec.exposure}'` |
 
 **403s that aren't about your permissions.**
+- `HTTP 403: Forbidden: invalid Host header "<hub>"` from `faros mcp proxy`,
+  `fmcp`, `faros commit` or any MCP client, while REST and kubectl work: the
+  hub's MCP endpoint refused a request that reached it through a proxy on the
+  same host or pod. Hubs from v0.1.33 and earlier have this bug. Your token
+  is fine and nothing client-side fixes it (don't try other hostnames):
+  report it so the operator upgrades the hub. Until then use REST and
+  kubectl. Commits can still be recorded by uploading files through the
+  files route (4.4 C): the reconciler commits them from inside the cluster.
 - Body mentions Cloudflare / `error code: 1010`: the edge blocked your HTTP
   client's user agent (Python's default). Use curl, or set a browser-like
   `User-Agent`. Real faros denials are Kubernetes `Status` JSON.

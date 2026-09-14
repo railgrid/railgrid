@@ -92,5 +92,14 @@ func TestCredentialTypesAndMissingToken(t *testing.T) {
 		if err != nil || cred.Token != "test-token" {
 			t.Fatalf("credential kind %s: %v", kind, err)
 		}
+		// `gh auth token | kubectl create secret --from-file=token=/dev/stdin`
+		// stores a trailing newline; it must not reach the Authorization header.
+		cred, err = (CredentialResolver{}).Resolve(context.Background(), conn, map[string][]byte{"token": []byte("test-token\n")})
+		if err != nil || cred.Token != "test-token" {
+			t.Fatalf("credential kind %s with trailing newline: token %q, err %v", kind, cred.Token, err)
+		}
+		if _, err := (CredentialResolver{}).Resolve(context.Background(), conn, map[string][]byte{"token": []byte(" \n")}); err == nil {
+			t.Fatalf("credential kind %s: whitespace-only token accepted", kind)
+		}
 	}
 }

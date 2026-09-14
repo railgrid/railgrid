@@ -14,6 +14,10 @@ their resources live there, and access is per workspace.
   faros workspace create "Platform"
   faros use --workspace platform            # make it the kubectl target
 
+```
+faros workspace [flags]
+```
+
 ### Options
 
 ```

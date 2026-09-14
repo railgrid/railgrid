@@ -2,6 +2,10 @@
 
 Manage agent tokens
 
+```
+faros agent token [flags]
+```
+
 ### Options
 
 ```

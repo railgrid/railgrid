@@ -1,7 +1,7 @@
 {
   "name": "faros",
   "displayName": "faros",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Drive a faros hub as a user: faros CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
   "author": {
     "name": "faroshq",

@@ -68,9 +68,14 @@ type devSyncInput struct {
 	Restart  string        `json:"restart,omitempty" jsonschema:"auto (default) restarts the dev process when needed per the template's reload rules; none only writes files"`
 }
 
+// devSyncComponentResult and devRestartOutput carry the dev agent's answer as
+// decoded JSON (see devAgentResponse), NOT json.RawMessage: the SDK's schema
+// reflector renders a RawMessage ([]byte) as {"type":["null","array"]}, so the
+// agent's object answer failed output validation and every successful call
+// came back as a tool error.
 type devSyncComponentResult struct {
-	Files    int             `json:"files"`
-	Response json.RawMessage `json:"response,omitempty"`
+	Files    int `json:"files"`
+	Response any `json:"response,omitempty"`
 }
 
 type devSyncOutput struct {
@@ -97,9 +102,9 @@ type devRestartInput struct {
 }
 
 type devRestartOutput struct {
-	Instance  string          `json:"instance"`
-	Component string          `json:"component"`
-	Response  json.RawMessage `json:"response,omitempty"`
+	Instance  string `json:"instance"`
+	Component string `json:"component"`
+	Response  any    `json:"response,omitempty"`
 }
 
 type devExecInput struct {
@@ -197,7 +202,13 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		// Files in the right directory but written for the wrong runtime sync
 		// "successfully" and then never start: the sandbox image has no
 		// toolchain for them. Fail here rather than leaving a dead component.
-		if err := validateDevSyncToolchains(routed, target.components); err != nil {
+		// dev_sync is incremental, so a component that already runs applied
+		// source keeps its manifest and may receive a partial sync.
+		established := func(component string) bool {
+			agent, _, ok := readDevAgentStatus(ctx, deps.DataPlane, ident, target.resource, in.Instance, component)
+			return ok && (agent.SourceRevision > 0 || agent.Running)
+		}
+		if err := validateDevSyncToolchains(routed, target.components, established); err != nil {
 			return nil, devSyncOutput{}, err
 		}
 		// Checked for every component before any is synced, so an old agent
@@ -298,7 +309,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		if status < 200 || status >= 300 {
 			return nil, devRestartOutput{}, fmt.Errorf("restart returned %d: %s", status, strings.TrimSpace(string(body)))
 		}
-		return nil, devRestartOutput{Instance: in.Instance, Component: component, Response: json.RawMessage(body)}, nil
+		return nil, devRestartOutput{Instance: in.Instance, Component: component, Response: devAgentResponse(body)}, nil
 	})
 }
 
@@ -388,9 +399,23 @@ func pushDevSync(ctx context.Context, dp http.Handler, ident identity, target de
 		if status < 200 || status >= 300 {
 			return nil, fmt.Errorf("component %s sync returned %d: %s", component, status, strings.TrimSpace(string(body)))
 		}
-		out[component] = devSyncComponentResult{Files: len(files), Response: json.RawMessage(body)}
+		out[component] = devSyncComponentResult{Files: len(files), Response: devAgentResponse(body)}
 	}
 	return out, nil
+}
+
+// devAgentResponse decodes a dev agent's answer for structured tool output:
+// JSON as its value, anything else as trimmed text, an empty body as nil.
+func devAgentResponse(body []byte) any {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal([]byte(trimmed), &v); err != nil {
+		return trimmed
+	}
+	return v
 }
 
 // normalizeDevSyncFiles validates each file's encoding, strictly decodes
@@ -436,7 +461,9 @@ func normalizeDevSyncFiles(files []devSyncFile) ([]devSyncFile, error) {
 // devAgentStatus is the part of a dev agent's GET /status (the "process"
 // data-plane verb) that dev_sync relies on.
 type devAgentStatus struct {
-	SyncEncodings []string `json:"syncEncodings"`
+	SyncEncodings  []string `json:"syncEncodings"`
+	Running        bool     `json:"running"`
+	SourceRevision uint64   `json:"sourceRevision"`
 }
 
 // requireDevSyncEncodings verifies, before anything is sent, that every
@@ -472,25 +499,35 @@ func requireDevSyncEncodings(ctx context.Context, dp http.Handler, ident identit
 // devComponentSupportsBase64 reads the component's dev-agent status and
 // reports whether it decodes base64 sync entries; reason explains a false.
 func devComponentSupportsBase64(ctx context.Context, dp http.Handler, ident identity, resource, instance, component string) (string, bool) {
+	agent, reason, ok := readDevAgentStatus(ctx, dp, ident, resource, instance, component)
+	if !ok {
+		return reason, false
+	}
+	if !slices.Contains(agent.SyncEncodings, devSyncEncodingBase64) {
+		return "its dev agent does not advertise base64 sync support", false
+	}
+	return "", true
+}
+
+// readDevAgentStatus reads the component's dev-agent status through the
+// "process" data-plane verb; reason explains a false.
+func readDevAgentStatus(ctx context.Context, dp http.Handler, ident identity, resource, instance, component string) (devAgentStatus, string, bool) {
 	body, status, err := callDataPlane(ctx, dp, ident, http.MethodGet, resource, instance, component, "process", nil, nil)
 	if err != nil {
-		return "status unavailable: " + err.Error(), false
+		return devAgentStatus{}, "status unavailable: " + err.Error(), false
 	}
 	if status < 200 || status >= 300 {
 		detail := strings.TrimSpace(string(body))
 		if len(detail) > 200 {
 			detail = detail[:200] + "..."
 		}
-		return fmt.Sprintf("status returned %d: %s", status, detail), false
+		return devAgentStatus{}, fmt.Sprintf("status returned %d: %s", status, detail), false
 	}
 	var agent devAgentStatus
 	if err := json.Unmarshal(body, &agent); err != nil {
-		return "status is not JSON: " + err.Error(), false
+		return devAgentStatus{}, "status is not JSON: " + err.Error(), false
 	}
-	if !slices.Contains(agent.SyncEncodings, devSyncEncodingBase64) {
-		return "its dev agent does not advertise base64 sync support", false
-	}
-	return "", true
+	return agent, "", true
 }
 
 // devWorkspacePath maps a component-relative path back to the workspace path
@@ -619,9 +656,12 @@ var devToolchainManifests = map[string]struct {
 
 // validateDevSyncToolchains rejects a sync whose files cannot run in the
 // component's sandbox. It fires only when a component received files, its
-// toolchain is known, and that toolchain's manifest is missing from the
-// component root — so partial syncs and unknown toolchains pass untouched.
-func validateDevSyncToolchains(routed map[string][]devSyncFile, components map[string]kro.TemplateDevelopmentComponent) error {
+// toolchain is known, that toolchain's manifest is missing from the
+// component root, and the component is not already established (it has
+// applied source or a running dev process, per established) — so partial
+// syncs into a working sandbox and unknown toolchains pass untouched.
+// established is consulted only for components that would otherwise fail.
+func validateDevSyncToolchains(routed map[string][]devSyncFile, components map[string]kro.TemplateDevelopmentComponent, established func(component string) bool) error {
 	for _, name := range sortedDevComponents(components) {
 		files := routed[name]
 		if len(files) == 0 {
@@ -630,6 +670,9 @@ func validateDevSyncToolchains(routed map[string][]devSyncFile, components map[s
 		comp := components[name]
 		manifest, known := devToolchainManifests[comp.Toolchain]
 		if !known || devFilesContainManifest(files, manifest.Files) {
+			continue
+		}
+		if established != nil && established(name) {
 			continue
 		}
 		where := path.Clean(strings.TrimSpace(comp.WorkspacePath))

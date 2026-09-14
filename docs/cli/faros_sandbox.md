@@ -18,6 +18,10 @@ Production instances answer 409.
   faros sandbox env     shop-dev api PULSE_URL=https://… --restart
   faros sandbox status  shop-dev [api]
 
+```
+faros sandbox [flags]
+```
+
 ### Options
 
 ```

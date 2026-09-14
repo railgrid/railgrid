@@ -9,6 +9,10 @@ Manage a development environment for faros using kind clusters.
 This command provides subcommands to initialize, update and delete kind
 clusters configured for faros.
 
+```
+faros dev [flags]
+```
+
 ### Options
 
 ```

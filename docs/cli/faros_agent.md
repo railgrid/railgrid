@@ -2,6 +2,10 @@
 
 Run, install or upgrade the edge agent on a cluster or server
 
+```
+faros agent [flags]
+```
+
 ### Options
 
 ```

@@ -12,6 +12,10 @@ organization on first login; teams create shared ones.
   faros org members --org acme        # …of another one you belong to
   faros org create "Acme"
 
+```
+faros org [flags]
+```
+
 ### Options
 
 ```

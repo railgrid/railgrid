@@ -45,16 +45,20 @@ func (r CredentialResolver) Resolve(ctx context.Context, conn *api.Connection, d
 		if key == "" {
 			key = DefaultTokenKey
 		}
-		if len(data[key]) == 0 {
+		// Trim: a Secret created from a file or `cmd | kubectl create secret
+		// --from-file` keeps the trailing newline, which net/http rejects as an
+		// invalid Authorization header value before GitHub is ever called.
+		token := strings.TrimSpace(string(data[key]))
+		if token == "" {
 			return backend.Credential{}, errors.New("code credential token missing")
 		}
-		return backend.Credential{Token: string(data[key])}, nil
+		return backend.Credential{Token: token}, nil
 	}
-	appID, err := strconv.ParseInt(string(data["appID"]), 10, 64)
+	appID, err := strconv.ParseInt(strings.TrimSpace(string(data["appID"])), 10, 64)
 	if err != nil || appID <= 0 {
 		return backend.Credential{}, errors.New("GitHub App appID must be positive")
 	}
-	installationID, err := strconv.ParseInt(string(data["installationID"]), 10, 64)
+	installationID, err := strconv.ParseInt(strings.TrimSpace(string(data["installationID"])), 10, 64)
 	if err != nil || installationID <= 0 {
 		return backend.Credential{}, errors.New("GitHub App installationID must be positive")
 	}
