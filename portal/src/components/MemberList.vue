@@ -102,8 +102,9 @@ async function submit() {
       <input
         v-model="newUser"
         class="k-input min-w-[200px] w-auto flex-1 text-sm"
-        placeholder="email or user UUID"
-        aria-label="Member email or user UUID"
+        placeholder="email or member ID"
+        aria-label="Member email or member ID"
+        title="Their email, or the member ID shown in their account menu (people signed in with a static token have no email)"
         @keyup.enter="submit"
       />
       <select

@@ -2,9 +2,17 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { AuthMode, HealthzResponse, StoredAuth } from '@/auth/types'
 import { loadAuth, saveAuth, clearAuth, parseClusterName, authSessionRevision, assertAuthSession } from '@/auth/token'
-import { getBearerToken, resetSessionExpired } from '@/auth/session'
+import { authFetch, getBearerToken, resetSessionExpired } from '@/auth/session'
 import { bootstrapBrowserSession, fetchHealthz, loginWithToken } from '@/lib/api'
 import { STORAGE_KEYS } from '@/lib/constants'
+
+// SelfIdentity is the caller's own identity from GET /api/users/me.
+export interface SelfIdentity {
+  user: string
+  email?: string
+  displayName?: string
+  rbacIdentity: string
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const stored = loadAuth()
@@ -13,6 +21,8 @@ export const useAuthStore = defineStore('auth', () => {
     stored ? { email: stored.email, userId: stored.userId } : null,
   )
   const clusterName = ref<string | null>(stored?.clusterName ?? null)
+  const self = ref<SelfIdentity | null>(null)
+  let selfRequest: Promise<void> | null = null
   const authMode = ref<AuthMode | null>(null)
   const healthz = ref<HealthzResponse | null>(null)
   const loading = ref(false)
@@ -21,6 +31,33 @@ export const useAuthStore = defineStore('auth', () => {
   let initializationPromise: Promise<void> | null = null
 
   const isAuthenticated = computed(() => !!token.value && !!clusterName.value)
+
+  // memberId is what someone types to add this user to an organization or
+  // workspace: the email, or the RBAC identity when there is none (static
+  // tokens deliberately have no email, so the token never shows up in
+  // member lists).
+  const memberId = computed(() => user.value?.email?.trim() || self.value?.email?.trim() || self.value?.rbacIdentity || '')
+
+  // fetchSelf loads the caller's identity once per session. Best-effort:
+  // hubs without the endpoint leave memberId falling back to the email.
+  function fetchSelf(): Promise<void> {
+    if (self.value || !token.value) return Promise.resolve()
+    if (selfRequest) return selfRequest
+    const revision = authSessionRevision()
+    selfRequest = (async () => {
+      try {
+        const resp = await authFetch('/api/users/me')
+        if (!resp.ok) return
+        const data = (await resp.json()) as SelfIdentity
+        if (revision === authSessionRevision()) self.value = data
+      } catch {
+        /* identity display only; auth failures surface elsewhere */
+      } finally {
+        selfRequest = null
+      }
+    })()
+    return selfRequest
+  }
 
   async function detectAuthMode() {
     if (initialized.value) return
@@ -88,6 +125,7 @@ export const useAuthStore = defineStore('auth', () => {
       saveAuth(auth)
       token.value = auth.idToken
       user.value = { email: auth.email, userId: auth.userId }
+      self.value = null
       clusterName.value = auth.clusterName
       resetSessionExpired()
     } catch (e) {
@@ -102,6 +140,7 @@ export const useAuthStore = defineStore('auth', () => {
     saveAuth(auth)
     token.value = auth.idToken
     user.value = { email: auth.email, userId: auth.userId }
+    self.value = null
     clusterName.value = auth.clusterName
     resetSessionExpired()
   }
@@ -129,6 +168,7 @@ export const useAuthStore = defineStore('auth', () => {
     clearAuth()
     token.value = null
     user.value = null
+    self.value = null
     clusterName.value = null
   }
 
@@ -164,6 +204,8 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     token,
     user,
+    self,
+    memberId,
     clusterName,
     authMode,
     healthz,
@@ -172,6 +214,7 @@ export const useAuthStore = defineStore('auth', () => {
     initialized,
     isAuthenticated,
     detectAuthMode,
+    fetchSelf,
     loginStatic,
     loginFromOIDCResponse,
     getValidToken,

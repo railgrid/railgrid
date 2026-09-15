@@ -931,12 +931,17 @@ test('account developer access gates unverified Workspace context without anothe
   assert.match(accountMenu, /v-if="developerAccessReady"[\s\S]*:to="scopePath\('\/mcp'\)"/)
   assert.match(accountMenu, /:title="developerAccessDisabledReason"/)
   assert.doesNotMatch(accountMenu, /Using Workspace|developerScopeId|retryWorkspaceContext/)
+  // Static-token users have no email; the menu must still show the member
+  // ID others add them with, and let them copy it.
+  assert.match(accountMenu, /auth\.memberId \|\| 'Authenticated user'/)
+  assert.match(accountMenu, /v-if="auth\.memberId"[\s\S]*@click="copyMemberId"/)
+  assert.match(accountMenu, /void auth\.fetchSelf\(\)/)
   assert.match(railgridUi, /\.k-menu-item:focus-visible\s*\{[^}]*outline: 2px solid var\(--color-accent/s)
   assert.match(railgridUi, /\.k-menu-item:disabled,[\s\S]*\.k-menu-item\[aria-disabled="true"\][\s\S]*opacity: 0\.45/)
 })
 
 test('member role controls have resource-specific names and use muted badges', () => {
-  assert.match(memberList, /placeholder="email or user UUID"[\s\S]*aria-label="Member email or user UUID"/)
+  assert.match(memberList, /placeholder="email or member ID"[\s\S]*aria-label="Member email or member ID"/)
   assert.match(memberList, /v-model="newRole"[\s\S]*aria-label="Role for new member"/)
 
   const roleStart = memberList.indexOf('<template #role="{ row }">')

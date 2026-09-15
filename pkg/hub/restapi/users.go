@@ -26,6 +26,39 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
+// SelfView is the caller's own identity, as GET /api/users/me returns it.
+type SelfView struct {
+	// User is the User CR name.
+	User string `json:"user"`
+	// Email is empty for static-token users, which have no mailbox.
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+	// RBACIdentity is the kcp username the caller authenticates as. It is
+	// also what another admin types to add the caller to an Organization
+	// or Workspace when there is no email to share.
+	RBACIdentity string `json:"rbacIdentity"`
+}
+
+// getSelfUser returns the caller's own identity, so the portal and CLI can
+// show people the identifier to give an admin who wants to add them.
+func (h *Handler) getSelfUser(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	u, err := h.mgr.client.Users().Get(r.Context(), user, metav1.GetOptions{})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, SelfView{
+		User:         u.Name,
+		Email:        u.Spec.Email,
+		DisplayName:  u.Spec.Name,
+		RBACIdentity: u.Spec.RBACIdentity,
+	})
+}
+
 // deleteSelfUser soft-deletes the caller's User CR by stamping
 // status.deletionRequestedAt. The soft-delete reconciler (PR #212)
 // drives the 30-day grace + cascade per O-8.

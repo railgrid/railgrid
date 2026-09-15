@@ -285,7 +285,7 @@ const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
 
           <!-- Footer note for clusterName context -->
           <div v-if="auth.clusterName" class="rounded-xl border border-border-subtle bg-surface-overlay/40 px-3 py-2 text-[10px] text-text-muted">
-            Logged in as <span class="font-mono text-text-secondary">{{ auth.user?.email || auth.user?.userId }}</span>
+            Logged in as <span class="font-mono text-text-secondary">{{ auth.memberId || auth.user?.userId }}</span>
             · workspace <span class="font-mono text-text-secondary">{{ auth.clusterName }}</span>
           </div>
         </div>

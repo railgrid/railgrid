@@ -484,6 +484,34 @@ func TestOrgAndWorkspaceCommands(t *testing.T) {
 	}
 }
 
+// A static-token user has no email; whoami must still tell them what to give
+// an admin who wants to add them.
+func TestWhoamiShowsMemberID(t *testing.T) {
+	hub := newFakeHub(t)
+	path := hub.useKubeconfig("cl-b")
+	hub.handle("GET /api/users/me", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(w, map[string]any{
+			"user":         "static-user-47b9dce0e91570a1",
+			"displayName":  "railgrid:static:47b9dce0e91570a1",
+			"rbacIdentity": "railgrid:static:47b9dce0e91570a1",
+		})
+	})
+
+	out := mustRun(t, path, "whoami")
+	for _, want := range []string{
+		"User:       railgrid:static:47b9dce0e91570a1",
+		"Member ID:  railgrid:static:47b9dce0e91570a1 (give this to an admin who wants to add you)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("whoami missing %q:\n%s", want, out)
+		}
+	}
+	var v whoamiView
+	if err := json.Unmarshal([]byte(mustRun(t, path, "whoami", "-o", "json")), &v); err != nil || v.MemberID != "railgrid:static:47b9dce0e91570a1" {
+		t.Fatalf("whoami json memberId = %q, %v", v.MemberID, err)
+	}
+}
+
 func TestWhoamiTokenLogout(t *testing.T) {
 	hub := newFakeHub(t)
 	path := hub.useKubeconfig("cl-b")

@@ -20,8 +20,10 @@ import { computed, nextTick, onBeforeUnmount, ref, useId, watch, type CSSPropert
 import { useRoute } from 'vue-router'
 import {
   Building2,
+  Check,
   ChevronDown,
   Code2,
+  Copy,
   LogOut,
   Monitor,
   Moon,
@@ -76,8 +78,34 @@ let resizeObserver: ResizeObserver | null = null
 let deferredTabClose: ReturnType<typeof setTimeout> | undefined
 const panelId = useId()
 
-const email = computed(() => auth.user?.email?.trim() || 'Authenticated user')
-const identityLabel = computed(() => auth.user?.email?.trim() ? 'Email' : 'Account')
+const hasEmail = computed(() => !!(auth.user?.email?.trim() || auth.self?.email?.trim()))
+// The identifier an admin types to add this user. Static-token users have no
+// email, so without this they would have no way to tell anyone how to add them.
+const email = computed(() => auth.memberId || 'Authenticated user')
+const identityLabel = computed(() => {
+  if (hasEmail.value) return 'Email · others add you with it'
+  if (auth.memberId) return 'Member ID · others add you with it'
+  return 'Account'
+})
+const copiedMemberId = ref(false)
+const copyMemberIdFailed = ref(false)
+let copyResetTimer: ReturnType<typeof setTimeout> | undefined
+
+async function copyMemberId() {
+  copyMemberIdFailed.value = false
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(auth.memberId)
+    copiedMemberId.value = true
+    if (copyResetTimer !== undefined) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => { copiedMemberId.value = false }, 2000)
+  } catch {
+    copyMemberIdFailed.value = true
+  }
+}
+
+watch(() => auth.token, () => { void auth.fetchSelf() }, { immediate: true })
+
 const mcpActive = computed(() => routePath.value === '/mcp' || routePath.value.startsWith('/mcp/'))
 const settingsActive = computed(() => routePath.value === '/settings' || routePath.value.startsWith('/settings/'))
 const adminActive = computed(() => routePath.value === '/bonkers' || routePath.value.startsWith('/bonkers/'))
@@ -104,7 +132,8 @@ const organizationDestination = computed(() => ({
   query: { from: route.fullPath },
 }))
 const initials = computed(() => {
-  const value = email.value === 'Authenticated user' ? '' : email.value
+  // Only an email yields meaningful initials; a member ID shows the icon.
+  const value = hasEmail.value ? email.value : ''
   const parts = value.split(/[@.\s_-]+/).filter(Boolean)
   if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
   return (parts[0]?.slice(0, 2) || '?').toUpperCase()
@@ -354,6 +383,7 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(positionFrame)
   }
   if (deferredTabClose !== undefined) clearTimeout(deferredTabClose)
+  if (copyResetTimer !== undefined) clearTimeout(copyResetTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
   document.removeEventListener('pointerdown', onDocumentPointerdown, true)
@@ -418,9 +448,22 @@ onBeforeUnmount(() => {
           <span v-else>{{ initials }}</span>
         </span>
         <span class="min-w-0 flex-1">
-          <span class="block truncate font-mono text-[11px] text-text-primary">{{ email }}</span>
-          <span class="mt-0.5 block text-[10px] text-text-secondary">{{ identityLabel }}</span>
+          <span class="block truncate font-mono text-[11px] text-text-primary" :title="auth.memberId || undefined">{{ email }}</span>
+          <span class="mt-0.5 block text-[10px] text-text-secondary">
+            {{ copyMemberIdFailed ? 'Copy failed. Select the ID and copy it manually.' : identityLabel }}
+          </span>
         </span>
+        <button
+          v-if="auth.memberId"
+          type="button"
+          class="account-menu-item k-btn k-btn--ghost flex shrink-0 items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-colors hover:text-accent"
+          :aria-label="copiedMemberId ? 'Copied' : `Copy ${hasEmail ? 'email' : 'member ID'}`"
+          :title="`Copy ${hasEmail ? 'email' : 'member ID'}`"
+          @click="copyMemberId"
+        >
+          <component :is="copiedMemberId ? Check : Copy" class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
+          {{ copiedMemberId ? 'Copied' : 'Copy' }}
+        </button>
       </div>
 
       <router-link
