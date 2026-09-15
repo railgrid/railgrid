@@ -948,9 +948,12 @@ the picture.
 - Status badge: Available / Enabled (= an `APIBinding` exists in your
   workspace) / Pending (provider not Ready).
 - Primary button:
-  - **Enable** when not bound → opens `ProviderEnableDialog.vue` listing
-    `permissionClaims`; on confirm, the portal POSTs the `APIBinding`
-    directly to kcp in the user's workspace.
+  - **Enable** when not bound, including before runtime readiness → opens
+    `ProviderEnableDialog.vue` listing `permissionClaims`; on confirm, the
+    portal calls the hub's workspace-scoped provider Enable endpoint to create
+    the `APIBinding`. KCP publishes virtual-workspace endpoints only after a
+    consumer binds, so readiness must not gate the first Enable. Permission
+    consent and dependency checks still apply; **Open** requires readiness.
   - **Disable** when bound → confirm + delete the user's `APIBinding`.
   - **Re-accept** when the catalog's `permissionClaims` no longer match
     what the user's `APIBinding` has accepted → re-shows the dialog with

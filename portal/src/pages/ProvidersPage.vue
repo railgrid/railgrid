@@ -87,7 +87,6 @@ function showEdgesCatalogEntry() {
 function bindingAction(p: ProviderDTO) {
   return providerBindingAction({
     hasAPIExport: !!p.apiExportName,
-    ready: p.ready,
     enabled: providers.isEnabled(p.name),
     disabling: providers.isDisabling(p.name),
   })
