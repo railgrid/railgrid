@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,18 +26,18 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 const (
 	sshServerName = "e2e-ssh-server"
-	sshTestMarker = "faros_ssh_e2e_ok"
+	sshTestMarker = "railgrid_ssh_e2e_ok"
 )
 
 // SSHServerModeConnect verifies the full SSH path end-to-end:
-//  1. Start an embedded test SSH server + faros agent (--mode=server) as subprocesses
+//  1. Start an embedded test SSH server + railgrid agent (--mode=server) as subprocesses
 //  2. Wait for the Edge resource to become Ready on the hub
-//  3. Run `faros ssh <name> -- echo <marker>` and verify the marker in output
+//  3. Run `railgrid ssh <name> -- echo <marker>` and verify the marker in output
 //  4. Verify interactive PTY (WebSocket, resize, keystrokes, output)
 //  5. Hold the session for the configured duration and assert it stays alive
 func SSHServerModeConnect() features.Feature {
@@ -88,14 +88,14 @@ func SSHServerModeConnect() features.Feature {
 		}).
 		Assess("ssh_command_returns_expected_output", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			out, err := client.Run(ctx,
 				"ssh", sshServerName,
 				"--", fmt.Sprintf("echo %s", sshTestMarker),
 			)
 			if err != nil {
-				t.Fatalf("faros ssh failed: %v\noutput: %s", err, out)
+				t.Fatalf("railgrid ssh failed: %v\noutput: %s", err, out)
 			}
 			if !strings.Contains(out, sshTestMarker) {
 				t.Fatalf("expected output to contain %q, got:\n%s", sshTestMarker, out)
@@ -106,7 +106,7 @@ func SSHServerModeConnect() features.Feature {
 		Assess("interactive_pty_sends_keystrokes_and_receives_output", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
-			const interactiveMarker = "faros_ssh_interactive_ok"
+			const interactiveMarker = "railgrid_ssh_interactive_ok"
 
 			client, err := framework.DialSSH(ctx, clusterEnv.HubKubeconfig, sshServerName)
 			if err != nil {
@@ -138,7 +138,7 @@ func SSHServerModeConnect() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			holdDuration := framework.SSHKeepaliveDuration
-			const aliveMarker = "faros_ssh_still_alive"
+			const aliveMarker = "railgrid_ssh_still_alive"
 
 			t.Logf("Holding SSH session open for %s to verify keepalive...", holdDuration)
 
@@ -251,7 +251,7 @@ func SSHEdgeURLSet() features.Feature {
 		}).
 		Assess("status_url_is_populated_and_ends_with_ssh", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, sshURLEdgeName)
 			if err != nil {
@@ -279,7 +279,7 @@ func SSHEdgeURLSet() features.Feature {
 
 // SSHDockerServerModeConnect is the Docker-based variant of SSHServerModeConnect.
 // It runs lscr.io/linuxserver/openssh-server in a container (--network host)
-// alongside a faros server-mode agent, and verifies the full SSH path through
+// alongside a railgrid server-mode agent, and verifies the full SSH path through
 // the hub tunnel.
 //
 // The agent authenticates using a real hub-generated join token (not a static
@@ -290,7 +290,7 @@ func SSHDockerServerModeConnect() features.Feature {
 	return features.New("SSH/DockerServerModeConnect").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Create the edge resource as an admin first so that the hub's
 			// TokenReconciler can generate a join token for it.
@@ -309,7 +309,7 @@ func SSHDockerServerModeConnect() features.Feature {
 			t.Logf("join token obtained for edge %q (len=%d)", dockerServerName, len(joinToken))
 
 			container := &framework.ServerContainer{
-				Name:       "faros-e2e-ssh-docker",
+				Name:       "railgrid-e2e-ssh-docker",
 				ServerName: dockerServerName,
 				HubURL:     clusterEnv.HubURL,
 				HubCluster: framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig),
@@ -348,15 +348,15 @@ func SSHDockerServerModeConnect() features.Feature {
 		}).
 		Assess("docker_ssh_command_returns_expected_output", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			const dockerMarker = "faros_ssh_docker_ok"
+			const dockerMarker = "railgrid_ssh_docker_ok"
 			out, err := client.Run(ctx,
 				"ssh", dockerServerName,
 				"--", fmt.Sprintf("echo %s", dockerMarker),
 			)
 			if err != nil {
-				t.Fatalf("faros ssh (docker) failed: %v\noutput: %s", err, out)
+				t.Fatalf("railgrid ssh (docker) failed: %v\noutput: %s", err, out)
 			}
 			if !strings.Contains(out, dockerMarker) {
 				t.Fatalf("expected output to contain %q, got:\n%s", dockerMarker, out)
@@ -440,13 +440,13 @@ func SSHUserMappingInherited() features.Feature {
 		}).
 		Assess("ssh_user_is_inherited_from_agent_credentials", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// The TestSSHServer sets USER=<authenticated-username> in commands,
 			// so `echo $USER` should return the inherited username "testuser".
 			out, err := client.Run(ctx, "ssh", edgeName, "--", "echo $USER")
 			if err != nil {
-				t.Fatalf("faros ssh failed: %v\noutput: %s", err, out)
+				t.Fatalf("railgrid ssh failed: %v\noutput: %s", err, out)
 			}
 			if !strings.Contains(out, "testuser") {
 				t.Fatalf("expected output to contain 'testuser' (inherited username), got:\n%s", out)
@@ -473,7 +473,7 @@ func SSHUserMappingProvided() features.Feature {
 	const (
 		edgeName    = "e2e-ssh-mapping-provided"
 		secretName  = "e2e-ssh-mapping-provided-creds"
-		secretNS    = "faros-system"
+		secretNS    = "railgrid-system"
 		sshUsername = "provided-user"
 	)
 
@@ -534,7 +534,7 @@ func SSHUserMappingProvided() features.Feature {
 		Assess("create_secret_and_patch_edge_spec", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			privKeyPEM := framework.SSHPrivateKeyPEMFromContext(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Create the Secret in the hub cluster.
 			secretYAML := fmt.Sprintf(`apiVersion: v1
@@ -566,12 +566,12 @@ stringData:
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			proc, _ := framework.ServerProcessFromContext(ctx)
 
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Run a command over SSH; the TestSSHServer sets USER=<ssh-username>.
 			out, err := client.Run(ctx, "ssh", edgeName, "--", "echo $USER")
 			if err != nil {
-				t.Fatalf("faros ssh (provided) failed: %v\noutput: %s", err, out)
+				t.Fatalf("railgrid ssh (provided) failed: %v\noutput: %s", err, out)
 			}
 			if !strings.Contains(out, sshUsername) {
 				t.Fatalf("expected output to contain %q (provided username), got:\n%s", sshUsername, out)
@@ -615,7 +615,7 @@ func SSHUserMappingIdentity() features.Feature {
 	const (
 		edgeName   = "e2e-ssh-mapping-identity"
 		secretName = "e2e-ssh-mapping-identity-creds"
-		secretNS   = "faros-system"
+		secretNS   = "railgrid-system"
 	)
 
 	return features.New("SSH/UserMappingIdentity").
@@ -680,7 +680,7 @@ func SSHUserMappingIdentity() features.Feature {
 		Assess("create_secret_and_patch_edge_spec", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			privKeyPEM := framework.SSHPrivateKeyPEMFromContext(ctx)
-			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewRailgridClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Create the Secret with just the private key (no username — username
 			// comes from the caller's identity at runtime).

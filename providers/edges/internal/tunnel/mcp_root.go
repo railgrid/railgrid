@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/provider-edges/internal/haclient"
-	"github.com/faroshq/provider-edges/internal/svccatalog"
+	"github.com/railgrid/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -38,8 +38,8 @@ import (
 
 // rootMCPImpl is advertised on `initialize` for the provider aggregate endpoint.
 var rootMCPImpl = &mcp.Implementation{
-	Name:    "faros-edges",
-	Title:   "Faros edges provider MCP",
+	Name:    "railgrid-edges",
+	Title:   "Railgrid edges provider MCP",
 	Version: "v1alpha1",
 }
 
@@ -63,7 +63,7 @@ func (p *Server) buildRootMCPHandler() http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		cluster := r.Header.Get("X-Faros-Cluster")
+		cluster := r.Header.Get("X-Railgrid-Cluster")
 
 		r.Host = "localhost" // MCP SDK DNS-rebinding guard (see buildMCPHandler).
 		handler := mcp.NewStreamableHTTPHandler(
@@ -106,7 +106,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 	}
 
 	instructions := fmt.Sprintf(
-		"You are connected to the faros edges provider MCP endpoint for tenant workspace %q. "+
+		"You are connected to the railgrid edges provider MCP endpoint for tenant workspace %q. "+
 			"It exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
 			"Service, tools named \"<service>_*\" (e.g. a Home Assistant service \"ha\" gives ha_states/ha_call_service; a qBittorrent service \"qb\" gives qb_torrents/qb_add).",
 		cluster,
@@ -357,7 +357,7 @@ func (p *Server) kubeRPC(ctx context.Context, h http.Handler, token, cluster, me
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if cluster != "" {
-		req.Header.Set("X-Faros-Cluster", cluster)
+		req.Header.Set("X-Railgrid-Cluster", cluster)
 	}
 
 	rec := httptest.NewRecorder()

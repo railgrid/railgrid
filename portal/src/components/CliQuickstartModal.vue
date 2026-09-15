@@ -60,25 +60,25 @@ const methods: { id: Method; label: string; description: string; icon: typeof Do
 const hubURL = computed(() => window.location.origin)
 
 const binarySnippet = `# Download the latest release for your OS/arch
-curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz
+curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
 
 # Move to a directory on your PATH
-sudo mv kubectl-faros /usr/local/bin/faros
-chmod +x /usr/local/bin/faros
+sudo mv kubectl-railgrid /usr/local/bin/railgrid
+chmod +x /usr/local/bin/railgrid
 
-faros version`
+railgrid version`
 
 const krewSnippet = `# Requires kubectl + krew (https://krew.sigs.k8s.io)
-kubectl krew index add faros https://github.com/faroshq/krew-index.git
-kubectl krew install faros/faros
+kubectl krew index add railgrid https://github.com/railgrid/krew-index.git
+kubectl krew install railgrid/railgrid
 
 # Verify
-kubectl faros version`
+kubectl railgrid version`
 
 const sourceSnippet = `# Requires Go 1.22+
-go install github.com/faroshq/faros/cmd/faros@latest
+go install github.com/railgrid/railgrid/cmd/railgrid@latest
 
-faros version`
+railgrid version`
 
 const installSnippet = computed(() => {
   if (method.value === 'binary') return binarySnippet
@@ -86,7 +86,7 @@ const installSnippet = computed(() => {
   return sourceSnippet
 })
 
-const cliBinary = computed(() => (method.value === 'krew' ? 'kubectl faros' : 'faros'))
+const cliBinary = computed(() => (method.value === 'krew' ? 'kubectl railgrid' : 'railgrid'))
 
 const loginSnippet = computed(
   () => `${cliBinary.value} login --hub-url ${hubURL.value}`,
@@ -111,7 +111,7 @@ async function copy(text: string, field: string) {
   }
 }
 
-const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
+const releasesURL = 'https://github.com/railgrid/railgrid/releases/latest'
 </script>
 
 <template>
@@ -131,7 +131,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
             </div>
             <Terminal class="ml-2 h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
             <span class="font-mono text-[11px] font-semibold tracking-wider text-text-secondary">
-              faros — quickstart
+              railgrid — quickstart
             </span>
           </div>
           <button
@@ -150,7 +150,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
           <div>
             <h2 id="cli-quickstart-title" class="text-[15px] font-bold text-text-primary">Install & log in to the CLI</h2>
             <p class="mt-1 text-[12px] text-text-muted">
-              The <span class="font-mono text-text-secondary">faros</span> CLI talks to this hub at
+              The <span class="font-mono text-text-secondary">railgrid</span> CLI talks to this hub at
               <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
               Once installed, log in once and your kubeconfig will be updated automatically.
             </p>
@@ -251,7 +251,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
 
             <p class="mt-2 text-[11px] text-text-muted">
               A browser window opens for SSO; the CLI then writes a context named
-              <span class="font-mono text-text-secondary">faros</span> into
+              <span class="font-mono text-text-secondary">railgrid</span> into
               <span class="font-mono text-text-secondary">~/.kube/config</span>.
             </p>
           </div>

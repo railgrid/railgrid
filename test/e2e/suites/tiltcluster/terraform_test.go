@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,10 +55,10 @@ const (
 	terraformCRDName          = "terraforms.infrakube.galleybytes.com"
 	terraformFinalizer        = "finalizer.infrakube.galleybytes.com"
 	terraformWorkspacePrefix  = "e2e-tf-"
-	terraformTestLabel        = "faros.sh/e2e-terraform"
+	terraformTestLabel        = "railgrid.ai/e2e-terraform"
 	terraformTestLabelValue   = "infra-operator-infrakube-demo"
-	terraformCompositionOptIn = "FAROS_E2E_TERRAFORM_COMPOSITION"
-	terraformSmokeOptIn       = "FAROS_E2E_TERRAFORM"
+	terraformCompositionOptIn = "RAILGRID_E2E_TERRAFORM_COMPOSITION"
+	terraformSmokeOptIn       = "RAILGRID_E2E_TERRAFORM"
 
 	terraformWait        = 12 * time.Minute
 	terraformCleanupWait = 3 * time.Minute
@@ -127,7 +127,7 @@ func runTerraformTenantLifecycle(t *testing.T, runtimeClient dynamic.Interface, 
 	t.Helper()
 	instanceGVR := schema.GroupVersionResource{Group: infraGroup, Version: "v1alpha1", Resource: instanceResource}
 	workspaceName := terraformWorkspacePrefix + shortNonce()
-	parentClient := kcpAdminDynamic(t, "root:faros")
+	parentClient := kcpAdminDynamic(t, "root:railgrid")
 	workspacePath := createTerraformWorkspace(t, parentClient, workspaceName)
 	t.Cleanup(func() {
 		if err := parentClient.Resource(workspaceGVR).Delete(context.Background(), workspaceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
@@ -148,14 +148,14 @@ func runTerraformTenantLifecycle(t *testing.T, runtimeClient dynamic.Interface, 
 	})
 	waitTerraformBinding(t, tenantClient, workspacePath)
 
-	stackName := "faros-tf-e2e-" + shortNonce()
+	stackName := "railgrid-tf-e2e-" + shortNonce()
 	instance := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": infraGroup + "/v1alpha1",
 		"kind":       instanceKind,
 		"metadata":   map[string]any{"name": stackName},
 		"spec": map[string]any{
 			"name":    stackName,
-			"message": "hello from Faros",
+			"message": "hello from Railgrid",
 		},
 	}}
 	created := createTerraformStack(t, tenantClient, instanceGVR, instance)
@@ -165,7 +165,7 @@ func runTerraformTenantLifecycle(t *testing.T, runtimeClient dynamic.Interface, 
 	}
 	instanceDeleted := false
 	childNamespace := ""
-	stateSecretName := "tfstate-default-" + stackName + "-faros"
+	stateSecretName := "tfstate-default-" + stackName + "-railgrid"
 	stateLeaseName := "lock-" + stateSecretName
 	t.Cleanup(func() {
 		if !instanceDeleted {
@@ -210,7 +210,7 @@ func runTerraformTenantLifecycle(t *testing.T, runtimeClient dynamic.Interface, 
 	if beforeResources == 0 {
 		t.Fatal("Terraform state has no resources after apply")
 	}
-	assertTerraformStateLock(t, runtimeClient, childNamespace, stateLeaseName, stackName+"-faros")
+	assertTerraformStateLock(t, runtimeClient, childNamespace, stateLeaseName, stackName+"-railgrid")
 
 	if err := tenantClient.Resource(instanceGVR).Delete(context.Background(), stackName, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete TerraformStack %q: %v", stackName, err)
@@ -224,7 +224,7 @@ func runTerraformTenantLifecycle(t *testing.T, runtimeClient dynamic.Interface, 
 	if afterResources != 0 || afterSerial <= beforeSerial || afterSecret.GetResourceVersion() == beforeSecret.GetResourceVersion() {
 		t.Fatalf("Terraform destroy state = serial %d -> %d, resources=%d, resourceVersion %s -> %s", beforeSerial, afterSerial, afterResources, beforeSecret.GetResourceVersion(), afterSecret.GetResourceVersion())
 	}
-	assertTerraformStateLock(t, runtimeClient, childNamespace, stateLeaseName, stackName+"-faros")
+	assertTerraformStateLock(t, runtimeClient, childNamespace, stateLeaseName, stackName+"-railgrid")
 
 	secretDeleted := deleteTerraformStateArtifact(t, runtimeClient, terraformSecretGVR, childNamespace, stateSecretName)
 	leaseDeleted := deleteTerraformStateArtifact(t, runtimeClient, terraformLeaseGVR, childNamespace, stateLeaseName)
@@ -461,7 +461,7 @@ func waitTerraformStackStatus(t *testing.T, tenantClient dynamic.Interface, inst
 		if _, found, _ := unstructured.NestedFieldNoCopy(instance.Object, "status", "internal_marker"); found {
 			t.Fatalf("TerraformStack status exposes internal_marker: %v", instance.Object["status"])
 		}
-		return phase == "completed" && message == "hello from Faros" && resourceID != "" && runtimeNamespace == namespace,
+		return phase == "completed" && message == "hello from Railgrid" && resourceID != "" && runtimeNamespace == namespace,
 			fmt.Sprintf("phase=%s message=%s resourceID=%s namespace=%s", phase, message, resourceID, runtimeNamespace)
 	}) {
 		t.Fatalf("TerraformStack %q never projected completed status", name)

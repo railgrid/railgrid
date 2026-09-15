@@ -1,11 +1,11 @@
 {{- if .Values.catalogEntry.enabled -}}
-# CatalogEntry registers this provider with the faros hub for routing + the
-# portal Enable flow. It is a kcp resource (providers.faros.sh/v1alpha1),
+# CatalogEntry registers this provider with the railgrid hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.railgrid.ai/v1alpha1),
 # so it MUST NOT be applied to the hosting cluster where this chart installs.
 # Instead the chart renders it into a ConfigMap that the init container mounts
 # and applies into the provider workspace via the provider kubeconfig
-# (FAROS_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
-# CatalogEntries in every workspace bound to providers.faros.sh, including
+# (RAILGRID_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.railgrid.ai, including
 # the provider's own, so a self-registered entry is seen.
 #
 # It only REFERENCES the APIExport (apiExport.name); the APIExport, its
@@ -20,14 +20,14 @@ metadata:
     {{- include "code.labels" . | nindent 4 }}
 data:
   catalogentry.yaml: |
-    apiVersion: providers.faros.sh/v1alpha1
+    apiVersion: providers.railgrid.ai/v1alpha1
     kind: CatalogEntry
     metadata:
       name: code
     spec:
       displayName: "Code"
       description: "Manage source-code repositories and access across git providers (GitHub)."
-      vendor: "faros"
+      vendor: "railgrid"
       version: {{ .Chart.AppVersion | quote }}
       category: "Developer"
       iconURL: "/ui/providers/code/icon.svg"
@@ -45,7 +45,7 @@ data:
         url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         healthPath: "/readyz"
       apiExport:
-        name: "code.providers.faros.sh"
+        name: "code.providers.railgrid.ai"
         permissionClaims:
           - resource: secrets
             verbs: [get, list, watch, create, update, patch, delete]
@@ -57,12 +57,12 @@ data:
       selfHosting:
         supported: true
         chart:
-          repository: "oci://ghcr.io/faroshq/charts"
-          name: "faros-code-provider"
+          repository: "oci://ghcr.io/railgrid/charts"
+          name: "railgrid-code-provider"
           version: {{ .Chart.Version | quote }}
-        namespace: "faros-provider-code"
+        namespace: "railgrid-provider-code"
         releaseName: "code"
-        docsURL: "https://github.com/faroshq/faros/blob/main/providers/code/deploy/chart/README.md"
+        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/code/deploy/chart/README.md"
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
@@ -72,7 +72,7 @@ data:
         description: List a bounded page of branch names from a registered repository. Uses
           caller authorization and pinned resource identities.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -134,7 +134,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -179,7 +179,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -226,7 +226,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -267,7 +267,7 @@ data:
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -318,7 +318,7 @@ data:
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -366,7 +366,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -407,7 +407,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -451,7 +451,7 @@ data:
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -492,7 +492,7 @@ data:
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -535,7 +535,7 @@ data:
         description: Use the registered Repository and pinned resource identities. Returns
           current host state.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:
@@ -576,7 +576,7 @@ data:
         description: Use the registered Repository and pinned resource identities. A failed
           response may leave an unconfirmed upstream outcome; inspect before retrying.
         boundResource:
-          apiVersion: code.faros.sh/v1alpha1
+          apiVersion: code.railgrid.ai/v1alpha1
           kind: Repository
           resource: repositories
         inputSchema:

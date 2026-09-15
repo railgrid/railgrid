@@ -1,6 +1,6 @@
 # Giving agents web access
 
-A faros agent starts out unable to see the web. It can reason and it can call
+A railgrid agent starts out unable to see the web. It can reason and it can call
 whatever tools its Connections give it, but "look this up" and "open that page"
 need a backend. This document covers the two infrastructure templates that
 provide them, and how to wire each to an agent.
@@ -79,7 +79,7 @@ anything you paste anywhere.
 ### SearXNG → a `websearch` Connection
 
 ```yaml
-apiVersion: agents.faros.sh/v1alpha1
+apiVersion: agents.railgrid.ai/v1alpha1
 kind: Connection
 metadata:
   name: search
@@ -118,7 +118,7 @@ Connection Secret if it is gated) and leave `instance` unset.
 ### Browser → an `mcp` Connection
 
 ```yaml
-apiVersion: agents.faros.sh/v1alpha1
+apiVersion: agents.railgrid.ai/v1alpha1
 kind: Connection
 metadata:
   name: browser
@@ -154,9 +154,9 @@ What gets created, once per agent, in the `default` namespace:
 
 | Object | Name | Purpose |
 |---|---|---|
-| ServiceAccount | `faros-agent-<agent>` | the identity |
-| Secret | `faros-agent-<agent>-token` | its token, populated by kcp's token controller |
-| ClusterRole + binding | `faros-agent-<agent>` | `get`/`list` on `infrastructure.faros.sh` |
+| ServiceAccount | `railgrid-agent-<agent>` | the identity |
+| Secret | `railgrid-agent-<agent>-token` | its token, populated by kcp's token controller |
+| ClusterRole + binding | `railgrid-agent-<agent>` | `get`/`list` on `infrastructure.railgrid.ai` |
 
 Things worth knowing before you rely on it:
 

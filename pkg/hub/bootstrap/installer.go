@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,10 +33,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// InstallCRDs installs the faros CRDs into the cluster.
+// InstallCRDs installs the railgrid CRDs into the cluster.
 func InstallCRDs(ctx context.Context, config *rest.Config) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Installing faros CRDs")
+	logger.Info("Installing railgrid CRDs")
 
 	client, err := apiextensionsclient.NewForConfig(config)
 	if err != nil {
@@ -95,21 +95,21 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 
 	// Wait for all CRDs to be established. KubernetesMCP + LinuxMCP
 	// CRDs were removed when both per-kind endpoints collapsed into
-	// the MCPServer aggregate. The legacy `users.faros.sh` CRD
+	// the MCPServer aggregate. The legacy `users.railgrid.ai` CRD
 	// was retired in the User CRD migration; the User type now lives
-	// under tenants.faros.sh alongside Organization, Membership,
+	// under tenants.railgrid.ai alongside Organization, Membership,
 	// and UserMembershipIndex.
 	crdNames := []string{
 		// Edge / VirtualWorkload / Placement / MCPServer CRDs moved out of the
 		// hub core into the edges-connectivity + edges-* providers, which install
 		// their own schemas at provider init. The hub no longer bootstraps them.
-		"users.tenants.faros.sh",
-		"organizations.tenants.faros.sh",
-		"memberships.tenants.faros.sh",
-		"usermembershipindices.tenants.faros.sh",
-		"userpreferences.tenants.faros.sh",
-		"grants.tenants.faros.sh",
-		"catalogentries.providers.faros.sh",
+		"users.tenants.railgrid.ai",
+		"organizations.tenants.railgrid.ai",
+		"memberships.tenants.railgrid.ai",
+		"usermembershipindices.tenants.railgrid.ai",
+		"userpreferences.tenants.railgrid.ai",
+		"grants.tenants.railgrid.ai",
+		"catalogentries.providers.railgrid.ai",
 	}
 
 	for _, name := range crdNames {
@@ -119,7 +119,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		}
 	}
 
-	logger.Info("All faros CRDs installed and established")
+	logger.Info("All railgrid CRDs installed and established")
 	return nil
 }
 

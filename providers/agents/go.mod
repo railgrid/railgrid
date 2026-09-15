@@ -1,4 +1,4 @@
-module github.com/faroshq/provider-agents
+module github.com/railgrid/provider-agents
 
 go 1.26.8
 
@@ -7,7 +7,7 @@ require (
 	github.com/cloudwego/eino v0.9.9
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/eino-contrib/jsonschema v1.0.3
-	github.com/faroshq/provider-sdk v0.1.0
+	github.com/railgrid/provider-sdk v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.10.9
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -98,7 +98,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-// Pin k8s.io/* to the kcp staging forks the faros providers + SDK use.
+// Pin k8s.io/* to the kcp staging forks the railgrid providers + SDK use.
 replace (
 	k8s.io/api => github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a
 	k8s.io/apiextensions-apiserver => github.com/kcp-dev/kubernetes/staging/src/k8s.io/apiextensions-apiserver v0.0.0-20260602065202-e006560fc76a
@@ -114,4 +114,4 @@ replace (
 // In-tree SDK: the monorepo is the source of truth until the SDK is
 // published with every package providers use (leaderelection landed after
 // v0.1.0). Image builds copy provider-sdk into the build context.
-replace github.com/faroshq/provider-sdk => ../../provider-sdk
+replace github.com/railgrid/provider-sdk => ../../provider-sdk

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ import (
 // once the export has a consumer, and kcp re-checks the slice when an
 // APIBinding appears by looking it up under the binding's export reference.
 // Tenant bindings reference the export by workspace path
-// (root:faros:providers:<name>), while a slice written with no spec.export.path
+// (root:railgrid:providers:<name>), while a slice written with no spec.export.path
 // — what current provider charts do, so one chart works in the platform and in
 // an org's own workspace — is indexed only under its own cluster ID. The first
 // binding therefore never reaches the slice: it keeps "no endpoints", the
@@ -49,7 +49,7 @@ import (
 // exists. So after enabling providers, touch each slice that still has no
 // endpoint until one appears.
 const (
-	devSliceResyncAnnotation = "faros.sh/dev-endpoint-resync"
+	devSliceResyncAnnotation = "railgrid.ai/dev-endpoint-resync"
 	devSliceResyncTimeout    = 2 * time.Minute
 )
 
@@ -111,7 +111,7 @@ func sliceHasEndpoints(s *unstructured.Unstructured) bool {
 // the in-cluster hub address swapped for the host-mapped one so this process
 // can use it.
 func (o *DevOptions) providerWorkspaceConfig(ctx context.Context, clientset kubernetes.Interface, provider string) (*rest.Config, error) {
-	name := "faros-" + provider + "-kubeconfig"
+	name := "railgrid-" + provider + "-kubeconfig"
 	secret, err := clientset.CoreV1().Secrets(devProvidersNS).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("reading %s/%s: %w", devProvidersNS, name, err)

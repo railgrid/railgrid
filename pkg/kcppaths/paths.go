@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package kcppaths is the single source of truth for the faros kcp workspace
+// Package kcppaths is the single source of truth for the railgrid kcp workspace
 // topology. It has no internal dependencies so every layer (bootstrap,
 // provisioner, admin, controllers, proxy) can import it without cycles.
 //
 // Topology:
 //
-//	root:faros
+//	root:railgrid
 //	  providers:<provider>        platform provider sub-workspaces (parent stays universal)
 //	  tenants:<uuid>              tenant fleet (org workspaces)
 //	    <ws>:<edge>               team + edge workspaces
@@ -36,7 +36,7 @@ limitations under the License.
 //
 // Org-owned providers mirror the platform layout one level down: the
 // well-known `providers` child of an Org workspace is a plain `universal`
-// workspace, exactly like root:faros:providers, so each provider under it can
+// workspace, exactly like root:railgrid:providers, so each provider under it can
 // use the SAME restricted `provider` WorkspaceType (which requires a universal
 // parent). That symmetry is deliberate — it lets the provider install path
 // (provider-sdk/install, the SA mint, CatalogEntry self-registration) run
@@ -46,12 +46,12 @@ package kcppaths
 import "strings"
 
 const (
-	// Root is the faros root workspace.
-	Root = "root:faros"
+	// Root is the railgrid root workspace.
+	Root = "root:railgrid"
 
 	// ProvidersParent is the parent of per-provider sub-workspaces. It is NOT
 	// where APIExports or Provider/CatalogEntry objects live anymore — only the
-	// sub-workspaces root:faros:providers:<name> hang off it.
+	// sub-workspaces root:railgrid:providers:<name> hang off it.
 	ProvidersParent = Root + ":providers"
 
 	// TenantsParent is the parent of per-tenant (organization) workspaces. The
@@ -62,7 +62,7 @@ const (
 	System = Root + ":system"
 
 	// SystemControllers holds ALL platform APIExports + APIResourceSchemas
-	// (core / faros / tenancy / providers / admin .faros.sh). Every
+	// (core / railgrid / tenancy / providers / admin .railgrid.ai). Every
 	// consumer binds the exports from here.
 	SystemControllers = System + ":controllers"
 
@@ -71,7 +71,7 @@ const (
 	SystemProviders = System + ":providers"
 
 	// SystemTenants holds the User / Organization / Membership CR OBJECTS
-	// (replaces the former root:faros:users). NOT the tenant workspaces.
+	// (replaces the former root:railgrid:users). NOT the tenant workspaces.
 	SystemTenants = System + ":tenants"
 
 	// OrgProvidersWorkspaceName is the well-known child of an Org workspace
@@ -81,31 +81,31 @@ const (
 )
 
 // ProviderPath returns the sub-workspace path for a provider by name:
-// root:faros:providers:<name>.
+// root:railgrid:providers:<name>.
 func ProviderPath(name string) string { return ProvidersParent + ":" + name }
 
 // OrgPath returns the tenant workspace path for an org by UUID:
-// root:faros:tenants:<uuid>.
+// root:railgrid:tenants:<uuid>.
 func OrgPath(orgUUID string) string { return TenantsParent + ":" + orgUUID }
 
 // WorkspacePath returns the team workspace path within a tenant org:
-// root:faros:tenants:<uuid>:<ws>.
+// root:railgrid:tenants:<uuid>:<ws>.
 func WorkspacePath(orgUUID, wsUUID string) string { return OrgPath(orgUUID) + ":" + wsUUID }
 
 // OrgProvidersParent returns the well-known parent of an Org's own provider
-// sub-workspaces: root:faros:tenants:<uuid>:providers.
+// sub-workspaces: root:railgrid:tenants:<uuid>:providers.
 func OrgProvidersParent(orgUUID string) string {
 	return OrgPath(orgUUID) + ":" + OrgProvidersWorkspaceName
 }
 
 // OrgProviderPath returns the sub-workspace path for one org-owned provider:
-// root:faros:tenants:<uuid>:providers:<name>.
+// root:railgrid:tenants:<uuid>:providers:<name>.
 func OrgProviderPath(orgUUID, name string) string {
 	return OrgProvidersParent(orgUUID) + ":" + name
 }
 
 // SplitOrgProviderPath reports whether path names an org-owned provider
-// workspace (root:faros:tenants:<org>:providers:<name>) and, if so, returns the
+// workspace (root:railgrid:tenants:<org>:providers:<name>) and, if so, returns the
 // owning org UUID and the provider name.
 //
 // This is the inverse the catalog layer needs: a CatalogEntry is observed by

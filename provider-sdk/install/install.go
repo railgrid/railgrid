@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package install holds the one-shot bootstrap a faros provider runs against
+// Package install holds the one-shot bootstrap a railgrid provider runs against
 // its own kcp workspace, using the workspace-admin kubeconfig the platform
-// admin onboarded (which already points at root:faros:providers:<name>).
+// admin onboarded (which already points at root:railgrid:providers:<name>).
 //
 // It is the provider-side half of the bootstrap split: the admin UI/API creates
 // the provider workspace + ServiceAccount + legacy-token kubeconfig, and the
@@ -74,11 +74,11 @@ var (
 )
 
 // PermissionClaim is the provider-local mirror of a CatalogEntry permission
-// claim. It is duplicated here (rather than imported from the faros apis
+// claim. It is duplicated here (rather than imported from the railgrid apis
 // module) so the SDK has no dependency on the monorepo — keeping every
 // provider's standalone build self-contained.
 //
-// IdentityHash is REQUIRED for first-party (*.faros.sh) claim groups: kcp
+// IdentityHash is REQUIRED for first-party (*.railgrid.ai) claim groups: kcp
 // rejects a permissionClaim on a non-built-in API type unless it carries the
 // identityHash of the APIExport that serves it. The platform admin reads the
 // hash from the /bonkers root-identities view and supplies it via the chart's
@@ -94,13 +94,13 @@ type PermissionClaim struct {
 // Options bundles everything a provider's init needs.
 type Options struct {
 	// Config is the workspace-admin rest.Config (its Host already targets the
-	// provider workspace cluster, e.g. .../clusters/root:faros:providers:code).
+	// provider workspace cluster, e.g. .../clusters/root:railgrid:providers:code).
 	Config *rest.Config
 	// ExportName is the provider's APIExport name (also the slice name by
-	// convention), e.g. "code.providers.faros.sh".
+	// convention), e.g. "code.providers.railgrid.ai".
 	ExportName string
 	// WorkspacePath is the logical-cluster path the APIExport lives in, e.g.
-	// "root:faros:providers:code".
+	// "root:railgrid:providers:code".
 	//
 	// OPTIONAL, and normally best left empty. The endpoint slice is always
 	// created in the same workspace as the export it references, and kcp
@@ -109,8 +109,8 @@ type Options struct {
 	//
 	// Leaving it empty is what makes a provider chart workspace-agnostic: the
 	// same chart bootstraps correctly whether its kubeconfig points at
-	// root:faros:providers/<name> or at an org's own
-	// root:faros:tenants/<org>/providers/<name>. Hardcoding a platform path
+	// root:railgrid:providers/<name> or at an org's own
+	// root:railgrid:tenants/<org>/providers/<name>. Hardcoding a platform path
 	// here instead would publish endpoints for an export that does not exist at
 	// that path when the provider is self-hosted by an organization.
 	//
@@ -127,8 +127,8 @@ type Options struct {
 
 	// CatalogEntryFile, when set, is the path to a CatalogEntry YAML the
 	// provider self-registers into its OWN workspace (which the platform's
-	// Provider controller bound to providers.faros.sh). Empty → skip
-	// (e.g. providers whose CatalogEntry is applied to root:faros:providers by
+	// Provider controller bound to providers.railgrid.ai). Empty → skip
+	// (e.g. providers whose CatalogEntry is applied to root:railgrid:providers by
 	// an admin instead). Applied last, after the APIExport exists.
 	CatalogEntryFile string
 }
@@ -169,16 +169,16 @@ func Bootstrap(ctx context.Context, opts Options) error {
 }
 
 // catalogEntryGVR is the cluster-scoped CatalogEntry served by the
-// providers.faros.sh APIExport, which the platform's Provider controller
+// providers.railgrid.ai APIExport, which the platform's Provider controller
 // binds into each provider sub-workspace.
 var catalogEntryGVR = schema.GroupVersionResource{
-	Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+	Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
 }
 
 // ApplyCatalogEntry reads a CatalogEntry YAML from path and create-or-updates it
 // in the workspace cl targets (the provider's own sub-workspace). This is how a
 // provider self-registers its catalog entry from inside its workspace, rather
-// than an admin applying it to root:faros:providers. Idempotent.
+// than an admin applying it to root:railgrid:providers. Idempotent.
 func ApplyCatalogEntry(ctx context.Context, cl dynamic.Interface, path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -188,8 +188,8 @@ func ApplyCatalogEntry(ctx context.Context, cl dynamic.Interface, path string) e
 	if err := yaml.Unmarshal(raw, &u.Object); err != nil {
 		return fmt.Errorf("parsing CatalogEntry file %s: %w", path, err)
 	}
-	if u.GetAPIVersion() != "providers.faros.sh/v1alpha1" || u.GetKind() != "CatalogEntry" {
-		return fmt.Errorf("file %s: expected CatalogEntry providers.faros.sh/v1alpha1, got %s/%s", path, u.GetAPIVersion(), u.GetKind())
+	if u.GetAPIVersion() != "providers.railgrid.ai/v1alpha1" || u.GetKind() != "CatalogEntry" {
+		return fmt.Errorf("file %s: expected CatalogEntry providers.railgrid.ai/v1alpha1, got %s/%s", path, u.GetAPIVersion(), u.GetKind())
 	}
 	if u.GetName() == "" {
 		return fmt.Errorf("file %s: metadata.name is required", path)
@@ -411,8 +411,8 @@ func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sli
 
 // orgProviderWorkspacePrefix marks a provider workspace owned by one
 // organization rather than the platform:
-// root:faros:tenants:<orgUUID>:providers:<name>.
-const orgProviderWorkspacePrefix = "root:faros:tenants:"
+// root:railgrid:tenants:<orgUUID>:providers:<name>.
+const orgProviderWorkspacePrefix = "root:railgrid:tenants:"
 
 // isOrgOwnedWorkspace reports whether a workspace path belongs to a single
 // organization. Matching on the separator matters: a sibling of the tenants
@@ -422,7 +422,7 @@ func isOrgOwnedWorkspace(path string) bool {
 }
 
 // ApplyBindGrant creates / updates the ClusterRole + ClusterRoleBinding in the
-// provider workspace that lets any authenticated faros user bind to the
+// provider workspace that lets any authenticated railgrid user bind to the
 // provider's APIExport from their own workspace. Without it, kcp refuses
 // tenant-side APIBinding creates with 403. Subject is "system:authenticated":
 // the platform admin is the gatekeeper at onboard/install time.
@@ -434,12 +434,12 @@ func isOrgOwnedWorkspace(path string) bool {
 // provider they were never offered. So for an org-owned workspace the grant is
 // not created, and one left by an earlier install is removed.
 //
-// Nothing supported breaks: every APIBinding faros creates comes from the hub's
+// Nothing supported breaks: every APIBinding railgrid creates comes from the hub's
 // Enable path, which runs as kcp-admin and needs no grant. What stops working
 // is hand-writing an APIBinding with kubectl, which for an Org workspace is
 // already outside the hub-mediated model (decision O-10).
 func ApplyBindGrant(ctx context.Context, cl dynamic.Interface, exportName string) error {
-	roleName := "faros:providers:bind:" + exportName
+	roleName := "railgrid:providers:bind:" + exportName
 
 	// Resolve from the LogicalCluster rather than a caller-supplied path:
 	// Options.WorkspacePath is deliberately empty in normal use, so that a
@@ -588,8 +588,8 @@ func mergeAPIExportResources(existing, owned []any) []any {
 }
 
 // splitSchemaName parses a kcp APIResourceSchema metadata.name of the form
-// "v260522-abc.greetings.hello.cost.faros.sh" → resource="greetings",
-// group="hello.cost.faros.sh". The version segment is everything up to the
+// "v260522-abc.greetings.hello.cost.railgrid.ai" → resource="greetings",
+// group="hello.cost.railgrid.ai". The version segment is everything up to the
 // first dot; the resource is the next segment; the group is the rest.
 func splitSchemaName(n string) (group, resource string) {
 	first := strings.IndexByte(n, '.')

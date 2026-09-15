@@ -44,7 +44,7 @@ function handleLogout() {
           <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
         </div>
         <template v-if="sidebarExpanded">
-          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
+          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">RAILGRID</span>
           <span class="k-badge k-badge--muted px-1.5 py-px text-[8px]">Admin</span>
         </template>
         <button
@@ -84,10 +84,10 @@ function handleLogout() {
           to="/"
           class="flex items-center gap-2.5 rounded-md px-3 py-2 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/50 hover:text-text-secondary"
           :class="sidebarExpanded ? '' : 'justify-center'"
-          :title="sidebarExpanded ? undefined : 'Back to faros'"
+          :title="sidebarExpanded ? undefined : 'Back to railgrid'"
         >
           <ArrowLeft class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-          <span v-if="sidebarExpanded">Back to faros</span>
+          <span v-if="sidebarExpanded">Back to railgrid</span>
         </router-link>
         <button
           type="button"

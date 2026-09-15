@@ -1,0 +1,37 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: edges.railgrid.ai
+spec:
+  resources:
+  - group: edges.railgrid.ai
+    name: kubernetesclusters
+    schema: v260715-d4e8aa2.kubernetesclusters.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
+    name: linuxservers
+    schema: v260904-9ab06b67.linuxservers.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
+    name: macosservers
+    schema: v260911-5c089fd5.macosservers.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
+    name: placements
+    schema: v260718-e83a64f.placements.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
+    name: services
+    schema: v260911-5c089fd5.services.edges.railgrid.ai
+    storage:
+      crd: {}
+  - group: edges.railgrid.ai
+    name: workloads
+    schema: v260911-c8af9718.workloads.edges.railgrid.ai
+    storage:
+      crd: {}
+status: {}

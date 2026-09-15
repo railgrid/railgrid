@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 
 func TestProjectScopeResolverUsesVerifiedEnvironmentReferences(t *testing.T) {
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.faros.sh/v1alpha1",
+		"apiVersion": "ai.railgrid.ai/v1alpha1",
 		"kind":       "Project",
 		"metadata": map[string]any{
 			"name": "project", "uid": "project-uid",
@@ -41,13 +41,13 @@ func TestProjectScopeResolverUsesVerifiedEnvironmentReferences(t *testing.T) {
 						"name": "dev", "provider": "app-studio",
 						"kind": "providerResource",
 						"resourceRef": map[string]any{
-							"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
+							"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
 						},
 					},
 					map[string]any{
 						"kind": "providerReference",
 						"resourceRef": map[string]any{
-							"apiVersion": "databricks.faros.sh/v1alpha1", "kind": "Table", "resource": "tables", "name": "taxi-trips",
+							"apiVersion": "databricks.railgrid.ai/v1alpha1", "kind": "Table", "resource": "tables", "name": "taxi-trips",
 						},
 					},
 				},
@@ -58,7 +58,7 @@ func TestProjectScopeResolverUsesVerifiedEnvironmentReferences(t *testing.T) {
 		projectGVR: "ProjectList",
 	}, project)
 	resolver := NewProjectScopeResolverForClient(client)
-	req := ExchangeRequest{TenantPath: "root:faros:tenants:org:workspace", Project: "project", ProjectUID: "project-uid", Environment: "development", Instance: "project-dev"}
+	req := ExchangeRequest{TenantPath: "root:railgrid:tenants:org:workspace", Project: "project", ProjectUID: "project-uid", Environment: "development", Instance: "project-dev"}
 	scope, err := resolver.Resolve(context.Background(), "org", "workspace", req)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -77,17 +77,17 @@ func TestProjectScopeResolverUsesVerifiedEnvironmentReferences(t *testing.T) {
 
 func TestProjectScopeResolverRejectsWrongUIDEnvironmentOrInstance(t *testing.T) {
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.faros.sh/v1alpha1", "kind": "Project",
+		"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
 		"metadata": map[string]any{"name": "project", "uid": "project-uid"},
 		"spec": map[string]any{"environments": []any{map[string]any{
 			"name": "development", "bindings": []any{map[string]any{"name": "dev", "provider": "app-studio", "kind": "providerResource", "resourceRef": map[string]any{
-				"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
+				"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
 			}}},
 		}}},
 	}}
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), project)
 	resolver := NewProjectScopeResolverForClient(client)
-	base := ExchangeRequest{TenantPath: "root:faros:tenants:org:workspace", Project: "project", ProjectUID: "project-uid", Environment: "development", Instance: "project-dev"}
+	base := ExchangeRequest{TenantPath: "root:railgrid:tenants:org:workspace", Project: "project", ProjectUID: "project-uid", Environment: "development", Instance: "project-dev"}
 	for name, req := range map[string]ExchangeRequest{
 		"wrong uid":      func() ExchangeRequest { r := base; r.ProjectUID = "other"; return r }(),
 		"wrong env":      func() ExchangeRequest { r := base; r.Environment = "prod"; return r }(),
@@ -103,13 +103,13 @@ func TestProjectScopeResolverRejectsWrongUIDEnvironmentOrInstance(t *testing.T) 
 
 func TestProjectScopeResolverDoesNotTreatSameNamedProviderReferenceAsInstance(t *testing.T) {
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.faros.sh/v1alpha1", "kind": "Project",
+		"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
 		"metadata": map[string]any{"name": "project", "uid": "project-uid"},
 		"spec": map[string]any{"environments": []any{map[string]any{
 			"name": "development", "bindings": []any{map[string]any{
 				"kind": "providerReference",
 				"resourceRef": map[string]any{
-					"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
+					"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Application", "resource": "applications", "name": "project-dev",
 				},
 			}},
 		}}},
@@ -117,7 +117,7 @@ func TestProjectScopeResolverDoesNotTreatSameNamedProviderReferenceAsInstance(t 
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), project)
 	resolver := NewProjectScopeResolverForClient(client)
 	_, err := resolver.Resolve(context.Background(), "org", "workspace", ExchangeRequest{
-		TenantPath: "root:faros:tenants:org:workspace", Project: "project", ProjectUID: "project-uid",
+		TenantPath: "root:railgrid:tenants:org:workspace", Project: "project", ProjectUID: "project-uid",
 		Environment: "development", Instance: "project-dev",
 	})
 	if err == nil {

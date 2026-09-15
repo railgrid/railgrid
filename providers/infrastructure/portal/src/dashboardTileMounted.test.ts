@@ -82,7 +82,7 @@ describe('Infrastructure dashboard tile refresh lifecycle', () => {
       identities: [{ name: 'demo instance', uid: 'uid-1' }],
     })
     const navigate = vi.fn()
-    host.addEventListener('faros-navigate', event => navigate((event as CustomEvent).detail))
+    host.addEventListener('railgrid-navigate', event => navigate((event as CustomEvent).detail))
 
     app = createApp(DashboardTile, { context: { tenant: 'cluster-a', token: 'token-a' } })
     app.mount(host)

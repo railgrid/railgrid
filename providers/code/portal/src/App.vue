@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from 'vue'
 import { GitBranch, Package, Plug } from 'lucide-vue-next'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 import { setAPIContext, setBasePath } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionCreateView from './views/ConnectionCreateView.vue'
@@ -34,7 +34,7 @@ import { codeNavigationDetail, parseCodeSubPath, type CodeRoute } from './routes
 //   'create/connection/token'  → token connection creation
 //   'create/connection/github' → GitHub OAuth connection creation
 //   'create/repository'        → repository creation
-const props = defineProps<{ ctx: FarosContext | null }>()
+const props = defineProps<{ ctx: RailgridContext | null }>()
 
 const route = computed<CodeRoute>(() => parseCodeSubPath(props.ctx?.subPath))
 const contextGeneration = ref(0)
@@ -122,15 +122,15 @@ const tabs = [
   { id: 'packages', label: 'Packages', icon: Package },
 ] as const
 
-// navigate dispatches a faros-navigate CustomEvent from the component root so it
-// bubbles up to the <faros-provider-code> element, where ProviderFrame listens
+// navigate dispatches a railgrid-navigate CustomEvent from the component root so it
+// bubbles up to the <railgrid-provider-code> element, where ProviderFrame listens
 // and pushes the shell's vue-router. detail.path is the trailing segment the
 // shell appends to /providers/code/.
 const rootRef = ref<HTMLElement | null>(null)
 function dispatchNavigation(path: string, options: { replace?: boolean } = {}) {
   const el = rootRef.value
   if (!el) return
-  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: codeNavigationDetail(path, options), bubbles: true }))
+  el.dispatchEvent(new CustomEvent('railgrid-navigate', { detail: codeNavigationDetail(path, options), bubbles: true }))
 }
 
 function clearCurrentJourneyIntent(): void {

@@ -1,4 +1,4 @@
-// Dashboard tile for kuery, mounted by <faros-dashboard-tile-kuery>
+// Dashboard tile for kuery, mounted by <railgrid-dashboard-tile-kuery>
 // (see main.ts).
 //
 // kuery owns no resources of its own — it is a query surface over the edges
@@ -33,7 +33,7 @@ export class KueryDashboardTile extends HTMLElement {
   private _connected = false
   private _lastHTML = ''
 
-  set farosContext(v: TileContext | null) {
+  set railgridContext(v: TileContext | null) {
     const changed = createKueryRequestContext(v).identity !== createKueryRequestContext(this._ctx).identity
     this._ctx = v
     if (changed) {
@@ -45,7 +45,7 @@ export class KueryDashboardTile extends HTMLElement {
     }
     this._poller?.refresh()
   }
-  get farosContext(): TileContext | null {
+  get railgridContext(): TileContext | null {
     return this._ctx
   }
 
@@ -101,7 +101,7 @@ export class KueryDashboardTile extends HTMLElement {
   }
 
   private _navigate(path: string): void {
-    this.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
+    this.dispatchEvent(new CustomEvent('railgrid-navigate', { detail: { path }, bubbles: true }))
   }
 
   private _render(): void {

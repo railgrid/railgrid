@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // fakeCreds serves model-credential Secrets from a map, standing in for the

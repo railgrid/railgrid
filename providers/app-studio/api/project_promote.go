@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ limitations under the License.
 // not a mode flip on the Project — it is a SECOND environment alongside the
 // development sandbox: an artifact-mode ProjectEnvironment bound to a
 // "<project>-prod" instance of the SAME template, provisioned with
-// farosMode: production and each template imageInput set to the digest the
+// railgridMode: production and each template imageInput set to the digest the
 // per-component build recorded in git. The user promotes explicitly ("Promote
 // to Prod") once the sandbox looks good and the build is green; promotion is
 // repeatable (re-promote redeploys the latest digests). The dev sandbox keeps
@@ -45,8 +45,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 // projectRegistryPullSecretName is the tenant Secret (holding a ghcr
@@ -96,7 +96,7 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 
 	username := strings.TrimSpace(login)
 	if username == "" {
-		username = "faros-app-studio" // ghcr validates the token, not the username
+		username = "railgrid-app-studio" // ghcr validates the token, not the username
 	}
 	dockerConfig, err := json.Marshal(map[string]any{
 		"auths": map[string]any{
@@ -149,16 +149,16 @@ const (
 	// infrastructure Template instance. A fresh value is minted for every
 	// accepted promotion so a provider can roll only the application workload
 	// pods without recreating the production instance (or its database).
-	projectRedeployRevisionField = "farosRedeployRevision"
+	projectRedeployRevisionField = "railgridRedeployRevision"
 
 	projectToolPromoteProject = "promote_project"
 )
 
 var projectPlatformOwnedProductionFields = map[string]struct{}{
 	"name":                       {},
-	"farosMode":                  {},
+	"railgridMode":               {},
 	projectRedeployRevisionField: {},
-	"farosCluster":               {},
+	"railgridCluster":            {},
 	"credentialsSecretName":      {},
 	// Publishing is the only mutation boundary for template-native access.
 	// Promotion preserves the current policy and starts new deployments private.
@@ -175,8 +175,8 @@ var projectPlatformOwnedProductionPaths = map[string]struct{}{
 // projectPromoteRequest is the "Promote to Prod" form submission: optional
 // release commit selection plus its server-derived release evidence ID, and
 // the template's production inputs (ports, replicas, oidc, …). The instance
-// name, farosMode, per-component image fields, and farosRedeployRevision are
-// platform-owned and ignored if supplied — name/farosMode are deterministic,
+// name, railgridMode, per-component image fields, and railgridRedeployRevision are
+// platform-owned and ignored if supplied — name/railgridMode are deterministic,
 // images come from the selected repository commit's Package evidence, and the
 // revision is minted here.
 type projectPromoteRequest struct {
@@ -207,9 +207,9 @@ func newProjectRedeployRevision() string {
 }
 
 // projectTemplateProdBinding builds the production binding: an instance of the
-// template kind named "<project>-prod", provisioned with farosMode: production,
+// template kind named "<project>-prod", provisioned with railgridMode: production,
 // the user's production input values, and each imageInput set to the built
-// digest. Platform-owned fields (name, farosMode, image inputs, and the
+// digest. Platform-owned fields (name, railgridMode, image inputs, and the
 // rollout revision) always win over anything in values. The optional revision
 // argument exists so promoteProject can mint once and return the exact value
 // written to the binding; callers that omit it get a fresh revision too.
@@ -239,7 +239,7 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 		merged[imageInput] = image
 	}
 	merged["name"] = name
-	merged["farosMode"] = "production"
+	merged["railgridMode"] = "production"
 	merged[projectRedeployRevisionField] = rolloutRevision
 	if err := validateProjectProductionValue(info.ProductionSchema, merged, "production settings"); err != nil {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, newValidationError(err.Error())

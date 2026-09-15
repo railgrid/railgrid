@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/faroshq/provider-kuery/queryapi"
+	"github.com/railgrid/provider-kuery/queryapi"
 )
 
 // queryInput is the kuery_query tool input: a raw kuery QuerySpec. Kept as

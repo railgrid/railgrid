@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,10 +30,10 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/google/uuid"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // projectAssistantRunView is the public run contract. Durable execution

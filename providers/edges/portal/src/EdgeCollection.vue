@@ -95,7 +95,7 @@ onActivated(() => emit('activated'))
     <FirstRunGuide
       v-if="showFirstRun"
       title="Connect your first edge"
-      description="Connect a Kubernetes cluster, Linux server, or macOS host. The Faros agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
+      description="Connect a Kubernetes cluster, Linux server, or macOS host. The Railgrid agent dials out, so the target needs no inbound firewall rule, VPN, or public IP."
       primary-label="Connect edge"
       :steps="edgeJourney"
       journey-label="Edge connection path"

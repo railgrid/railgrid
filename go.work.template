@@ -6,7 +6,7 @@
 //
 //	cp go.work.template go.work
 //
-// Workspace mode makes the provider modules resolve github.com/faroshq/provider-sdk
+// Workspace mode makes the provider modules resolve github.com/railgrid/provider-sdk
 // to the local ./provider-sdk source — so once the SDK is published and the
 // per-provider `replace` directives are dropped, you still develop the SDK and
 // the providers together in-tree without touching any go.mod.

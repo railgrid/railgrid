@@ -19,7 +19,7 @@ const workspaceControlHeader = fs.readFileSync(path.join(portalSrc, 'components/
 const popover = fs.readFileSync(path.join(portalSrc, 'composables/useAnchoredPopover.ts'), 'utf8')
 const providerFrame = fs.readFileSync(path.join(portalSrc, 'pages/ProviderFrame.vue'), 'utf8')
 const providersStore = fs.readFileSync(path.join(portalSrc, 'stores/providers.ts'), 'utf8')
-const farosUi = fs.readFileSync(path.join(root, 'provider-sdk/portalkit/faros-ui.css'), 'utf8')
+const railgridUi = fs.readFileSync(path.join(root, 'provider-sdk/portalkit/railgrid-ui.css'), 'utf8')
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -832,7 +832,7 @@ test('organization chooser is a standalone full-viewport surface without app chr
   assert.match(organizationsPage, /<div class="contour-grid contour-grid-fade pointer-events-none/)
   assert.doesNotMatch(organizationsPage, /<div class="contour-grid relative flex min-h-screen/)
   assert.match(organizationsPage, /<header[^>]*max-w-4xl/)
-  assert.match(organizationsPage, /<span[^>]*>FAROS<\/span>/)
+  assert.match(organizationsPage, /<span[^>]*>RAILGRID<\/span>/)
   assert.match(organizationsPage, /<main[^>]*items-start[^>]*justify-center/)
   assert.doesNotMatch(organizationsPage, /<main[^>]*lg:items-center|<main[^>]*items-center/)
   assert.match(organizationsPage, /<section class="w-full max-w-2xl"[^>]*aria-labelledby=/)
@@ -931,8 +931,8 @@ test('account developer access gates unverified Workspace context without anothe
   assert.match(accountMenu, /v-if="developerAccessReady"[\s\S]*:to="scopePath\('\/mcp'\)"/)
   assert.match(accountMenu, /:title="developerAccessDisabledReason"/)
   assert.doesNotMatch(accountMenu, /Using Workspace|developerScopeId|retryWorkspaceContext/)
-  assert.match(farosUi, /\.k-menu-item:focus-visible\s*\{[^}]*outline: 2px solid var\(--color-accent/s)
-  assert.match(farosUi, /\.k-menu-item:disabled,[\s\S]*\.k-menu-item\[aria-disabled="true"\][\s\S]*opacity: 0\.45/)
+  assert.match(railgridUi, /\.k-menu-item:focus-visible\s*\{[^}]*outline: 2px solid var\(--color-accent/s)
+  assert.match(railgridUi, /\.k-menu-item:disabled,[\s\S]*\.k-menu-item\[aria-disabled="true"\][\s\S]*opacity: 0\.45/)
 })
 
 test('member role controls have resource-specific names and use muted badges', () => {
@@ -1628,7 +1628,7 @@ test('provider catalog resets and fences late org-scoped responses', () => {
   const loadEnd = providers.indexOf('\n\n  // refreshBindings', loadStart)
   assert.ok(loadStart >= 0 && loadEnd > loadStart)
   const load = providers.slice(loadStart, loadEnd)
-  assert.match(load, /headers: targetOrgUUID \? \{ 'X-Faros-Org': targetOrgUUID \} : undefined/)
+  assert.match(load, /headers: targetOrgUUID \? \{ 'X-Railgrid-Org': targetOrgUUID \} : undefined/)
   assert.doesNotMatch(load, /tenant:\s*true/)
 })
 

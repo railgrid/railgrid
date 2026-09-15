@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 )
 
 // The hub identifies a tenant to a provider by the workspace's kcp
-// logical-cluster ID — the same value in X-Faros-Tenant and X-Faros-Cluster —
+// logical-cluster ID — the same value in X-Railgrid-Tenant and X-Railgrid-Cluster —
 // never by the workspace path. A provider that needs the path anyway (to
 // derive the organization / workspace UUIDs it keys durable state on, or to
 // hand a workload identity its tenant path) asks kcp: the workspace's
@@ -43,8 +43,8 @@ const (
 	// LogicalClusterIDAnnotation carries a workspace's logical-cluster ID.
 	LogicalClusterIDAnnotation = "kcp.io/cluster"
 	// TenantPathPrefix is the parent of every Organization workspace; a tenant
-	// path is root:faros:tenants:<orgUUID>[:<workspaceUUID>].
-	TenantPathPrefix = "root:faros:tenants:"
+	// path is root:railgrid:tenants:<orgUUID>[:<workspaceUUID>].
+	TenantPathPrefix = "root:railgrid:tenants:"
 	// DefaultWorkspaceResolverTTL bounds how long a WorkspaceResolver keeps a
 	// (clusterID → Workspace) mapping. The mapping is stable for a workspace's
 	// lifetime; the TTL only lets a deleted-and-recreated ID age out.

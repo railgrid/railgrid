@@ -14,7 +14,7 @@ import {
 } from './assistantResources'
 import { filterAssistantSkills } from './skillsSearch'
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectAssistantContextResource,
   ProjectAssistantRunMode,
   ProjectAssistantSkill,
@@ -27,7 +27,7 @@ const props = defineProps<{
   open: boolean
   commandQuery: string
   preserveComposerFocus?: boolean
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   providers: ProviderItem[]
   skills: ProjectAssistantSkill[]
   selectedSkillIDs: string[]

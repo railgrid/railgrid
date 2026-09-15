@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strings"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func validateCodingSandboxConfig(spec infrav1alpha1.InfrastructureProviderSpec) error {

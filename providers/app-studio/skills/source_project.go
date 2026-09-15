@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const defaultProjectSkillsRoot = ".agents/skills"
@@ -38,7 +38,7 @@ const ProjectSkillsRoot = defaultProjectSkillsRoot
 // ProjectMetadataPath stores activation/distribution metadata outside any
 // skill package. It is deliberately a workspace-relative path so it can never
 // expose a provider host path through a catalog response.
-const ProjectMetadataPath = defaultProjectSkillsRoot + "/.faros-catalog.json"
+const ProjectMetadataPath = defaultProjectSkillsRoot + "/.railgrid-catalog.json"
 
 const projectMetadataVersion = 1
 
@@ -176,7 +176,7 @@ func projectMetadataEntryCount(metadata ProjectMetadata) int {
 func validateProjectMetadataActivations(activations map[string]Activation, system bool) error {
 	for rawPath, activation := range activations {
 		clean, err := cleanPublicPackagePath(rawPath)
-		if err != nil || clean != rawPath || len([]byte(clean)) > workspace.MaxProjectPathBytes || strings.Contains(clean, "/.faros-") || strings.HasPrefix(clean, ".faros-") {
+		if err != nil || clean != rawPath || len([]byte(clean)) > workspace.MaxProjectPathBytes || strings.Contains(clean, "/.railgrid-") || strings.HasPrefix(clean, ".railgrid-") {
 			if system {
 				return errors.New("project skill metadata contains an invalid bundled package identity")
 			}

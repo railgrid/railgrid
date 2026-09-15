@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,26 +16,26 @@ limitations under the License.
 
 import { readFileSync } from "node:fs";
 
-export const previewBridgeJWKSPath = "/faros/bin/preview-bridge-jwks.json";
+export const previewBridgeJWKSPath = "/railgrid/bin/preview-bridge-jwks.json";
 
 const previewBridgeClient = String.raw`(() => {
   "use strict";
 
-  const TRUSTED_VERIFICATION_KEYS = __FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__;
+  const TRUSTED_VERIFICATION_KEYS = __RAILGRID_PREVIEW_BRIDGE_VERIFICATION_KEYS__;
   const VERSION = 1;
-  const READY = "faros.preview-bridge.ready";
-  const PROBE = "faros.preview-bridge.probe";
-  const START = "faros.preview-bridge.start";
-  const CONNECTED = "faros.preview-bridge.connected";
-  const ANNOTATION_START = "faros.preview-bridge.annotation.start";
-  const ANNOTATION_STOP = "faros.preview-bridge.annotation.stop";
-  const ANNOTATION_PINS = "faros.preview-bridge.annotation.pins";
-  const ANNOTATION_PINS_RENDERED = "faros.preview-bridge.annotation.pins-rendered";
-  const ANNOTATION_PIN_HOVER = "faros.preview-bridge.annotation.pin-hover";
-  const ANNOTATION_PIN_SELECTED = "faros.preview-bridge.annotation.pin-selected";
-  const ANNOTATION_SELECTED = "faros.preview-bridge.annotation.selected";
-  const ANNOTATION_CANCELLED = "faros.preview-bridge.annotation.cancelled";
-  const ANNOTATION_MODE = "faros.preview-bridge.annotation.mode";
+  const READY = "railgrid.preview-bridge.ready";
+  const PROBE = "railgrid.preview-bridge.probe";
+  const START = "railgrid.preview-bridge.start";
+  const CONNECTED = "railgrid.preview-bridge.connected";
+  const ANNOTATION_START = "railgrid.preview-bridge.annotation.start";
+  const ANNOTATION_STOP = "railgrid.preview-bridge.annotation.stop";
+  const ANNOTATION_PINS = "railgrid.preview-bridge.annotation.pins";
+  const ANNOTATION_PINS_RENDERED = "railgrid.preview-bridge.annotation.pins-rendered";
+  const ANNOTATION_PIN_HOVER = "railgrid.preview-bridge.annotation.pin-hover";
+  const ANNOTATION_PIN_SELECTED = "railgrid.preview-bridge.annotation.pin-selected";
+  const ANNOTATION_SELECTED = "railgrid.preview-bridge.annotation.selected";
+  const ANNOTATION_CANCELLED = "railgrid.preview-bridge.annotation.cancelled";
+  const ANNOTATION_MODE = "railgrid.preview-bridge.annotation.mode";
   const MAX_ANNOTATION_STRING = 240;
   const MAX_ANNOTATION_TEXT = 320;
   const MAX_ANNOTATION_SELECTOR = 320;
@@ -207,13 +207,13 @@ const previewBridgeClient = String.raw`(() => {
   };
 
   const directAnnotationLocator = (element) => {
-    const farosID = annotationAttribute(element, "data-faros-id");
+    const railgridID = annotationAttribute(element, "data-railgrid-id");
     const id = annotationAttribute(element, "id");
     const standardTestID = annotationAttribute(element, "data-testid");
     const alternateTestID = annotationAttribute(element, "data-test-id");
     const testID = standardTestID || alternateTestID;
     const candidates = [];
-    if (farosID) candidates.push({ locator: attributeSelector("data-faros-id", farosID), strategy: "css" });
+    if (railgridID) candidates.push({ locator: attributeSelector("data-railgrid-id", railgridID), strategy: "css" });
     if (id) candidates.push({ locator: idSelector(id), strategy: "css" });
     if (testID) candidates.push({
       locator: attributeSelector(standardTestID ? "data-testid" : "data-test-id", testID),
@@ -539,14 +539,14 @@ const previewBridgeClient = String.raw`(() => {
   const installAnnotationCursor = () => {
     if (annotationCursorStyle || typeof document === "undefined") return;
     annotationCursorStyle = document.createElement("style");
-    annotationCursorStyle.setAttribute("data-faros-annotation-cursor", "true");
+    annotationCursorStyle.setAttribute("data-railgrid-annotation-cursor", "true");
     annotationCursorStyle.textContent =
-      "html[data-faros-annotation-mode=\"true\"]," +
-      "html[data-faros-annotation-mode=\"true\"] * {" +
+      "html[data-railgrid-annotation-mode=\"true\"]," +
+      "html[data-railgrid-annotation-mode=\"true\"] * {" +
       "cursor: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M5 3.5h16a3.5 3.5 0 0 1 3.5 3.5v10a3.5 3.5 0 0 1-3.5 3.5h-7l-5.5 4v-4H5A3.5 3.5 0 0 1 1.5 17V7A3.5 3.5 0 0 1 5 3.5Z' fill='%238b6bff' stroke='white' stroke-width='2'/%3E%3Ccircle cx='8' cy='12' r='1.3' fill='white'/%3E%3Ccircle cx='13' cy='12' r='1.3' fill='white'/%3E%3Ccircle cx='18' cy='12' r='1.3' fill='white'/%3E%3C/svg%3E\") 5 5, crosshair !important;" +
       "}";
     (document.head || document.documentElement)?.append(annotationCursorStyle);
-    document.documentElement?.setAttribute("data-faros-annotation-mode", "true");
+    document.documentElement?.setAttribute("data-railgrid-annotation-mode", "true");
   };
 
   const removeAnnotationCursor = () => {
@@ -554,7 +554,7 @@ const previewBridgeClient = String.raw`(() => {
       annotationCursorStyle = null;
       return;
     }
-    document.documentElement?.removeAttribute("data-faros-annotation-mode");
+    document.documentElement?.removeAttribute("data-railgrid-annotation-mode");
     if (annotationCursorStyle) annotationCursorStyle.remove();
     annotationCursorStyle = null;
   };
@@ -589,10 +589,10 @@ const previewBridgeClient = String.raw`(() => {
     for (let depth = 0; current && depth < 8; depth++) {
       try {
         if (
-          current.getAttribute?.("data-faros-annotation-pin") === "true" ||
-          current.getAttribute?.("data-faros-annotation-pins") === "true" ||
-          current.getAttribute?.("data-faros-annotation-overlay") === "true" ||
-          current.getAttribute?.("data-faros-annotation-cursor") === "true"
+          current.getAttribute?.("data-railgrid-annotation-pin") === "true" ||
+          current.getAttribute?.("data-railgrid-annotation-pins") === "true" ||
+          current.getAttribute?.("data-railgrid-annotation-overlay") === "true" ||
+          current.getAttribute?.("data-railgrid-annotation-cursor") === "true"
         ) return current;
       } catch {
         return null;
@@ -690,7 +690,7 @@ const previewBridgeClient = String.raw`(() => {
     if (!connected || !port || typeof document === "undefined") return false;
     stopAnnotationMode("restarted", false);
     annotationOverlay = document.createElement("div");
-    annotationOverlay.setAttribute("data-faros-annotation-overlay", "true");
+    annotationOverlay.setAttribute("data-railgrid-annotation-overlay", "true");
     annotationOverlay.setAttribute("aria-hidden", "true");
     Object.assign(annotationOverlay.style, {
       position: "fixed",
@@ -751,7 +751,7 @@ const previewBridgeClient = String.raw`(() => {
       return;
     }
     annotationPinLayer = document.createElement("div");
-    annotationPinLayer.setAttribute("data-faros-annotation-pins", "true");
+    annotationPinLayer.setAttribute("data-railgrid-annotation-pins", "true");
     Object.assign(annotationPinLayer.style, {
       position: "fixed",
       left: "0",
@@ -775,8 +775,8 @@ const previewBridgeClient = String.raw`(() => {
       pin.textContent = label || "?";
       pin.setAttribute("type", "button");
       pin.setAttribute("aria-label", "Annotation " + (label || "?"));
-      pin.setAttribute("data-faros-annotation-pin", "true");
-      pin.setAttribute("data-faros-annotation-id", id);
+      pin.setAttribute("data-railgrid-annotation-pin", "true");
+      pin.setAttribute("data-railgrid-annotation-id", id);
       Object.assign(pin.style, {
         position: "absolute",
         left: "0",
@@ -1064,19 +1064,19 @@ function verificationKeys(configuration) {
 export function previewBridgeClientSource(configuration) {
   const keys = verificationKeys(configuration);
   const encoded = JSON.stringify(keys).replaceAll("<", "\\u003c");
-  return previewBridgeClient.replace("__FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__", encoded);
+  return previewBridgeClient.replace("__RAILGRID_PREVIEW_BRIDGE_VERIFICATION_KEYS__", encoded);
 }
 
 export function createPreviewBridgePlugin(configuration) {
   const client = previewBridgeClientSource(configuration);
   return {
-    name: "faros-preview-bridge-v1",
+    name: "railgrid-preview-bridge-v1",
     enforce: "pre",
     apply: "serve",
     transformIndexHtml() {
       return [{
         tag: "script",
-        attrs: { "data-faros-preview-bridge": "v1" },
+        attrs: { "data-railgrid-preview-bridge": "v1" },
         children: client,
         injectTo: "head-prepend",
       }];

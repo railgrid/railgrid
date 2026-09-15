@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,14 +34,14 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	farosv1alpha1 "github.com/faroshq/faros/apis/faros/v1alpha1"
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 )
 
-func newServer(name string, readOnly bool) *farosv1alpha1.MCPServer {
-	return &farosv1alpha1.MCPServer{
+func newServer(name string, readOnly bool) *railgridv1alpha1.MCPServer {
+	return &railgridv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("uid-" + name)},
-		Spec:       farosv1alpha1.MCPServerSpec{ReadOnly: readOnly},
+		Spec:       railgridv1alpha1.MCPServerSpec{ReadOnly: readOnly},
 	}
 }
 
@@ -87,18 +87,18 @@ func assertNoWildcards(t *testing.T, rules []rbacv1.PolicyRule) {
 
 func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("code.faros.sh", "repositories"),
-		bound("code.faros.sh", "connections"),
-		bound("edges.faros.sh", "kubernetesclusters"),
-		bound("infrastructure.faros.sh", "templates"),
-		bound("infrastructure.faros.sh", "instances"),
+		bound("code.railgrid.ai", "repositories"),
+		bound("code.railgrid.ai", "connections"),
+		bound("edges.railgrid.ai", "kubernetesclusters"),
+		bound("infrastructure.railgrid.ai", "templates"),
+		bound("infrastructure.railgrid.ai", "instances"),
 	}, []ActionGrant{
-		{Group: "databricks.faros.sh", Resource: "tables", Name: "query_table", ReadOnly: true}, // not bound: ignored
-		{Group: "infrastructure.faros.sh", Resource: "instances", Name: "restart"},
+		{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}, // not bound: ignored
+		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"},
 	}, false)
 	assertNoWildcards(t, rules)
 
-	code := findRule(t, rules, "code.faros.sh", "repositories")
+	code := findRule(t, rules, "code.railgrid.ai", "repositories")
 	if code == nil || !slices.Equal(code.Resources, []string{"connections", "repositories"}) {
 		t.Fatalf("code rule = %+v, want sorted connections+repositories", code)
 	}
@@ -107,12 +107,12 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 		t.Fatalf("code verbs = %v, want %v", code.Verbs, wantVerbs)
 	}
 
-	if r := findRule(t, rules, "edges.faros.sh", "kubernetesclusters"); r == nil {
+	if r := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters"); r == nil {
 		t.Fatal("missing edges rule")
 	}
 	var proxy bool
 	for _, r := range rules {
-		if slices.Contains(r.APIGroups, "edges.faros.sh") && slices.Equal(r.Verbs, []string{"proxy"}) {
+		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
 			proxy = true
 		}
 	}
@@ -120,15 +120,15 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 		t.Fatalf("missing proxy verb on edges resources: %+v", rules)
 	}
 
-	exec := findRule(t, rules, "infrastructure.faros.sh", "instances/exec")
+	exec := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec")
 	if exec == nil || !slices.Equal(exec.Verbs, []string{"create"}) {
 		t.Fatalf("exec rule = %+v, want create", exec)
 	}
-	action := findRule(t, rules, "infrastructure.faros.sh", "instances/restart")
+	action := findRule(t, rules, "infrastructure.railgrid.ai", "instances/restart")
 	if action == nil || !slices.Equal(action.Verbs, []string{"create"}) {
 		t.Fatalf("action rule = %+v, want create", action)
 	}
-	if r := findRule(t, rules, "databricks.faros.sh", "tables/query_table"); r != nil {
+	if r := findRule(t, rules, "databricks.railgrid.ai", "tables/query_table"); r != nil {
 		t.Fatalf("action for an unbound resource must not be granted: %+v", r)
 	}
 
@@ -150,29 +150,29 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 // grows later) must not pick up an /exec grant just by sharing the group.
 func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("infrastructure.faros.sh", "templates"),
-		bound("infrastructure.faros.sh", "instances"),
-		bound("infrastructure.faros.sh", "executions"),
+		bound("infrastructure.railgrid.ai", "templates"),
+		bound("infrastructure.railgrid.ai", "instances"),
+		bound("infrastructure.railgrid.ai", "executions"),
 	}, nil, false)
 	assertNoWildcards(t, rules)
 
-	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/exec"); r == nil {
+	if r := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec"); r == nil {
 		t.Fatalf("instances/exec not granted: %+v", rules)
 	}
 	for _, res := range []string{"templates/exec", "executions/exec"} {
-		if r := findRule(t, rules, "infrastructure.faros.sh", res); r != nil {
+		if r := findRule(t, rules, "infrastructure.railgrid.ai", res); r != nil {
 			t.Fatalf("%s must not be granted: %+v", res, r)
 		}
 	}
 
 	// A group whose data plane serves every bound resource keeps them all.
 	edges := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("edges.faros.sh", "kubernetesclusters"),
-		bound("edges.faros.sh", "linuxservers"),
+		bound("edges.railgrid.ai", "kubernetesclusters"),
+		bound("edges.railgrid.ai", "linuxservers"),
 	}, nil, false)
 	var proxied []string
 	for _, r := range edges {
-		if slices.Contains(r.APIGroups, "edges.faros.sh") && slices.Equal(r.Verbs, []string{"proxy"}) {
+		if slices.Contains(r.APIGroups, "edges.railgrid.ai") && slices.Equal(r.Verbs, []string{"proxy"}) {
 			proxied = r.Resources
 		}
 	}
@@ -185,7 +185,7 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 // nothing at all, rather than falling back to whatever else is bound.
 func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("infrastructure.faros.sh", "templates"),
+		bound("infrastructure.railgrid.ai", "templates"),
 	}, nil, false)
 	for _, r := range rules {
 		for _, res := range r.Resources {
@@ -198,12 +198,12 @@ func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {
 
 func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 	rules := buildRules([]apisv1alpha2.BoundAPIResource{
-		bound("code.faros.sh", "repositories"),
-		bound("edges.faros.sh", "kubernetesclusters"),
-		bound("infrastructure.faros.sh", "instances"),
+		bound("code.railgrid.ai", "repositories"),
+		bound("edges.railgrid.ai", "kubernetesclusters"),
+		bound("infrastructure.railgrid.ai", "instances"),
 	}, []ActionGrant{
-		{Group: "infrastructure.faros.sh", Resource: "instances", Name: "describe", ReadOnly: true},
-		{Group: "infrastructure.faros.sh", Resource: "instances", Name: "restart"},
+		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "describe", ReadOnly: true},
+		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"},
 	}, true)
 	assertNoWildcards(t, rules)
 
@@ -214,17 +214,17 @@ func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 			}
 		}
 	}
-	code := findRule(t, rules, "code.faros.sh", "repositories")
+	code := findRule(t, rules, "code.railgrid.ai", "repositories")
 	if code == nil || !slices.Equal(code.Verbs, []string{"get", "list", "watch"}) {
 		t.Fatalf("code verbs = %+v, want read-only", code)
 	}
-	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/exec"); r != nil {
+	if r := findRule(t, rules, "infrastructure.railgrid.ai", "instances/exec"); r != nil {
 		t.Fatalf("readOnly must not grant exec: %+v", r)
 	}
-	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/restart"); r != nil {
+	if r := findRule(t, rules, "infrastructure.railgrid.ai", "instances/restart"); r != nil {
 		t.Fatalf("readOnly must not grant a mutating action: %+v", r)
 	}
-	if r := findRule(t, rules, "infrastructure.faros.sh", "instances/describe"); r == nil {
+	if r := findRule(t, rules, "infrastructure.railgrid.ai", "instances/describe"); r == nil {
 		t.Fatal("readOnly should keep read-only actions")
 	}
 	// The edges tunnel serves kubectl delete, exec and SSH shells under the
@@ -264,10 +264,10 @@ func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
 
 func TestActionGrantsFromSpec(t *testing.T) {
 	got := actionGrantsFromSpec([]providersv1alpha1.ProviderActionSpec{
-		{ID: "query_table/v1", ReadOnly: true, BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "databricks.faros.sh/v1alpha1", Resource: "tables"}},
+		{ID: "query_table/v1", ReadOnly: true, BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "databricks.railgrid.ai/v1alpha1", Resource: "tables"}},
 		{ID: "bad", BoundResource: providersv1alpha1.ProviderActionBoundResource{APIVersion: "x/v1"}}, // no resource
 	})
-	want := []ActionGrant{{Group: "databricks.faros.sh", Resource: "tables", Name: "query_table", ReadOnly: true}}
+	want := []ActionGrant{{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("grants = %+v, want %+v", got, want)
 	}
@@ -281,7 +281,7 @@ func TestActionGrantsFromSpec(t *testing.T) {
 // that predate the marker: a legacy entry must not be granted just because
 // it is stored.
 func TestActionGrantsFromSpec_SkipsIDsWithoutAVersion(t *testing.T) {
-	res := providersv1alpha1.ProviderActionBoundResource{APIVersion: "infrastructure.faros.sh/v1alpha1", Resource: "instances"}
+	res := providersv1alpha1.ProviderActionBoundResource{APIVersion: "infrastructure.railgrid.ai/v1alpha1", Resource: "instances"}
 	for _, id := range []string{
 		"restart", "restart/", "  restart  ", "/v1", "",
 		// A slash with something after it is not enough: the version must be
@@ -311,7 +311,7 @@ func TestEnsureMCPIdentity_NeverBindsClusterAdmin(t *testing.T) {
 	ctx := context.Background()
 	srv := newServer("default", false)
 	kube := kubefake.NewSimpleClientset(populatedTokenSecret(srv.Name))
-	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.faros.sh", "repositories")))
+	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.railgrid.ai", "repositories")))
 
 	r := &Reconciler{actionGrants: func(context.Context) ([]ActionGrant, error) { return nil, nil }}
 	rules, err := r.desiredRules(ctx, kcp, srv)
@@ -333,13 +333,13 @@ func TestEnsureMCPIdentity_NeverBindsClusterAdmin(t *testing.T) {
 	if crb.RoleRef.Name == "cluster-admin" {
 		t.Fatal("binding references cluster-admin")
 	}
-	if crb.RoleRef.Name != "faros:mcpserver:default" || crb.RoleRef.Kind != "ClusterRole" {
+	if crb.RoleRef.Name != "railgrid:mcpserver:default" || crb.RoleRef.Kind != "ClusterRole" {
 		t.Fatalf("roleRef = %+v", crb.RoleRef)
 	}
 	if len(crb.OwnerReferences) != 1 || crb.OwnerReferences[0].UID != srv.UID {
 		t.Fatalf("binding not owned by the MCPServer: %+v", crb.OwnerReferences)
 	}
-	role, err := kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+	role, err := kube.RbacV1().ClusterRoles().Get(ctx, "railgrid:mcpserver:default", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get role: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestEnsureMCPIdentity_NeverBindsClusterAdmin(t *testing.T) {
 		t.Fatalf("role not owned by the MCPServer: %+v", role.OwnerReferences)
 	}
 	assertNoWildcards(t, role.Rules)
-	if findRule(t, role.Rules, "code.faros.sh", "repositories") == nil {
+	if findRule(t, role.Rules, "code.railgrid.ai", "repositories") == nil {
 		t.Fatalf("role rules = %+v, want repositories", role.Rules)
 	}
 }
@@ -382,7 +382,7 @@ func TestEnsureMCPRBAC_ReplacesClusterAdminBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get binding: %v", err)
 	}
-	if crb.RoleRef.Name != "faros:mcpserver:default" {
+	if crb.RoleRef.Name != "railgrid:mcpserver:default" {
 		t.Fatalf("roleRef = %+v, want generated role", crb.RoleRef)
 	}
 	if len(crb.OwnerReferences) != 1 || crb.OwnerReferences[0].UID != srv.UID {
@@ -406,7 +406,7 @@ func TestEnsureMCPRBAC_ConvergesBindingSubjectsAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	srv := newServer("default", false)
 	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
-	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "faros:mcpserver:default"}
+	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "railgrid:mcpserver:default"}
 	drifted := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "default-mcp"},
 		Subjects: []rbacv1.Subject{
@@ -469,7 +469,7 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
 	rules := buildRules(nil, nil, false)
 	orphaned := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "faros:mcpserver:default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "railgrid:mcpserver:default"},
 		Rules:      rules,
 	}
 	kube := kubefake.NewSimpleClientset(orphaned)
@@ -477,7 +477,7 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", rules); err != nil {
 		t.Fatalf("ensureMCPRBAC: %v", err)
 	}
-	role, err := kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+	role, err := kube.RbacV1().ClusterRoles().Get(ctx, "railgrid:mcpserver:default", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get role: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", rules); err != nil {
 		t.Fatalf("second ensureMCPRBAC: %v", err)
 	}
-	role, err = kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+	role, err = kube.RbacV1().ClusterRoles().Get(ctx, "railgrid:mcpserver:default", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get role: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 func TestCachedActionGrants_ReusesResultWithinTTL(t *testing.T) {
 	ctx := context.Background()
 	var calls int
-	grant := ActionGrant{Group: "infrastructure.faros.sh", Resource: "instances", Name: "restart"}
+	grant := ActionGrant{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"}
 	src := cachedActionGrants(func(context.Context) ([]ActionGrant, error) {
 		calls++
 		return []ActionGrant{grant}, nil
@@ -548,7 +548,7 @@ func TestEnsureMCPRBAC_SecondReconcileAddsRulesForNewBinding(t *testing.T) {
 	srv := newServer("default", false)
 	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
 	var kube kubernetes.Interface = kubefake.NewSimpleClientset()
-	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.faros.sh", "repositories")))
+	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.railgrid.ai", "repositories")))
 	r := &Reconciler{actionGrants: func(context.Context) ([]ActionGrant, error) { return nil, nil }}
 
 	reconcileRBAC := func() *rbacv1.ClusterRole {
@@ -560,7 +560,7 @@ func TestEnsureMCPRBAC_SecondReconcileAddsRulesForNewBinding(t *testing.T) {
 		if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", rules); err != nil {
 			t.Fatalf("ensureMCPRBAC: %v", err)
 		}
-		role, err := kube.RbacV1().ClusterRoles().Get(ctx, "faros:mcpserver:default", metav1.GetOptions{})
+		role, err := kube.RbacV1().ClusterRoles().Get(ctx, "railgrid:mcpserver:default", metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("get role: %v", err)
 		}
@@ -568,19 +568,19 @@ func TestEnsureMCPRBAC_SecondReconcileAddsRulesForNewBinding(t *testing.T) {
 	}
 
 	role := reconcileRBAC()
-	if findRule(t, role.Rules, "edges.faros.sh", "kubernetesclusters") != nil {
+	if findRule(t, role.Rules, "edges.railgrid.ai", "kubernetesclusters") != nil {
 		t.Fatalf("edges granted before the binding exists: %+v", role.Rules)
 	}
 
 	// A provider is enabled: its APIBinding appears with bound resources.
-	if _, err := kcp.ApisV1alpha2().APIBindings().Create(ctx, newBinding("edges", bound("edges.faros.sh", "kubernetesclusters")), metav1.CreateOptions{}); err != nil {
+	if _, err := kcp.ApisV1alpha2().APIBindings().Create(ctx, newBinding("edges", bound("edges.railgrid.ai", "kubernetesclusters")), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create binding: %v", err)
 	}
 	role = reconcileRBAC()
-	if findRule(t, role.Rules, "edges.faros.sh", "kubernetesclusters") == nil {
+	if findRule(t, role.Rules, "edges.railgrid.ai", "kubernetesclusters") == nil {
 		t.Fatalf("edges not granted after the binding appeared: %+v", role.Rules)
 	}
-	if findRule(t, role.Rules, "code.faros.sh", "repositories") == nil {
+	if findRule(t, role.Rules, "code.railgrid.ai", "repositories") == nil {
 		t.Fatalf("existing grant lost: %+v", role.Rules)
 	}
 	assertNoWildcards(t, role.Rules)
@@ -588,7 +588,7 @@ func TestEnsureMCPRBAC_SecondReconcileAddsRulesForNewBinding(t *testing.T) {
 
 func TestListBoundResources(t *testing.T) {
 	kcp := kcpfake.NewSimpleClientset(
-		newBinding("a", bound("code.faros.sh", "repositories"), bound("code.faros.sh", "connections")),
+		newBinding("a", bound("code.railgrid.ai", "repositories"), bound("code.railgrid.ai", "connections")),
 		newBinding("pending"), // not yet bound
 	)
 	got, err := listBoundResources(context.Background(), kcp)
@@ -600,7 +600,7 @@ func TestListBoundResources(t *testing.T) {
 		names = append(names, b.Group+"/"+b.Resource)
 	}
 	slices.Sort(names)
-	if want := "code.faros.sh/connections,code.faros.sh/repositories"; strings.Join(names, ",") != want {
+	if want := "code.railgrid.ai/connections,code.railgrid.ai/repositories"; strings.Join(names, ",") != want {
 		t.Fatalf("bound = %v, want %s", names, want)
 	}
 }

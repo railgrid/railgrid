@@ -1,0 +1,22 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: ai.railgrid.ai
+spec:
+  resources:
+  - group: ai.railgrid.ai
+    name: projects
+    schema: v260915-52c2152f.projects.ai.railgrid.ai
+    storage:
+      crd: {}
+  - group: ai.railgrid.ai
+    name: sessions
+    schema: v260806-59f3b567.sessions.ai.railgrid.ai
+    storage:
+      crd: {}
+  - group: ai.railgrid.ai
+    name: studios
+    schema: v260809-dbe6b457.studios.ai.railgrid.ai
+    storage:
+      crd: {}
+status: {}

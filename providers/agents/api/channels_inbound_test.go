@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,10 +33,10 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/executor"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/executor"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 func TestParseTelegramUpdate(t *testing.T) {

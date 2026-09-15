@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,12 +35,12 @@ import (
 // SvcPolicyHeader for how it answers). Exported so out-of-package callers that
 // build their own tunnel requests (e.g. the events WebSocket subscriber) set
 // the same header — prefer Target.SetSvcHeaders.
-const SvcTargetHeader = "X-Faros-Svc-Target"
+const SvcTargetHeader = "X-Railgrid-Svc-Target"
 
 // SvcTLSInsecureHeader mirrors the agent-side constant: "true" tells the agent
 // to skip TLS verification for a non-loopback https target. Set from
 // Service.spec.tlsInsecureSkipVerify.
-const SvcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
+const SvcTLSInsecureHeader = "X-Railgrid-Svc-TLS-Insecure"
 
 // SvcPolicyHeader is the response header the agent stamps when its host policy
 // acted: SvcPolicyEnforce on a 403 refusing the target (never dialed),
@@ -48,7 +48,7 @@ const SvcTLSInsecureHeader = "X-Faros-Svc-TLS-Insecure"
 // --svc-policy=warn. Its presence on a 403 distinguishes an agent refusal from
 // a 403 the service itself returned.
 const (
-	SvcPolicyHeader  = "X-Faros-Svc-Policy"
+	SvcPolicyHeader  = "X-Railgrid-Svc-Policy"
 	SvcPolicyEnforce = "enforce"
 	SvcPolicyWarn    = "warn"
 )
@@ -57,7 +57,7 @@ const (
 const svcTargetHeader = SvcTargetHeader
 
 // IsHostNotAllowed reports whether resp is the agent refusing to dial the
-// target (403 with X-Faros-Svc-Policy: enforce), as opposed to a 403 from
+// target (403 with X-Railgrid-Svc-Policy: enforce), as opposed to a 403 from
 // the service. See pkg/agent/tunnel/svc.go.
 func IsHostNotAllowed(resp *http.Response) bool {
 	return resp != nil && resp.StatusCode == http.StatusForbidden &&
@@ -85,7 +85,7 @@ type Target struct {
 	TLSInsecureSkipVerify bool
 }
 
-// SvcTarget returns the value for the X-Faros-Svc-Target header. The agent
+// SvcTarget returns the value for the X-Railgrid-Svc-Target header. The agent
 // validates the host against its policy (loopback always; cluster DNS in
 // kubernetes mode; --svc-allow-cidr otherwise).
 func (t Target) SvcTarget() string {

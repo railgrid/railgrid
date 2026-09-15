@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 const (
@@ -75,16 +75,16 @@ func newEdgeBackedProxy(t *testing.T, orgOfCaller string) (*ProviderProxy, *edge
 }
 
 // newEdgeBackedProxyWithTenant builds the proxy without a delegated issuer,
-// resolving the caller to root:faros:tenants:{org}[:{ws}].
+// resolving the caller to root:railgrid:tenants:{org}[:{ws}].
 func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) (*ProviderProxy, *edgeUpstream) {
 	t.Helper()
 	rec := &edgeUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.hit = true
 		rec.path = r.URL.Path
-		rec.user = r.Header.Get("X-Faros-User")
-		rec.tenant = r.Header.Get("X-Faros-Tenant")
-		rec.cluster = r.Header.Get("X-Faros-Cluster")
+		rec.user = r.Header.Get("X-Railgrid-User")
+		rec.tenant = r.Header.Get("X-Railgrid-Tenant")
+		rec.cluster = r.Header.Get("X-Railgrid-Cluster")
 		rec.authorization = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -115,7 +115,7 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		if orgOfCaller == "" {
 			return "", "", errors.New("anonymous caller")
 		}
-		path := "root:faros:tenants:" + orgOfCaller
+		path := "root:railgrid:tenants:" + orgOfCaller
 		if wsOfCaller != "" {
 			path += ":" + wsOfCaller
 		}
@@ -136,7 +136,7 @@ func testClusterResolver(_ context.Context, tenantPath string) (string, error) {
 }
 
 func testClusterIDFor(tenantPath string) string {
-	return "lc-" + strings.ReplaceAll(strings.TrimPrefix(tenantPath, "root:faros:tenants:"), ":", "-")
+	return "lc-" + strings.ReplaceAll(strings.TrimPrefix(tenantPath, "root:railgrid:tenants:"), ":", "-")
 }
 
 // serveProxy sends an authenticated request, the way the portal does.
@@ -165,7 +165,7 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	}
 	// The edges provider strips /services/providers/edges, so its handler must
 	// see the edgeproxy path with the hub-owned Service named.
-	wantPrefix := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy"
+	wantPrefix := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 	if got := rec.path; got != wantPrefix+"/dataplane/clusters/x/apps/demo/log" {
 		t.Errorf("edges provider saw path %q, want %q", got, wantPrefix+"/dataplane/clusters/x/apps/demo/log")
 	}
@@ -187,10 +187,10 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
 	if rec.user != "alice" {
-		t.Errorf("X-Faros-User = %q, want alice — the far end cannot authorize without it", rec.user)
+		t.Errorf("X-Railgrid-User = %q, want alice — the far end cannot authorize without it", rec.user)
 	}
-	if want := testClusterIDFor("root:faros:tenants:" + testOrg + ":" + testWS); rec.tenant != want || rec.cluster != want {
-		t.Errorf("X-Faros-Tenant / X-Faros-Cluster = (%q, %q), want the caller's workspace cluster ID %q in both", rec.tenant, rec.cluster, want)
+	if want := testClusterIDFor("root:railgrid:tenants:" + testOrg + ":" + testWS); rec.tenant != want || rec.cluster != want {
+		t.Errorf("X-Railgrid-Tenant / X-Railgrid-Cluster = (%q, %q), want the caller's workspace cluster ID %q in both", rec.tenant, rec.cluster, want)
 	}
 	if rec.authorization != "Bearer "+delegatedToken {
 		t.Errorf("Authorization = %q, want the delegated token", rec.authorization)
@@ -304,7 +304,7 @@ func TestBackendProxyPlatformProviderStillReceivesCallerBearer(t *testing.T) {
 	reg.Upsert(Provider{Name: "infrastructure", BackendURL: backendURL, EndpointsValid: true})
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		return "alice", "root:faros:tenants:" + testOrg + ":" + testWS, nil
+		return "alice", "root:railgrid:tenants:" + testOrg + ":" + testWS, nil
 	}))
 	issuer := &recordingIssuer{}
 	proxy.SetDelegatedTokenIssuer(issuer)
@@ -328,7 +328,7 @@ func TestBackendProxyResolvesCallerOnce(t *testing.T) {
 	resolves := 0
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
 		resolves++
-		return "alice", "root:faros:tenants:" + testOrg + ":" + testWS, nil
+		return "alice", "root:railgrid:tenants:" + testOrg + ":" + testWS, nil
 	}))
 
 	serveProxy(proxy, "/services/providers/infrastructure/dataplane/x")
@@ -376,7 +376,7 @@ func TestBackendProxyUnusableEdgeRouteIs503(t *testing.T) {
 	})
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		return "alice", "root:faros:tenants:" + testOrg, nil
+		return "alice", "root:railgrid:tenants:" + testOrg, nil
 	}))
 
 	if w := serveProxy(proxy, "/services/providers/infrastructure/x"); w.Code != http.StatusServiceUnavailable {
@@ -401,7 +401,7 @@ func TestBackendProxyOrgProviderWithoutEdgeRouteNeverDialsBackendURL(t *testing.
 	})
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		return "alice", "root:faros:tenants:" + testOrg, nil
+		return "alice", "root:railgrid:tenants:" + testOrg, nil
 	}))
 
 	if w := serveProxy(proxy, "/services/providers/infrastructure/x"); w.Code != http.StatusServiceUnavailable {
@@ -426,7 +426,7 @@ func TestBackendProxyWithoutEdgesProviderIs503(t *testing.T) {
 	})
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		return "alice", "root:faros:tenants:" + testOrg, nil
+		return "alice", "root:railgrid:tenants:" + testOrg, nil
 	}))
 
 	if w := serveProxy(proxy, "/services/providers/infrastructure/x"); w.Code != http.StatusServiceUnavailable {
@@ -466,7 +466,7 @@ func TestBackendProxyAlwaysUsesThePlatformEdgesProvider(t *testing.T) {
 
 func TestEdgeProxyPathComposition(t *testing.T) {
 	route := &EdgeRoute{Cluster: testCluster, ServiceName: "provider-infrastructure"}
-	base := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy"
+	base := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 
 	for _, tc := range []struct{ name, rest, want string }{
 		{"empty rest addresses the service root", "", base},

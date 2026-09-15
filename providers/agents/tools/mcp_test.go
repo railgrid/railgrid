@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 )
 
 // An mcp connection naming an instance is addressed over the infrastructure

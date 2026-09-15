@@ -20,8 +20,8 @@ await document.fonts.ready
 // Load every real provider entry point. The selected element below receives
 // the host context exactly as it does when embedded in the main portal.
 await Promise.all([
-  import('faros-app-main'),
-  import('faros-agents-main'),
+  import('railgrid-app-main'),
+  import('railgrid-agents-main'),
 ])
 
 const params = new URLSearchParams(location.search)
@@ -32,7 +32,7 @@ const root = document.querySelector('#root')
 
 document.documentElement.className = theme
 if (provider === 'agents' && route.startsWith('#')) location.hash = route
-localStorage.setItem('faros:portal:tenant', JSON.stringify({
+localStorage.setItem('railgrid:portal:tenant', JSON.stringify({
   orgUUID: 'org-test',
   workspaceUUID: 'workspace-test',
 }))
@@ -41,8 +41,8 @@ const calls = []
 function hostHeaders(init) {
   const headers = new Headers(init?.headers)
   headers.set('Authorization', 'Bearer test-token')
-  headers.set('X-Faros-Org', 'org-test')
-  headers.set('X-Faros-Workspace', 'workspace-test')
+  headers.set('X-Railgrid-Org', 'org-test')
+  headers.set('X-Railgrid-Workspace', 'workspace-test')
   return Object.fromEntries(headers.entries())
 }
 const agentsCredentials = [
@@ -140,12 +140,12 @@ function agentsFetch(input, init = {}) {
 function updateContext(element, context, path) {
   const normalized = String(path || '').replace(/^#\/?/, '').replace(/^\//, '')
   context.subPath = normalized
-  element.farosContext = { ...context, subPath: normalized }
+  element.railgridContext = { ...context, subPath: normalized }
 }
 
 const tag = provider === 'agents'
-  ? 'faros-provider-agents'
-  : 'faros-provider-app-studio'
+  ? 'railgrid-provider-agents'
+  : 'railgrid-provider-app-studio'
 const element = document.createElement(tag)
 const context = {
   token: 'test-token',
@@ -159,7 +159,7 @@ const context = {
   fetch: provider === 'agents' ? agentsFetch : appFetch,
 }
 
-element.addEventListener('faros-navigate', event => {
+element.addEventListener('railgrid-navigate', event => {
   const detail = event.detail || {}
   if (provider === 'app' && typeof detail.path === 'string') {
     updateContext(element, context, detail.path)
@@ -171,8 +171,8 @@ element.addEventListener('faros-navigate', event => {
   }
 })
 root.replaceChildren(element)
-element.farosContext = context
+element.railgridContext = context
 
 // Expose deterministic evidence for Playwright scripts without relying on
 // Vue internals. The host receives the same context shape it would push.
-globalThis.__farosModelFixture = { element, calls, context, provider, theme }
+globalThis.__railgridModelFixture = { element, calls, context, provider, theme }

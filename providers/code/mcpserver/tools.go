@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 )
 
 var (
@@ -37,7 +37,7 @@ func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
 		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
 	}
 	if ident.clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the tenant workspace by ID")
+		return nil, errors.New("no workspace cluster on this request (X-Railgrid-Cluster missing) — cannot address the tenant workspace by ID")
 	}
 	if ident.token == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")

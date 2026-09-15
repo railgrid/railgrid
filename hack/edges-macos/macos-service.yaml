@@ -1,12 +1,12 @@
-# Apply this Service to the Faros tenant workspace after creating and joining
+# Apply this Service to the Railgrid tenant workspace after creating and joining
 # the MacOSServer. The object is intentionally explicit: no MacOSServer is
 # automatically enrolled as a coding worker.
-apiVersion: edges.faros.sh/v1alpha1
+apiVersion: edges.railgrid.ai/v1alpha1
 kind: Service
 metadata:
   name: macos-runner-stub
   labels:
-    edges.faros.sh/edge: mac-mini
+    edges.railgrid.ai/edge: mac-mini
 spec:
   edgeRef:
     kind: MacOSServer

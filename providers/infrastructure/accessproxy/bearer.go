@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -271,7 +271,7 @@ func (p *Proxy) writeBearerError(w http.ResponseWriter, status int, retryAfter s
 			Resource: p.config.Instance.Resource,
 			Name:     p.config.Instance.Name,
 		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="faros", error="invalid_token"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="railgrid", error="invalid_token"`)
 	case http.StatusForbidden:
 		body.Error, body.Message = "access_denied", "This account does not have access to this application. Ask the app owner to share it with you."
 	case http.StatusTooManyRequests:

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,13 +21,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // modelCredential is a named, reusable set of model credentials the user
 // creates once and assigns to one or more agents. Each is its own Secret
-// (faros-agents-model-<name>), so credentials can be shared and managed
+// (railgrid-agents-model-<name>), so credentials can be shared and managed
 // independently. The API key is never returned on reads.
 type modelCredential struct {
 	Name      string `json:"name"`

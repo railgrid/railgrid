@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -259,7 +259,7 @@ func TestSeedTemplatesConnectionsSurviveDevOverlay(t *testing.T) {
 			}
 			assertSecretEnv(t, dev, "DATABASE_URL", connDatabaseSecretName, connDatabaseOptional)
 			assertSecretEnv(t, dev, "REDIS_URL", connCacheSecretName, connCacheOptional)
-			if _, ok := dev["FAROS_DEV_START_COMMAND"]; !ok {
+			if _, ok := dev["RAILGRID_DEV_START_COMMAND"]; !ok {
 				t.Fatal("dev container lacks the runtime-supervisor env; wrong container inspected")
 			}
 			if tc.file == "simple-webapp.yaml" {

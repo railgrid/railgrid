@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/store"
-	"github.com/faroshq/provider-agents/tools"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // A whole research pass, driven through the real executeTask path: the parent

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestProjectLLMRegistryRoundTripsMultipleModelsAndDefault(t *testing.T) {
@@ -126,9 +126,9 @@ func TestCreateProjectLLMModelRejectsMissingCredential(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models", strings.NewReader(
 		`{"name":"GPT High","provider":"openai-compatible","baseURL":"https://api.openai.com/v1","model":"gpt-test"}`,
 	))
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 
 	server.createProjectLLMModel(response, request)

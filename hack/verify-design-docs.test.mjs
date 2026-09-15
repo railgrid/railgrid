@@ -20,7 +20,7 @@ const COMPONENT_HEADINGS = [
 ]
 
 function fixture() {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'faros-design-docs-'))
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railgrid-design-docs-'))
   fs.mkdirSync(path.join(repoRoot, 'docs/design'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'docs/design-book.md'), '# Design intent\n')

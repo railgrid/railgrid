@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 )
 
 // NewScheme returns a fully-populated scheme. Panics on registration error

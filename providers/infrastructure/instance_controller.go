@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/provider-sdk/leaderelection"
+	"github.com/railgrid/provider-sdk/leaderelection"
 
-	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
-	"github.com/faroshq/provider-infrastructure/controller/instance"
-	"github.com/faroshq/provider-infrastructure/install"
-	"github.com/faroshq/provider-infrastructure/networkpolicy"
+	krobackend "github.com/railgrid/provider-infrastructure/backend/kro"
+	"github.com/railgrid/provider-infrastructure/controller/instance"
+	"github.com/railgrid/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
 // startInstanceController starts the cross-tenant Instance controller —
@@ -39,7 +39,7 @@ import (
 // there is nothing to materialize instances on, so the controller stays
 // disabled (dev/REST-only flows).
 //
-// FAROS_APP_BASE_DOMAIN is optional here: without it, instances that ask to
+// RAILGRID_APP_BASE_DOMAIN is optional here: without it, instances that ask to
 // be published fail their reconcile with a clear message, while internal
 // templates keep provisioning.
 func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
@@ -53,13 +53,13 @@ func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
 		return
 	}
 
-	baseDomain := os.Getenv("FAROS_APP_BASE_DOMAIN")
+	baseDomain := os.Getenv("RAILGRID_APP_BASE_DOMAIN")
 
 	// Tenant runtime-namespace ingress isolation (off unless
-	// FAROS_TENANT_NETWORK_POLICY_ENABLED=true). The exposure Gateway's
+	// RAILGRID_TENANT_NETWORK_POLICY_ENABLED=true). The exposure Gateway's
 	// namespace is always admitted, resolved exactly as the kro backend
-	// resolves ${faros.gatewayNamespace} so the policy follows the HTTPRoutes.
-	gatewayNamespace := os.Getenv("FAROS_GATEWAY_NAMESPACE")
+	// resolves ${railgrid.gatewayNamespace} so the policy follows the HTTPRoutes.
+	gatewayNamespace := os.Getenv("RAILGRID_GATEWAY_NAMESPACE")
 	if gatewayNamespace == "" {
 		gatewayNamespace = krobackend.DefaultGatewayNamespace
 	}

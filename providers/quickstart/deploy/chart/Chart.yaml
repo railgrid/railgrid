@@ -1,22 +1,22 @@
 apiVersion: v2
-name: faros-quickstart-provider
+name: railgrid-quickstart-provider
 description: |
-  Reference faros provider demonstrating the platform's extension surface
+  Reference railgrid provider demonstrating the platform's extension surface
   end-to-end. Ships the provider Deployment, ClusterIP Service, and the
   CatalogEntry that registers the provider (UI + backend + a sample
-  greetings APIExport) with the faros hub. Pure broker — no kcp or kro
+  greetings APIExport) with the railgrid hub. Pure broker — no kcp or kro
   kubeconfig wiring; useful as a copy-from template for new providers.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-icon: https://example.com/faros-icon.png
+icon: https://example.com/railgrid-icon.png
 keywords:
-  - faros
+  - railgrid
   - provider
   - quickstart
   - reference
-home: https://github.com/faroshq/faros
+home: https://github.com/railgrid/railgrid
 sources:
-  - https://github.com/faroshq/faros/tree/main/providers/quickstart
+  - https://github.com/railgrid/railgrid/tree/main/providers/quickstart
 maintainers:
-  - name: faros maintainers
+  - name: railgrid maintainers

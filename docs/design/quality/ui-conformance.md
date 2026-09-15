@@ -5,15 +5,15 @@
 # Provider UI conformance contract
 
 `make verify-ui-conformance` runs focused fixture tests and the dependency-free
-Node scanner. The stylesheet authority is `provider-sdk/portalkit/faros-ui.css`.
-The host copy at `portal/src/assets/faros-ui.css` and vendored `src/portalkit/`
+Node scanner. The stylesheet authority is `provider-sdk/portalkit/railgrid-ui.css`.
+The host copy at `portal/src/assets/railgrid-ui.css` and vendored `src/portalkit/`
 copies are checked separately by `make verify-portalkit`. The manifest rejects
 unregistered canonical files and copy checks reject missing, stale, or
 unexpected assets.
 
 Standalone bundles use the shared `styles.ts` handoff. The computed
-`--faros-ui-canonical: 1` marker preserves a host stylesheet only when its
-`--faros-ui-version` is compatible with the current version 7 contract. A
+`--railgrid-ui-canonical: 1` marker preserves a host stylesheet only when its
+`--railgrid-ui-version` is compatible with the current version 7 contract. A
 stale or unversioned host remains untouched while canonical CSS imported
 through Vite's `?inline` loader is appended under a versioned fallback ID.
 Vite may minify that runtime fallback; the authored stylesheet and synced

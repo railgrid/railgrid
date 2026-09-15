@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,20 +24,20 @@ import (
 func devComponent(workspacePath string) TemplateDevelopmentComponent {
 	return TemplateDevelopmentComponent{
 		WorkspacePath: workspacePath,
-		DevImage:      "${faros.devImage.node}",
+		DevImage:      "${railgrid.devImage.node}",
 		StartCommand:  "npm run dev",
 	}
 }
 
 func TestValidateImmutableImageRef(t *testing.T) {
-	valid := "ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("a", 64)
+	valid := "ghcr.io/railgrid/railgrid-universal-dev@sha256:" + strings.Repeat("a", 64)
 	if err := ValidateImmutableImageRef(valid); err != nil {
 		t.Fatalf("valid digest image rejected: %v", err)
 	}
 	for _, image := range []string{
-		"ghcr.io/faroshq/faros-universal-dev:latest",
-		"ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("A", 64),
-		"ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("a", 63),
+		"ghcr.io/railgrid/railgrid-universal-dev:latest",
+		"ghcr.io/railgrid/railgrid-universal-dev@sha256:" + strings.Repeat("A", 64),
+		"ghcr.io/railgrid/railgrid-universal-dev@sha256:" + strings.Repeat("a", 63),
 		"",
 	} {
 		if err := ValidateImmutableImageRef(image); err == nil {
@@ -174,7 +174,7 @@ func TestValidateDevelopment(t *testing.T) {
 			name: "missing start command",
 			spec: TemplateSpec{Development: &TemplateDevelopment{
 				Components: map[string]TemplateDevelopmentComponent{
-					"web": {WorkspacePath: ".", DevImage: "${faros.devImage.node}"},
+					"web": {WorkspacePath: ".", DevImage: "${railgrid.devImage.node}"},
 				},
 			}},
 			wantErr: "startCommand is required",
@@ -185,7 +185,7 @@ func TestValidateDevelopment(t *testing.T) {
 				Components: map[string]TemplateDevelopmentComponent{
 					"web": {
 						WorkspacePath: ".",
-						DevImage:      "${faros.devImage.node}",
+						DevImage:      "${railgrid.devImage.node}",
 						StartCommand:  "npm run dev",
 						Reload: &TemplateDevelopmentReload{Rules: []TemplateDevelopmentReloadRule{
 							{Paths: []string{"package.json"}},

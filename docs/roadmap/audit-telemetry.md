@@ -3,7 +3,7 @@
 Status: **NOT IMPLEMENTED.** Proposal written 13 September 2026; no phase has
 started. Nothing in this document describes shipped behaviour: kcp auditing is
 not enabled in either install mode, there is no `pkg/audit` package, no
-`cmd/faros-audit` binary, no `--kcp-audit-*` hub flags, no `audit` chart
+`cmd/railgrid-audit` binary, no `--kcp-audit-*` hub flags, no `audit` chart
 values and no `AuditSubscription` API. Section 2 describes the current state
 and is accurate as of the date above; everything from section 3 on is a plan.
 When a phase lands, update this line and move the document out of
@@ -16,7 +16,7 @@ Companion to [install-embedded-kcp.md](../install-embedded-kcp.md),
 
 ## 1. The target
 
-Every state change in a faros hub already passes through the kcp API server
+Every state change in a railgrid hub already passes through the kcp API server
 as a request with a verified identity, a workspace, a verb and a result. kcp
 can emit that as a Kubernetes audit event. Today we throw it away.
 
@@ -70,7 +70,7 @@ kcp annotates every event before it reaches the backend
 |---|---|---|
 | `kcp.io/cluster` | logical cluster ID (`Name`) | join key for everything else |
 | `tenancy.kcp.io/workspace` | same as above (legacy key) | ignore |
-| `kcp.io/path` | canonical path, e.g. `root:faros:tenants:<orgUUID>:<wsUUID>` | org + workspace resolution |
+| `kcp.io/path` | canonical path, e.g. `root:railgrid:tenants:<orgUUID>:<wsUUID>` | org + workspace resolution |
 
 The authorization chain adds decision annotations on failures and on every
 step when audit logging is on
@@ -78,7 +78,7 @@ step when audit logging is on
 `request.auth.kcp.io/<step>-decision` and `…-reason`, with steps such as
 `01-requiredgroups`, `02-content`, `03-systemcrd`, `04-maxpermissionpolicy`,
 `05-local`, `05-global`, `05-bootstrap`. So the audit event says *which*
-authorizer denied a request and why, without any faros-side work.
+authorizer denied a request and why, without any railgrid-side work.
 
 ### 2.3 Who shows up as the `user`
 
@@ -88,8 +88,8 @@ human appears in the audit event exactly as kcp authenticated them:
 
 | Caller | `user.username` | `user.groups` |
 |---|---|---|
-| Portal / CLI user | `faros:<email>` (OIDC prefix set in `embedded.go`) | `faros:<group>…`, `system:authenticated` |
-| Static-token user (dev) | `faros:static:<16-hex>` | `system:authenticated` |
+| Portal / CLI user | `railgrid:<email>` (OIDC prefix set in `embedded.go`) | `railgrid:<group>…`, `system:authenticated` |
+| Static-token user (dev) | `railgrid:static:<16-hex>` | `system:authenticated` |
 | Provider (hub-provisioned SA) | `system:serviceaccount:<ns>:<name>` in the provider workspace | `system:serviceaccounts`, … |
 | Hub itself, controllers | the hub's kcp identity (admin kubeconfig / bootstrap user) | `system:masters` or bootstrap groups |
 
@@ -98,13 +98,13 @@ That is enough to classify events into *human*, *provider*, *platform* and
 
 ### 2.4 Mapping a path to a tenant
 
-`pkg/kcppaths` fixes the layout: `root:faros:tenants:<orgUUID>` is an org,
-`root:faros:tenants:<orgUUID>:<wsUUID>` a workspace, `root:faros:providers:*`
-and `root:faros:system:*` are platform. `Organization` CRs
+`pkg/kcppaths` fixes the layout: `root:railgrid:tenants:<orgUUID>` is an org,
+`root:railgrid:tenants:<orgUUID>:<wsUUID>` a workspace, `root:railgrid:providers:*`
+and `root:railgrid:system:*` are platform. `Organization` CRs
 (`apis/tenancy/v1alpha1/types_organization.go`) live in kcp and carry
 `spec.displayName`; child workspaces are kcp `Workspace` objects whose
 `metadata.name` is the UUID and whose human label is the
-`tenants.faros.sh/display-name` annotation the hub patches on at creation
+`tenants.railgrid.ai/display-name` annotation the hub patches on at creation
 (`pkg/hub/kcp/bootstrap.go:WorkspaceDisplayNameAnnotation`). A single
 informer on each is enough to render `Acme/demo` instead of two UUIDs.
 
@@ -129,11 +129,11 @@ informer on each is enough to render `Acme/demo` instead of two UUIDs.
 ```
                      audit webhook (batch mode)
  ┌──────────────┐  POST audit.k8s.io/v1 EventList   ┌──────────────────┐
- │ kcp shard(s) │ ────────────────────────────────▶ │ faros audit sink │
+ │ kcp shard(s) │ ────────────────────────────────▶ │ railgrid audit sink │
  └──────────────┘                                   │  receive         │
                                                     │  enrich          │
    embedded: loopback into the hub process          │  match rules     │
-   external: Deployment faros-audit, N replicas     │  aggregate       │
+   external: Deployment railgrid-audit, N replicas     │  aggregate       │
                                                     │  fan out         │
                                                     └───┬───┬───┬───┬──┘
                                                         │   │   │   │
@@ -148,7 +148,7 @@ One Go package, `pkg/audit`, with two hosts:
   generates at start and writes into the kubeconfig-shaped webhook config it
   hands to kcp. kcp posts to `https://127.0.0.1:<hub port>/…`. No new pod, no
   new port, nothing on the network.
-- **External install.** `cmd/faros-audit` is the same receiver as a
+- **External install.** `cmd/railgrid-audit` is the same receiver as a
   Deployment behind a ClusterIP Service. The chart renders a Secret with the
   webhook kubeconfig and the install script points `RootShard`/`Shard`
   `spec.audit.webhook.configSecretName` at it. Each shard posts
@@ -158,7 +158,7 @@ One Go package, `pkg/audit`, with two hosts:
 ### 3.2 Audit policy
 
 The policy is deliberately small and ships as a file in the chart
-(`deploy/charts/faros-hub/files/audit-policy.yaml`), mounted for embedded kcp
+(`deploy/charts/railgrid-hub/files/audit-policy.yaml`), mounted for embedded kcp
 and put in a ConfigMap for the operator. First version:
 
 ```yaml
@@ -199,7 +199,7 @@ consume:
 | `cluster`, `path` | `kcp.io/cluster`, `kcp.io/path` annotations |
 | `orgUUID`, `wsUUID`, `scope` | `kcppaths` on `path`: `tenant-workspace`, `tenant-org`, `platform-providers`, `platform-system`, `root`, `other` |
 | `orgName`, `wsName` | informer cache on `Organization` and `Workspace`; UUID if unknown |
-| `actorKind` | `human` (`faros:` prefix, not `faros:static:`), `static`, `provider` (SA in `root:faros:providers:*` or `…:providers` org workspace), `platform` (`system:masters`, hub identity), `system` (`system:*` other), `unknown` |
+| `actorKind` | `human` (`railgrid:` prefix, not `railgrid:static:`), `static`, `provider` (SA in `root:railgrid:providers:*` or `…:providers` org workspace), `platform` (`system:masters`, hub identity), `system` (`system:*` other), `unknown` |
 | `actor` | username, with an optional hashing mode (3.6) |
 | `verb`, `group`, `resource`, `subresource`, `name`, `namespace` | `objectRef` and `verb` |
 | `code`, `denied` | `responseStatus.code`; `denied` when code is 401 or 403 |
@@ -256,12 +256,12 @@ Discord messages.
 |---|---|---|
 | `discord` | webhook URL | one embed per message, 30/min per URL rate limit respected client-side, 429 honoured |
 | `slack` | incoming webhook URL | Block Kit text, same rate limiting |
-| `http` | URL, optional HMAC secret, headers | JSON body `{rule, message, event}` with the enriched event, `X-Faros-Signature: sha256=<hmac>`, retries with backoff, bounded queue |
+| `http` | URL, optional HMAC secret, headers | JSON body `{rule, message, event}` with the enriched event, `X-Railgrid-Signature: sha256=<hmac>`, retries with backoff, bounded queue |
 | `stdout` | none | one JSON line per event, for `kubectl logs` and log collectors |
 | `metrics` | none | Prometheus counters on `/metrics` (3.7) |
 
 Every sink has a bounded in-memory queue. When it fills, the sink drops and
-increments `faros_audit_sink_dropped_total{sink}`. kcp is never back-pressured:
+increments `railgrid_audit_sink_dropped_total{sink}`. kcp is never back-pressured:
 the webhook is configured in `batch` mode and the receiver returns 200 as
 soon as the batch is decoded and queued.
 
@@ -283,7 +283,7 @@ ConfigMap.
 
 ### 3.7 Metrics
 
-`faros_audit_events_total{scope, actorKind, verb, group, resource, code}` is
+`railgrid_audit_events_total{scope, actorKind, verb, group, resource, code}` is
 the baseline. Org labels are off by default because org count is unbounded;
 `metrics.orgLabels: allowlist` with an explicit list of org UUIDs is the
 escape hatch for "how active is customer X". Plus per-sink `delivered_total`,
@@ -304,7 +304,7 @@ person. Two options; the plan takes the first:
 1. **Synthetic events.** The hub emits an `audit.Event` into the same
    pipeline from the REST layer via `pkg/audit.Emit(ctx, ...)`, with
    `actor` from `TenantContext`, `actorKind: human` and an extra annotation
-   `faros.sh/via: rest`. Same struct, same rules, same sinks. Costs one call
+   `railgrid.ai/via: rest`. Same struct, same rules, same sinks. Costs one call
    per handler that mutates state; there are a bounded number of those.
 2. Impersonation headers from the hub REST layer to kcp so kcp records the
    person. Cleaner on paper, but it changes the hub's authorization model and
@@ -324,7 +324,7 @@ the open design question tracked in the provider hub-access plan, not here.
 Auditing is opt-in at every layer. The hub binary does nothing unless a
 policy file is passed, the chart ships `audit.enabled: false`, the install
 scripts under `hack/install/` do not set it, and a local hub started any way
-other than Tilt (`go run ./cmd/faros-hub`, the e2e harness, `make e2e-*`)
+other than Tilt (`go run ./cmd/railgrid-hub`, the e2e harness, `make e2e-*`)
 sees no audit configuration at all. There is no "on in dev, off in prod"
 toggle inferred from `--dev-mode` or similar; the only signal is explicit
 configuration.
@@ -350,11 +350,11 @@ audit:
   sinks:
     ops-discord:
       type: discord
-      urlSecretRef: { name: faros-audit-sinks, key: ops-discord }
+      urlSecretRef: { name: railgrid-audit-sinks, key: ops-discord }
     security-webhook:
       type: http
-      url: https://collector.example.com/faros
-      hmacSecretRef: { name: faros-audit-sinks, key: security-hmac }
+      url: https://collector.example.com/railgrid
+      hmacSecretRef: { name: railgrid-audit-sinks, key: security-hmac }
   actorHashing: false
   metrics:
     orgLabels: none                        # none | allowlist
@@ -370,8 +370,8 @@ empty, kcp is started exactly as today and the receiver is not registered.
 Tilt (the only place this is on without an operator asking for it):
 
 ```
-./bin/faros-hub ... \
-  --kcp-audit-policy-file=deploy/charts/faros-hub/files/audit-policy.yaml \
+./bin/railgrid-hub ... \
+  --kcp-audit-policy-file=deploy/charts/railgrid-hub/files/audit-policy.yaml \
   --audit-rules-file=hack/tilt/audit-rules-log-only.yaml
 ```
 
@@ -386,7 +386,7 @@ log-only rule from 4.1.
 
 | Rule | Signal | Aggregated |
 |---|---|---|
-| org created / deleted | `Organization` create/delete in `root:faros:tenants` | no |
+| org created / deleted | `Organization` create/delete in `root:railgrid:tenants` | no |
 | workspace created / deleted | `Workspace` create/delete under an org | no |
 | member added / removed | synthetic event from the membership REST handlers | no |
 | provider enabled / disabled | synthetic event from the enable/disable REST handlers, plus `APIBinding` create by a human | no |
@@ -421,7 +421,7 @@ stays off.
 
 **Phase 2: rules and chat.** Rule loader, matcher, aggregation, `discord`,
 `slack` and `http` sinks with rate limiting and bounded queues, the default
-rule set, synthetic events from the REST layer (3.8). `cmd/faros-audit`
+rule set, synthetic events from the REST layer (3.8). `cmd/railgrid-audit`
 standalone binary and the external-install wiring. e2e: create a workspace
 through the CLI, assert a fake HTTP sink receives a `workspace-created`
 message with the right org name. Docs page moves out of `roadmap/`.

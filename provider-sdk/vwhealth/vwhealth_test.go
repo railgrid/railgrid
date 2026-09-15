@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -106,7 +106,7 @@ func TestFirstEndpointURL(t *testing.T) {
 		name: "no status", obj: map[string]any{}, wantErr: true,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := FirstEndpointURL(tc.obj, "x.faros.sh")
+			got, err := FirstEndpointURL(tc.obj, "x.railgrid.ai")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %q", got)

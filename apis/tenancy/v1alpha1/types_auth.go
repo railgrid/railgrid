@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ type LoginResponse struct {
 	RefreshToken string `json:"refreshToken,omitempty"`
 
 	// OIDC provider config so the exec plugin can refresh tokens.
-	// ClientSecret is intentionally omitted: faros uses PKCE (public client)
+	// ClientSecret is intentionally omitted: railgrid uses PKCE (public client)
 	// so no client secret is ever issued or sent to CLI users.
 	IssuerURL string `json:"issuerUrl,omitempty"`
 	ClientID  string `json:"clientId,omitempty"`

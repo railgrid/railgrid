@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 
 const (
 	workloadIdentityReviewPath = "/workload-identities/review"
-	workloadIdentityAudience   = "faros-provider-actions-bootstrap"
+	workloadIdentityAudience   = "railgrid-provider-actions-bootstrap"
 	identityReviewBodyLimit    = 1 << 20
 )
 
@@ -227,11 +227,11 @@ func workloadPodMatchesRequest(pod *corev1.Pod, request workloadIdentityReviewRe
 	}
 	annotations := pod.GetAnnotations()
 	for key, expected := range map[string]string{
-		"faros.sh/actions-tenant":      request.TenantPath,
-		"faros.sh/actions-project":     request.Project,
-		"faros.sh/actions-project-uid": request.ProjectUID,
-		"faros.sh/actions-environment": request.Environment,
-		"faros.sh/actions-instance":    request.Instance,
+		"railgrid.ai/actions-tenant":      request.TenantPath,
+		"railgrid.ai/actions-project":     request.Project,
+		"railgrid.ai/actions-project-uid": request.ProjectUID,
+		"railgrid.ai/actions-environment": request.Environment,
+		"railgrid.ai/actions-instance":    request.Instance,
 	} {
 		actual := strings.TrimSpace(annotations[key])
 		if actual == "" || actual != expected {

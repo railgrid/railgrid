@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,9 +28,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // MCPHandler returns the streamable-HTTP MCP handler mounted at /mcp. A fresh
@@ -41,12 +41,12 @@ func (s *Server) MCPHandler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			srv := mcp.NewServer(&mcp.Implementation{
-				Name:    "faros-agents",
+				Name:    "railgrid-agents",
 				Version: "0.1.0",
-				Title:   "faros agents provider",
+				Title:   "railgrid agents provider",
 			}, &mcp.ServerOptions{
 				Instructions: "This MCP endpoint both RUNS and CONFIGURES the AI agents hosted in " +
-					"your faros tenant workspace. To delegate work: run_agent(agent, task) hands an " +
+					"your railgrid tenant workspace. To delegate work: run_agent(agent, task) hands an " +
 					"agent a task and returns its answer (pass wait for it inline, or poll get_run); " +
 					"get_run reads a run's answer, sources, tool steps and sub-agent runs; list_runs " +
 					"finds runs in flight. Everything else is configuration — everything the portal's " +
@@ -78,15 +78,15 @@ func (s *Server) MCPHandler() http.Handler {
 // mcpClient resolves the caller's tenant client from the identity the hub (or
 // its federation client) put on the MCP request. Unlike requireClient it does
 // not demand a parseable tenant path: federation forwards the cluster ID as
-// both X-Faros-Tenant and X-Faros-Cluster, and the tenant client only needs
+// both X-Railgrid-Tenant and X-Railgrid-Cluster, and the tenant client only needs
 // the cluster ID plus the caller's token.
 func (s *Server) mcpClient(r *http.Request) (*agentsclient.Client, error) {
 	if s.tenant == nil {
-		return nil, errors.New("tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
+		return nil, errors.New("tenant access not configured — provider has no hub URL (set RAILGRID_HUB_URL)")
 	}
-	clusterID := strings.TrimSpace(r.Header.Get("X-Faros-Cluster"))
+	clusterID := strings.TrimSpace(r.Header.Get("X-Railgrid-Cluster"))
 	if clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the tenant workspace")
+		return nil, errors.New("no workspace cluster on this request (X-Railgrid-Cluster missing) — cannot address the tenant workspace")
 	}
 	if bearerToken(r) == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")

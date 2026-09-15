@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 )
 
 // The tenant identity a provider receives is the workspace's kcp
-// logical-cluster ID, in both X-Faros-Tenant and X-Faros-Cluster. The
+// logical-cluster ID, in both X-Railgrid-Tenant and X-Railgrid-Cluster. The
 // workspace path the hub resolves internally must never reach a provider —
 // neither as the tenant header nor as a fallback when the ID is unavailable.
 
@@ -42,9 +42,9 @@ func newPlatformProxyRecordingHeaders(t *testing.T) (*ProviderProxy, *headerUpst
 	t.Helper()
 	rec := &headerUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec.user = r.Header.Get("X-Faros-User")
-		rec.tenant, rec.hasTenant = r.Header.Get("X-Faros-Tenant"), r.Header.Values("X-Faros-Tenant") != nil
-		rec.cluster, rec.hasCluster = r.Header.Get("X-Faros-Cluster"), r.Header.Values("X-Faros-Cluster") != nil
+		rec.user = r.Header.Get("X-Railgrid-User")
+		rec.tenant, rec.hasTenant = r.Header.Get("X-Railgrid-Tenant"), r.Header.Values("X-Railgrid-Tenant") != nil
+		rec.cluster, rec.hasCluster = r.Header.Get("X-Railgrid-Cluster"), r.Header.Values("X-Railgrid-Cluster") != nil
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
@@ -56,7 +56,7 @@ func newPlatformProxyRecordingHeaders(t *testing.T) (*ProviderProxy, *headerUpst
 	reg.Upsert(Provider{Name: "quickstart", BackendURL: backendURL, EndpointsValid: true})
 	proxy := NewBackendProxy(reg, logr.Discard())
 	proxy.SetTenantResolver(TenantResolverFunc(func(*http.Request) (string, string, error) {
-		return "alice", "root:faros:tenants:" + testOrg + ":" + testWS, nil
+		return "alice", "root:railgrid:tenants:" + testOrg + ":" + testWS, nil
 	}))
 	return proxy, rec
 }
@@ -68,26 +68,26 @@ func TestBackendProxySendsClusterIDInBothTenantHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/services/providers/quickstart/api/hello", nil)
 	req.Header.Set("Authorization", "Bearer "+callerBearer)
 	// A caller-supplied identity must be stripped, not merged.
-	req.Header.Set("X-Faros-Tenant", "root:faros:tenants:someone-else")
-	req.Header.Set("X-Faros-Cluster", "forged-cluster")
+	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:someone-else")
+	req.Header.Set("X-Railgrid-Cluster", "forged-cluster")
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
-	want := testClusterIDFor("root:faros:tenants:" + testOrg + ":" + testWS)
+	want := testClusterIDFor("root:railgrid:tenants:" + testOrg + ":" + testWS)
 	if rec.user != "alice" {
-		t.Errorf("X-Faros-User = %q, want alice", rec.user)
+		t.Errorf("X-Railgrid-User = %q, want alice", rec.user)
 	}
 	if rec.tenant != want {
-		t.Errorf("X-Faros-Tenant = %q, want the workspace cluster ID %q", rec.tenant, want)
+		t.Errorf("X-Railgrid-Tenant = %q, want the workspace cluster ID %q", rec.tenant, want)
 	}
 	if rec.cluster != want {
-		t.Errorf("X-Faros-Cluster = %q, want the workspace cluster ID %q", rec.cluster, want)
+		t.Errorf("X-Railgrid-Cluster = %q, want the workspace cluster ID %q", rec.cluster, want)
 	}
-	if strings.Contains(rec.tenant, "root:faros:tenants") {
-		t.Errorf("X-Faros-Tenant = %q carries a workspace path; providers must only ever see the cluster ID", rec.tenant)
+	if strings.Contains(rec.tenant, "root:railgrid:tenants") {
+		t.Errorf("X-Railgrid-Tenant = %q carries a workspace path; providers must only ever see the cluster ID", rec.tenant)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestBackendProxyOmitsTenantHeadersWithoutClusterID(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/services/providers/quickstart/api/hello", nil)
 			req.Header.Set("Authorization", "Bearer "+callerBearer)
-			req.Header.Set("X-Faros-Tenant", "root:faros:tenants:someone-else")
+			req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:someone-else")
 			w := httptest.NewRecorder()
 			proxy.ServeHTTP(w, req)
 
@@ -116,7 +116,7 @@ func TestBackendProxyOmitsTenantHeadersWithoutClusterID(t *testing.T) {
 				t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 			}
 			if rec.user != "alice" {
-				t.Errorf("X-Faros-User = %q, want alice — attribution survives a missing cluster ID", rec.user)
+				t.Errorf("X-Railgrid-User = %q, want alice — attribution survives a missing cluster ID", rec.user)
 			}
 			if rec.hasTenant || rec.hasCluster {
 				t.Errorf("tenant headers = (%q, %q), want neither: the workspace path is not a substitute for the cluster ID", rec.tenant, rec.cluster)

@@ -147,7 +147,7 @@ watch(
 // the user switches workspace and the MCP/edges/workload pages keep showing
 // data from the login-time DefaultCluster. Mirror
 // activeWorkspace.clusterName → auth.clusterName so ProviderFrame's watch on
-// auth.clusterName pushes a fresh farosContext to the mounted provider
+// auth.clusterName pushes a fresh railgridContext to the mounted provider
 // element and its API layer retargets the new cluster.
 // The hub omits clusterName until the workspace reports Ready. Keep the
 // retained login cluster during the initial async hydration (this watcher is

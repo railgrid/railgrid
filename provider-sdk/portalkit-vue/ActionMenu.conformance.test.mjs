@@ -5,11 +5,11 @@ import test from 'node:test'
 
 const component = readFileSync(new URL('./ActionMenu.vue', import.meta.url), 'utf8')
 const layoutSelector = readFileSync(new URL('./LayoutSelector.vue', import.meta.url), 'utf8')
-const stylesheet = readFileSync(new URL('../portalkit/faros-ui.css', import.meta.url), 'utf8')
+const stylesheet = readFileSync(new URL('../portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../portalkit/styles.ts', import.meta.url), 'utf8')
 const resourceTable = readFileSync(new URL('./ResourceTable.vue', import.meta.url), 'utf8')
-const cssVersion = stylesheet.match(/--faros-ui-core-version:\s*(\d+);/)?.[1]
-const runtimeVersion = styles.match(/FAROS_UI_CORE_VERSION = (\d+)/)?.[1]
+const cssVersion = stylesheet.match(/--railgrid-ui-core-version:\s*(\d+);/)?.[1]
+const runtimeVersion = styles.match(/RAILGRID_UI_CORE_VERSION = (\d+)/)?.[1]
 assert.ok(cssVersion, 'canonical stylesheet declares a version')
 assert.ok(runtimeVersion, 'style handoff declares a version')
 
@@ -45,9 +45,9 @@ function styleNode(id, textContent = '') {
 
 function executableStylesHelper({ canonical = '1', version = '', existingNodes = [] } = {}) {
   const computedValues = new Map([
-    ['--faros-ui-canonical', canonical],
-    ['--faros-ui-core-version', version],
-    ['--faros-ui-version', version],
+    ['--railgrid-ui-canonical', canonical],
+    ['--railgrid-ui-core-version', version],
+    ['--railgrid-ui-version', version],
   ])
   const nodes = new Map(existingNodes.map(node => [node.id, node]))
   const document = {
@@ -72,21 +72,21 @@ function executableStylesHelper({ canonical = '1', version = '', existingNodes =
         nodes.set(node.id, node)
         // A real browser incorporates the newly appended stylesheet into the
         // computed root style before a second provider bundle can run.
-        computedValues.set('--faros-ui-canonical', '1')
-        computedValues.set('--faros-ui-core-version', node.getAttribute('data-faros-ui-core-version') ?? '')
+        computedValues.set('--railgrid-ui-canonical', '1')
+        computedValues.set('--railgrid-ui-core-version', node.getAttribute('data-railgrid-ui-core-version') ?? '')
         return node
       },
     },
   }
   const context = { document, window: { getComputedStyle: () => ({ getPropertyValue: name => computedValues.get(name) ?? '' }) } }
   const executable = styles
-    .replace(/^import farosUIStyles.*$/m, "const farosUIStyles = 'current-faros-ui';")
+    .replace(/^import railgridUIStyles.*$/m, "const railgridUIStyles = 'current-railgrid-ui';")
     .replaceAll('export const ', 'const ')
     .replaceAll('export function ', 'function ')
     .replaceAll(': string', '')
     .replaceAll(': boolean', '')
     .replaceAll(': void', '')
-    + '\n;globalThis.__styles = { ensureFarosUIStyles, FAROS_UI_STYLE_ID, FAROS_UI_VERSION };'
+    + '\n;globalThis.__styles = { ensureRailgridUIStyles, RAILGRID_UI_STYLE_ID, RAILGRID_UI_VERSION };'
   runInNewContext(executable, context)
   return { ...context.__styles, document }
 }
@@ -242,37 +242,37 @@ test('ActionMenu geometry survives broad provider descendant constraints', () =>
 })
 
 test('standalone style recovery distinguishes a stale host stylesheet', () => {
-  assert.match(styles, /export const FAROS_UI_CORE_VERSION_MARKER = '--faros-ui-core-version'/)
+  assert.match(styles, /export const RAILGRID_UI_CORE_VERSION_MARKER = '--railgrid-ui-core-version'/)
   assert.equal(runtimeVersion, cssVersion, 'style handoff and canonical CSS must use the same version')
-  assert.match(styles, /getPropertyValue\(FAROS_UI_CANONICAL_MARKER\)\.trim\(\) === FAROS_UI_CANONICAL_VALUE/)
+  assert.match(styles, /getPropertyValue\(RAILGRID_UI_CANONICAL_MARKER\)\.trim\(\) === RAILGRID_UI_CANONICAL_VALUE/)
   assert.match(styles, /function hasRequiredVersion\(value: string\): boolean/)
-  assert.match(styles, /Number\.isFinite\(version\) && version >= FAROS_UI_CORE_VERSION/)
-  assert.match(styles, /hasRequiredVersion\(styles\.getPropertyValue\(FAROS_UI_CORE_VERSION_MARKER\)\)/)
-  assert.doesNotMatch(styles, /if \(document\.getElementById\(FAROS_UI_STYLE_ID\) \|\| hostStylesAreLoaded\(\)\) return/)
-  assert.match(styles, /const fallbackStyleID = document\.getElementById\(FAROS_UI_STYLE_ID\)/)
-  assert.match(styles, /`\$\{FAROS_UI_STYLE_ID\}-v\$\{FAROS_UI_CORE_VERSION\}`/)
-  assert.match(styles, /style\.setAttribute\('data-faros-ui-core-version', String\(FAROS_UI_CORE_VERSION\)\)/)
+  assert.match(styles, /Number\.isFinite\(version\) && version >= RAILGRID_UI_CORE_VERSION/)
+  assert.match(styles, /hasRequiredVersion\(styles\.getPropertyValue\(RAILGRID_UI_CORE_VERSION_MARKER\)\)/)
+  assert.doesNotMatch(styles, /if \(document\.getElementById\(RAILGRID_UI_STYLE_ID\) \|\| hostStylesAreLoaded\(\)\) return/)
+  assert.match(styles, /const fallbackStyleID = document\.getElementById\(RAILGRID_UI_STYLE_ID\)/)
+  assert.match(styles, /`\$\{RAILGRID_UI_STYLE_ID\}-v\$\{RAILGRID_UI_CORE_VERSION\}`/)
+  assert.match(styles, /style\.setAttribute\('data-railgrid-ui-core-version', String\(RAILGRID_UI_CORE_VERSION\)\)/)
 })
 
 test('standalone style recovery executes the stale/current/newer host matrix', () => {
-  const staleHost = styleNode('k-faros-ui', 'stale-host-css')
+  const staleHost = styleNode('k-railgrid-ui', 'stale-host-css')
   const stale = executableStylesHelper({ existingNodes: [staleHost] })
-  stale.ensureFarosUIStyles()
+  stale.ensureRailgridUIStyles()
   assert.equal(stale.document.head.children.length, 1)
-  assert.equal(stale.document.head.children[0].id, `k-faros-ui-v${cssVersion}`)
-  assert.equal(stale.document.head.children[0].textContent, 'current-faros-ui')
-  assert.equal(stale.document.head.children[0].getAttribute('data-faros-ui-core-version'), cssVersion)
+  assert.equal(stale.document.head.children[0].id, `k-railgrid-ui-v${cssVersion}`)
+  assert.equal(stale.document.head.children[0].textContent, 'current-railgrid-ui')
+  assert.equal(stale.document.head.children[0].getAttribute('data-railgrid-ui-core-version'), cssVersion)
   assert.equal(staleHost.textContent, 'stale-host-css')
-  assert.equal(staleHost.getAttribute('data-faros-ui-version'), null)
-  stale.ensureFarosUIStyles()
+  assert.equal(staleHost.getAttribute('data-railgrid-ui-version'), null)
+  stale.ensureRailgridUIStyles()
   assert.equal(stale.document.head.children.length, 1)
 
   const current = executableStylesHelper({ version: cssVersion })
-  current.ensureFarosUIStyles()
+  current.ensureRailgridUIStyles()
   assert.equal(current.document.head.children.length, 0)
 
-  const newerHost = executableStylesHelper({ version: String(Number(cssVersion) + 1), existingNodes: [styleNode('k-faros-ui', 'future-host-css')] })
-  newerHost.ensureFarosUIStyles()
+  const newerHost = executableStylesHelper({ version: String(Number(cssVersion) + 1), existingNodes: [styleNode('k-railgrid-ui', 'future-host-css')] })
+  newerHost.ensureRailgridUIStyles()
   assert.equal(newerHost.document.head.children.length, 0)
-  assert.equal(newerHost.document.getElementById('k-faros-ui').textContent, 'future-host-css')
+  assert.equal(newerHost.document.getElementById('k-railgrid-ui').textContent, 'future-host-css')
 })

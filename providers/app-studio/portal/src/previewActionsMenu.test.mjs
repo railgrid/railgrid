@@ -107,7 +107,7 @@ test('keeps annotation visible as a first-class preview action with an anchored 
   assert.match(app, /const pins: ProjectAssistantAnnotationPin\[\]/)
   assert.doesNotMatch(app, /boundingRect: annotation\.target\.rect![\s\S]*comment: annotation\.comment/)
   assert.doesNotMatch(app, /<DevelopmentPreviewAnnotationPins/)
-  assert.doesNotMatch(app, /data-faros-studio-annotation-pin/)
+  assert.doesNotMatch(app, /data-railgrid-studio-annotation-pin/)
   assert.match(app, /:style="developmentPreviewAnnotationEditorStyle"/)
   assert.match(app, /class="absolute \[z-index:var\(--app-studio-z-menu\)\] flex flex-col items-stretch gap-3/)
   assert.equal((app.match(/id="development-preview-annotation-comment"/g) ?? []).length, 1)

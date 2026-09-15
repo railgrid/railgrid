@@ -48,7 +48,7 @@ function dispatchReady(frameWindow, generation, origin = 'https://preview.exampl
   listeners.get('message')({
     source: frameWindow,
     origin,
-    data: { type: 'faros.preview-bridge.ready', version: 1, documentID: generation },
+    data: { type: 'railgrid.preview-bridge.ready', version: 1, documentID: generation },
     ports: [port],
   })
   return port
@@ -107,8 +107,8 @@ test('transfers the capability only to the exact iframe window and preview origi
   })
 
   await controller.connect('project-a')
-  assert.equal(calls[0].message.type, 'faros.preview-bridge.probe')
-  const ready = { type: 'faros.preview-bridge.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' }
+  assert.equal(calls[0].message.type, 'railgrid.preview-bridge.probe')
+  const ready = { type: 'railgrid.preview-bridge.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' }
   listeners.get('message')({ source: {}, origin: 'https://preview.example.test', data: ready, ports: [readyPort()] })
   listeners.get('message')({ source: frameWindow, origin: 'https://attacker.example.test', data: ready, ports: [readyPort()] })
   assert.equal(calls.length, 1)
@@ -125,7 +125,7 @@ test('transfers the capability only to the exact iframe window and preview origi
   listeners.get('message')({ source: frameWindow, origin: 'https://preview.example.test', data: ready, ports: [handshakePort] })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(calls.length, 1, 'the capability must stay on the bridge-created port')
-  assert.equal(handshakePort.messages[0].type, 'faros.preview-bridge.start')
+  assert.equal(handshakePort.messages[0].type, 'railgrid.preview-bridge.start')
   assert.equal(handshakePort.messages[0].capability, 'signed')
   const replayPort = readyPort()
   listeners.get('message')({ source: frameWindow, origin: 'https://preview.example.test', data: ready, ports: [replayPort] })
@@ -167,27 +167,27 @@ test('keeps annotation mode behind the authenticated port and rebinds route-scop
   const reactiveTarget = new Proxy({ locator: '#target', locatorStrategy: 'css', rect: reactiveRect, ancestors: new Proxy(['main'], {}) }, {})
   const initialPins = [{ id: 'a', number: 1, documentID: firstGeneration, pagePath: '/app', boundingRect: reactiveRect, target: reactiveTarget, anchor: new Proxy({ x: 0.25, y: 0.75 }, {}), comment: 'Make this blue' }]
   assert.equal(controller.setAnnotationPins(initialPins), false, 'desired pins should be retained while the bridge connects')
-  firstChannel.port1.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
-  assert.equal(firstChannel.port1.messages.at(-1).type, 'faros.preview-bridge.annotation.pins')
+  firstChannel.port1.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
+  assert.equal(firstChannel.port1.messages.at(-1).type, 'railgrid.preview-bridge.annotation.pins')
   assert.equal(Object.hasOwn(firstChannel.port1.messages.at(-1).pins[0], 'comment'), false)
   assert.deepEqual(firstChannel.port1.messages.at(-1).pins[0].target, { locator: '#target', locatorStrategy: 'css', rect: { x: 1, y: 2, width: 3, height: 4 }, ancestors: ['main'] })
   assert.deepEqual(firstChannel.port1.messages.at(-1).pins[0].anchor, { x: 0.25, y: 0.75 })
   assert.equal(controller.startAnnotationMode(), true)
-  assert.equal(firstChannel.port1.messages.at(-1).type, 'faros.preview-bridge.annotation.start')
+  assert.equal(firstChannel.port1.messages.at(-1).type, 'railgrid.preview-bridge.annotation.start')
   const messagesBeforeIdenticalPins = firstChannel.port1.messages.length
   assert.equal(controller.setAnnotationPins([{ ...initialPins[0], comment: 'Make this blue now' }]), true)
   assert.equal(firstChannel.port1.messages.length, messagesBeforeIdenticalPins, 'comment-only changes must not rebuild identical preview pins')
-  const lastPinMessage = firstChannel.port1.messages.findLast((message) => message.type === 'faros.preview-bridge.annotation.pins')
+  const lastPinMessage = firstChannel.port1.messages.findLast((message) => message.type === 'railgrid.preview-bridge.annotation.pins')
   assert.equal(Object.hasOwn(lastPinMessage.pins[0], 'comment'), false)
 
   const secondGeneration = '5ac4b288-a1fa-4c99-936c-07467cd3cadb'
   dispatchReady(frameWindow, secondGeneration)
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(firstChannel.port1.messages.some((message) => message.type === 'faros.preview-bridge.annotation.stop'), true)
+  assert.equal(firstChannel.port1.messages.some((message) => message.type === 'railgrid.preview-bridge.annotation.stop'), true)
   assert.deepEqual(documents, [firstGeneration, secondGeneration])
   const secondChannel = channels.at(-1)
-  secondChannel.port1.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/admin.html' } })
-  assert.equal(secondChannel.port1.messages.at(-1).type, 'faros.preview-bridge.annotation.pins')
+  secondChannel.port1.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/admin.html' } })
+  assert.equal(secondChannel.port1.messages.at(-1).type, 'railgrid.preview-bridge.annotation.pins')
   assert.equal(secondChannel.port1.messages.at(-1).pins.length, 1)
   assert.equal(secondChannel.port1.messages.at(-1).pins[0].documentID, secondGeneration, 'transport must bind the pin to the authenticated document')
   assert.equal(secondChannel.port1.messages.at(-1).pins[0].pagePath, '/app', 'the annotated route must remain stable across document navigation')
@@ -250,7 +250,7 @@ test('hot reload replaces only the local bridge without waiting for remote delet
   await controller.connect('project-a')
   const firstPort = dispatchReady(frameWindow, firstGeneration)
   await new Promise((resolve) => setImmediate(resolve))
-  firstPort.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
+  firstPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation: firstGeneration, path: '/app' } })
   assert.equal(states.at(-1), 'connected')
 
   const secondPort = dispatchReady(frameWindow, secondGeneration)
@@ -261,8 +261,8 @@ test('hot reload replaces only the local bridge without waiting for remote delet
   await new Promise((resolve) => setImmediate(resolve))
   assert.deepEqual(created, [firstGeneration, secondGeneration])
   assert.equal(deleteCount, 0, 'same-tab bridge replacement must not wait on best-effort DELETE')
-  assert.equal(secondPort.messages.at(-1).type, 'faros.preview-bridge.start')
-  secondPort.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/app' } })
+  assert.equal(secondPort.messages.at(-1).type, 'railgrid.preview-bridge.start')
+  secondPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-2', generation: secondGeneration, path: '/app' } })
   assert.equal(states.at(-1), 'connected')
   controller.destroy()
 })
@@ -353,13 +353,13 @@ test('renews the console bridge before the 15-minute boundary without reloading 
     dispatchReady(frameWindow, generation)
     await new Promise((resolve) => setImmediate(resolve))
     const firstPort = channels.at(-1).port1
-    firstPort.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-1', generation, path: '/app' } })
+    firstPort.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-1', generation, path: '/app' } })
     const renewal = [...timers.values()].find((timer) => timer.delay === 14 * 60_000 + 30_000)
     assert.ok(renewal, 'renewal should be scheduled 30 seconds before the 15-minute expiry')
 
     renewal.callback()
     await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(frameMessages.filter((message) => message.type === 'faros.preview-bridge.probe').length, 2)
+    assert.equal(frameMessages.filter((message) => message.type === 'railgrid.preview-bridge.probe').length, 2)
     assert.deepEqual(deleted, [], 'renewal must not block on deleting its prior session')
 
     dispatchReady(frameWindow, generation)
@@ -402,7 +402,7 @@ test('port failure closes the session and rejects oversized pin state explicitly
   await controller.connect('project-a')
   const port = dispatchReady(frameWindow, generation)
   await new Promise((resolve) => setImmediate(resolve))
-  port.onmessage({ data: { type: 'faros.preview-bridge.connected', version: 1, sessionID: 'session-failure', generation, path: '/app' } })
+  port.onmessage({ data: { type: 'railgrid.preview-bridge.connected', version: 1, sessionID: 'session-failure', generation, path: '/app' } })
   assert.equal(states.at(-1), 'connected')
   const acceptedPins = Array.from({ length: 64 }, (_, index) => ({
     id: `accepted-${index}`,
@@ -494,15 +494,15 @@ test('projects only current-document annotation selections and relays mode cance
       locatorStrategy: 'css',
     },
   }
-  channel.port1.onmessage({ data: { ...envelope, type: 'faros.preview-bridge.annotation.mode', active: true } })
+  channel.port1.onmessage({ data: { ...envelope, type: 'railgrid.preview-bridge.annotation.mode', active: true } })
   assert.deepEqual(modes, [true])
 
   channel.port1.onmessage({
-    data: { ...envelope, type: 'faros.preview-bridge.annotation.selected', documentID: 'stale-document' },
+    data: { ...envelope, type: 'railgrid.preview-bridge.annotation.selected', documentID: 'stale-document' },
   })
   assert.equal(selections.length, 0, 'a selection from an older document must not reach the composer')
 
-  channel.port1.onmessage({ data: { ...envelope, type: 'faros.preview-bridge.annotation.selected', documentID: generation } })
+  channel.port1.onmessage({ data: { ...envelope, type: 'railgrid.preview-bridge.annotation.selected', documentID: generation } })
   assert.deepEqual(selections, [{
     documentID: generation,
     pagePath: '/settings',
@@ -512,14 +512,14 @@ test('projects only current-document annotation selections and relays mode cance
   }])
 
   channel.port1.onmessage({
-    data: { ...envelope, type: 'faros.preview-bridge.annotation.selected', documentID: generation, anchor: { x: 1.01, y: 0.5 } },
+    data: { ...envelope, type: 'railgrid.preview-bridge.annotation.selected', documentID: generation, anchor: { x: 1.01, y: 0.5 } },
   })
   assert.equal(selections.length, 1, 'an out-of-element anchor must not reach the composer')
 
   channel.port1.onmessage({
     data: {
       ...envelope,
-      type: 'faros.preview-bridge.annotation.pins-rendered',
+      type: 'railgrid.preview-bridge.annotation.pins-rendered',
       documentID: generation,
       pins: [{ id: ' annotation-1 ', resolved: true }, { id: '', resolved: true }],
     },
@@ -592,7 +592,7 @@ test('projects only current-document annotation selections and relays mode cance
     { id: 'annotation-1', pagePath: '/settings', rect: { x: 12, y: 24, width: 120, height: 32 }, viewport: { width: 1024, height: 768 } },
   ])
 
-  channel.port1.onmessage({ data: { ...envelope, type: 'faros.preview-bridge.annotation.cancelled' } })
+  channel.port1.onmessage({ data: { ...envelope, type: 'railgrid.preview-bridge.annotation.cancelled' } })
   assert.deepEqual(modes, [true, false])
   controller.destroy()
 })

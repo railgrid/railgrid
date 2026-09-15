@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -91,10 +91,10 @@ type rpcResponse struct {
 }
 
 // endpoint is the apiurl.MCPServerPath pattern (hub module):
-// /services/mcpserver/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
+// /services/mcpserver/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp
 // — "default" is the per-tenant aggregate the hub bootstraps.
 func (c *Client) endpoint() string {
-	return fmt.Sprintf("%s/services/mcpserver/%s/apis/faros.sh/v1alpha1/mcpservers/default/mcp",
+	return fmt.Sprintf("%s/services/mcpserver/%s/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp",
 		c.HubBase, c.ClusterID)
 }
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package apiurl is the single source of truth for all faros service path
-// construction and URL parsing. All packages that build or decompose faros
+// Package apiurl is the single source of truth for all railgrid service path
+// construction and URL parsing. All packages that build or decompose railgrid
 // hub URLs should use the helpers here instead of hand-crafting strings.
 package apiurl
 
@@ -25,7 +25,7 @@ import (
 	"strings"
 )
 
-// Path prefix constants for faros virtual-workspace services and auth endpoints.
+// Path prefix constants for railgrid virtual-workspace services and auth endpoints.
 // Hub-specific endpoints live under /services and /auth — distinct from
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
@@ -110,9 +110,9 @@ func KCPClusterURL(kcpBase, cluster string) string {
 // EdgeAgentProxyPath returns the URL path (relative to the hub base) for the
 // agent-proxy virtual workspace endpoint.
 //
-// Pattern: /services/agent-proxy/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/{subresource}
+// Pattern: /services/agent-proxy/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}/{subresource}
 func EdgeAgentProxyPath(cluster, edgeName, subresource string) string {
-	return fmt.Sprintf("%s/%s/apis/faros.sh/v1alpha1/edges/%s/%s",
+	return fmt.Sprintf("%s/%s/apis/railgrid.ai/v1alpha1/edges/%s/%s",
 		PathPrefixAgentProxy, cluster, edgeName, subresource)
 }
 
@@ -124,17 +124,17 @@ func EdgeAgentProxyURL(hubBase, cluster, edgeName, subresource string) string {
 
 // EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server" | "macos") to the
 // owning provider's backend-proxy name, API group and resource. The edge plane
-// is one provider `edges` holding all kinds under group edges.faros.sh;
+// is one provider `edges` holding all kinds under group edges.railgrid.ai;
 // only the resource differs by type. Unknown values default to kubernetes for
 // backwards compatibility with callers that omitted the edge type.
 func EdgeProviderCoordinates(edgeType string) (provider, group, resource string) {
 	if edgeType == "server" {
-		return "edges", "edges.faros.sh", "linuxservers"
+		return "edges", "edges.railgrid.ai", "linuxservers"
 	}
 	if edgeType == "macos" {
-		return "edges", "edges.faros.sh", "macosservers"
+		return "edges", "edges.railgrid.ai", "macosservers"
 	}
-	return "edges", "edges.faros.sh", "kubernetesclusters"
+	return "edges", "edges.railgrid.ai", "kubernetesclusters"
 }
 
 // ProviderAgentProxyPath returns the agent-ingress path for an edge provider's
@@ -159,9 +159,9 @@ func ProviderAgentProxyURL(hubBase, edgeType, cluster, edgeName, subresource str
 // EdgeProxyPath returns the URL path (relative to the hub base) for the
 // edges-proxy virtual workspace endpoint.
 //
-// Pattern: /services/edges-proxy/clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/{subresource}
+// Pattern: /services/edges-proxy/clusters/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}/{subresource}
 func EdgeProxyPath(cluster, edgeName, subresource string) string {
-	return fmt.Sprintf("%s/clusters/%s/apis/faros.sh/v1alpha1/edges/%s/%s",
+	return fmt.Sprintf("%s/clusters/%s/apis/railgrid.ai/v1alpha1/edges/%s/%s",
 		PathPrefixEdgesProxy, cluster, edgeName, subresource)
 }
 
@@ -174,13 +174,13 @@ func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
 // EdgeServiceProxyPath returns the consumer-egress path for a subresource on an
 // EdgeService, routed through the hub backend proxy to the edges provider. The
 // provider StripPrefixes /services/providers/edges/edgeproxy so its handler sees
-// /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{subresource}.
+// /clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}.
 //
 // subresource is "proxy" (HTTP data plane) or "mcp".
 //
-// Pattern: /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{subresource}
+// Pattern: /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/services/{name}/{subresource}
 func EdgeServiceProxyPath(cluster, name, subresource string) string {
-	return fmt.Sprintf("%s/edges/edgeproxy/clusters/%s/apis/edges.faros.sh/v1alpha1/services/%s/%s",
+	return fmt.Sprintf("%s/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/services/%s/%s",
 		PathPrefixProvidersProxy, cluster, name, subresource)
 }
 
@@ -197,9 +197,9 @@ func EdgeServiceProxyURL(hubBase, cluster, name, subresource string) string {
 // MCPServerPath returns the URL path for the unified MCPServer virtual
 // workspace endpoint (aggregates kube + linux edges).
 //
-// Pattern: /services/mcpserver/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
+// Pattern: /services/mcpserver/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp
 func MCPServerPath(cluster, mcpServerName string) string {
-	return fmt.Sprintf("%s/%s/apis/faros.sh/v1alpha1/mcpservers/%s/mcp",
+	return fmt.Sprintf("%s/%s/apis/railgrid.ai/v1alpha1/mcpservers/%s/mcp",
 		PathPrefixMCPServer, cluster, mcpServerName)
 }
 
@@ -211,9 +211,9 @@ func MCPServerURL(hubBase, cluster, mcpServerName string) string {
 // EdgeAPIPath returns the kcp API path for an Edge resource, suitable for use
 // as a client Host suffix or in kubeconfig server URLs.
 //
-// Pattern: /clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}
+// Pattern: /clusters/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}
 func EdgeAPIPath(cluster, edgeName string) string {
-	return fmt.Sprintf("/clusters/%s/apis/faros.sh/v1alpha1/edges/%s", cluster, edgeName)
+	return fmt.Sprintf("/clusters/%s/apis/railgrid.ai/v1alpha1/edges/%s", cluster, edgeName)
 }
 
 // ExternalizeURL replaces the scheme and host in edgeURL with those from

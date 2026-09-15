@@ -263,7 +263,7 @@ describe('api client array normalization', () => {
   })
 
   it('does not resurrect a stored workspace after the host explicitly clears context', () => {
-    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
+    localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
     const api = new ApiClient()
     api.setContext({ basePath: '/ui/providers/agents', orgUUID: null, workspaceUUID: null, token: null })
 
@@ -273,7 +273,7 @@ describe('api client array normalization', () => {
   })
 
   it('omits stale tenant headers after the host explicitly clears context', async () => {
-    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
+    localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
     const api = new ApiClient()
     api.setContext({ basePath: '/ui/providers/agents', orgUUID: null, workspaceUUID: null, token: null })
     const request = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ items: [] }) })
@@ -282,8 +282,8 @@ describe('api client array normalization', () => {
     await api.get('/api/agents')
 
     const headers = request.mock.calls[0]?.[1]?.headers as Record<string, string>
-    expect(headers['X-Faros-Org']).toBeUndefined()
-    expect(headers['X-Faros-Workspace']).toBeUndefined()
+    expect(headers['X-Railgrid-Org']).toBeUndefined()
+    expect(headers['X-Railgrid-Workspace']).toBeUndefined()
   })
 })
 

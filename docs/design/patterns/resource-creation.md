@@ -36,7 +36,7 @@ empty table.
 
 When domain help is useful, put `CreateGuidance.vue` beside `k-create-fields`
 inside `k-create-surface--guided`. The rail contains only timely prerequisites,
-a live non-secret summary of what Faros will create, and controller-owned next
+a live non-secret summary of what Railgrid will create, and controller-owned next
 steps. Provider copy and value derivation remain local. A shared container query
 puts fields before guidance on narrow surfaces and keeps both regions fluid at
 desktop and 4K widths.

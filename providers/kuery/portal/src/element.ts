@@ -4,7 +4,7 @@ import { createApp, reactive, type App as VueApp } from 'vue'
 
 import App from './App.vue'
 
-export interface FarosContext {
+export interface RailgridContext {
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).
@@ -20,11 +20,11 @@ export interface FarosContext {
 }
 
 export class KueryElement extends HTMLElement {
-  private readonly state = reactive<{ context: FarosContext | null }>({ context: null })
+  private readonly state = reactive<{ context: RailgridContext | null }>({ context: null })
   private app: VueApp | null = null
 
-  set farosContext(value: FarosContext | null) { this.state.context = value }
-  get farosContext(): FarosContext | null { return this.state.context }
+  set railgridContext(value: RailgridContext | null) { this.state.context = value }
+  get railgridContext(): RailgridContext | null { return this.state.context }
 
   connectedCallback(): void {
     if (this.app) return

@@ -42,7 +42,7 @@ ClusterRole (P-3), `MaximalPermissionPolicy`, and the Disable confirm-gate (P-7)
 The org-owned layout mirrors the platform one exactly, one level down:
 
 ```
-root:faros
+root:railgrid
   providers:<name>                        platform provider workspace
   tenants:<orgUUID>                       Org workspace          (type: organization)
     <wsUUID>                              team workspace         (type: workspace)
@@ -50,8 +50,8 @@ root:faros
       <name>                              org provider workspace (type: provider)
 ```
 
-`root:faros:tenants:<orgUUID>:providers` is a plain `universal` workspace, just
-like `root:faros:providers`. That is the load-bearing detail: the `provider`
+`root:railgrid:tenants:<orgUUID>:providers` is a plain `universal` workspace, just
+like `root:railgrid:providers`. That is the load-bearing detail: the `provider`
 WorkspaceType's `limitAllowedParents` requires a universal parent, so making the
 container universal lets each org provider reuse **the same `provider`
 WorkspaceType** platform providers use. No new WorkspaceType ships with this
@@ -59,9 +59,9 @@ feature.
 
 Reusing that type is what makes the rest fall out for free:
 
-- It carries `defaultAPIBindings: providers.faros.sh`, so the workspace binds the
+- It carries `defaultAPIBindings: providers.railgrid.ai`, so the workspace binds the
   CatalogEntry API on creation. The hub's catalog manager watches every cluster
-  that binds `providers.faros.sh`, so an org provider joins the catalog watch
+  that binds `providers.railgrid.ai`, so an org provider joins the catalog watch
   **with no change to the manager** and no second watch.
 - It has no `extend: universal`, so a provider holding cluster-admin over its own
   workspace still cannot spawn workspaces.
@@ -186,7 +186,7 @@ hub hostname has no way to route them apart.
 A SaaS deployment therefore gives each shard its own externally reachable
 address and points that shard's `virtualWorkspaceURL` at it. kcp's front proxy
 already serves `/services/…` and enforces APIExport ownership through its own
-RBAC, so this needs no faros-side routing at all.
+RBAC, so this needs no railgrid-side routing at all.
 
 In either topology `virtualWorkspaceURL` is one global value per shard, so
 in-platform providers dial the public address too and hairpin back in. A small
@@ -214,10 +214,10 @@ instructions from it:
 selfHosting:
   supported: true
   chart:
-    repository: "oci://ghcr.io/faroshq/charts"
-    name: "faros-edges-provider"
+    repository: "oci://ghcr.io/railgrid/charts"
+    name: "railgrid-edges-provider"
     version: "0.1.4"          # stamped from .Chart.Version at release
-  namespace: "faros-provider-edges"
+  namespace: "railgrid-provider-edges"
   releaseName: "edges"
   requiredValues:
     - name: hub.externalURL
@@ -344,7 +344,7 @@ reaches production, and they drift silently (`AGENTS.md` §5.1).
 
 ### The workspace-path fix this depended on
 
-Provider `init` used to hardcode `root:faros:providers:<name>` and write it into
+Provider `init` used to hardcode `root:railgrid:providers:<name>` and write it into
 `APIExportEndpointSlice.spec.export.path`, so a chart installed against an org
 workspace published endpoints for an export that does not exist at that path.
 
@@ -379,7 +379,7 @@ cluster-admin credential and, under a platform provider's name, redirects every
 org user's traffic for that provider into the registrant's cluster. That is an
 admin's call. Organizations created before the default flipped were stamped
 with an explicit `members` by a one-time backfill in the organization
-controller (recorded in the `tenants.faros.sh/catalog-entry-creation-migrated`
+controller (recorded in the `tenants.railgrid.ai/catalog-entry-creation-migrated`
 annotation), so their behaviour did not change; an admin can tighten them with
 `PATCH /api/orgs/{org}`.
 
@@ -416,8 +416,8 @@ kubeconfig before `previousValidUntil`; that is the whole procedure.
 
 **What the hub does.** It issues a *second* token Secret for the same
 ServiceAccount, records which one is current on the ServiceAccount
-(`providers.faros.sh/active-token-secret`), and stamps the previous Secret with
-`providers.faros.sh/delete-after` — 24 hours out by default. The catalog
+(`providers.railgrid.ai/active-token-secret`), and stamps the previous Secret with
+`providers.railgrid.ai/delete-after` — 24 hours out by default. The catalog
 controller deletes retired Secrets once that time passes.
 
 **Why both work in the meantime.** Both Secrets are tokens for the *same*
@@ -439,12 +439,12 @@ hub can read back.
 
 Platform providers have the same endpoint behind the platform-admin gate:
 `POST /api/admin/providers/{name}/credentials/rotate`, which additionally
-rewrites the kubeconfig Secret in `root:faros:system:providers` so in-cluster
-readers move with it. There is no `faros` CLI subcommand for either; use curl:
+rewrites the kubeconfig Secret in `root:railgrid:system:providers` so in-cluster
+readers move with it. There is no `railgrid` CLI subcommand for either; use curl:
 
 ```bash
-curl -sS -X POST -H "Authorization: Bearer $FAROS_TOKEN" \
-  "$FAROS_HUB_URL/api/orgs/$ORG/providers/$NAME/credentials/rotate" \
+curl -sS -X POST -H "Authorization: Bearer $RAILGRID_TOKEN" \
+  "$RAILGRID_HUB_URL/api/orgs/$ORG/providers/$NAME/credentials/rotate" \
   | jq -r .kubeconfig > provider-kubeconfig.yaml
 ```
 
@@ -454,7 +454,7 @@ What an Org gets is deliberately narrow.
 
 - **The minted ServiceAccount holds rights only inside its own provider
   workspace** — cluster-admin there today, and the narrower generated
-  `faros:provider` role on a hub started with
+  `railgrid:provider` role on a hub started with
   `--provider-workspace-cluster-admin=false` (see
   [providers.md](./providers.md#credentials-and-rotation)). Either way it cannot
   read the Org workspace above it or any team workspace beside it.
@@ -466,20 +466,20 @@ What an Org gets is deliberately narrow.
 - **An org-owned provider never receives a user's hub token.** The backend
   proxy strips the caller's `Authorization` before the request enters the edge
   tunnel and replaces it with a *delegated user token*: a ServiceAccount token
-  minted in the caller's current team workspace (`faros-du-<hash>` in the
+  minted in the caller's current team workspace (`railgrid-du-<hash>` in the
   `default` namespace, one deterministic account per workspace, user, and
   provider), audience-bound, valid for ten minutes, cached hub-side for five,
   and annotated with the user it stands in for
-  (`faros.sh/delegated-user`, `-org`, `-workspace`, `-provider`). kcp scopes
+  (`railgrid.ai/delegated-user`, `-org`, `-workspace`, `-provider`). kcp scopes
   it to that one workspace, so the worst a tenant-run provider can do with it
   is what the user could already do in that workspace with `kubectl`. The
   account is bound to the same ClusterRole workspace members hold today
   (`cluster-admin` in the workspace, granted by the bootstrap); narrowing that
-  is the workspace RBAC's job, not the proxy's. `X-Faros-User` still names
-  the human and `X-Faros-Tenant` / `X-Faros-Cluster` still carry the
+  is the workspace RBAC's job, not the proxy's. `X-Railgrid-User` still names
+  the human and `X-Railgrid-Tenant` / `X-Railgrid-Cluster` still carry the
   workspace's cluster ID. When the provider calls back into the
   hub with the token — `/clusters/{id}` or another provider's backend, with
-  `X-Faros-Org`/`X-Faros-Workspace` naming its workspace — the tenant resolver
+  `X-Railgrid-Org`/`X-Railgrid-Workspace` naming its workspace — the tenant resolver
   verifies it online and resolves it to the human user again. A request the
   hub cannot mint a token for (no resolvable caller, no workspace selection,
   issuer unavailable) is refused; it never falls back to forwarding the bearer.
@@ -563,8 +563,8 @@ Two details are load-bearing:
 
 - **The read uses the hub's kcp-admin config addressed at `/clusters/<id>`, not
   the reconcile request's multicluster client.** That client is scoped to the
-  `providers.faros.sh` APIExport virtual workspace, and a VW serves only the
-  resources its APIExport declares. `providers.faros.sh` declares nothing but
+  `providers.railgrid.ai` APIExport virtual workspace, and a VW serves only the
+  resources its APIExport declares. `providers.railgrid.ai` declares nothing but
   `catalogentries`, so `core.kcp.io/LogicalCluster` is not reachable there at
   all — a read through it fails for every cluster.
 - **A failed resolution fails the reconcile; it does not default the scope.**
@@ -614,8 +614,8 @@ in URL paths.
   was on the list) and then died on the provider's own custom resource:
 
   ```
-  infrastructureproviders.infrastructure.faros.sh "…" is forbidden:
-  User "system:serviceaccount:faros-agent:faros-agent" cannot get …
+  infrastructureproviders.infrastructure.railgrid.ai "…" is forbidden:
+  User "system:serviceaccount:railgrid-agent:railgrid-agent" cannot get …
   ```
 
   Bounding the agent for real means removing that escalate/bind path, which
@@ -688,8 +688,8 @@ in URL paths.
   they were never offered.
 
   `ApplyBindGrant` now resolves its own workspace from the `LogicalCluster` and,
-  under `root:faros:tenants:`, creates no grant and removes one an earlier
-  install left. Nothing supported breaks: every APIBinding faros creates comes
+  under `root:railgrid:tenants:`, creates no grant and removes one an earlier
+  install left. Nothing supported breaks: every APIBinding railgrid creates comes
   from the hub's Enable path, which runs as kcp-admin and needs no grant. What
   stops working is writing an APIBinding by hand with kubectl, already outside
   the hub-mediated model (O-10).

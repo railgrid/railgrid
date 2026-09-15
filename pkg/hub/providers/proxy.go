@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,14 +33,14 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 // NewUIProxy returns an http.Handler serving /ui/providers/{name}/* by reverse
 // proxying to the provider's spec.ui.url. The handler is mounted in the hub
 // router WITHOUT http.StripPrefix; this proxy strips the /ui/providers/{name}
-// segment itself so it can inject X-Faros-Base-Path before forwarding.
+// segment itself so it can inject X-Railgrid-Base-Path before forwarding.
 //
 // Routing nuance: the portal SPA also lives at /ui/, with Vue Router serving
 // /providers/{name} (and arbitrary sub-paths) as in-app routes that mount
@@ -58,7 +58,7 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		pathPrefix: apiurl.PathPrefixProvidersUI,
 		pick:       func(p Provider) *url.URL { return p.UIURL },
 		setHeaders: func(req *http.Request, name, base string) {
-			req.Header.Set("X-Faros-Base-Path", base)
+			req.Header.Set("X-Railgrid-Base-Path", base)
 		},
 		// UI proxy reserves only asset-shaped paths; portal SPA routes fall
 		// through (see SetFallback). Backend proxy keeps the default "always
@@ -68,7 +68,7 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 }
 
 // TenantResolver resolves the caller's identity (User CR name) and
-// tenant workspace path (e.g. root:faros:orgs:{orgUUID}) from an HTTP
+// tenant workspace path (e.g. root:railgrid:orgs:{orgUUID}) from an HTTP
 // request's bearer token. Implementations typically wrap
 // proxy.KCPProxy.IdentifyUser plus a User → Organization → WorkspacePath
 // lookup; see pkg/hub/server.go for the canonical wiring. Returns an
@@ -98,10 +98,10 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 // If a TenantResolver is
 // installed via SetTenantResolver (and a cluster resolver via
 // SetClusterResolver), the proxy resolves the caller's identity and injects
-// X-Faros-User plus the tenant's kcp logical-cluster ID as both
-// X-Faros-Tenant and X-Faros-Cluster, so the provider can scope work without
-// re-parsing the bearer token. Incoming X-Faros-User / X-Faros-Tenant /
-// X-Faros-Cluster headers are ALWAYS stripped before the request is
+// X-Railgrid-User plus the tenant's kcp logical-cluster ID as both
+// X-Railgrid-Tenant and X-Railgrid-Cluster, so the provider can scope work without
+// re-parsing the bearer token. Incoming X-Railgrid-User / X-Railgrid-Tenant /
+// X-Railgrid-Cluster headers are ALWAYS stripped before the request is
 // forwarded — a third-party caller can't forge identity by setting those
 // headers directly.
 func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
@@ -113,7 +113,7 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		denyHubOnlyEndpoints: true,
 	}
 	// setHeaders runs after the Director's URL rewrite. Always strip
-	// inbound X-Faros-* identity headers (defense in depth — a client
+	// inbound X-Railgrid-* identity headers (defense in depth — a client
 	// must not be able to spoof identity by setting them at the front
 	// door); if a TenantResolver is installed, populate them from the
 	// resolver. Reading p.tenantResolver via the closure is safe
@@ -121,13 +121,13 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	// request lands in practice; if the wiring ever needs hot-swap,
 	// switch the field to atomic.Pointer[TenantResolver].
 	p.setHeaders = func(req *http.Request, name, _ string) {
-		req.Header.Del("X-Faros-User")
-		req.Header.Del("X-Faros-Tenant")
-		req.Header.Del("X-Faros-Cluster")
+		req.Header.Del("X-Railgrid-User")
+		req.Header.Del("X-Railgrid-Tenant")
+		req.Header.Del("X-Railgrid-Cluster")
 		if p.tenantResolver == nil {
 			// V(2) so tests / non-bootstrapper hubs don't spam, but
 			// devs can flip on verbosity to see the dropped path.
-			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Faros-* headers", "provider", name)
+			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Railgrid-* headers", "provider", name)
 			return
 		}
 		user, tenantPath, err := p.resolveCaller(req)
@@ -139,29 +139,29 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 			// TenantMissing error in a provider has a corresponding
 			// hub log line a dev can grep for.
 			if err.Error() == "anonymous caller" {
-				p.log.V(2).Info("anonymous caller — forwarding without X-Faros-* headers", "provider", name, "path", req.URL.Path)
+				p.log.V(2).Info("anonymous caller — forwarding without X-Railgrid-* headers", "provider", name, "path", req.URL.Path)
 			} else {
-				p.log.Info("tenant resolve failed — forwarding without X-Faros-* headers", "provider", name, "path", req.URL.Path, "err", err.Error())
+				p.log.Info("tenant resolve failed — forwarding without X-Railgrid-* headers", "provider", name, "path", req.URL.Path, "err", err.Error())
 			}
 			// Still inject user when the resolver returned a name
 			// but errored later in the chain. Lets the provider at
 			// least attribute the call even when tenant scoping
 			// isn't available.
 			if user != "" {
-				req.Header.Set("X-Faros-User", user)
+				req.Header.Set("X-Railgrid-User", user)
 			}
 			return
 		}
 		if user != "" {
-			req.Header.Set("X-Faros-User", user)
+			req.Header.Set("X-Railgrid-User", user)
 		}
 		if tenantPath == "" {
-			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Faros-Tenant / X-Faros-Cluster", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
+			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Railgrid-Tenant / X-Railgrid-Cluster", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
 			return
 		}
 		// Tenant identity between the hub and a provider is the workspace's
-		// kcp logical-cluster ID, carried in BOTH X-Faros-Tenant and
-		// X-Faros-Cluster (the MCP aggregate's federation client sends the
+		// kcp logical-cluster ID, carried in BOTH X-Railgrid-Tenant and
+		// X-Railgrid-Cluster (the MCP aggregate's federation client sends the
 		// same pair). The workspace path resolved above stays hub-internal:
 		// it is never forwarded, so a provider cannot come to depend on it.
 		// Without an ID — no resolver wired, or the lookup failed — both
@@ -169,11 +169,11 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		// then reports the tenant as missing, which is the honest state.
 		clusterID, err := p.resolveClusterID(req.Context(), tenantPath)
 		if err != nil {
-			p.log.Info("cluster-id resolve failed — forwarding without X-Faros-Tenant / X-Faros-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
+			p.log.Info("cluster-id resolve failed — forwarding without X-Railgrid-Tenant / X-Railgrid-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
 			return
 		}
-		req.Header.Set("X-Faros-Tenant", clusterID)
-		req.Header.Set("X-Faros-Cluster", clusterID)
+		req.Header.Set("X-Railgrid-Tenant", clusterID)
+		req.Header.Set("X-Railgrid-Cluster", clusterID)
 	}
 	return p
 }
@@ -231,10 +231,10 @@ func (p *ProviderProxy) withResolvedCaller(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{user: user, tenantPath: tenantPath, err: err}))
 }
 
-// SetTenantResolver installs the resolver used to populate X-Faros-User on
+// SetTenantResolver installs the resolver used to populate X-Railgrid-User on
 // proxied requests and to find the caller's workspace, whose logical-cluster
-// ID then goes out as X-Faros-Tenant / X-Faros-Cluster (see
-// SetClusterResolver). Wire after the kcpProxy and farosClient are built (see
+// ID then goes out as X-Railgrid-Tenant / X-Railgrid-Cluster (see
+// SetClusterResolver). Wire after the kcpProxy and railgridClient are built (see
 // pkg/hub/server.go around the providerRegistry setup). Calling with nil
 // disables injection but the inbound-header stripping below still runs.
 func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
@@ -242,8 +242,8 @@ func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
 }
 
 // SetClusterResolver installs the resolver mapping a tenant workspace path to
-// its kcp logical-cluster ID, injected as both X-Faros-Tenant and
-// X-Faros-Cluster on backend-proxied requests. Wire alongside
+// its kcp logical-cluster ID, injected as both X-Railgrid-Tenant and
+// X-Railgrid-Cluster on backend-proxied requests. Wire alongside
 // SetTenantResolver; without it neither tenant header is sent (the workspace
 // path is never used in their place) and any inbound value is still stripped.
 func (p *ProviderProxy) SetClusterResolver(f func(ctx context.Context, tenantPath string) (string, error)) {
@@ -270,14 +270,14 @@ type ProviderProxy struct {
 	// is true. Nil until SetFallback is called; while nil, those paths 404.
 	fallback http.Handler
 
-	// tenantResolver, when set, populates X-Faros-User and finds the
+	// tenantResolver, when set, populates X-Railgrid-User and finds the
 	// caller's workspace on backend-proxied requests. Used only by the
 	// backend proxy; the UI proxy serves static assets and has no use for
 	// caller identity. See SetTenantResolver.
 	tenantResolver TenantResolver
 
 	// clusterResolver maps the resolved tenant workspace path to its kcp
-	// logical-cluster ID, injected as X-Faros-Tenant and X-Faros-Cluster.
+	// logical-cluster ID, injected as X-Railgrid-Tenant and X-Railgrid-Cluster.
 	// The ID is the tenant's identity towards providers: it is what the
 	// hub's kcp proxy at /clusters/{id} authorizes by (workspace paths are
 	// rejected there), and what every provider keys its tenant scope on.

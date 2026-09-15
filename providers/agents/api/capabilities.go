@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/tools"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // capabilityTTL bounds how stale a cached probe may be. Enabling a provider is
@@ -98,7 +98,7 @@ func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	sess, err := tools.ConnectMCPEndpoint(ctx, endpoint, id.token, "faros", s.cfg.HubInsecure)
+	sess, err := tools.ConnectMCPEndpoint(ctx, endpoint, id.token, "railgrid", s.cfg.HubInsecure)
 	if err != nil {
 		// Not cached: a transient failure should not suppress the capability
 		// for a whole minute.
@@ -117,7 +117,7 @@ func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
 
 // providersFromTools derives the federated provider set from tool names. The
 // aggregate endpoint namespaces every tool as "<provider>__<tool>", and our MCP
-// client prefixes what it dials, so a tool arrives as "faros__<provider>__<tool>".
+// client prefixes what it dials, so a tool arrives as "railgrid__<provider>__<tool>".
 func providersFromTools(ts []engine.Tool) []string {
 	seen := map[string]bool{}
 	out := []string{}

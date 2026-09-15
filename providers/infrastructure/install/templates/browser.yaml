@@ -1,4 +1,4 @@
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: browser
@@ -36,7 +36,7 @@ spec:
       set (POST for requests, GET for the SSE stream, DELETE to end a session).
       The hop is hub → infrastructure provider → the runtime cluster's
       kube-apiserver `services/proxy` subresource → the instance's Service. The
-      caller authenticates as ITSELF with its own faros credential; the gate is
+      caller authenticates as ITSELF with its own railgrid credential; the gate is
       the caller's kcp RBAC on this instance — a caller that cannot GET the
       Browser object gets 403/404 and never reaches Chromium. So there is
       nothing to paste anywhere: no bearer token, no baseURL to copy out of
@@ -102,7 +102,7 @@ spec:
             path: status.runtimeNamespace
             type: code
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: browsers
     kind: Browser
@@ -538,8 +538,8 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${faros.gatewayName}
-                namespace: ${faros.gatewayNamespace}
+                name: ${railgrid.gatewayName}
+                namespace: ${railgrid.gatewayNamespace}
             hostnames:
               - ${schema.spec.expose.fqdn}
             rules:
@@ -551,7 +551,7 @@ spec:
                   - name: ${oauthService.metadata.name}
                     port: 4180
         readyWhen:
-          - '${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}'
+          - '${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${railgrid.gatewayName}" && p.parentRef.namespace == "${railgrid.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}'
     # The data plane resolves its target through these paths, so they are part
     # of the contract, not decoration.
     #
@@ -571,4 +571,4 @@ spec:
       # is includeWhen-gated — so this resolves only for an instance that
       # opted into exposure and is simply absent otherwise. That is exactly
       # the wanted semantics: no URL that is only sometimes real.
-      url: ${"https://" + httpRoute.spec.hostnames[0] + "${faros.appPublicPort}"}
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${railgrid.appPublicPort}"}

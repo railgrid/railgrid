@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 type fakeNativeBrowserToolPort struct {
@@ -352,7 +352,7 @@ func TestProjectAssistantNativeBrowserEvidenceUsesReceipts(t *testing.T) {
 func TestProjectAssistantBrowserSessionOwnerIncludesProjectAndCaller(t *testing.T) {
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "project-a", UID: types.UID("uid-a")}}
 	base := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        project,
 		AssistantRunID: "run-a",
 	}
@@ -378,7 +378,7 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 	}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        project,
 		AssistantRunID: "run-a",
 	}
@@ -414,7 +414,7 @@ func TestProjectAssistantNativeBrowserFirstNonNavigationStartsAtPreview(t *testi
 		return "https://demo.preview.example/", nil
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-first-preview",
 	}
@@ -508,7 +508,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-private-first-preview",
 	}
@@ -539,7 +539,7 @@ func TestProjectAssistantNativeBrowserFirstNavigationIsNotDuplicated(t *testing.
 		return "https://demo.preview.example/", nil
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-first-navigation",
 		Arguments:      map[string]any{"url": "/tasks"},
@@ -684,7 +684,7 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 	}
 	req := projectAssistantRunRequest{
 		ToolPort:   port,
-		Identity:   identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:   identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:    &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		TurnPolicy: projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
@@ -774,7 +774,7 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-discovery-guard",
 		Arguments:      map[string]any{"url": "/"},
@@ -861,7 +861,7 @@ func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundar
 			return recorder.Result(), nil
 		})}
 	}
-	identity := identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"}
+	identity := identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
 		Identity:       identity,
@@ -982,7 +982,7 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 				})}
 			}
 			request := projectAssistantToolCallRequest{
-				Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+				Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 				Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 				AssistantRunID: "run-safety",
 			}
@@ -1051,8 +1051,8 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 	manager := newProjectAssistantBrowserSessionManager()
 	defer manager.closeAll()
 	ref := dataPlaneRef{Resource: "instances", Name: "browser"}
-	idA := identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a", user: "alice"}
-	idB := identity{tenant: "root:faros:tenants:org-b:ws-b", clusterID: "cluster-b", orgUUID: "org-b", workspaceUUID: "ws-b", user: "bob"}
+	idA := identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a", user: "alice"}
+	idB := identity{tenant: "root:railgrid:tenants:org-b:ws-b", clusterID: "cluster-b", orgUUID: "org-b", workspaceUUID: "ws-b", user: "bob"}
 	ownerA := browserSessionOwner{Identity: idA, AssistantRunID: "run-a"}
 	ownerB := browserSessionOwner{Identity: idB, AssistantRunID: "run-b"}
 
@@ -1152,7 +1152,7 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-read",
 	}
@@ -1239,7 +1239,7 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 		t.Fatal("unexpected event-stream EOF did not invalidate initial session")
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-eof-read",
 	}
@@ -1317,7 +1317,7 @@ func TestProjectAssistantNativeBrowserLostReadWithPendingInteractionIsUnverifiab
 	}
 	state := newProjectEinoAssistantRunState()
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-pending-read",
 		RunState:       state,
@@ -1416,7 +1416,7 @@ func TestProjectAssistantNativeBrowserMutationDoesNotReplayLostSession(t *testin
 		})}
 	}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:faros:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
 		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
 		AssistantRunID: "run-mutation",
 	}

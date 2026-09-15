@@ -193,7 +193,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
       </div>
       <div class="flex-1">
         <h1 class="flex items-center gap-2 text-[18px] font-bold text-text-primary">
-          Welcome to Faros
+          Welcome to Railgrid
           <Sparkles class="h-4 w-4 text-accent" :stroke-width="1.75" />
         </h1>
         <p class="mt-1 text-[12px] text-text-muted">
@@ -244,7 +244,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
         <template v-if="step === 0">
           <h2 class="text-[13px] font-semibold text-text-primary">The four things worth knowing</h2>
           <p class="mt-1 text-[11px] text-text-muted">
-            Faros is a control plane you extend. Here is the whole vocabulary.
+            Railgrid is a control plane you extend. Here is the whole vocabulary.
           </p>
 
           <ul class="mt-4 grid gap-3 sm:grid-cols-2">

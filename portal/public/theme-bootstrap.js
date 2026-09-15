@@ -12,7 +12,7 @@
 // entry, so it still wins the race with the first frame.
 (function() {
   try {
-    var stored = localStorage.getItem('faros-theme');
+    var stored = localStorage.getItem('railgrid-theme');
     var t = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'light';
     var hasMatchMedia = typeof window.matchMedia === 'function';
     var prefersDark = hasMatchMedia
@@ -20,12 +20,12 @@
     var d = t === 'system'
       ? (prefersDark ? 'dark' : 'light')
       : t;
-    var scheme = document.getElementById('faros-color-scheme');
+    var scheme = document.getElementById('railgrid-color-scheme');
     if (scheme) scheme.setAttribute('content', d);
     document.documentElement.className = d;
     document.documentElement.style.colorScheme = d;
   } catch (e) {
-    var scheme = document.getElementById('faros-color-scheme');
+    var scheme = document.getElementById('railgrid-color-scheme');
     if (scheme) scheme.setAttribute('content', 'light');
     document.documentElement.className = 'light';
     document.documentElement.style.colorScheme = 'light';

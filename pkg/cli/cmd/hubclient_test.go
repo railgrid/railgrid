@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -71,8 +71,8 @@ func newFakeHub(t *testing.T) *fakeHub {
 	})
 	h.handle("GET /api/orgs/{org}/workspaces", func(w http.ResponseWriter, r *http.Request) {
 		org := r.PathValue("org")
-		if r.Header.Get("X-Faros-Org") != org {
-			writeTestStatus(w, http.StatusBadRequest, "BadRequest", "missing X-Faros-Org")
+		if r.Header.Get("X-Railgrid-Org") != org {
+			writeTestStatus(w, http.StatusBadRequest, "BadRequest", "missing X-Railgrid-Org")
 			return
 		}
 		items := []map[string]any{{"uuid": "ws-a1", "orgUUID": "org-a", "displayName": "default", "clusterName": "cl-a"}}
@@ -85,11 +85,11 @@ func newFakeHub(t *testing.T) *fakeHub {
 		writeTestJSON(w, map[string]any{"items": items})
 	})
 	h.handle("GET /api/orgs/{org}/workspaces/{ws}/mcpservers/{name}/connect", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Faros-Org") != r.PathValue("org") || r.Header.Get("X-Faros-Workspace") != r.PathValue("ws") {
+		if r.Header.Get("X-Railgrid-Org") != r.PathValue("org") || r.Header.Get("X-Railgrid-Workspace") != r.PathValue("ws") {
 			writeTestStatus(w, http.StatusBadRequest, "BadRequest", "tenant headers do not match the path")
 			return
 		}
-		writeTestJSON(w, map[string]any{"endpointURL": h.URL + "/mcp", "serverName": "faros", "token": fakeMCPToken, "tokenReady": true})
+		writeTestJSON(w, map[string]any{"endpointURL": h.URL + "/mcp", "serverName": "railgrid", "token": fakeMCPToken, "tokenReady": true})
 	})
 	return h
 }
@@ -98,16 +98,16 @@ func (h *fakeHub) handle(pattern string, fn http.HandlerFunc) {
 	h.mux.HandleFunc(pattern, fn)
 }
 
-// useKubeconfig writes a faros kubeconfig pointing at cluster on the fake hub
+// useKubeconfig writes a railgrid kubeconfig pointing at cluster on the fake hub
 // and makes the package-level --kubeconfig use it.
 func (h *fakeHub) useKubeconfig(cluster string) string {
 	h.t.Helper()
 	cfg := clientcmdapi.NewConfig()
 	// clientcmd applies user credentials only over TLS.
-	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: h.URL + "/clusters/" + cluster, InsecureSkipTLSVerify: true}
-	cfg.AuthInfos["faros"] = &clientcmdapi.AuthInfo{Token: fakeUserToken}
-	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "faros"}
-	cfg.CurrentContext = "faros"
+	cfg.Clusters["railgrid"] = &clientcmdapi.Cluster{Server: h.URL + "/clusters/" + cluster, InsecureSkipTLSVerify: true}
+	cfg.AuthInfos["railgrid"] = &clientcmdapi.AuthInfo{Token: fakeUserToken}
+	cfg.Contexts["railgrid"] = &clientcmdapi.Context{Cluster: "railgrid", AuthInfo: "railgrid"}
+	cfg.CurrentContext = "railgrid"
 	path := filepath.Join(h.t.TempDir(), "kubeconfig")
 	if err := clientcmd.WriteToFile(*cfg, path); err != nil {
 		h.t.Fatal(err)
@@ -192,7 +192,7 @@ func TestHubSessionDoSendsTenantHeadersAndDecodesStatus(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.useKubeconfig("cl-b")
 	hub.handle("GET /probe", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(w, map[string]string{"org": r.Header.Get("X-Faros-Org"), "ws": r.Header.Get("X-Faros-Workspace")})
+		writeTestJSON(w, map[string]string{"org": r.Header.Get("X-Railgrid-Org"), "ws": r.Header.Get("X-Railgrid-Workspace")})
 	})
 	hub.handle("POST /fail", func(w http.ResponseWriter, r *http.Request) {
 		writeTestStatus(w, http.StatusConflict, "Conflict", "an assistant turn owns the project")
@@ -227,7 +227,7 @@ func TestDecodeAPIError(t *testing.T) {
 		{"error object", 500, `{"error":"boom"}`, "HTTP 500: boom"},
 		{"plain text", 409, "production instances have no dev sandbox\n", "HTTP 409: production instances have no dev sandbox"},
 		{"empty body", 502, "", "HTTP 502: Bad Gateway"},
-		{"unauthorized gets a hint", 401, "no bearer token", "run 'faros login'"},
+		{"unauthorized gets a hint", 401, "no bearer token", "run 'railgrid login'"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -365,7 +365,7 @@ func TestEnvCommand(t *testing.T) {
 		root.SetErr(&errOut)
 		root.SetArgs(append(args, "--kubeconfig", path))
 		if err := root.Execute(); err != nil {
-			t.Fatalf("faros %s: %v", strings.Join(args, " "), err)
+			t.Fatalf("railgrid %s: %v", strings.Join(args, " "), err)
 		}
 		return out.String(), errOut.String()
 	}

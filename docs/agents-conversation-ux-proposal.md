@@ -42,7 +42,7 @@ The prototype shows Agents' existing elapsed-duration concept as “Elapsed,” 
 
 ## Extraction architecture and sequence
 
-Canonical Vue presentation belongs in `provider-sdk/portalkit-vue/`; the seven shared components and neutral types are implemented there and consumed by App Studio and Agents in this workspace. Shared CSS recipes belong in `provider-sdk/portalkit/faros-ui.css`. The sync manifest distributes the canonical files to Vue portals; run `make sync-portalkit` after canonical changes and consume generated copies in provider portals. Provider adapters and lifecycle decisions remain provider-owned.
+Canonical Vue presentation belongs in `provider-sdk/portalkit-vue/`; the seven shared components and neutral types are implemented there and consumed by App Studio and Agents in this workspace. Shared CSS recipes belong in `provider-sdk/portalkit/railgrid-ui.css`. The sync manifest distributes the canonical files to Vue portals; run `make sync-portalkit` after canonical changes and consume generated copies in provider portals. Provider adapters and lifecycle decisions remain provider-owned.
 
 1. Completed the shared extraction for message layout, prose styling, activity, composer, approval frame, primary action, and conversation rail; App Studio and Agents consume the seven shared components.
 2. Agents adapters in `ChatMessage`, `AgentChat`, and `RunDetail` preserve server order and the provider's pending-approval and child-run semantics; shared presentation cannot establish interleaved chronology or lifecycle authority.

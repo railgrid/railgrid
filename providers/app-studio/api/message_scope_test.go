@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 package api
 
-import "github.com/faroshq/provider-app-studio/store"
+import "github.com/railgrid/provider-app-studio/store"
 
 // testProjectMessageScope keeps legacy test fixtures explicit without
 // weakening production scope derivation. The UID is stable for a fixture name

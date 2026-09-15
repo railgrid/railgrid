@@ -1,10 +1,10 @@
-module github.com/faroshq/provider-edges
+module github.com/railgrid/provider-edges
 
 go 1.26.8
 
 require (
 	github.com/containers/kubernetes-mcp-server v0.0.58
-	github.com/faroshq/provider-sdk v0.1.0
+	github.com/railgrid/provider-sdk v0.1.0
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
 	github.com/go-logr/logr v1.4.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -181,7 +181,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-// Pin k8s.io/* to the kcp staging forks the faros providers + SDK use.
+// Pin k8s.io/* to the kcp staging forks the railgrid providers + SDK use.
 
 // The full kcp k8s.io/* staging fork replace set, mirrored from the root
 // module. The edges provider imports kubernetes-mcp-server's helm toolset,
@@ -230,4 +230,4 @@ replace (
 // In-tree SDK: the monorepo is the source of truth until the SDK is
 // published with every package providers use (leaderelection landed after
 // v0.1.0). Image builds copy provider-sdk into the build context.
-replace github.com/faroshq/provider-sdk => ../../provider-sdk
+replace github.com/railgrid/provider-sdk => ../../provider-sdk

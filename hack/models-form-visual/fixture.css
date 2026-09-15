@@ -24,8 +24,8 @@ body {
 
 /* The real shell gives provider frames a fluid block. The fixture keeps the
  * same boundary while leaving the page available for full-page screenshots. */
-faros-provider-app-studio,
-faros-provider-agents,
+railgrid-provider-app-studio,
+railgrid-provider-agents,
   display: block;
   width: 100%;
   min-width: 0;

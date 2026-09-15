@@ -1,6 +1,6 @@
-# Faros Design Book compatibility pointer
+# Railgrid Design Book compatibility pointer
 
-The design book was split into the browsable [Faros design knowledge base](design/).
+The design book was split into the browsable [Railgrid design knowledge base](design/).
 Use [design/README.md](design/README.md) as the constitution and router, then
 follow its foundation, component, pattern, and quality contracts.
 
@@ -9,7 +9,7 @@ follow its foundation, component, pattern, and quality contracts.
   anchors while links migrate to docs/design; they intentionally preserve every
   former ATX heading slug without restoring a second design source.
 -->
-<a id="faros-design-book-violet-circuit"></a>
+<a id="railgrid-design-book-violet-circuit"></a>
 <a id="1-principles"></a>
 <a id="2-color-tokens"></a>
 <a id="3-radius-law"></a>
@@ -21,10 +21,10 @@ follow its foundation, component, pattern, and quality contracts.
 <a id="8-sanctioned-exceptions"></a>
 <a id="9-provider-portals-how-the-system-reaches-them"></a>
 <a id="10-extended-component-specs"></a>
-<a id="tooltip-implemented-as-data-k-tip-faros-uicss"></a>
+<a id="tooltip-implemented-as-data-k-tip-railgrid-uicss"></a>
 <a id="toast-snackbar-implemented-as-portalkittoastts"></a>
 <a id="toast-snackbar-implemented-as-vue-portalkit"></a>
-<a id="dropdown-context-menu-implemented-as-k-menu-faros-uicss"></a>
+<a id="dropdown-context-menu-implemented-as-k-menu-railgrid-uicss"></a>
 <a id="layout-selector-implemented-as-portalkit-vuelayoutselectorvue"></a>
 <a id="provider-route-tabs-implemented-as-portalkit-tabs"></a>
 <a id="resource-instance-pages-implemented-with-portalkit"></a>
@@ -32,13 +32,13 @@ follow its foundation, component, pattern, and quality contracts.
 <a id="resource-creation"></a>
 <a id="select-combobox"></a>
 <a id="checkbox-radio"></a>
-<a id="toggle-switch-implemented-as-k-toggle-faros-uicss"></a>
-<a id="progress-bar-implemented-as-k-progress-faros-uicss"></a>
-<a id="avatar-implemented-as-k-avatar-faros-uicss"></a>
-<a id="shortcut-hint-implemented-as-k-kbd-faros-uicss"></a>
-<a id="file-dropzone-implemented-as-k-dropzone-faros-uicss"></a>
+<a id="toggle-switch-implemented-as-k-toggle-railgrid-uicss"></a>
+<a id="progress-bar-implemented-as-k-progress-railgrid-uicss"></a>
+<a id="avatar-implemented-as-k-avatar-railgrid-uicss"></a>
+<a id="shortcut-hint-implemented-as-k-kbd-railgrid-uicss"></a>
+<a id="file-dropzone-implemented-as-k-dropzone-railgrid-uicss"></a>
 <!-- GitHub-style slugging can retain the literal `kbd` from the backticked tag. -->
-<a id="kbd-shortcut-hint-implemented-as-k-kbd-faros-uicss"></a>
+<a id="kbd-shortcut-hint-implemented-as-k-kbd-railgrid-uicss"></a>
 <a id="slider-range-input"></a>
 <a id="pagination"></a>
 <a id="date-time-picker"></a>

@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
-import type { Agent, Connection, FarosContext, Toolset } from '../types'
+import type { Agent, Connection, RailgridContext, Toolset } from '../types'
 import { agentFixture } from './helpers'
 import { settleVue, text } from './vue-helper'
 
-if (!customElements.get('faros-provider-agents')) customElements.define('faros-provider-agents', AgentsElement)
+if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -14,7 +14,7 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function ctx(overrides: Partial<FarosContext> = {}): FarosContext {
+function ctx(overrides: Partial<RailgridContext> = {}): RailgridContext {
   return {
     basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', token: 'token-a', user: { sub: 'alice' },
     ...overrides,
@@ -28,10 +28,10 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks())
 
-async function mountShell(hash = '#/agents', context: FarosContext = ctx()): Promise<AgentsElement> {
+async function mountShell(hash = '#/agents', context: RailgridContext = ctx()): Promise<AgentsElement> {
   history.replaceState(null, '', hash)
-  const element = document.createElement('faros-provider-agents') as AgentsElement
-  element.farosContext = context
+  const element = document.createElement('railgrid-provider-agents') as AgentsElement
+  element.railgridContext = context
   document.body.appendChild(element)
   await settleVue(6)
   return element
@@ -66,14 +66,14 @@ describe('public Agents shell routing', () => {
     const element = await mountShell('#/agents/scout/config', ctx({ subPath: '' }))
     expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
     const layouts: boolean[] = []
-    element.addEventListener('faros-layout-change', event => {
+    element.addEventListener('railgrid-layout-change', event => {
       layouts.push((event as CustomEvent<{ fullBleed: boolean }>).detail.fullBleed)
     })
 
     // Host Vue Router commits the sidebar destination with pushState. The
     // provider receives fresh context, but the path-only subPath stays empty.
     history.pushState(null, '', location.pathname)
-    element.farosContext = ctx({ subPath: '' })
+    element.railgridContext = ctx({ subPath: '' })
     await settleVue(6)
     expect(element.route).toEqual({ kind: 'menu', menu: 'agents' })
     expect(location.hash).toBe('')
@@ -81,12 +81,12 @@ describe('public Agents shell routing', () => {
     expect(element.querySelector('.agents-nav-wrap')).not.toBeNull()
 
     history.replaceState(null, '', '#/agents/scout/chat')
-    element.farosContext = ctx({ subPath: '' })
+    element.railgridContext = ctx({ subPath: '' })
     await settleVue(6)
     expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
     expect(location.hash).toBe('#/agents/scout/chat')
     expect(layouts.at(-1)).toBe(true)
-    element.farosContext = ctx({ subPath: '', theme: 'dark' })
+    element.railgridContext = ctx({ subPath: '', theme: 'dark' })
     await settleVue(6)
     expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
     element.remove()
@@ -95,7 +95,7 @@ describe('public Agents shell routing', () => {
   it('requests workspace layout on agent routes and releases it on exit and authority loss', async () => {
     const element = await mountShell()
     const layouts: boolean[] = []
-    element.addEventListener('faros-layout-change', event => {
+    element.addEventListener('railgrid-layout-change', event => {
       layouts.push((event as CustomEvent<{ fullBleed: boolean }>).detail.fullBleed)
     })
     const routeTo = async (hash: string) => {
@@ -109,14 +109,14 @@ describe('public Agents shell routing', () => {
     await routeTo('#/agents/scout/config')
     expect(layouts.at(-1)).toBe(true)
     layouts.length = 0
-    element.farosContext = ctx({ subPath: 'agents/scout/config' })
+    element.railgridContext = ctx({ subPath: 'agents/scout/config' })
     await settleVue(6)
     expect(layouts.at(-1)).toBe(true)
     await routeTo('#/agents')
     expect(layouts.at(-1)).toBe(false)
     await routeTo('#/agents/scout/runs')
     expect(layouts.at(-1)).toBe(true)
-    element.farosContext = null
+    element.railgridContext = null
     await settleVue(6)
     expect(layouts.at(-1)).toBe(false)
     element.remove()
@@ -124,14 +124,14 @@ describe('public Agents shell routing', () => {
 
   it('preserves a dashboard run deep link when the host supplies context after mounting', async () => {
     history.replaceState(null, '', '#/activity/run%2F42')
-    const element = document.createElement('faros-provider-agents') as AgentsElement
+    const element = document.createElement('railgrid-provider-agents') as AgentsElement
     document.body.appendChild(element)
     await settleVue()
 
     expect(text(element)).toContain('Connecting')
     expect(element.route).toEqual({ kind: 'run', id: 'run/42' })
 
-    element.farosContext = ctx()
+    element.railgridContext = ctx()
     await settleVue(6)
 
     expect(location.hash).toBe('#/activity/run%2F42')
@@ -143,7 +143,7 @@ describe('public Agents shell routing', () => {
   it('delegates embedded navigation to the host router without mutating history itself', async () => {
     const element = await mountShell()
     const navigate = vi.fn((event: Event) => event.preventDefault())
-    document.body.addEventListener('faros-navigate', navigate)
+    document.body.addEventListener('railgrid-navigate', navigate)
     const push = vi.spyOn(history, 'pushState')
     push.mockClear()
     try {
@@ -155,7 +155,7 @@ describe('public Agents shell routing', () => {
       expect(push).not.toHaveBeenCalled()
       expect(element.route).toEqual({ kind: 'menu', menu: 'connections' })
     } finally {
-      document.body.removeEventListener('faros-navigate', navigate)
+      document.body.removeEventListener('railgrid-navigate', navigate)
     }
   })
 
@@ -473,7 +473,7 @@ describe('context and create-session routing fences', () => {
     await settleVue()
     expect(oldApi.createAgent).toHaveBeenCalledOnce()
 
-    element.farosContext = ctx({ token: 'token-b' })
+    element.railgridContext = ctx({ token: 'token-b' })
     expect(location.hash).toBe('#/create/agent')
     await settleVue()
     expect(element.querySelector('.agents-create-form')).not.toBe(oldForm)
@@ -493,7 +493,7 @@ describe('context and create-session routing fences', () => {
     oldStore.agents.data = [{ metadata: { name: 'nova' }, spec: {} }]
     const oldDisconnect = vi.spyOn(oldStore, 'disconnect')
 
-    element.farosContext = nextContext
+    element.railgridContext = nextContext
 
     expect(element.store).not.toBe(oldStore)
     expect(element.store!.agents.data).toEqual([])
@@ -507,7 +507,7 @@ describe('context and create-session routing fences', () => {
     oldStore.live = true
     const oldDisconnect = vi.spyOn(oldStore, 'disconnect')
 
-    element.farosContext = null
+    element.railgridContext = null
 
     expect(element.store).not.toBe(oldStore)
     expect(oldDisconnect).toHaveBeenCalled()

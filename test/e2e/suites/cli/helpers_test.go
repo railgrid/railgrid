@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,10 +34,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros/pkg/util/identity"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
-// cliSession is one logged-in user: an isolated kubeconfig the faros binary
+// cliSession is one logged-in user: an isolated kubeconfig the railgrid binary
 // is driven against, so tests and users never stomp on each other.
 type cliSession struct {
 	t          *testing.T
@@ -49,7 +49,7 @@ type cliSession struct {
 func login(t *testing.T, name, token string) *cliSession {
 	t.Helper()
 	dir := suiteTempDir(t, name)
-	s := &cliSession{t: t, kubeconfig: filepath.Join(dir, "faros.kubeconfig"), token: token}
+	s := &cliSession{t: t, kubeconfig: filepath.Join(dir, "railgrid.kubeconfig"), token: token}
 	out := s.run("login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", token)
 	if !strings.Contains(out, "Logged in as") {
 		t.Fatalf("login output:\n%s", out)
@@ -57,22 +57,22 @@ func login(t *testing.T, name, token string) *cliSession {
 	return s
 }
 
-// run executes `faros <args>` and fails the test on a non-zero exit.
+// run executes `railgrid <args>` and fails the test on a non-zero exit.
 func (s *cliSession) run(args ...string) string {
 	s.t.Helper()
 	out, err := s.try(args...)
 	if err != nil {
-		s.t.Fatalf("faros %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		s.t.Fatalf("railgrid %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return out
 }
 
-// try executes `faros <args>` and returns the combined output and error.
+// try executes `railgrid <args>` and returns the combined output and error.
 func (s *cliSession) try(args ...string) (string, error) {
 	s.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, farosBin, args...)
+	cmd := exec.CommandContext(ctx, railgridBin, args...)
 	cmd.Env = append(os.Environ(), "KUBECONFIG="+s.kubeconfig, "HOME="+filepath.Dir(s.kubeconfig))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -83,10 +83,10 @@ func (s *cliSession) mustFail(want string, args ...string) string {
 	s.t.Helper()
 	out, err := s.try(args...)
 	if err == nil {
-		s.t.Fatalf("faros %s succeeded, expected an error mentioning %q:\n%s", strings.Join(args, " "), want, out)
+		s.t.Fatalf("railgrid %s succeeded, expected an error mentioning %q:\n%s", strings.Join(args, " "), want, out)
 	}
 	if !strings.Contains(out, want) {
-		s.t.Fatalf("faros %s: output lacks %q:\n%s", strings.Join(args, " "), want, out)
+		s.t.Fatalf("railgrid %s: output lacks %q:\n%s", strings.Join(args, " "), want, out)
 	}
 	return out
 }
@@ -96,7 +96,7 @@ func (s *cliSession) runJSON(v any, args ...string) {
 	s.t.Helper()
 	out := s.run(append(args, "-o", "json")...)
 	if err := json.Unmarshal([]byte(out), v); err != nil {
-		s.t.Fatalf("faros %s -o json: %v\n%s", strings.Join(args, " "), err, out)
+		s.t.Fatalf("railgrid %s -o json: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }
 
@@ -106,14 +106,14 @@ func (s *cliSession) kubectl(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig", s.kubeconfig, "--insecure-skip-tls-verify"}, args...)...)
-	// PATH must resolve the faros exec plugin for OIDC kubeconfigs; the
+	// PATH must resolve the railgrid exec plugin for OIDC kubeconfigs; the
 	// static-token kubeconfigs here do not need it, but keep parity.
-	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(farosBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(railgridBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// whoami is the -o json shape of `faros whoami` (mirrors pkg/cli/cmd).
+// whoami is the -o json shape of `railgrid whoami` (mirrors pkg/cli/cmd).
 type whoami struct {
 	Hub     string `json:"hub"`
 	Context string `json:"context"`
@@ -172,7 +172,7 @@ func (s *cliSession) whoami() whoami {
 }
 
 // clusterFromKubeconfig extracts the logical cluster name from the server URL
-// (https://.../clusters/<cluster>) of the faros login context.
+// (https://.../clusters/<cluster>) of the railgrid login context.
 func clusterFromKubeconfig(t *testing.T, kubeconfig string) string {
 	t.Helper()
 	b, err := os.ReadFile(kubeconfig)
@@ -264,7 +264,7 @@ func enableEdges(t *testing.T, tenant dynamic.Interface) {
 // create, so the provider can read edge CRs and run delegated reviews.
 func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	t.Helper()
-	providersWS := kcpDynamic(t, "root:faros:providers", adminToken)
+	providersWS := kcpDynamic(t, "root:railgrid:providers", adminToken)
 	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "edges", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get provider workspace: %v", err)
@@ -275,11 +275,11 @@ func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	}
 	qualified := identity.QualifiedServiceAccount(providerCluster, "default", "provider")
 
-	name := "faros:provider:edges:edgeproxy"
+	name := "railgrid:provider:edges:edgeproxy"
 	rules := []any{
 		map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
-		map[string]any{"apiGroups": []any{"edges.faros.sh"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch", "proxy"}},
-		map[string]any{"apiGroups": []any{"edges.faros.sh"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
+		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch", "proxy"}},
+		map[string]any{"apiGroups": []any{"edges.railgrid.ai"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"get", "list", "watch", "create", "update"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces"}, "verbs": []any{"get", "create"}},
 		map[string]any{"apiGroups": []any{"authentication.k8s.io"}, "resources": []any{"tokenreviews"}, "verbs": []any{"create"}},
@@ -317,7 +317,7 @@ func prepareEdgesWorkspace(t *testing.T, s *cliSession) (string, dynamic.Interfa
 	return tenantWS, tenantAdmin
 }
 
-// joinTokenFromOutput extracts --token from the `faros agent run` block of
+// joinTokenFromOutput extracts --token from the `railgrid agent run` block of
 // the join guide printed by `edge create` / `edge join-command`.
 func joinTokenFromOutput(t *testing.T, out string) string {
 	t.Helper()
@@ -344,7 +344,7 @@ func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...str
 		"--edge-name", edgeName,
 		"--cluster", tenantWS,
 	}, extra...)
-	cmd := exec.Command(farosBin, args...)
+	cmd := exec.Command(railgridBin, args...)
 	cmd.Env = append(os.Environ(), "HOME="+logDir)
 	cmd.Stdout = logf
 	cmd.Stderr = logf

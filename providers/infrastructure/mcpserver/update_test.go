@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 func TestMergePatchValues(t *testing.T) {
@@ -77,7 +77,7 @@ func TestRejectImmutableChanges(t *testing.T) {
 	if err := rejectImmutableChanges([]string{"frontendImage", "oidc.mode"}, tmpl); err != nil {
 		t.Errorf("mutable paths must pass, got %v", err)
 	}
-	for _, path := range []string{"farosMode", "name", "expose.fqdn", "credentialsSecretName", "database.version"} {
+	for _, path := range []string{"railgridMode", "name", "expose.fqdn", "credentialsSecretName", "database.version"} {
 		err := rejectImmutableChanges([]string{path}, tmpl)
 		if err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("path %q must be rejected naming the path, got %v", path, err)

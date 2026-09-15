@@ -11,11 +11,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { AlertCircle } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 import type { ResourceReadState, ResourceRefreshMode } from '../portalkit/page-state'
 import { useDelayedLoading } from './useDelayedLoading'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
   title: string

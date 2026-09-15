@@ -1,4 +1,4 @@
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: cron-job
@@ -79,7 +79,7 @@ spec:
             path: spec.image
             type: code
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: scheduledjobs
     kind: ScheduledJob

@@ -3,7 +3,7 @@
 #
 # Portals build self-contained (no npm workspace / symlink), so the kit is
 # copied per portal rather than imported across package boundaries. Visual
-# core recipes live in provider-sdk/portalkit/faros-ui.css; optional agentic
+# core recipes live in provider-sdk/portalkit/railgrid-ui.css; optional agentic
 # recipes live in provider-sdk/agentkit/. Exact stylesheets are copy-synced
 # and their separate style loaders inject them when a bundle needs them.
 #
@@ -18,7 +18,7 @@ TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/quickstart/portal"
 )
-TS_FILES=(navigation.ts dashboardtile.ts faros-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
+TS_FILES=(navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -70,9 +70,9 @@ AGENTKIT_VUE_FILES=(
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(navigation.ts dashboardtile.ts faros-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts)
+VUE_SHARED_FILES=(navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
-HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
+HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 
 # README.md documents the canonical kit but is not a distributable vendored
 # asset. Every other direct file in the canonical directories must be listed
@@ -86,7 +86,7 @@ AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs)
 # remove that legacy copy while preserving it for string-building portals.
 VUE_LEGACY_FILES=(form-select.ts modal.ts resource-table-filter.ts)
 
-# These files were visual implementations before faros-ui.css became the sole
+# These files were visual implementations before railgrid-ui.css became the sole
 # recipe. Remove only this known migration set; arbitrary unexpected files are
 # deliberately left in place so --verify can report them instead of hiding
 # drift.
@@ -346,7 +346,7 @@ verify_all() {
   if ! verify_manifest "$VUE_SRC" vue_canonical_expected VUE_CANONICAL_ONLY; then stale=1; fi
   if ! verify_manifest "$AGENTKIT_SRC" AGENTKIT_FILES AGENTKIT_CANONICAL_ONLY; then stale=1; fi
   if ! verify_manifest "$AGENTKIT_VUE_SRC" AGENTKIT_VUE_FILES AGENTKIT_VUE_CANONICAL_ONLY; then stale=1; fi
-  if ! verify_file "$TS_SRC/faros-ui.css" "$HOST_UI"; then stale=1; fi
+  if ! verify_file "$TS_SRC/railgrid-ui.css" "$HOST_UI"; then stale=1; fi
   if ! verify_group "$TS_SRC" TS_PORTALS TS_FILES; then stale=1; fi
   if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then stale=1; fi
   if ! verify_group "$VUE_SRC" VUE_TOAST_PORTALS VUE_TOAST_FILES; then stale=1; fi
@@ -405,5 +405,5 @@ sync_group "$TS_SRC" AGENTS_PORTALS AGENTS_LEGACY_FILES
 sync_group "$TS_SRC" VUE_PORTALS VUE_SHARED_FILES
 sync_agentkit_plain_group
 sync_agentkit_vue_group
-cp "$TS_SRC/faros-ui.css" "$HOST_UI"
-echo "synced portalkit/faros-ui.css -> portal/src/assets/faros-ui.css"
+cp "$TS_SRC/railgrid-ui.css" "$HOST_UI"
+echo "synced portalkit/railgrid-ui.css -> portal/src/assets/railgrid-ui.css"

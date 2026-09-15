@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrastructurev1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/backend"
+	infrastructurev1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/backend"
 )
 
 // Name registered with backend.Registry. Operators put this string

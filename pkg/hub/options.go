@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ limitations under the License.
 package hub
 
 import (
-	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // Options holds configuration for the hub server.
@@ -65,7 +65,7 @@ type Options struct {
 	// IP to the edge.
 	//
 	// Typically the hub's in-cluster Service
-	// (https://<release>-faros-hub.<namespace>.svc.cluster.local:9443). Also
+	// (https://<release>-railgrid-hub.<namespace>.svc.cluster.local:9443). Also
 	// useful when provider pods reach the hub at a different address than
 	// browsers do — e.g. a kind pod dialing https://host.docker.internal:9443
 	// while browsers use https://localhost:9443. Leave empty when providers run
@@ -129,8 +129,8 @@ type Options struct {
 	AdminUsers []string
 
 	// Providers is the list of first-party builtin providers to materialize
-	// into root:faros:providers at bootstrap. The flag accepts a comma-
-	// separated list or repeats; see cmd/faros-hub/main.go for the default.
+	// into root:railgrid:providers at bootstrap. The flag accepts a comma-
+	// separated list or repeats; see cmd/railgrid-hub/main.go for the default.
 	// Empty/nil enables every known builtin (kcp.BuiltinProviderNames()).
 	// Dependencies between builtins are validated at hub startup — see
 	// pkg/hub/kcp.builtinEntries[].Requires.
@@ -147,7 +147,7 @@ type Options struct {
 	// ProviderWorkspaceClusterAdmin selects the role the provider ServiceAccount
 	// is bound to inside its own provider workspace: true (the default this
 	// release) keeps cluster-admin, false binds the generated, narrower
-	// faros:provider ClusterRole.
+	// railgrid:provider ClusterRole.
 	//
 	// The default is the wide one for one release so an operator can stage the
 	// change — flip it, watch their providers, flip back if one of them needed
@@ -194,7 +194,7 @@ type Options struct {
 // NewOptions returns default Options.
 func NewOptions() *Options {
 	return &Options{
-		DataDir:             "/tmp/faros-data",
+		DataDir:             "/tmp/railgrid-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
 		EmbeddedKCP:         false,

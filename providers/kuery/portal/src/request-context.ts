@@ -47,8 +47,8 @@ export function createKueryRequestContext(context: KueryRequestContextInput | nu
   const scopeIdentity = JSON.stringify([basePath, orgUUID, workspaceUUID])
   const identity = JSON.stringify([basePath, token, orgUUID, workspaceUUID])
   const headers: Record<string, string> = {}
-  if (orgUUID) headers['X-Faros-Org'] = orgUUID
-  if (workspaceUUID) headers['X-Faros-Workspace'] = workspaceUUID
+  if (orgUUID) headers['X-Railgrid-Org'] = orgUUID
+  if (workspaceUUID) headers['X-Railgrid-Workspace'] = workspaceUUID
   return {
     basePath,
     fetch: providerFetch(context),

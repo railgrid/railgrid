@@ -1,12 +1,12 @@
-# App Studio provider — register with the faros hub.
+# App Studio provider — register with the railgrid hub.
 #
 # App Studio gives tenants a persistent AI project workspace: project metadata,
 # durable "memory" (goals/requirements/constraints), and a chat surface backed
 # by the tenant's own LLM credentials, with optional MCP tool use against the
 # workspace.
 #
-# Apply this against the kcp workspace where the faros.sh APIExport is
-# bound (typically root:faros:providers when running embedded kcp for
+# Apply this against the kcp workspace where the railgrid.ai APIExport is
+# bound (typically root:railgrid:providers when running embedded kcp for
 # development):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
@@ -21,16 +21,16 @@
 # provider's init command creates the APIExport, schemas, endpoint slice, and
 # bind grant from deploy/chart/files/schemas.
 ---
-apiVersion: providers.faros.sh/v1alpha1
+apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata:
   name: app-studio
   annotations:
-    providers.faros.sh/builtin: "false"
+    providers.railgrid.ai/builtin: "false"
 spec:
   displayName: "App Studio"
   description: "Persistent AI project workspace for planning, memory, and chat."
-  vendor: "faros"
+  vendor: "railgrid"
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
@@ -43,20 +43,20 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
+    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
     # caller's bearer token. The provider serves /api/projects/*, /healthz
     # (liveness), and /readyz (controller-aware readiness).
     url: "http://localhost:8085"
     healthPath: "/readyz"
 
   apiExport:
-    name: "ai.faros.sh"
+    name: "ai.railgrid.ai"
     # Keep in sync with init_cmd.go (APIExport claims) and
     # deploy/chart/templates/catalogentry.yaml — the hub writes these into the
     # tenant APIBinding at Enable time; a claim missing here is silently
     # denied at reconcile.
     permissionClaims:
-      # Built-in types ONLY — deliberately no first-party (*.faros.sh)
+      # Built-in types ONLY — deliberately no first-party (*.railgrid.ai)
       # claims. Those must pin the serving APIExport's identityHash, and one
       # export can pin exactly one identity per resource for every consumer
       # at once, which breaks mixed platform/self-hosted dependency
@@ -105,11 +105,11 @@ spec:
   selfHosting:
     supported: true
     chart:
-      repository: "oci://ghcr.io/faroshq/charts"
-      name: "faros-app-studio-provider"
-    namespace: "faros-provider-app-studio"
+      repository: "oci://ghcr.io/railgrid/charts"
+      name: "railgrid-app-studio-provider"
+    namespace: "railgrid-provider-app-studio"
     releaseName: "app-studio"
-    docsURL: "https://github.com/faroshq/faros/blob/main/providers/app-studio/deploy/chart/README.md"
+    docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
     # No requiredValues: app-studio pins no APIExport identity hashes — the
     # reconcilers reach infrastructure/code through each workspace's own
     # bindings, whichever copy that is.

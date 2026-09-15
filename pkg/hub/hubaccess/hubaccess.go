@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 	"path"
 	"strings"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // Requirement is the capability a route needs, at a scope.

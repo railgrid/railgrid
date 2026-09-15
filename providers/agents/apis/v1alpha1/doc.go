@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +kubebuilder:object:generate=true
-// +groupName=agents.faros.sh
+// +groupName=agents.railgrid.ai
 
 // Package v1alpha1 defines the agents provider's tenant-facing API: Agent,
 // Connection, Schedule, and Run. These are the source of truth for

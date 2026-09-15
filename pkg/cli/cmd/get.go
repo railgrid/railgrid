@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 func newGetCommand() *cobra.Command {
@@ -34,7 +34,7 @@ func newGetCommand() *cobra.Command {
 		Use:        "get [resource]",
 		Short:      "Get resources",
 		Hidden:     true,
-		Deprecated: "use 'faros edge list' or kubectl",
+		Deprecated: "use 'railgrid edge list' or kubectl",
 		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resource := args[0]
@@ -71,7 +71,7 @@ func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
 	printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
 
 	for _, item := range items {
-		edgeType := farosclient.EdgeTypeForGVR(edgeGVRForKind(item.GetKind()))
+		edgeType := railgridclient.EdgeTypeForGVR(edgeGVRForKind(item.GetKind()))
 		phase := getNestedString(item, "status", "phase")
 		connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 		age := formatAge(item.GetCreationTimestamp().Time)
@@ -84,7 +84,7 @@ func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
 }
 
 func listWorkloads(ctx context.Context, dyn dynamic.Interface) error {
-	list, err := dyn.Resource(farosclient.WorkloadGVR).List(ctx, metav1.ListOptions{})
+	list, err := dyn.Resource(railgridclient.WorkloadGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("listing workloads: %w", err)
 	}
@@ -104,7 +104,7 @@ func listWorkloads(ctx context.Context, dyn dynamic.Interface) error {
 }
 
 func listPlacements(ctx context.Context, dyn dynamic.Interface) error {
-	list, err := dyn.Resource(farosclient.PlacementGVR).List(ctx, metav1.ListOptions{})
+	list, err := dyn.Resource(railgridclient.PlacementGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("listing placements: %w", err)
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // APIExport virtual-workspace relaying.
@@ -61,7 +61,7 @@ type virtualWorkspaceRequest struct {
 var clusterSegmentRE = regexp.MustCompile(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`)
 
 // exportSegmentRE matches an APIExport name (a DNS subdomain, e.g.
-// "infrastructure.providers.faros.sh").
+// "infrastructure.providers.railgrid.ai").
 var exportSegmentRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // parseVirtualWorkspacePath reports whether urlPath addresses an APIExport

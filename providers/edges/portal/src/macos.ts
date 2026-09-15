@@ -25,7 +25,7 @@ export function macosJoinSnippet(
   origin?: string,
 ): string {
   const lines = [
-    'sudo faros agent join',
+    'sudo railgrid agent join',
     '  --hub-url ' + hubURLForCluster(cluster, origin),
     '  --edge-name ' + edgeName,
     '  --type macos',

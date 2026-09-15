@@ -39,7 +39,7 @@ stringData:
 {{- end }}
 # The InfrastructureProvider CR the operator reconciles. Image versions and the
 # kro release config live here so upgrades are a CR edit (or a helm value bump).
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: InfrastructureProvider
 metadata:
   name: {{ include "infrastructure.fullname" . }}
@@ -93,7 +93,7 @@ spec:
   {{- $sandboxRuntimeClass := include "infrastructure.sandboxRuntimeClassName" . }}
   {{- if $sandboxRuntimeClass }}
   # Hardened RuntimeClass (gVisor, Kata) for every synthesized development pod
-  # (serve container's FAROS_SANDBOX_RUNTIME_CLASS_NAME).
+  # (serve container's RAILGRID_SANDBOX_RUNTIME_CLASS_NAME).
   sandbox:
     runtimeClassName: {{ $sandboxRuntimeClass | quote }}
   {{- end }}
@@ -101,8 +101,8 @@ spec:
   {{- if or $devAgentImage .Values.development.images }}
   development:
     {{- with $devAgentImage }}
-    # development.agentImage, else this release's faros-dev-agent — the
-    # operator maps it onto the serve Deployment's FAROS_DEV_AGENT_IMAGE.
+    # development.agentImage, else this release's railgrid-dev-agent — the
+    # operator maps it onto the serve Deployment's RAILGRID_DEV_AGENT_IMAGE.
     agentImage: {{ . | quote }}
     {{- end }}
     {{- if .Values.development.images }}
@@ -112,7 +112,7 @@ spec:
   {{- end }}
   {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
   # Exposure layer for the `application` template (serve container's
-  # FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE).
+  # RAILGRID_APP_BASE_DOMAIN / RAILGRID_GATEWAY_NAME / RAILGRID_GATEWAY_NAMESPACE).
   # baseDomain gates the feature.
   application:
     {{- with .Values.operator.application.baseDomain }}

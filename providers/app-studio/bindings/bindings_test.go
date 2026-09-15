@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func testProject() *aiv1alpha1.Project {
@@ -39,11 +39,11 @@ func testBinding() aiv1alpha1.ProjectProviderBindingSpec {
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
 			Name:       "demo-dev",
-			APIVersion: "infrastructure.faros.sh/v1alpha1",
+			APIVersion: "infrastructure.railgrid.ai/v1alpha1",
 			Kind:       "Instance",
 			Resource:   "instances",
 		},
-		Values: runtime.RawExtension{Raw: []byte(`{"farosMode":"development","webImage":"x"}`)},
+		Values: runtime.RawExtension{Raw: []byte(`{"railgridMode":"development","webImage":"x"}`)},
 	}
 }
 
@@ -53,7 +53,7 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
-	if gvr.Group != "infrastructure.faros.sh" || gvr.Resource != "instances" || gvr.Version != "v1alpha1" {
+	if gvr.Group != "infrastructure.railgrid.ai" || gvr.Resource != "instances" || gvr.Version != "v1alpha1" {
 		t.Fatalf("gvr = %v", gvr)
 	}
 	if want.GetName() != "demo-dev" {
@@ -73,9 +73,9 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if tmplName != "application" {
 		t.Fatalf("spec.template = %q", tmplName)
 	}
-	mode, _, _ := unstructured.NestedString(want.Object, "spec", "values", "farosMode")
+	mode, _, _ := unstructured.NestedString(want.Object, "spec", "values", "railgridMode")
 	if mode != "development" {
-		t.Fatalf("spec.values.farosMode = %q", mode)
+		t.Fatalf("spec.values.railgridMode = %q", mode)
 	}
 }
 
@@ -127,17 +127,17 @@ func TestDesiredInvalidBinding(t *testing.T) {
 
 func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.T) {
 	input := map[string]any{
-		"ordinary":                "preserved",
-		ActionsExchangeURLField:   "stale-exchange",
-		ActionsBaseURLField:       "stale-base",
-		ActionsCABundleField:      "stale-ca",
-		ActionsTenantPathField:    "stale-tenant",
-		"farosActionsFutureField": "stale-future",
-		"farosActions":            "stale-prefix",
+		"ordinary":                   "preserved",
+		ActionsExchangeURLField:      "stale-exchange",
+		ActionsBaseURLField:          "stale-base",
+		ActionsCABundleField:         "stale-ca",
+		ActionsTenantPathField:       "stale-tenant",
+		"railgridActionsFutureField": "stale-future",
+		"railgridActions":            "stale-prefix",
 	}
 	overlay := ActionsOverlay{
 		ActionsIdentity: ActionsIdentity{
-			TenantPath:  "root:faros:tenants:org:workspace",
+			TenantPath:  "root:railgrid:tenants:org:workspace",
 			Org:         "org",
 			Workspace:   "workspace",
 			Project:     "demo",
@@ -170,7 +170,7 @@ func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.
 			t.Errorf("%s = %v, want %q", key, got[key], want)
 		}
 	}
-	for _, key := range []string{"farosActionsFutureField", "farosActions"} {
+	for _, key := range []string{"railgridActionsFutureField", "railgridActions"} {
 		if _, found := got[key]; found {
 			t.Errorf("reserved unknown field %s survived: %v", key, got[key])
 		}
@@ -215,7 +215,7 @@ func TestMergeProviderSpecPreservesComputedFieldsAndClearsStaleActions(t *testin
 		"credentialsSecretName": "demo-dev-credentials",
 		"providerComputed":      "keep-top-level",
 		ActionsExchangeURLField: "https://stale.example/exchange",
-		"farosActionsFuture":    "stale-future",
+		"railgridActionsFuture": "stale-future",
 	}
 	desired := map[string]any{
 		"expose": map[string]any{
@@ -366,7 +366,7 @@ func TestPreviewAccessDefaultsToPrivate(t *testing.T) {
 func TestApplyPreviewAccessToBindingOverwritesStaleValue(t *testing.T) {
 	binding := aiv1alpha1.ProjectProviderBindingSpec{
 		Name:   "dev",
-		Values: runtime.RawExtension{Raw: []byte(`{"name":"todo-dev","farosMode":"development","access":"public"}`)},
+		Values: runtime.RawExtension{Raw: []byte(`{"name":"todo-dev","railgridMode":"development","access":"public"}`)},
 	}
 	out, err := ApplyPreviewAccessToBinding(binding, AccessPrivate)
 	if err != nil {
@@ -383,8 +383,8 @@ func TestApplyPreviewAccessToBindingOverwritesStaleValue(t *testing.T) {
 	if got := values["name"]; got != "todo-dev" {
 		t.Fatalf("name = %v, want it preserved", got)
 	}
-	if got := values["farosMode"]; got != "development" {
-		t.Fatalf("farosMode = %v, want it preserved", got)
+	if got := values["railgridMode"]; got != "development" {
+		t.Fatalf("railgridMode = %v, want it preserved", got)
 	}
 }
 

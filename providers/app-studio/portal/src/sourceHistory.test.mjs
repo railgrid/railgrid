@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', cacheDir: '/tmp/faros-vite-source-history' })
+const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', cacheDir: '/tmp/railgrid-vite-source-history' })
 test.after(async () => { await vite.close() })
 
 const {

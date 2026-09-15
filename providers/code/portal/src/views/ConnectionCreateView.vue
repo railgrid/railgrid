@@ -62,12 +62,12 @@ const pageMeta = computed(() => isGitHub.value
   : 'Store a GitHub personal access token in this workspace and validate the connection.')
 const guidanceTitle = computed(() => isGitHub.value ? 'Authorize and connect GitHub' : 'Name and connect GitHub')
 const guidanceDescription = computed(() => isGitHub.value
-  ? 'Authorize Faros in GitHub, then review the workspace-local connection before creating it.'
-  : 'Choose the Faros connection name and GitHub owner, then provide a personal access token.')
+  ? 'Authorize Railgrid in GitHub, then review the workspace-local connection before creating it.'
+  : 'Choose the Railgrid connection name and GitHub owner, then provide a personal access token.')
 const guidancePrerequisites = computed(() => isGitHub.value
   ? [
       'A GitHub session with access to the account or organization that will own repositories.',
-      'Permission to authorize the configured Faros GitHub OAuth app.',
+      'Permission to authorize the configured Railgrid GitHub OAuth app.',
     ]
   : [
       'A GitHub account or organization name that will own repositories.',
@@ -75,7 +75,7 @@ const guidancePrerequisites = computed(() => isGitHub.value
       'For GitHub Enterprise Server, the API base URL for the instance.',
     ])
 const guidanceValues = computed(() => [
-  { label: 'Faros name', value: name.value.trim() || 'Not entered yet', technical: true },
+  { label: 'Railgrid name', value: name.value.trim() || 'Not entered yet', technical: true },
   { label: 'GitHub owner', value: owner.value.trim() || 'Not entered yet', technical: true },
   { label: 'Authentication', value: isGitHub.value ? 'GitHub OAuth' : 'Personal access token' },
   {
@@ -95,7 +95,7 @@ const guidanceValues = computed(() => [
   },
 ])
 const guidanceNextSteps = [
-  'Faros stores the credential as a Secret in this workspace; it is not shown after submission.',
+  'Railgrid stores the credential as a Secret in this workspace; it is not shown after submission.',
   'The connection controller validates the credential and reports the GitHub login and readiness.',
   'Use the connection when creating repositories; manage deploy keys and collaborators from each repository.',
 ]
@@ -218,7 +218,7 @@ function connectGitHub(): void {
   }
   oauthOrigin = url.origin
   url.searchParams.set('state', oauthState)
-  oauthPopup = window.open(url.toString(), 'faros-github-oauth', 'width=720,height=820')
+  oauthPopup = window.open(url.toString(), 'railgrid-github-oauth', 'width=720,height=820')
   if (!oauthPopup) {
     clearOAuthWait('popup blocked — allow popups and retry')
     return
@@ -237,7 +237,7 @@ function onMessage(ev: MessageEvent): void {
   }
   if (!oauthPopup || ev.source !== oauthPopup || ev.origin !== oauthOrigin) return
   const data = ev.data as { type?: string; state?: string; token?: string; login?: string; error?: string }
-  if (!data || data.type !== 'faros-github-oauth') return
+  if (!data || data.type !== 'railgrid-github-oauth') return
   if (data.state !== oauthState) {
     clearOAuthWait('oauth state mismatch — please retry')
     return

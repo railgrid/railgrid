@@ -10,7 +10,7 @@ describe('Infrastructure primary provisioning workflow', () => {
     expect(app).not.toContain("import Tabs from './portalkit/Tabs.vue'")
     expect(app).not.toContain('sectionTabs')
     expect(app).not.toContain('activeSection')
-    expect(app).toContain("new CustomEvent('faros-navigate'")
+    expect(app).toContain("new CustomEvent('railgrid-navigate'")
     expect(app).toContain('parseInfrastructureSubPath(props.ctx?.subPath)')
   })
 

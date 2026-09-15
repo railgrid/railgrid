@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Push Helm charts to OCI registry
-# Requires: IMAGE_REPO environment variable (e.g., ghcr.io/faroshq)
+# Requires: IMAGE_REPO environment variable (e.g., ghcr.io/railgrid)
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ cd "$REPO_ROOT"
 
 if [ -z "${IMAGE_REPO:-}" ]; then
     echo "ERROR: IMAGE_REPO environment variable is required"
-    echo "Example: IMAGE_REPO=ghcr.io/faroshq make helm-push-local"
+    echo "Example: IMAGE_REPO=ghcr.io/railgrid make helm-push-local"
     exit 1
 fi
 

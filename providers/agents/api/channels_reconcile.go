@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,9 +33,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 const connectionTelegramRegisterFailedPrefix = "telegram webhook re-registration failed: "

@@ -23,7 +23,7 @@ describe('agents list card semantics', () => {
     expect(link.getAttribute('href')).toBe('#/agents/scout/chat')
     expect(remove.classList.contains('k-icon-action')).toBe(true)
     expect(remove.classList.contains('agents-iconbtn')).toBe(false)
-    const sharedStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/faros-ui.css'), 'utf8')
+    const sharedStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/railgrid-ui.css'), 'utf8')
     expect(sharedStyles).toMatch(/@media \(pointer: coarse\), \(any-pointer: coarse\)[\s\S]*?\.k-icon-action\s*\{[\s\S]*?flex-basis:\s*44px;[\s\S]*?height:\s*44px;[\s\S]*?width:\s*44px;/)
 
     runs.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))

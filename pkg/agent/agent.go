@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package agent implements the faros agent that connects edges to the hub.
+// Package agent implements the railgrid agent that connects edges to the hub.
 package agent
 
 import (
@@ -55,11 +55,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	agentReconciler "github.com/faroshq/faros/pkg/agent/reconciler"
-	agentStatus "github.com/faroshq/faros/pkg/agent/status"
-	"github.com/faroshq/faros/pkg/agent/tunnel"
-	"github.com/faroshq/faros/pkg/apiurl"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	agentReconciler "github.com/railgrid/railgrid/pkg/agent/reconciler"
+	agentStatus "github.com/railgrid/railgrid/pkg/agent/status"
+	"github.com/railgrid/railgrid/pkg/agent/tunnel"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // AgentConfig holds the locally persisted agent configuration. It is written
@@ -72,7 +72,7 @@ type AgentConfig struct {
 }
 
 // AgentConfigPath returns the path for the per-edge agent config file.
-// Default location: ~/.faros/agent-<edgeName>.json
+// Default location: ~/.railgrid/agent-<edgeName>.json
 func AgentConfigPath(edgeName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -85,11 +85,11 @@ func AgentConfigPath(edgeName string) (string, error) {
 // used by installers that provision a service for a different local account
 // (for example a root-installed launchd daemon running as a worker user).
 func AgentConfigPathForHome(home, edgeName string) string {
-	return filepath.Join(home, ".faros", "agent-"+edgeName+".json")
+	return filepath.Join(home, ".railgrid", "agent-"+edgeName+".json")
 }
 
 // AgentKubeconfigPath returns the path for the per-edge agent kubeconfig file.
-// Default location: ~/.faros/agent-<edgeName>.kubeconfig
+// Default location: ~/.railgrid/agent-<edgeName>.kubeconfig
 func AgentKubeconfigPath(edgeName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -101,11 +101,11 @@ func AgentKubeconfigPath(edgeName string) (string, error) {
 // AgentKubeconfigPathForHome returns the per-edge kubeconfig path under home.
 // See AgentConfigPathForHome for why installers need this variant.
 func AgentKubeconfigPathForHome(home, edgeName string) string {
-	return filepath.Join(home, ".faros", "agent-"+edgeName+".kubeconfig")
+	return filepath.Join(home, ".railgrid", "agent-"+edgeName+".kubeconfig")
 }
 
 // SaveAgentKubeconfig decodes the base64-encoded kubeconfig returned by the hub
-// (via X-Faros-Agent-Kubeconfig header) and persists it to disk so the agent
+// (via X-Railgrid-Agent-Kubeconfig header) and persists it to disk so the agent
 // can reconnect without the bootstrap join token after the first successful auth.
 func SaveAgentKubeconfig(edgeName, kubeconfigB64 string) error {
 	kubeconfigBytes, err := base64.StdEncoding.DecodeString(kubeconfigB64)
@@ -191,7 +191,7 @@ func ValidateAgentKubeconfig(kubeconfigPath string, insecureSkipTLS bool) error 
 	}
 	// A lightweight discovery-style call: list edges with limit=1. Edge moved to
 	// the edges-connectivity provider group.
-	gvr := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	gvr := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	_, err = dynClient.Resource(gvr).List(context.Background(), metav1.ListOptions{Limit: 1})
 	if err == nil {
 		return nil
@@ -383,7 +383,7 @@ type Options struct {
 	SSHPassword string
 	// SSHPrivateKeyPath is the path to an SSH private key file for key-based auth.
 	SSHPrivateKeyPath string
-	// Cluster is the kcp logical cluster path (e.g., "root:faros:user-default").
+	// Cluster is the kcp logical cluster path (e.g., "root:railgrid:user-default").
 	// If not set, it's extracted from the SA token (for kubeconfig-based auth)
 	// or defaults to "default" (for static token auth).
 	Cluster string
@@ -401,13 +401,13 @@ type Options struct {
 	// Service's spec.host outside this set is refused (or warned about, per
 	// SvcPolicy). Link-local, unspecified and multicast addresses are never
 	// dialable even if listed. Flag: --svc-allow-cidr (repeatable); env:
-	// FAROS_AGENT_SVC_ALLOW_CIDR (comma-separated).
+	// RAILGRID_AGENT_SVC_ALLOW_CIDR (comma-separated).
 	SvcAllowedCIDRs []string
 	// SvcPolicy is what the /svc proxy does with a target outside the allowed
 	// set: "enforce" (403, never dialed), "warn" (dialed, logged, response
-	// carries X-Faros-Svc-Policy: warn) or "allow-any" (allow list disabled,
+	// carries X-Railgrid-Svc-Policy: warn) or "allow-any" (allow list disabled,
 	// logged at startup). Defaults to "warn" in this release; the next release
-	// flips the default to "enforce". Flag: --svc-policy; env: FAROS_AGENT_SVC_POLICY.
+	// flips the default to "enforce". Flag: --svc-policy; env: RAILGRID_AGENT_SVC_POLICY.
 	SvcPolicy string
 }
 
@@ -420,7 +420,7 @@ func NewOptions() *Options {
 	}
 }
 
-// Agent is the faros agent that connects an edge to the hub.
+// Agent is the railgrid agent that connects an edge to the hub.
 type Agent struct {
 	opts             *Options
 	agentType        AgentType
@@ -459,7 +459,7 @@ func (a *Agent) currentTunnelToken() string {
 }
 
 // extractTokenFromKubeconfigB64 decodes a base64-encoded kubeconfig (as
-// delivered by the hub in the X-Faros-Agent-Kubeconfig header) and returns the
+// delivered by the hub in the X-Railgrid-Agent-Kubeconfig header) and returns the
 // bearer token of its current context's AuthInfo.
 func extractTokenFromKubeconfigB64(kubeconfigB64 string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(kubeconfigB64)
@@ -519,10 +519,10 @@ func New(opts *Options) (*Agent, error) {
 	}
 
 	// Auto-discover or auto-generate an SSH private key for Linux server edges
-	// when no credentials were provided. This makes `faros agent join --type
+	// when no credentials were provided. This makes `railgrid agent join --type
 	// server` work out of the box: the agent generates a keypair, installs the
 	// public half into authorized_keys, and ships the private half to the hub
-	// via the X-Faros-SSH-PrivateKey header (join-token mode) or the
+	// via the X-Railgrid-SSH-PrivateKey header (join-token mode) or the
 	// SSH-credentials Secret (kubeconfig mode).
 	if agentType == AgentTypeServer && opts.SSHPrivateKeyPath == "" && opts.SSHPassword == "" {
 		home, err := os.UserHomeDir()
@@ -633,7 +633,7 @@ func New(opts *Options) (*Agent, error) {
 // Run starts the agent and blocks until the context is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting faros agent",
+	logger.Info("Starting railgrid agent",
 		"edgeName", a.opts.EdgeName,
 		"type", a.agentType,
 		"labels", a.opts.Labels,
@@ -647,7 +647,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating hub dynamic client: %w", err)
 	}
-	hubClient := farosclient.NewFromDynamic(hubDynamic)
+	hubClient := railgridclient.NewFromDynamic(hubDynamic)
 
 	if a.agentType == AgentTypeServer || a.agentType == AgentTypeMacOS {
 		return a.runServerMode(ctx, logger, hubClient)
@@ -688,7 +688,7 @@ func runDebugServer(ctx context.Context, logger klog.Logger, addr string) {
 }
 
 // runKubernetesMode is the Kubernetes-cluster edge mode.
-func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
+func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *railgridclient.Client) error {
 	// Validate the downstream (target-cluster) config is usable. The client
 	// itself was only consumed by the removed workload reconciler; the tunnel
 	// serves the downstream API over the raw connection, not via this client.
@@ -832,7 +832,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		if a.agentType == AgentTypeMacOS {
 			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
 		}
@@ -851,11 +851,11 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 
 // refreshHubClientFromSavedKubeconfig loads the SA kubeconfig that the tunnel
 // token-exchange callback just saved to disk, builds a fresh rest.Config from
-// it, updates a.hubConfig in place, and returns a faros client backed by the
+// it, updates a.hubConfig in place, and returns a railgrid client backed by the
 // new credentials. Used by out-of-cluster join-token startup to transition the
 // agent's in-memory clients from the bootstrap join token (no kcp access) to
 // the durable SA credential without exiting the process.
-func (a *Agent) refreshHubClientFromSavedKubeconfig() (*farosclient.Client, error) {
+func (a *Agent) refreshHubClientFromSavedKubeconfig() (*railgridclient.Client, error) {
 	kubeconfigPath, err := AgentKubeconfigPath(a.opts.EdgeName)
 	if err != nil {
 		return nil, fmt.Errorf("resolving saved kubeconfig path: %w", err)
@@ -878,13 +878,13 @@ func (a *Agent) refreshHubClientFromSavedKubeconfig() (*farosclient.Client, erro
 		return nil, fmt.Errorf("creating dynamic client from saved kubeconfig: %w", err)
 	}
 	a.hubConfig = newCfg
-	return farosclient.NewFromDynamic(dynClient), nil
+	return railgridclient.NewFromDynamic(dynClient), nil
 }
 
 // runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
 // hosts additionally expose SSH; MacOSServer hosts use the same reverse tunnel
 // and Service proxy without requiring sshd.
-func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
+func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *railgridclient.Client) error {
 	// Skip edge registration when:
 	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
 	// - saved kubeconfig mode: edge was already registered in a previous run
@@ -976,7 +976,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		sshHeaders = a.sshHostKeyHeader()
 	}
 	// The host's name rides on every connect too: the provider records it in
-	// status.hostname (shown by `faros edge get` / `edge list -o wide`), and
+	// status.hostname (shown by `railgrid edge get` / `edge list -o wide`), and
 	// nothing else in the protocol carries it.
 	if hostname, err := os.Hostname(); err == nil && hostname != "" {
 		sshHeaders.Set(agentHostnameHeader, hostname)
@@ -1016,7 +1016,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		if a.agentType == AgentTypeMacOS {
 			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
 		}
@@ -1033,9 +1033,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	return nil
 }
 
-// ensureGeneratedAgentKey returns the path to a faros-managed ed25519 keypair,
-// generating it on first call. The key lives under <homeDir>/.faros/agents/<edge>/
-// (or /etc/faros/agents/<edge>/ when no usable home directory is available — typical
+// ensureGeneratedAgentKey returns the path to a railgrid-managed ed25519 keypair,
+// generating it on first call. The key lives under <homeDir>/.railgrid/agents/<edge>/
+// (or /etc/railgrid/agents/<edge>/ when no usable home directory is available — typical
 // for some systemd-hardened sandboxes). Both the private key and a sibling ".pub"
 // are written. Subsequent calls reuse the existing keypair.
 func ensureGeneratedAgentKey(edgeName string) (string, error) {
@@ -1067,7 +1067,7 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 		return "", fmt.Errorf("generating ed25519 key: %w", err)
 	}
 
-	pemBlock, err := gossh.MarshalPrivateKey(priv, "faros-agent-"+edgeName)
+	pemBlock, err := gossh.MarshalPrivateKey(priv, "railgrid-agent-"+edgeName)
 	if err != nil {
 		return "", fmt.Errorf("marshaling private key: %w", err)
 	}
@@ -1080,7 +1080,7 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 		return "", fmt.Errorf("converting public key: %w", err)
 	}
 	pubLine := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n") +
-		" faros-agent-" + edgeName + "\n"
+		" railgrid-agent-" + edgeName + "\n"
 	if err := os.WriteFile(pubPath, []byte(pubLine), 0644); err != nil {
 		return "", fmt.Errorf("writing %s: %w", pubPath, err)
 	}
@@ -1088,12 +1088,12 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 }
 
 // agentKeyDir returns the directory where the agent stores its self-generated
-// SSH keypair. Prefers $HOME/.faros/agents/<edge>; falls back to /etc/faros/agents/<edge>.
+// SSH keypair. Prefers $HOME/.railgrid/agents/<edge>; falls back to /etc/railgrid/agents/<edge>.
 func agentKeyDir(edgeName string) (string, error) {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".faros", "agents", edgeName), nil
+		return filepath.Join(home, ".railgrid", "agents", edgeName), nil
 	}
-	return filepath.Join("/etc", "faros", "agents", edgeName), nil
+	return filepath.Join("/etc", "railgrid", "agents", edgeName), nil
 }
 
 // writePubFromPrivate derives the public key from a private key file on disk
@@ -1169,7 +1169,7 @@ func ensureAuthorizedKey(privateKeyPath string) error {
 
 const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
-	sshCredentialsNamespace = "faros-system"
+	sshCredentialsNamespace = "railgrid-system"
 )
 
 // buildSSHHeaders returns HTTP headers carrying SSH credentials for the hub
@@ -1184,14 +1184,14 @@ func (a *Agent) buildSSHHeaders() http.Header {
 			sshUser = "root"
 		}
 	}
-	h.Set("X-Faros-SSH-User", sshUser)
+	h.Set("X-Railgrid-SSH-User", sshUser)
 	if a.opts.SSHPassword != "" {
-		h.Set("X-Faros-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
+		h.Set("X-Railgrid-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
 	}
 	if a.opts.SSHPrivateKeyPath != "" {
 		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
 		if err == nil {
-			h.Set("X-Faros-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
+			h.Set("X-Railgrid-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
 			klog.Infof("Sending SSH private key to hub via headers (key path: %s)", a.opts.SSHPrivateKeyPath)
 		} else {
 			klog.Warningf("Failed to read SSH private key from %s: %v", a.opts.SSHPrivateKeyPath, err)
@@ -1206,10 +1206,10 @@ func (a *Agent) buildSSHHeaders() http.Header {
 // agentHostnameHeader carries os.Hostname() on the tunnel upgrade request;
 // the edges provider stores it as status.hostname. Keep in sync with
 // providers/edges/internal/tunnel.AgentHostnameHeader.
-const agentHostnameHeader = "X-Faros-Agent-Hostname"
+const agentHostnameHeader = "X-Railgrid-Agent-Hostname"
 
 // sshHostKeyHeader probes the local sshd for its host public key and returns
-// it as the X-Faros-SSH-HostKey header so the provider can record it
+// it as the X-Railgrid-SSH-HostKey header so the provider can record it
 // (write-once) and verify SSH sessions against it. Best-effort: an empty
 // result sends nothing, and the provider's sshHostKeyPolicy decides what
 // happens to sessions until a key is known.
@@ -1217,14 +1217,14 @@ func (a *Agent) sshHostKeyHeader() http.Header {
 	h := http.Header{}
 	if a.opts.SSHProxyPort > 0 {
 		if hostKey := agentStatus.DialAndFetchSSHHostKey(a.opts.SSHProxyPort, klog.Background()); hostKey != "" {
-			h.Set("X-Faros-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))
+			h.Set("X-Railgrid-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))
 		}
 	}
 	return h
 }
 
 // setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
-func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
+func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *railgridclient.Client) error {
 	// Determine SSH username.
 	sshUser := a.opts.SSHUser
 	if sshUser == "" {
@@ -1289,7 +1289,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 			Name:      secretName,
 			Namespace: sshCredentialsNamespace,
 			Labels: map[string]string{
-				"faros.sh/edge": a.opts.EdgeName,
+				"railgrid.ai/edge": a.opts.EdgeName,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -1352,7 +1352,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return fmt.Errorf("marshaling edge status patch: %w", err)
 	}
 
-	_, err = hubClient.Dynamic().Resource(farosclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
+	_, err = hubClient.Dynamic().Resource(railgridclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -1365,13 +1365,13 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 
 // registerEdge ensures an Edge resource exists on the hub with the correct type.
 // The Edge type lives in the edges-connectivity provider (group
-// edges.faros.sh); the agent addresses it dynamically (unstructured).
-func (a *Agent) registerEdge(ctx context.Context, client *farosclient.Client) error {
+// edges.railgrid.ai); the agent addresses it dynamically (unstructured).
+func (a *Agent) registerEdge(ctx context.Context, client *railgridclient.Client) error {
 	logger := klog.FromContext(ctx)
 
 	edgeType := string(a.agentType)
-	gvr := farosclient.EdgeGVRForType(edgeType)
-	kind := farosclient.EdgeKindForType(edgeType)
+	gvr := railgridclient.EdgeGVRForType(edgeType)
+	kind := railgridclient.EdgeKindForType(edgeType)
 
 	res := client.Dynamic().Resource(gvr)
 

@@ -927,7 +927,7 @@ describe('agent config', () => {
 
 describe('connection test feedback', () => {
   it('keeps the Slack inbound request URL out of ordinary feedback and exposes only explicit masked copy', async () => {
-    const requestURL = 'https://faros.example.test/services/providers/agents/inbound/slack/secret'
+    const requestURL = 'https://railgrid.example.test/services/providers/agents/inbound/slack/secret'
     const enableInbound = vi.fn().mockResolvedValue({ registered: false, note: 'Paste this request URL into Slack.', webhookURL: requestURL })
     const connection = { metadata: { name: 'slack' }, spec: { type: 'slack', channel: 'C012345' } } satisfies Connection
     const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([connection]) })
@@ -958,7 +958,7 @@ describe('connection test feedback', () => {
   })
 
   it('reports Telegram registration success without presenting its callback URL', async () => {
-    const callbackURL = 'https://faros.example.test/services/providers/agents/inbound/telegram/secret'
+    const callbackURL = 'https://railgrid.example.test/services/providers/agents/inbound/telegram/secret'
     const enableInbound = vi.fn().mockResolvedValue({ registered: true, note: 'Telegram webhook registered.', webhookURL: callbackURL })
     const connection = { metadata: { name: 'tg' }, spec: { type: 'telegram', channel: '123' } } satisfies Connection
     const api = stubApi({ enableInbound, listConnections: () => Promise.resolve([connection]) })

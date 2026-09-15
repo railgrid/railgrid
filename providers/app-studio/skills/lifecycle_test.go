@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"io/fs"
 	"testing"
 
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectActivationPersistsAndDisablesSnapshotEntries(t *testing.T) {
@@ -86,7 +86,7 @@ func TestProjectMetadataRejectsTraversalAndStaleReplacement(t *testing.T) {
 	if _, err := WriteProjectMetadata(ctx, files, scope, current, "sha256:stale"); err == nil {
 		t.Fatal("stale metadata replacement unexpectedly succeeded")
 	}
-	if _, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: ".agents/skills/.faros-catalog.json"}); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: ".agents/skills/.railgrid-catalog.json"}); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
 }

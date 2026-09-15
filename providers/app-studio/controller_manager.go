@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package main
 //
 // This is where the deterministic lifecycle lives: the HTTP layer only
 // writes Project spec; the reconciler converges infrastructure instances and
-// mirrors their status back. OPT-IN via FAROS_PROVIDER_KUBECONFIG — without
+// mirrors their status back. OPT-IN via RAILGRID_PROVIDER_KUBECONFIG — without
 // it the provider runs REST/portal-only.
 
 import (
@@ -38,17 +38,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	"github.com/faroshq/provider-app-studio/api"
-	"github.com/faroshq/provider-app-studio/bindings"
-	"github.com/faroshq/provider-app-studio/controller/project"
-	"github.com/faroshq/provider-app-studio/controller/session"
-	"github.com/faroshq/provider-app-studio/controller/studio"
-	appscheme "github.com/faroshq/provider-app-studio/scheme"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/api"
+	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/controller/project"
+	"github.com/railgrid/provider-app-studio/controller/session"
+	"github.com/railgrid/provider-app-studio/controller/studio"
+	appscheme "github.com/railgrid/provider-app-studio/scheme"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // endpointSliceName matches the provider's APIExport name by convention
@@ -341,7 +341,7 @@ func controllerModeFromEnv() controllerMode {
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_REST_ONLY")), "true") {
 			return controllerModeRESTOnly
 		}
-		if strings.TrimSpace(os.Getenv("FAROS_PROVIDER_KUBECONFIG")) != "" ||
+		if strings.TrimSpace(os.Getenv("RAILGRID_PROVIDER_KUBECONFIG")) != "" ||
 			strings.TrimSpace(os.Getenv("KUBECONFIG")) != "" {
 			return controllerModeRequired
 		}

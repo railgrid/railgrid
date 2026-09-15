@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ package serviceaccounts
 //
 // The account is deterministic per (tenant, user, provider), so repeated
 // requests reuse one ServiceAccount rather than accumulating. Nothing deletes
-// them yet: a member leaving the workspace keeps an idle faros-du-* account
+// them yet: a member leaving the workspace keeps an idle railgrid-du-* account
 // bound to a role they no longer hold, though any token minted for it is dead
 // within ten minutes. Garbage collection on Membership removal is a follow-up.
 
@@ -55,37 +55,37 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corev1typed "k8s.io/client-go/kubernetes/typed/core/v1"
 
-	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 const (
 	// LabelDelegatedUser marks a ServiceAccount minted to stand in for a human
 	// user at an org-owned provider. Such accounts also carry
 	// LabelWorkloadIdentity, so the online verifier treats them as hub-managed
-	// and the user-facing ServiceAccount CRUD surface (LabelFarosSA) never
+	// and the user-facing ServiceAccount CRUD surface (LabelRailgridSA) never
 	// lists or rotates them.
-	LabelDelegatedUser = "faros.sh/delegated-user"
+	LabelDelegatedUser = "railgrid.ai/delegated-user"
 
 	// AnnotationDelegatedUser is the User CR name the account stands in for.
-	// The tenant resolver surfaces it as X-Faros-User so a provider at the far
+	// The tenant resolver surfaces it as X-Railgrid-User so a provider at the far
 	// end attributes the call to the person, not to the account.
-	AnnotationDelegatedUser = "faros.sh/delegated-user"
+	AnnotationDelegatedUser = "railgrid.ai/delegated-user"
 	// AnnotationDelegatedOrg and AnnotationDelegatedWorkspace record the tenant
 	// the account was minted in. AnnotationWorkloadIdentityTenantPath carries
 	// the same fact as a path and is what the verifier enforces; these exist so
 	// an operator reading the object sees the tuple without parsing a path.
-	AnnotationDelegatedOrg       = "faros.sh/delegated-org"
-	AnnotationDelegatedWorkspace = "faros.sh/delegated-workspace"
+	AnnotationDelegatedOrg       = "railgrid.ai/delegated-org"
+	AnnotationDelegatedWorkspace = "railgrid.ai/delegated-workspace"
 	// AnnotationDelegatedProvider names the org-owned provider the token was
 	// issued for. It participates in the account name, so a token minted for
 	// one provider is a different identity from one minted for another.
-	AnnotationDelegatedProvider = "faros.sh/delegated-provider"
+	AnnotationDelegatedProvider = "railgrid.ai/delegated-provider"
 	// AnnotationDelegatedProviderOrg is the Organization that owns the
 	// provider the token was issued for, absent for a platform provider. An
 	// org-owned provider may share its name with the platform provider it
 	// shadows, so the name alone does not say which one holds the token; the
 	// owner does, and it is covered by the proof.
-	AnnotationDelegatedProviderOrg = "faros.sh/delegated-provider-org"
+	AnnotationDelegatedProviderOrg = "railgrid.ai/delegated-provider-org"
 
 	// DelegatedUserClusterRole is what the delegated account is bound to. It is
 	// the role every workspace member holds today: the bootstrap grants members
@@ -106,14 +106,14 @@ const (
 	// a provider moments before it expires mid-request.
 	delegatedUserTokenExpirySlack = time.Minute
 
-	delegatedUserNamePrefix   = "faros-du-"
+	delegatedUserNamePrefix   = "railgrid-du-"
 	delegatedUserBindingInfix = "-"
 )
 
 // Identity is the caller a delegated token stands in for.
 type Identity struct {
 	// User is the User CR name — the value the backend proxy injects as
-	// X-Faros-User.
+	// X-Railgrid-User.
 	User string
 }
 
@@ -403,7 +403,7 @@ func validateDelegatedInputs(orgUUID, wsUUID string, user Identity, provider Del
 }
 
 // tenantPathFor is the workspace path the tenant resolver composes from
-// X-Faros-Org / X-Faros-Workspace, which the verifier compares against
+// X-Railgrid-Org / X-Railgrid-Workspace, which the verifier compares against
 // AnnotationWorkloadIdentityTenantPath.
 func tenantPathFor(orgUUID, wsUUID string) string {
 	return kcppaths.WorkspacePath(orgUUID, wsUUID)

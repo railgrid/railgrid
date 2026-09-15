@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // EdgeRoute says an org-owned provider's backend is reached over its edge
@@ -33,7 +33,7 @@ type EdgeRoute struct {
 	Cluster string
 	// EdgeName is the KubernetesCluster edge whose agent carries the tunnel.
 	EdgeName string
-	// ServiceName is the hub-owned edges.faros.sh/Service in front of the
+	// ServiceName is the hub-owned edges.railgrid.ai/Service in front of the
 	// provider inside the tenant's cluster.
 	ServiceName string
 }

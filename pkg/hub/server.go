@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package hub implements the faros hub server.
+// Package hub implements the railgrid hub server.
 package hub
 
 import (
@@ -30,8 +30,8 @@ import (
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
-	"github.com/faroshq/provider-sdk/apiexportprovider"
 	"github.com/gorilla/mux"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -43,31 +43,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/browsersession"
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/hub/admin"
-	"github.com/faroshq/faros/pkg/hub/appauth"
-	"github.com/faroshq/faros/pkg/hub/bootstrap"
-	"github.com/faroshq/faros/pkg/hub/controllers/mcpserver"
-	"github.com/faroshq/faros/pkg/hub/controllers/membershipindex"
-	"github.com/faroshq/faros/pkg/hub/controllers/organization"
-	"github.com/faroshq/faros/pkg/hub/controllers/softdelete"
-	"github.com/faroshq/faros/pkg/hub/hubaccess"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	"github.com/faroshq/faros/pkg/hub/leaderelection"
-	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/restapi"
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
-	"github.com/faroshq/faros/pkg/hub/sharedstore"
-	"github.com/faroshq/faros/pkg/hub/tenant"
-	"github.com/faroshq/faros/pkg/hub/workloadidentity"
-	"github.com/faroshq/faros/pkg/kcppaths"
-	"github.com/faroshq/faros/pkg/server/auth"
-	"github.com/faroshq/faros/pkg/server/proxy"
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/browsersession"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/admin"
+	"github.com/railgrid/railgrid/pkg/hub/appauth"
+	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/mcpserver"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/membershipindex"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/organization"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
+	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/restapi"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/hub/workloadidentity"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/server/auth"
+	"github.com/railgrid/railgrid/pkg/server/proxy"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -77,7 +77,7 @@ const (
 	// running the singleton (write-side) controllers. One lease covers all of
 	// them: they are started and stopped as a unit, so splitting the lock per
 	// manager would only add failure modes.
-	controllerLeaseName = "faros-hub-controllers"
+	controllerLeaseName = "railgrid-hub-controllers"
 
 	// sharedStoreGCInterval is how often the leader reclaims expired session
 	// and authorization-code records. Readers already refuse expired entries,
@@ -92,7 +92,7 @@ const (
 	mcpVerifyBurst = 60
 )
 
-// Server is the faros hub server orchestrator.
+// Server is the railgrid hub server orchestrator.
 type Server struct {
 	opts *Options
 }
@@ -108,7 +108,7 @@ func NewServer(opts *Options) (*Server, error) {
 // Run starts the hub server and blocks until the context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting faros hub server",
+	logger.Info("Starting railgrid hub server",
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
@@ -180,7 +180,7 @@ func (s *Server) Run(ctx context.Context) error {
 			StaticAuthTokens:         s.opts.StaticAuthTokens,
 			// Wire OIDC into kcp so it can authenticate user tokens forwarded
 			// by the proxy natively. The default username mapping (sub →
-			// "faros:<sub>") matches User.Spec.RBACIdentity issued by the auth
+			// "railgrid:<sub>") matches User.Spec.RBACIdentity issued by the auth
 			// handler, so existing workspace RBAC bindings keep working.
 			OIDCIssuerURL: s.opts.IDPIssuerURL,
 			OIDCClientID:  s.opts.IDPClientID,
@@ -314,7 +314,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("installing CRDs: %w", err)
 	}
 
-	// 3. Create dynamic client (used by controllers for faros resources)
+	// 3. Create dynamic client (used by controllers for railgrid resources)
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating dynamic client: %w", err)
@@ -325,12 +325,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// kcp bootstrap creates the per-tenant default MCPServer instead (see
 	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
 
-	farosClient := farosclient.NewFromDynamic(dynamicClient)
+	railgridClient := railgridclient.NewFromDynamic(dynamicClient)
 
 	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
-	// userClient is a faros client targeting the workspace where User CRDs live.
-	// Defaults to the base farosClient; overridden to root:faros:users when kcp is configured.
-	userClient := farosClient
+	// userClient is a railgrid client targeting the workspace where User CRDs live.
+	// Defaults to the base railgridClient; overridden to root:railgrid:users when kcp is configured.
+	userClient := railgridClient
 	if kcpConfig != nil {
 		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
 		// Retry for the same reason InstallCRDs does: sibling replicas bootstrap
@@ -347,18 +347,18 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("kcp bootstrap complete")
 
 		// The legacy per-tenant BackfillDefaultMCPs walk (which iterated
-		// root:faros:tenants) was removed when the new multi-org model
+		// root:railgrid:tenants) was removed when the new multi-org model
 		// retired tenant workspaces. The organization bootstrap controller
 		// now seeds the "default" MCPServer inside each personal Org's
 		// default child Workspace and re-runs idempotently on every
 		// reconcile.
 
-		// Create user client targeting root:faros:users workspace.
+		// Create user client targeting root:railgrid:users workspace.
 		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())
 		if err != nil {
 			return fmt.Errorf("creating user dynamic client: %w", err)
 		}
-		userClient = farosclient.NewFromDynamic(userDynamic)
+		userClient = railgridclient.NewFromDynamic(userDynamic)
 	}
 
 	// One process-wide store backs the host-only portal cookie, app-access SSO,
@@ -440,8 +440,8 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(uiProxy)
 	// backendProxy is held so we can install the TenantResolver below
 	// once kcpProxy + userClient are wired. Until then the proxy still
-	// works — it just forwards without injecting X-Faros-User /
-	// X-Faros-Tenant, which is the Phase 1A behaviour.
+	// works — it just forwards without injecting X-Railgrid-User /
+	// X-Railgrid-Tenant, which is the Phase 1A behaviour.
 	backendProxy := providers.NewBackendProxy(providerRegistry, logger)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(backendProxy)
 	// Held so the optional tenant middleware can be installed below, once the
@@ -652,7 +652,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			// App access tokens (programmatic access to private apps) are sealed
 			// with a subkey HKDF-derived from the hub's cross-replica secret in
-			// root:faros:system:controllers, so any replica verifies them.
+			// root:railgrid:system:controllers, so any replica verifies them.
 			appTokenKeys, err := serviceaccounts.NewKCPProofKeySource(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
 			if err != nil {
 				return fmt.Errorf("creating app-access token key source: %w", err)
@@ -719,7 +719,7 @@ func (s *Server) Run(ctx context.Context) error {
 			membershipLookup := tenant.MembershipLookupFunc(func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 			})
-			// Let hub users (CLI `faros mcp`, e2e) reach the aggregate MCP
+			// Let hub users (CLI `railgrid mcp`, e2e) reach the aggregate MCP
 			// endpoint with their own bearer, gated on tenant membership.
 			mcpVerifier.SetUserIdentity(kcpProxy.IdentifyUser, membershipLookup.GetUserMembershipIndex)
 
@@ -734,7 +734,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 			// Wire the backend-proxy tenant resolver. With this in place
 			// every authenticated request to /services/providers/{name}/*
-			// arrives at the provider with X-Faros-User and X-Faros-Tenant
+			// arrives at the provider with X-Railgrid-User and X-Railgrid-Tenant
 			// populated, so providers (e.g. infrastructure) can scope
 			// per-tenant work without re-parsing the bearer token.
 			// Anonymous requests pass through with the headers stripped.
@@ -745,7 +745,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// it: the issuer signs the tuple onto the minted ServiceAccount,
 			// the resolver refuses any delegated account that cannot present
 			// the same MAC. It lives beside the hub's other cross-replica
-			// state in root:faros:system:controllers, so every replica
+			// state in root:railgrid:system:controllers, so every replica
 			// verifies what any replica minted.
 			delegatedProofKeys, err := serviceaccounts.NewKCPProofKeySource(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
 			if err != nil {
@@ -781,7 +781,7 @@ func (s *Server) Run(ctx context.Context) error {
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
 			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
-			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
+			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
@@ -811,7 +811,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// inside the same kcp-gated branch as the rest of the REST surface.
 			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
-			// credential plugin entry (faros get-token), static-token mode
+			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
 			// is HubExternalURL + /clusters/<clusterName>.
 			kcCfg := restapi.KubeconfigConfig{
@@ -843,7 +843,7 @@ func (s *Server) Run(ctx context.Context) error {
 			saHandler.Register(tenantSub)
 
 			// Production provider-action runtimes exchange an Infrastructure-owned
-			// bootstrap attestation for a short-lived, audience-bound Faros token.
+			// bootstrap attestation for a short-lived, audience-bound Railgrid token.
 			// The attestor resolves the provider's declared virtual workspace from
 			// the catalog; the service-account manager owns deterministic identity
 			// and scoped RBAC in the tenant workspace.
@@ -902,7 +902,7 @@ func (s *Server) Run(ctx context.Context) error {
 		scheme := NewScheme()
 
 		// The multicluster providers watch APIExportEndpointSlices that live in
-		// root:faros:system:controllers. Route through the front-proxy: it
+		// root:railgrid:system:controllers. Route through the front-proxy: it
 		// resolves the workspace path and forwards to whichever shard hosts it
 		// (multi-shard safe), and the shards accept the front-proxy client cert
 		// for the shard-direct virtual-workspace endpoints advertised in
@@ -910,21 +910,21 @@ func (s *Server) Run(ctx context.Context) error {
 		providersConfig := rest.CopyConfig(kcpConfig)
 		providersConfig.Host = apiurl.KCPClusterURL(providersConfig.Host, kcppaths.SystemControllers)
 
-		// NOTE: the core.faros.sh merged-APIExport multicluster manager hosted
+		// NOTE: the core.railgrid.ai merged-APIExport multicluster manager hosted
 		// only edge reconcilers (scheduler / status / edge lifecycle-RBAC-mount-
 		// token / mcpserver). All of those moved into the edges-connectivity and
-		// edges-* providers, so the hub no longer runs a core.faros.sh manager.
+		// edges-* providers, so the hub no longer runs a core.railgrid.ai manager.
 		// Only the provider-catalog manager (below) remains.
 
 		// Provider-catalog reconciler runs against a SECOND multicluster
-		// manager bound to the providers.faros.sh APIExport. That
-		// APIExport is intentionally absent from core.faros.sh (see
+		// manager bound to the providers.railgrid.ai APIExport. That
+		// APIExport is intentionally absent from core.railgrid.ai (see
 		// hack/gen-core-apiexport) so tenants cannot see or create catalog
-		// entries. The hub binds it once in root:faros:providers (during
+		// entries. The hub binds it once in root:railgrid:providers (during
 		// kcp bootstrap, ensureProvidersSelfBinding) and reconciles there.
-		providersExportProvider, err := apiexportprovider.New(providersConfig, "providers.faros.sh", apiexportprovider.Options{Scheme: scheme})
+		providersExportProvider, err := apiexportprovider.New(providersConfig, "providers.railgrid.ai", apiexportprovider.Options{Scheme: scheme})
 		if err != nil {
-			return fmt.Errorf("creating providers.faros.sh multicluster provider: %w", err)
+			return fmt.Errorf("creating providers.railgrid.ai multicluster provider: %w", err)
 		}
 		providersMgr, err := mcmanager.New(providersConfig, providersExportProvider, manager.Options{
 			Scheme:  scheme,
@@ -934,7 +934,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating providers multicluster manager: %w", err)
 		}
 		// The hub no longer provisions providers or writes the
-		// faros-provider-kubeconfig Secret — admin onboarding mints it and the
+		// railgrid-provider-kubeconfig Secret — admin onboarding mints it and the
 		// provider's Helm init applies the in-workspace objects. The catalog
 		// controller only maintains the registry + resolves the workspace
 		// cluster ID for the Enable flow.
@@ -973,13 +973,13 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Elected leader; starting singleton controllers")
 
 			// MCPServer reconciler: MCPServer is a built-in, core-hosted provider —
-			// its CRD is distributed to tenants via core.faros.sh, so we re-introduce
-			// a core.faros.sh multicluster manager (removed in the edge extraction)
+			// its CRD is distributed to tenants via core.railgrid.ai, so we re-introduce
+			// a core.railgrid.ai multicluster manager (removed in the edge extraction)
 			// to run it. It provisions each server's identity across all tenant
 			// workspaces. The aggregate serving lives in pkg/hub/mcpaggregate.
-			coreExportProvider, err := apiexportprovider.New(providersConfig, "core.faros.sh", apiexportprovider.Options{Scheme: scheme})
+			coreExportProvider, err := apiexportprovider.New(providersConfig, "core.railgrid.ai", apiexportprovider.Options{Scheme: scheme})
 			if err != nil {
-				logger.Error(err, "Creating core.faros.sh multicluster provider failed")
+				logger.Error(err, "Creating core.railgrid.ai multicluster provider failed")
 				return
 			}
 			coreMgr, err := mcmanager.New(providersConfig, coreExportProvider, manager.Options{
@@ -1000,12 +1000,12 @@ func (s *Server) Run(ctx context.Context) error {
 			// sub-workspace + ServiceAccount + kubeconfig Secret, then binds the
 			// CatalogEntry export into the sub-workspace so the provider
 			// self-registers. Provider lives in its OWN APIExport
-			// (admin.faros.sh), bound ONLY in root:faros:providers (so
+			// (admin.railgrid.ai), bound ONLY in root:railgrid:providers (so
 			// a provider cannot create Provider objects from its own sub-workspace),
 			// hence a separate multicluster manager bound to the admin export.
-			adminExportProvider, err := apiexportprovider.New(providersConfig, "admin.faros.sh", apiexportprovider.Options{Scheme: scheme})
+			adminExportProvider, err := apiexportprovider.New(providersConfig, "admin.railgrid.ai", apiexportprovider.Options{Scheme: scheme})
 			if err != nil {
-				logger.Error(err, "Creating admin.faros.sh multicluster provider failed")
+				logger.Error(err, "Creating admin.railgrid.ai multicluster provider failed")
 				return
 			}
 			adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
@@ -1025,7 +1025,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 
-			// Organization bootstrap controller — runs against root:faros:users
+			// Organization bootstrap controller — runs against root:railgrid:users
 			// where the User and (companion) Organization CRs live. This is a
 			// single-cluster controller-runtime manager, separate from the
 			// multicluster managers above which serve the kcp-tenant fleet.
@@ -1290,8 +1290,8 @@ func buildAdminSet(logger klog.Logger, entries []string) map[string]struct{} {
 		}
 		// The retired form embeds the token, so the entry itself is
 		// deliberately not logged.
-		if strings.HasPrefix(a, "static-") && strings.HasSuffix(a, "@faros.local") {
-			logger.Error(nil, "--admin-users entry uses the retired static-token email form (static-<token>@faros.local) and matches no user; use the token's RBAC identity (faros:static:<hash>) instead")
+		if strings.HasPrefix(a, "static-") && strings.HasSuffix(a, "@railgrid.local") {
+			logger.Error(nil, "--admin-users entry uses the retired static-token email form (static-<token>@railgrid.local) and matches no user; use the token's RBAC identity (railgrid:static:<hash>) instead")
 		}
 		adminSet[a] = struct{}{}
 	}

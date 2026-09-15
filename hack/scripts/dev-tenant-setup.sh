@@ -21,7 +21,7 @@ die() {
   exit 1
 }
 
-ENV_FILE="${FAROS_DEV_TENANT_ENV_FILE:-.env}"
+ENV_FILE="${RAILGRID_DEV_TENANT_ENV_FILE:-.env}"
 if [[ ! -f "${ENV_FILE}" ]]; then
   die "missing ${ENV_FILE}. Copy hack/dev/tenant-bootstrap.env.example to .env and fill it in."
 fi
@@ -34,11 +34,11 @@ fi
 # that was already exported by the caller keeps that attribute after source,
 # so explicitly remove it for every credential this script handles.
 for sensitive_name in \
-  FAROS_BOOTSTRAP_STATIC_TOKEN \
+  RAILGRID_BOOTSTRAP_STATIC_TOKEN \
   STATIC_AUTH_TOKEN \
-  FAROS_BOOTSTRAP_GITHUB_TOKEN \
-  FAROS_BOOTSTRAP_LLM_API_KEY \
-  FAROS_BOOTSTRAP_DATABRICKS_TOKEN; do
+  RAILGRID_BOOTSTRAP_GITHUB_TOKEN \
+  RAILGRID_BOOTSTRAP_LLM_API_KEY \
+  RAILGRID_BOOTSTRAP_DATABRICKS_TOKEN; do
   export -n "${sensitive_name}" 2>/dev/null || true
 done
 
@@ -55,33 +55,33 @@ require_value() {
   fi
 }
 
-require_value FAROS_BOOTSTRAP_GITHUB_OWNER
-require_value FAROS_BOOTSTRAP_GITHUB_TOKEN
-require_value FAROS_BOOTSTRAP_LLM_API_KEY
-# Optional external provider; public Faros bootstrap needs only Code.
+require_value RAILGRID_BOOTSTRAP_GITHUB_OWNER
+require_value RAILGRID_BOOTSTRAP_GITHUB_TOKEN
+require_value RAILGRID_BOOTSTRAP_LLM_API_KEY
+# Optional external provider; public Railgrid bootstrap needs only Code.
 DATABRICKS_ENABLED=false
-if [[ -n "${FAROS_BOOTSTRAP_DATABRICKS_HOST:-}" || -n "${FAROS_BOOTSTRAP_DATABRICKS_TOKEN:-}" ]]; then
-  require_value FAROS_BOOTSTRAP_DATABRICKS_HOST
-  require_value FAROS_BOOTSTRAP_DATABRICKS_TOKEN
+if [[ -n "${RAILGRID_BOOTSTRAP_DATABRICKS_HOST:-}" || -n "${RAILGRID_BOOTSTRAP_DATABRICKS_TOKEN:-}" ]]; then
+  require_value RAILGRID_BOOTSTRAP_DATABRICKS_HOST
+  require_value RAILGRID_BOOTSTRAP_DATABRICKS_TOKEN
   DATABRICKS_ENABLED=true
 fi
 
-GITHUB_CONNECTION_NAME="${FAROS_BOOTSTRAP_GITHUB_CONNECTION_NAME:-github}"
-GITHUB_SECRET_NAME="${FAROS_BOOTSTRAP_GITHUB_SECRET_NAME:-${GITHUB_CONNECTION_NAME}-credentials}"
-LLM_PROVIDER="${FAROS_BOOTSTRAP_LLM_PROVIDER:-openai-compatible}"
-LLM_BASE_URL="${FAROS_BOOTSTRAP_LLM_BASE_URL:-https://api.openai.com/v1}"
-LLM_MODEL="${FAROS_BOOTSTRAP_LLM_MODEL:-gpt-5.4}"
-DATABRICKS_CONNECTION_NAME="${FAROS_BOOTSTRAP_DATABRICKS_CONNECTION_NAME:-databricks}"
-DATABRICKS_SECRET_NAME="${FAROS_BOOTSTRAP_DATABRICKS_SECRET_NAME:-${DATABRICKS_CONNECTION_NAME}-credentials}"
+GITHUB_CONNECTION_NAME="${RAILGRID_BOOTSTRAP_GITHUB_CONNECTION_NAME:-github}"
+GITHUB_SECRET_NAME="${RAILGRID_BOOTSTRAP_GITHUB_SECRET_NAME:-${GITHUB_CONNECTION_NAME}-credentials}"
+LLM_PROVIDER="${RAILGRID_BOOTSTRAP_LLM_PROVIDER:-openai-compatible}"
+LLM_BASE_URL="${RAILGRID_BOOTSTRAP_LLM_BASE_URL:-https://api.openai.com/v1}"
+LLM_MODEL="${RAILGRID_BOOTSTRAP_LLM_MODEL:-gpt-5.4}"
+DATABRICKS_CONNECTION_NAME="${RAILGRID_BOOTSTRAP_DATABRICKS_CONNECTION_NAME:-databricks}"
+DATABRICKS_SECRET_NAME="${RAILGRID_BOOTSTRAP_DATABRICKS_SECRET_NAME:-${DATABRICKS_CONNECTION_NAME}-credentials}"
 
-HUB_URL="${FAROS_BOOTSTRAP_HUB_URL:-https://console.127.0.0.1.sslip.io:9443}"
-STATIC_TOKEN="${FAROS_BOOTSTRAP_STATIC_TOKEN:-${STATIC_AUTH_TOKEN:-dev-token}}"
-TENANT_KUBECONFIG="${FAROS_BOOTSTRAP_KUBECONFIG:-.kcp/dev-tenant.kubeconfig}"
+HUB_URL="${RAILGRID_BOOTSTRAP_HUB_URL:-https://console.127.0.0.1.sslip.io:9443}"
+STATIC_TOKEN="${RAILGRID_BOOTSTRAP_STATIC_TOKEN:-${STATIC_AUTH_TOKEN:-dev-token}}"
+TENANT_KUBECONFIG="${RAILGRID_BOOTSTRAP_KUBECONFIG:-.kcp/dev-tenant.kubeconfig}"
 
-RETRY_ATTEMPTS="${FAROS_BOOTSTRAP_RETRIES:-30}"
-RETRY_DELAY_SECONDS="${FAROS_BOOTSTRAP_RETRY_DELAY_SECONDS:-2}"
-REQUEST_TIMEOUT_SECONDS="${FAROS_BOOTSTRAP_REQUEST_TIMEOUT_SECONDS:-10}"
-BINDING_RETRIES="${FAROS_BOOTSTRAP_BINDING_RETRIES:-${RETRY_ATTEMPTS}}"
+RETRY_ATTEMPTS="${RAILGRID_BOOTSTRAP_RETRIES:-30}"
+RETRY_DELAY_SECONDS="${RAILGRID_BOOTSTRAP_RETRY_DELAY_SECONDS:-2}"
+REQUEST_TIMEOUT_SECONDS="${RAILGRID_BOOTSTRAP_REQUEST_TIMEOUT_SECONDS:-10}"
+BINDING_RETRIES="${RAILGRID_BOOTSTRAP_BINDING_RETRIES:-${RETRY_ATTEMPTS}}"
 
 require_positive_integer() {
   local name="$1"
@@ -110,7 +110,7 @@ HUB_HOST=""
 
 validate_hub_url() {
   if [[ ! "${HUB_URL}" =~ ^https://([^/?#]+)(/[^?#]*)?$ ]]; then
-    die "FAROS_BOOTSTRAP_HUB_URL must be an HTTPS URL without credentials, query, or fragment (got ${HUB_URL@Q})"
+    die "RAILGRID_BOOTSTRAP_HUB_URL must be an HTTPS URL without credentials, query, or fragment (got ${HUB_URL@Q})"
   fi
 
   HUB_AUTHORITY="${BASH_REMATCH[1]}"
@@ -119,7 +119,7 @@ validate_hub_url() {
   elif [[ "${HUB_AUTHORITY}" =~ ^([[:alnum:].-]+)(:[0-9]{1,5})?$ ]]; then
     HUB_HOST="${BASH_REMATCH[1]}"
   else
-    die "FAROS_BOOTSTRAP_HUB_URL has an invalid host or port (got ${HUB_URL@Q})"
+    die "RAILGRID_BOOTSTRAP_HUB_URL has an invalid host or port (got ${HUB_URL@Q})"
   fi
 }
 
@@ -138,35 +138,35 @@ is_local_hub_host() {
 validate_hub_url
 
 CURL_TLS_ARGS=()
-CA_CERT="${FAROS_BOOTSTRAP_CA_CERT:-}"
-INSECURE_TLS="${FAROS_BOOTSTRAP_INSECURE_TLS:-false}"
+CA_CERT="${RAILGRID_BOOTSTRAP_CA_CERT:-}"
+INSECURE_TLS="${RAILGRID_BOOTSTRAP_INSECURE_TLS:-false}"
 
 case "${INSECURE_TLS,,}" in
   true|yes|1)
     if ! is_local_hub_host; then
-      die "refusing insecure TLS for non-local hub ${HUB_HOST}; set FAROS_BOOTSTRAP_CA_CERT to a trusted CA instead"
+      die "refusing insecure TLS for non-local hub ${HUB_HOST}; set RAILGRID_BOOTSTRAP_CA_CERT to a trusted CA instead"
     fi
     CURL_TLS_ARGS+=(--insecure --noproxy '*')
     ;;
   false|no|0|'')
     ;;
   *)
-    die "FAROS_BOOTSTRAP_INSECURE_TLS must be true or false (got ${INSECURE_TLS@Q})"
+    die "RAILGRID_BOOTSTRAP_INSECURE_TLS must be true or false (got ${INSECURE_TLS@Q})"
     ;;
 esac
 
 if [[ -n "${CA_CERT}" ]]; then
   if [[ "${INSECURE_TLS,,}" == true || "${INSECURE_TLS,,}" == yes || "${INSECURE_TLS}" == 1 ]]; then
-    die "set only one of FAROS_BOOTSTRAP_CA_CERT and FAROS_BOOTSTRAP_INSECURE_TLS"
+    die "set only one of RAILGRID_BOOTSTRAP_CA_CERT and RAILGRID_BOOTSTRAP_INSECURE_TLS"
   fi
-  [[ -f "${CA_CERT}" && -r "${CA_CERT}" ]] || die "FAROS_BOOTSTRAP_CA_CERT is not a readable file: ${CA_CERT}"
+  [[ -f "${CA_CERT}" && -r "${CA_CERT}" ]] || die "RAILGRID_BOOTSTRAP_CA_CERT is not a readable file: ${CA_CERT}"
   CURL_TLS_ARGS+=(--cacert "${CA_CERT}")
 fi
 
 # Keep every temporary file private. In particular, LOGIN_RESPONSE and the
 # generated tenant kubeconfig contain bearer credentials.
 umask 077
-PRIVATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/faros-dev-tenant.XXXXXX")"
+PRIVATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/railgrid-dev-tenant.XXXXXX")"
 chmod 700 "${PRIVATE_DIR}"
 
 LOGIN_RESPONSE="${PRIVATE_DIR}/login-response.json"
@@ -203,13 +203,13 @@ write_protected_file() {
   chmod 600 "${path}"
 }
 
-write_protected_file "${GITHUB_TOKEN_FILE}" "${FAROS_BOOTSTRAP_GITHUB_TOKEN}"
+write_protected_file "${GITHUB_TOKEN_FILE}" "${RAILGRID_BOOTSTRAP_GITHUB_TOKEN}"
 write_protected_file "${LLM_PROVIDER_FILE}" "${LLM_PROVIDER}"
 write_protected_file "${LLM_BASE_URL_FILE}" "${LLM_BASE_URL}"
 write_protected_file "${LLM_MODEL_FILE}" "${LLM_MODEL}"
-write_protected_file "${LLM_API_KEY_FILE}" "${FAROS_BOOTSTRAP_LLM_API_KEY}"
+write_protected_file "${LLM_API_KEY_FILE}" "${RAILGRID_BOOTSTRAP_LLM_API_KEY}"
 if [[ "${DATABRICKS_ENABLED}" == true ]]; then
-  write_protected_file "${DATABRICKS_TOKEN_FILE}" "${FAROS_BOOTSTRAP_DATABRICKS_TOKEN}"
+  write_protected_file "${DATABRICKS_TOKEN_FILE}" "${RAILGRID_BOOTSTRAP_DATABRICKS_TOKEN}"
 fi
 
 CURL_COMMON_ARGS=(
@@ -283,15 +283,15 @@ wait_for_hub_ready() {
 
   if (( health_ok == 1 )); then
     echo "Hub is reachable but did not become ready after ${RETRY_ATTEMPTS} attempts." >&2
-    echo "The hub may still be bootstrapping kcp; inspect the faros-hub Tilt resource and retry." >&2
+    echo "The hub may still be bootstrapping kcp; inspect the railgrid-hub Tilt resource and retry." >&2
   else
     echo "Hub preflight failed after ${RETRY_ATTEMPTS} attempts: ${last_error}" >&2
-    echo "Check that Tilt is running, faros-hub is listening, and FAROS_BOOTSTRAP_HUB_URL is correct." >&2
+    echo "Check that Tilt is running, railgrid-hub is listening, and RAILGRID_BOOTSTRAP_HUB_URL is correct." >&2
   fi
   if [[ "${INSECURE_TLS,,}" == true || "${INSECURE_TLS,,}" == yes || "${INSECURE_TLS}" == 1 ]]; then
     echo "Insecure TLS is enabled only for the validated local host ${HUB_HOST}." >&2
   else
-    echo "TLS verification is enabled; use FAROS_BOOTSTRAP_CA_CERT for a local CA or explicitly enable insecure TLS for localhost only." >&2
+    echo "TLS verification is enabled; use RAILGRID_BOOTSTRAP_CA_CERT for a local CA or explicitly enable insecure TLS for localhost only." >&2
   fi
   return 1
 }
@@ -347,7 +347,7 @@ login_to_hub() {
   done
 
   echo "Token login failed after ${RETRY_ATTEMPTS} attempts: ${last_error}" >&2
-  echo "A fresh hub can answer /readyz before its users APIBinding settles; retry with a larger FAROS_BOOTSTRAP_RETRIES if startup is still progressing." >&2
+  echo "A fresh hub can answer /readyz before its users APIBinding settles; retry with a larger RAILGRID_BOOTSTRAP_RETRIES if startup is still progressing." >&2
   return 1
 }
 
@@ -479,13 +479,13 @@ validate_hub_ready
 # in a misleading "setup applied" message or a half-created Connection flow.
 wait_for_provider_binding \
   code \
-  root:faros:providers:code \
-  code.providers.faros.sh || exit 1
+  root:railgrid:providers:code \
+  code.providers.railgrid.ai || exit 1
 if [[ "${DATABRICKS_ENABLED}" == true ]]; then
 wait_for_provider_binding \
   databricks \
-  root:faros:providers:databricks \
-  databricks.providers.faros.sh || exit 1
+  root:railgrid:providers:databricks \
+  databricks.providers.railgrid.ai || exit 1
 fi
 
 echo "Applying provider-code GitHub credential and Connection..."
@@ -493,10 +493,10 @@ apply_secret_from_file "${GITHUB_SECRET_NAME}" token "${GITHUB_TOKEN_FILE}"
 
 jq -n \
   --arg name "${GITHUB_CONNECTION_NAME}" \
-  --arg owner "${FAROS_BOOTSTRAP_GITHUB_OWNER}" \
+  --arg owner "${RAILGRID_BOOTSTRAP_GITHUB_OWNER}" \
   --arg secret "${GITHUB_SECRET_NAME}" \
   '{
-    apiVersion: "code.faros.sh/v1alpha1",
+    apiVersion: "code.railgrid.ai/v1alpha1",
     kind: "Connection",
     metadata: {name: $name},
     spec: {
@@ -510,7 +510,7 @@ chmod 600 "${GITHUB_CONNECTION_MANIFEST}"
 apply_connection_manifest code "${GITHUB_CONNECTION_MANIFEST}"
 
 echo "Applying App Studio LLM credential..."
-kubectl --kubeconfig="${TENANT_KUBECONFIG}" create secret generic faros-projects-llm \
+kubectl --kubeconfig="${TENANT_KUBECONFIG}" create secret generic railgrid-projects-llm \
   --namespace=default \
   "--from-file=provider=${LLM_PROVIDER_FILE}" \
   "--from-file=baseURL=${LLM_BASE_URL_FILE}" \
@@ -525,10 +525,10 @@ apply_secret_from_file "${DATABRICKS_SECRET_NAME}" token "${DATABRICKS_TOKEN_FIL
 
 jq -n \
   --arg name "${DATABRICKS_CONNECTION_NAME}" \
-  --arg host "${FAROS_BOOTSTRAP_DATABRICKS_HOST}" \
+  --arg host "${RAILGRID_BOOTSTRAP_DATABRICKS_HOST}" \
   --arg secret "${DATABRICKS_SECRET_NAME}" \
   '{
-    apiVersion: "databricks.faros.sh/v1alpha1",
+    apiVersion: "databricks.railgrid.ai/v1alpha1",
     kind: "Connection",
     metadata: {name: $name},
     spec: {

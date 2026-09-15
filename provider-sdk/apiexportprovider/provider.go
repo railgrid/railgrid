@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package apiexportprovider is the multicluster-runtime provider every faros
+// Package apiexportprovider is the multicluster-runtime provider every railgrid
 // provider uses to reconcile resources in tenant workspaces. It is a drop-in
 // for github.com/kcp-dev/multicluster-provider/apiexport with two additions
 // that upstream (v0.8.0) lacks:

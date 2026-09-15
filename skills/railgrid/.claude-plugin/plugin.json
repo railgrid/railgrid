@@ -1,0 +1,26 @@
+{
+  "name": "railgrid",
+  "displayName": "railgrid",
+  "version": "0.2.1",
+  "description": "Drive a railgrid hub as a user: railgrid CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
+  "author": {
+    "name": "railgrid",
+    "url": "https://github.com/railgrid"
+  },
+  "homepage": "https://github.com/railgrid/railgrid/tree/main/skills/railgrid",
+  "repository": "https://github.com/railgrid/railgrid",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "railgrid": {
+      "command": "railgrid",
+      "args": ["mcp", "proxy"]
+    }
+  },
+  "keywords": [
+    "railgrid",
+    "kcp",
+    "mcp",
+    "app-studio",
+    "kubernetes"
+  ]
+}

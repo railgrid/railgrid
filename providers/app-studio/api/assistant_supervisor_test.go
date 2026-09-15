@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,11 +31,11 @@ import (
 
 	"github.com/gorilla/mux"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *testing.T) {
@@ -1313,7 +1313,7 @@ func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjec
 
 func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
+	projectYAML := "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
@@ -1335,9 +1335,9 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/"+threadID+"/turns", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer caller-token")
-		request.Header.Set("X-Faros-User", "test-user")
-		request.Header.Set("X-Faros-Tenant", "cluster-a")
-		request.Header.Set("X-Faros-Cluster", "cluster-a")
+		request.Header.Set("X-Railgrid-User", "test-user")
+		request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+		request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusAccepted {
@@ -1409,7 +1409,7 @@ func TestProjectAssistantRunStartInitialBootstrapSeesTranscriptAfterReservation(
 
 func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(proxy.Client(), memoryStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
@@ -1427,9 +1427,9 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-1/events", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "test-user")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -1453,7 +1453,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 }
 
 func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
-	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
+	projectYAML := "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 
@@ -1482,9 +1482,9 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-pending/interrupt", strings.NewReader(`{"clientRequestID":"stop-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "test-user")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
@@ -1634,7 +1634,7 @@ func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	memoryStore := store.NewMemoryStore()
@@ -1656,9 +1656,9 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"finish the plan","clientUserMessageID":"plan-request","collaborationMode":" Plan "}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "test-user")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -1722,7 +1722,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	tests := []struct {
@@ -1749,9 +1749,9 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"answer this","clientUserMessageID":"terminal-request","collaborationMode":"default"}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer caller-token")
-			request.Header.Set("X-Faros-User", "test-user")
-			request.Header.Set("X-Faros-Tenant", "cluster-a")
-			request.Header.Set("X-Faros-Cluster", "cluster-a")
+			request.Header.Set("X-Railgrid-User", "test-user")
+			request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+			request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 			if response.Code != http.StatusAccepted {
@@ -1783,7 +1783,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(secretGVR, projectLLMSettingsSecret(settings))
 
 	memoryStore := store.NewMemoryStore()
@@ -1819,9 +1819,9 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-1/input", strings.NewReader(`{"requestID":"follow-up-1","answer":"Continue with the plan."}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "test-user")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {

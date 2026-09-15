@@ -37,7 +37,7 @@ export interface ProviderFetchOptions {
 //
 //   hub-proxy model (agents, app-studio, kuery, quickstart, databricks REST):
 //     /services/providers/<name>/   the provider's own backend, via the hub's
-//                                   backend proxy (tenant headers -> X-Faros-*)
+//                                   backend proxy (tenant headers -> X-Railgrid-*)
 //     /ui/providers/<name>/         its own static assets (icons, lazy chunks)
 //
 //   cluster-in-path model (code, edges, infrastructure, databricks):
@@ -136,9 +136,9 @@ function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
   return 'GET'
 }
 
-// createProviderFetch builds the fetch the host places on farosContext.fetch.
+// createProviderFetch builds the fetch the host places on railgridContext.fetch.
 // Relative URLs resolve against the portal origin; the host's Authorization
-// and X-Faros-Org / X-Faros-Workspace headers replace whatever the provider
+// and X-Railgrid-Org / X-Railgrid-Workspace headers replace whatever the provider
 // set (the host is authoritative for the tenant scope, and the hub's tenant
 // middleware rejects a mismatch anyway).
 export function createProviderFetch(options: ProviderFetchOptions): ProviderFetch {
@@ -166,10 +166,10 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
     const headers = new Headers(init?.headers ?? (isRequest ? (input as Request).headers : undefined))
     if (current.token) headers.set('Authorization', `Bearer ${current.token}`)
     else headers.delete('Authorization')
-    if (current.orgUUID) headers.set('X-Faros-Org', current.orgUUID)
-    else headers.delete('X-Faros-Org')
-    if (current.workspaceUUID) headers.set('X-Faros-Workspace', current.workspaceUUID)
-    else headers.delete('X-Faros-Workspace')
+    if (current.orgUUID) headers.set('X-Railgrid-Org', current.orgUUID)
+    else headers.delete('X-Railgrid-Org')
+    if (current.workspaceUUID) headers.set('X-Railgrid-Workspace', current.workspaceUUID)
+    else headers.delete('X-Railgrid-Workspace')
 
     // Policy the host owns goes after the spread so a provider's init cannot
     // override it: the credentials mode and the headers assembled above.

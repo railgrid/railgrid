@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=providers.faros.sh
+// +groupName=providers.railgrid.ai
 
-// Package v1alpha1 contains the platform-owner-only API for managing faros
+// Package v1alpha1 contains the platform-owner-only API for managing railgrid
 // providers (extensions). These types are deliberately NOT bound into tenant
-// workspaces: the APIExport providers.faros.sh is bound only in
-// root:faros:providers and is reachable to platform administrators (and the
+// workspaces: the APIExport providers.railgrid.ai is bound only in
+// root:railgrid:providers and is reachable to platform administrators (and the
 // hub's catalog controller). Tenants interact with providers via the portal,
 // which mediates Enable/Disable through hub APIs — not by directly creating
 // ProviderBinding objects.

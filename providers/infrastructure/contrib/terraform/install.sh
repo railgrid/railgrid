@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -10,16 +10,16 @@
 
 set -euo pipefail
 
-: "${FAROS_E2E_TILT_RUNTIME_KUBECONFIG:?FAROS_E2E_TILT_RUNTIME_KUBECONFIG is required}"
-: "${FAROS_TERRAFORM_KIND_CLUSTER_NAME:?FAROS_TERRAFORM_KIND_CLUSTER_NAME is required}"
+: "${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG:?RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG is required}"
+: "${RAILGRID_TERRAFORM_KIND_CLUSTER_NAME:?RAILGRID_TERRAFORM_KIND_CLUSTER_NAME is required}"
 : "${INFRAKUBE_COMMIT:?INFRAKUBE_COMMIT is required}"
 : "${CONTROLLER_IMAGE:?CONTROLLER_IMAGE is required}"
 : "${TASK_IMAGE:?TASK_IMAGE is required}"
 
 INFRAKUBE_REPOSITORY="${INFRAKUBE_REPOSITORY:-https://github.com/cwilhit/infrakube-multicluster.git}"
 BUILD_CACHE_ROOT="${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"
-RUNTIME_KUBECONFIG="${FAROS_E2E_TILT_RUNTIME_KUBECONFIG}"
-KIND_CLUSTER_NAME="${FAROS_TERRAFORM_KIND_CLUSTER_NAME}"
+RUNTIME_KUBECONFIG="${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG}"
+KIND_CLUSTER_NAME="${RAILGRID_TERRAFORM_KIND_CLUSTER_NAME}"
 
 for tool in docker git kind kubectl sed; do
   command -v "${tool}" >/dev/null || {
@@ -29,7 +29,7 @@ for tool in docker git kind kubectl sed; do
 done
 
 mkdir -p "${BUILD_CACHE_ROOT}"
-source_dir="$(mktemp -d "${BUILD_CACHE_ROOT}/faros-infrakube.XXXXXX")"
+source_dir="$(mktemp -d "${BUILD_CACHE_ROOT}/railgrid-infrakube.XXXXXX")"
 cleanup() {
   rm -rf -- "${source_dir}"
 }

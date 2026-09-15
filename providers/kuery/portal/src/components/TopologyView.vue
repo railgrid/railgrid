@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import type { FarosContext } from '../element'
+import type { RailgridContext } from '../element'
 import type { ObjectResult, QuerySpec, QueryStatus } from '../api'
 import {
   buildTopologyElements, deriveTopologyTree, forceLayoutOptions, graphKeyAction, IMPACT_RELATIONS, mountGraph, relationElements, themeStyle,
@@ -10,7 +10,7 @@ import {
 import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
 import FormSelect from '../portalkit/FormSelect.vue'
 
-const props = defineProps<{ context: FarosContext | null; edges: string[]; active: boolean }>()
+const props = defineProps<{ context: RailgridContext | null; edges: string[]; active: boolean }>()
 const emit = defineEmits<{ inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
 const { api, query } = useKueryApi(context)

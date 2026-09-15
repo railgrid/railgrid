@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ func renderAllowlist(t *testing.T, omit string) string {
 // TestLoadAllowlistRequiresEveryDocumentedField pins the contract the
 // allowlist header states: an entry without one of id / module / reason /
 // exposure / reviewBy is rejected, so a suppression never lands without the
-// faros-specific justification the review depends on.
+// railgrid-specific justification the review depends on.
 func TestLoadAllowlistRequiresEveryDocumentedField(t *testing.T) {
 	entries, order, err := loadAllowlist(renderAllowlist(t, ""))
 	if err != nil {

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,11 +26,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/engine"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // chatHistoryLimit bounds how many prior messages are replayed into a turn.
@@ -781,7 +781,7 @@ func (s *Server) edgesEndpoint(clusterID string) string {
 	if s.cfg.HubURL == "" || clusterID == "" {
 		return ""
 	}
-	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/faros.sh/v1alpha1/mcpservers/default/mcp"
+	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/railgrid.ai/v1alpha1/mcpservers/default/mcp"
 }
 
 // errNoCredential signals that an agent has no model credential assigned.
@@ -795,7 +795,7 @@ func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, 
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
 // name in spec.models[purpose]; the credential is its own Secret
-// (faros-agents-model-<name>). A purpose the agent did not map falls back to
+// (railgrid-agents-model-<name>). A purpose the agent did not map falls back to
 // "chat", so mapping only "chat" keeps working everywhere.
 func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
 	primary := strings.TrimSpace(agent.Spec.Models[purpose])

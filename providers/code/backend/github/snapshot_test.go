@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/provider-code/backend"
+	"github.com/railgrid/provider-code/backend"
 )
 
 func snapshotCommand(t *testing.T, dir, stdin string, args ...string) string {
@@ -23,7 +23,7 @@ func snapshotCommand(t *testing.T, dir, stdin string, args ...string) string {
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	command.Stdin = strings.NewReader(stdin)
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Faros Runner", "GIT_AUTHOR_EMAIL=runner@localhost", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_NAME=Faros Runner", "GIT_COMMITTER_EMAIL=runner@localhost", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z"}
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Railgrid Runner", "GIT_AUTHOR_EMAIL=runner@localhost", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_NAME=Railgrid Runner", "GIT_COMMITTER_EMAIL=runner@localhost", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z"}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v %s", args, err, output)

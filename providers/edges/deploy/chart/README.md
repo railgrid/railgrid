@@ -1,8 +1,8 @@
-# faros-edges-provider
+# railgrid-edges-provider
 
-Standalone faros provider for edges — Kubernetes clusters, Linux/SSH servers, and macOS hosts, under one group edges.faros.sh. Terminates the agent reverse tunnel (revdial) in-process, owns the connectable APIs + their APIExport, and exposes kubectl/SSH/MCP/host-local Services through the hub backend proxy. MacOSServer is Service-only and does not require SSH. Ships the provider Deployment (horizontally scalable — each agent dials one replica and a Lease registry + pod-to-pod relay route requests to the tunnel's owner), a ClusterIP Service, and the CatalogEntry that registers the provider with the faros hub.
+Standalone railgrid provider for edges — Kubernetes clusters, Linux/SSH servers, and macOS hosts, under one group edges.railgrid.ai. Terminates the agent reverse tunnel (revdial) in-process, owns the connectable APIs + their APIExport, and exposes kubectl/SSH/MCP/host-local Services through the hub backend proxy. MacOSServer is Service-only and does not require SSH. Ships the provider Deployment (horizontally scalable — each agent dials one replica and a Lease registry + pod-to-pod relay route requests to the tunnel's owner), a ClusterIP Service, and the CatalogEntry that registers the provider with the railgrid hub.
 
-Helm chart for the faros **edges** provider. `values.yaml` is the source of
+Helm chart for the railgrid **edges** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
 ## Installing
@@ -10,21 +10,21 @@ truth and carries the full inline notes; this table summarises it.
 A provider needs a kcp credential for the workspace it registers into.
 
 - **On the platform**, an admin mints it during provider onboarding.
-- **Running it yourself**, faros creates the workspace, mints the credential,
+- **Running it yourself**, railgrid creates the workspace, mints the credential,
   and generates these exact commands for you under **Providers → Self-Hosting**
   in the portal. See [docs/byo-providers.md](../../../../docs/byo-providers.md).
 
 ```bash
-kubectl create namespace faros-provider-edges
+kubectl create namespace railgrid-provider-edges
 
 # The data key MUST be `kubeconfig` — the chart mounts that exact key.
-kubectl --namespace faros-provider-edges create secret generic faros-provider-kubeconfig \
+kubectl --namespace railgrid-provider-edges create secret generic railgrid-provider-kubeconfig \
   --from-file=kubeconfig=./edges.kubeconfig
 
-helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
-  --namespace faros-provider-edges \
-  --set hub.url=https://faros.example.com \
-  --set providerKubeconfig.secretName=faros-provider-kubeconfig \
+helm upgrade --install edges oci://ghcr.io/railgrid/charts/railgrid-edges-provider \
+  --namespace railgrid-provider-edges \
+  --set hub.url=https://railgrid.example.com \
+  --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
   --set catalogEntry.enabled=true
 ```
 
@@ -33,7 +33,7 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | Key | Default | Notes |
 |---|---|---|
 | `image` |  | Container image. Build (context = REPO ROOT) with: docker build -f providers/edges/Dockerfile -t IMAGE . |
-| `image.repository` | `ghcr.io/faroshq/faros-edges-provider` |  |
+| `image.repository` | `ghcr.io/railgrid/railgrid-edges-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
 | `replicaCount` | `1` | Safe to scale: each agent dials ONE replica; the replica terminating the tunnel claims it in a Lease registry in the provider workspace, and every other replica relays pickups and data-plane requests to the owner over the internal listener (pod-to-pod on internalPort, never exposed on the Service… |
@@ -42,7 +42,7 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8088` |  |
 | `hub` |  | Hub wiring. |
-| `hub.url` | `https://faros-hub.faros.svc.cluster.local:9443` | Heartbeat + agent-kubeconfig externalization base. In-cluster Service DNS. |
+| `hub.url` | `https://railgrid-hub.railgrid.svc.cluster.local:9443` | Heartbeat + agent-kubeconfig externalization base. In-cluster Service DNS. |
 | `hub.externalURL` | `""` | External URL agents dial (baked into the agent kubeconfig the RBAC reconciler mints). Defaults to hub.url when empty. |
 | `hub.internalURL` | `""` | Internal URL the provider uses for hub-side calls when it differs from the external one (split-horizon deployments). Optional. |
 | `hub.tokenSecretRef` |  | Bearer token for the heartbeat POST. Secret-backed; empty → unauthenticated heartbeat (dev only). |
@@ -55,7 +55,7 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `devMode` | `false` | Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA). |
 | `allowUnverifiedSSHHostKey` | `false` | Legacy escape hatch: open SSH sessions to LinuxServers that have NO known sshd host key (no spec.sshHostKey pin and no agent-reported status.sshHostKey) without verifying the server. Edges with a known key are always verified. Prefer pinning spec.sshHostKey or sshHostKeyPolicy=tofu on the edge instead. |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and the serve container (token validation + cross-tenant controllers). Key must be "kubeconfig". |
-| `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
+| `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `catalogEntry` |  | Render the CatalogEntry into a ConfigMap the init container applies into the provider workspace (it is a kcp resource, not a host-cluster one). |
 | `catalogEntry.enabled` | `true` |  |
 | `serviceAccount` |  |  |

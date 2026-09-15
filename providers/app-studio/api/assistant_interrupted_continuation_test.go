@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testing.T) {
@@ -75,9 +75,9 @@ func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testi
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-review/turns/run-interrupted/continue", strings.NewReader(`{"clientUserMessageID":"continue-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", "test-user")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "test-user")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {

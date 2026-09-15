@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,42 +19,42 @@ package kcp
 
 import "embed"
 
-// RootWorkspaceFS contains the faros workspace definition applied to the root workspace.
+// RootWorkspaceFS contains the railgrid workspace definition applied to the root workspace.
 //
-//go:embed workspace-faros.yaml
+//go:embed workspace-railgrid.yaml
 var RootWorkspaceFS embed.FS
 
-// FarosWorkspaceFS contains workspace definitions for children of root:faros:
+// RailgridWorkspaceFS contains workspace definitions for children of root:railgrid:
 // the provider sub-workspace parent, the tenant-fleet parent, and the `system`
 // container. The User/Organization CR-object storage moved from
-// root:faros:users into root:faros:system:tenants, so workspace-users.yaml is
+// root:railgrid:users into root:railgrid:system:tenants, so workspace-users.yaml is
 // gone. The `organization` + `workspace` + `edge` + `provider` WorkspaceTypes
 // ship in PostProvidersFS (they carry defaultAPIBindings to exports that must
 // exist first).
 //
 //go:embed workspace-providers.yaml workspace-tenants.yaml workspace-system.yaml
-var FarosWorkspaceFS embed.FS
+var RailgridWorkspaceFS embed.FS
 
-// SystemWorkspaceFS contains the children of root:faros:system — controllers
+// SystemWorkspaceFS contains the children of root:railgrid:system — controllers
 // (all platform APIExports), providers (Provider/CatalogEntry objects), and
-// tenants (User/Organization/Membership objects). Applied INTO root:faros:system
+// tenants (User/Organization/Membership objects). Applied INTO root:railgrid:system
 // after it is Ready.
 //
 //go:embed workspace-system-controllers.yaml workspace-system-providers.yaml workspace-system-tenants.yaml
 var SystemWorkspaceFS embed.FS
 
 // ProvidersFS contains the platform APIResourceSchemas + APIExports applied to
-// root:faros:system:controllers (the single home for all platform exports).
+// root:railgrid:system:controllers (the single home for all platform exports).
 //
 //go:embed apiresourceschema-*.yaml apiexport-*.yaml
 var ProvidersFS embed.FS
 
 // PostProvidersFS contains workspace-scoped objects that must be applied in
-// root:faros AFTER ProvidersFS has populated root:faros:system:controllers with
+// root:railgrid AFTER ProvidersFS has populated root:railgrid:system:controllers with
 // the APIExports they reference. Ships the `organization` + `workspace` +
 // `edge` + `provider` WorkspaceTypes. They carry defaultAPIBindings to exports
-// under root:faros:system:controllers (e.g. tenants.faros.sh,
-// providers.faros.sh); kcp's WorkspaceType admission
+// under root:railgrid:system:controllers (e.g. tenants.railgrid.ai,
+// providers.railgrid.ai); kcp's WorkspaceType admission
 // validates bind permission on every APIExport in defaultAPIBindings, so the
 // referenced export has to exist by the time the WT is applied, otherwise
 // the LogicalCluster lookup fails and admission returns 403 forbidden (see

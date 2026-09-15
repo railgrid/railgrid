@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func TestDiscoverProjectLLMModelsOpenAICompatible(t *testing.T) {
@@ -187,8 +187,8 @@ func projectLLMDiscoveryRequest(t *testing.T, body string) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/llm-settings/models/discover", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }

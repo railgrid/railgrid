@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,12 +31,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
-// farosContextName is the kubeconfig context that `faros login` writes and
-// that `faros use` retargets.
-const farosContextName = "faros"
+// railgridContextName is the kubeconfig context that `railgrid login` writes and
+// that `railgrid use` retargets.
+const railgridContextName = "railgrid"
 
 // orgView / workspaceView / listResponse mirror the hub REST projections in
 // pkg/hub/restapi (OrgView, WorkspaceView, ListResponse). Only the fields the
@@ -72,16 +72,16 @@ func newUseCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "use",
 		Short: "Switch the active organization and workspace",
-		Long: `Switch the kubeconfig "faros" context between the organizations and
+		Long: `Switch the kubeconfig "railgrid" context between the organizations and
 workspaces you belong to.
 
 With no flags it opens an interactive picker — first an organization, then a
 workspace within it. Pass --org and/or --workspace (display name or UUID) to
 skip the picker, e.g. for scripts:
 
-  faros use                                  # fully interactive
-  faros use --org acme                       # pick a workspace in "acme"
-  faros use --org acme --workspace platform  # non-interactive`,
+  railgrid use                                  # fully interactive
+  railgrid use --org acme                       # pick a workspace in "acme"
+  railgrid use --org acme --workspace platform  # non-interactive`,
 		Aliases: []string{"switch", "ctx"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,7 +96,7 @@ skip the picker, e.g. for scripts:
 }
 
 func runUse(ctx context.Context, orgFlag, wsFlag string) error {
-	// Load the kubeconfig and locate the faros context to retarget.
+	// Load the kubeconfig and locate the railgrid context to retarget.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
@@ -105,7 +105,7 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 	if err != nil {
 		return err
 	}
-	ctxName, kctx, err := resolveFarosContext(raw)
+	ctxName, kctx, err := resolveRailgridContext(raw)
 	if err != nil {
 		return err
 	}
@@ -169,8 +169,8 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 		return fmt.Errorf("workspace %q is not ready yet (no cluster assigned); try again shortly", displayLabel(ws.DisplayName, ws.UUID))
 	}
 
-	// 3. Retarget the faros cluster server URL, make the faros context
-	// current again (a previous 'faros connect' may have moved kubectl to an
+	// 3. Retarget the railgrid cluster server URL, make the railgrid context
+	// current again (a previous 'railgrid connect' may have moved kubectl to an
 	// edge), and persist.
 	newServer := apiurl.HubServerURL(base, ws.ClusterName)
 	switched := cluster.Server != newServer
@@ -189,18 +189,18 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 	return nil
 }
 
-// resolveFarosContext returns the context to retarget: the "faros" context if
-// present (what `faros login` writes), otherwise the current-context.
-func resolveFarosContext(raw *clientcmdapi.Config) (string, *clientcmdapi.Context, error) {
-	if c, ok := raw.Contexts[farosContextName]; ok {
-		return farosContextName, c, nil
+// resolveRailgridContext returns the context to retarget: the "railgrid" context if
+// present (what `railgrid login` writes), otherwise the current-context.
+func resolveRailgridContext(raw *clientcmdapi.Config) (string, *clientcmdapi.Context, error) {
+	if c, ok := raw.Contexts[railgridContextName]; ok {
+		return railgridContextName, c, nil
 	}
 	if raw.CurrentContext != "" {
 		if c, ok := raw.Contexts[raw.CurrentContext]; ok {
 			return raw.CurrentContext, c, nil
 		}
 	}
-	return "", nil, fmt.Errorf("no %q context found in kubeconfig — run 'faros login' first", farosContextName)
+	return "", nil, fmt.Errorf("no %q context found in kubeconfig — run 'railgrid login' first", railgridContextName)
 }
 
 func fetchOrgs(ctx context.Context, c *http.Client, base string) ([]orgView, error) {
@@ -231,7 +231,7 @@ func fetchWorkspaces(ctx context.Context, c *http.Client, base, orgUUID string) 
 }
 
 // doGetJSON issues an authenticated GET and decodes a JSON body. When orgHeader
-// is set it is sent as X-Faros-Org, which the tenant-scoped endpoints require.
+// is set it is sent as X-Railgrid-Org, which the tenant-scoped endpoints require.
 func doGetJSON(ctx context.Context, c *http.Client, url, orgHeader string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -239,7 +239,7 @@ func doGetJSON(ctx context.Context, c *http.Client, url, orgHeader string, out a
 	}
 	req.Header.Set("Accept", "application/json")
 	if orgHeader != "" {
-		req.Header.Set("X-Faros-Org", orgHeader)
+		req.Header.Set("X-Railgrid-Org", orgHeader)
 	}
 	resp, err := c.Do(req)
 	if err != nil {

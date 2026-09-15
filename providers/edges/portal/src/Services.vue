@@ -469,7 +469,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       :title="hasEdges ? 'Expose your first service' : 'Connect an edge first'"
       :description="hasEdges
         ? 'Declare an app reachable from an edge, then add credentials when its service type requires them.'
-        : 'A Service must run beside an edge before Faros can expose its endpoint and tools.'"
+        : 'A Service must run beside an edge before Railgrid can expose its endpoint and tools.'"
       :primary-label="hasEdges ? 'Create service' : 'Connect edge'"
       :steps="serviceJourney"
       :current-step="hasEdges ? 1 : 0"

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=inst
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=inst
 // +kubebuilder:printcolumn:name="Template",type=string,JSONPath=`.spec.template`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
@@ -84,8 +84,8 @@ type InstanceSpec struct {
 	// Values is the template-shaped input — exactly the object
 	// Template.spec.schema describes, the same payload that used to be the
 	// whole spec of the retired per-template kinds. The platform-reserved
-	// fields (farosMode, farosActions*, plus controller-stamped fields like
-	// expose.fqdn, farosCluster, credentialsSecretName) live in here too, so
+	// fields (railgridMode, railgridActions*, plus controller-stamped fields like
+	// expose.fqdn, railgridCluster, credentialsSecretName) live in here too, so
 	// "spec" in template schemas, RGD ${schema.spec.*} expressions, and view
 	// definitions all keep meaning this object.
 	//
@@ -117,7 +117,7 @@ type InstanceStatus struct {
 	// mirrored from the runtime Instance only after the runtime reports Ready;
 	// callers must not use spec.values as an execution-readiness signal.
 	// +optional
-	NetworkPhase string `json:"farosNetworkPhase,omitempty"`
+	NetworkPhase string `json:"railgridNetworkPhase,omitempty"`
 
 	// Template echoes spec.template as resolved at last reconcile.
 	// +optional
@@ -187,7 +187,7 @@ const (
 // (the per-template kro CR and any bridged Secrets) — none of it is
 // reachable by kcp garbage collection, so the instance controller cleans up
 // before releasing the object.
-const FinalizerInstanceRuntime = "instances.infrastructure.faros.sh/runtime"
+const FinalizerInstanceRuntime = "instances.infrastructure.railgrid.ai/runtime"
 
 // InstancesResource is the stable resource name consumers claim and address
 // ("instances"). Kept as a constant so claim lists and data-plane paths

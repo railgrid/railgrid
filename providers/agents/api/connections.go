@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/channels"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/channels"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +62,7 @@ type createConnectionRequest struct {
 	ClientSecret  string   `json:"clientSecret,omitempty"`
 }
 
-func connectionSecretName(conn string) string { return "faros-agents-conn-" + conn }
+func connectionSecretName(conn string) string { return "railgrid-agents-conn-" + conn }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.requireClient(w, r)
@@ -343,7 +343,7 @@ func sendConnectionTest(ctx context.Context, c *agentsclient.Client, name string
 		Token:  token,
 		Target: conn.Spec.Channel,
 		Config: conn.Spec.Config,
-		Text:   "✅ Test message from your faros agents — this connection works.",
+		Text:   "✅ Test message from your railgrid agents — this connection works.",
 	}); err != nil {
 		return &requestError{http.StatusBadGateway, "SendFailed", err.Error()}
 	}

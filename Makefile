@@ -18,7 +18,7 @@ KCP := $(TOOLSDIR)/kcp-$(KCP_VER)
 KCP_DATA_DIR := .kcp
 
 # Browser/CLI address of every local hub (make run-hub-*, both Tiltfiles,
-# `faros dev init`). Public DNS answers every *.127.0.0.1.sslip.io name with
+# `railgrid dev init`). Public DNS answers every *.127.0.0.1.sslip.io name with
 # 127.0.0.1, so no /etc/hosts entry is needed, and published apps under
 # apps.127.0.0.1.sslip.io share its site (private-app sign-in cookies stay
 # first-party). certs/apiserver.crt covers *.127.0.0.1.sslip.io.
@@ -53,11 +53,11 @@ endif
 # --- Version info ---
 # --match 'v*' excludes the provider-sdk/* submodule tags (e.g.
 # provider-sdk/v0.0.12) that git describe would otherwise latch onto, keeping the
-# version a real faros release tag (or a bare SHA when none is reachable).
+# version a real railgrid release tag (or a bare SHA when none is reachable).
 VERSION ?= $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo dev)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS_PKG := github.com/faroshq/faros/pkg/version
+LDFLAGS_PKG := github.com/railgrid/railgrid/pkg/version
 LDFLAGS := -s -w -X $(LDFLAGS_PKG).Version=$(VERSION) -X $(LDFLAGS_PKG).GitCommit=$(GIT_COMMIT) -X $(LDFLAGS_PKG).BuildDate=$(BUILD_DATE)
 
 ldflags: ## Print ldflags for goreleaser
@@ -65,16 +65,16 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-faros build-hub
+build: build-railgrid build-hub
 
-build-faros:
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros ./cmd/faros/
+build-railgrid:
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid ./cmd/railgrid/
 
 ## CLI reference docs (docs/cli/*.md) are generated from the cobra command
 ## tree so they can never drift from the binary. verify-docs-cli is part of
 ## `make verify`.
-docs-cli: build-faros ## Regenerate docs/cli from the faros command tree
-	$(BINDIR)/faros docs --dir docs/cli
+docs-cli: build-railgrid ## Regenerate docs/cli from the railgrid command tree
+	$(BINDIR)/railgrid docs --dir docs/cli
 
 verify-docs-cli: docs-cli ## Fail when docs/cli is out of date with the command tree
 	@if [ -n "$$(git status --porcelain -- docs/cli)" ]; then \
@@ -87,32 +87,32 @@ build-release: ## Build the release-tagging helper (release <component|all>)
 	go build $(GOFLAGS) -o $(BINDIR)/release ./cmd/release/
 
 build-hub:
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-hub ./cmd/railgrid-hub/
 
 test-runner: ## Run focused generic runner and harness tests
-	go test -count=1 ./pkg/runner/... ./cmd/faros-runner/...
+	go test -count=1 ./pkg/runner/... ./cmd/railgrid-runner/...
 	python3 -m unittest discover -s hack/runner-install -p 'test_*.py'
 
 lint-runner: $(GOLANGCI_LINT) ## Lint the standalone runner and adapters
-	$(GOLANGCI_LINT) run ./pkg/runner/... ./cmd/faros-runner/...
+	$(GOLANGCI_LINT) run ./pkg/runner/... ./cmd/railgrid-runner/...
 
 fix-lint-runner: $(GOLANGCI_LINT) ## Format and auto-fix the standalone runner
-	$(GOLANGCI_LINT) run --fix ./pkg/runner/... ./cmd/faros-runner/...
+	$(GOLANGCI_LINT) run --fix ./pkg/runner/... ./cmd/railgrid-runner/...
 
 build-runner: ## Build the standalone loopback runner binary
 	mkdir -p $(BINDIR)
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-runner ./cmd/faros-runner/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-runner ./cmd/railgrid-runner/
 
 build-runner-darwin: ## Build the standalone runner for Darwin arm64 and amd64
 	mkdir -p $(BINDIR)
-	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-runner-darwin-arm64 ./cmd/faros-runner/
-	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-runner-darwin-amd64 ./cmd/faros-runner/
+	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-runner-darwin-arm64 ./cmd/railgrid-runner/
+	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-runner-darwin-amd64 ./cmd/railgrid-runner/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
 	mkdir -p pkg/hub/portal
 	rm -rf pkg/hub/portal/dist
 	cp -r portal/dist pkg/hub/portal/dist
-	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/
+	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-hub ./cmd/railgrid-hub/
 
 build-portal: ## Build the portal Vue.js SPA
 	cd portal && npm ci && npm run build
@@ -122,11 +122,11 @@ dev-portal: ## Run the portal dev server
 
 
 build-access-proxy: ## Build the published-app access-proxy binary (infrastructure module)
-	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/faros-access-proxy ./cmd/access-proxy/
+	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/railgrid-access-proxy ./cmd/access-proxy/
 
-# build-agent is an alias for build-faros: the agent container image now ships
-# the faros CLI binary (cmd/faros/) with ENTRYPOINT [/faros, agent, run].
-build-agent: build-faros
+# build-agent is an alias for build-railgrid: the agent container image now ships
+# the railgrid CLI binary (cmd/railgrid/) with ENTRYPOINT [/railgrid, agent, run].
+build-agent: build-railgrid
 
 ## macOS agent compile/test gates. These targets deliberately use the caller's
 ## GOCACHE/GOTMPDIR/TMPDIR so local and CI builds share the environment-provided
@@ -146,11 +146,11 @@ build-macos-agent: build-macos-agent-arm64 build-macos-agent-amd64 ## Compile th
 
 build-macos-agent-arm64: ## Compile the agent for Darwin arm64
 	mkdir -p $(BINDIR)
-	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-darwin-arm64 ./cmd/faros/
+	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-darwin-arm64 ./cmd/railgrid/
 
 build-macos-agent-amd64: ## Compile the agent for Darwin amd64
 	mkdir -p $(BINDIR)
-	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-darwin-amd64 ./cmd/faros/
+	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-darwin-amd64 ./cmd/railgrid/
 
 build-macos-stub-native: ## Compile the localhost-only health stub for the current platform
 	mkdir -p $(BINDIR)
@@ -197,7 +197,7 @@ build-edges-provider: build-edges-provider-portal ## Build the edges provider bi
 	cd providers/edges && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/edges-provider .
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the edges provider's
-## API (KubernetesCluster, LinuxServer, and MacOSServer in edges.faros.sh), then
+## API (KubernetesCluster, LinuxServer, and MacOSServer in edges.railgrid.ai), then
 ## sync the schema bodies into the Helm chart's files/schemas/ directory.
 ## Provider init applies them at runtime so tenants that bind the APIExport get
 ## all connectable edge kinds.
@@ -209,8 +209,8 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
 	@for r in kubernetesclusters linuxservers macosservers workloads placements services; do \
-		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.faros.sh.yaml \
-		   providers/edges/deploy/chart/files/schemas/$$r.edges.faros.sh.yaml; \
+		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.railgrid.ai.yaml \
+		   providers/edges/deploy/chart/files/schemas/$$r.edges.railgrid.ai.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -218,10 +218,10 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
 
 ## --- edges provider dev lifecycle (install → init → run) --------------------
-install-provider-edges: ## Apply edges Provider + CatalogEntry into root:faros:providers
+install-provider-edges: ## Apply edges Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(EDGES_KCP_KUBECONFIG) || { echo "kubeconfig not found at $(EDGES_KCP_KUBECONFIG); start the hub first (make run-hub-embedded-static)"; exit 1; }
 	kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
-		--server=$(EDGES_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(EDGES_PROVIDER_MANIFEST) -f $(EDGES_MANIFEST)
 
@@ -233,11 +233,11 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
 		"$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(EDGES_RUNTIME_KUBECONFIG)
-	FAROS_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	FAROS_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	RAILGRID_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
 	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
 		$(BINDIR)/edges-provider init
 
@@ -252,25 +252,25 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	POD_NAME=$${POD_NAME:-edges-local-1} \
 	POD_IP=$${POD_IP:-127.0.0.1} \
 	EDGES_INTERNAL_PORT=$(EDGES_INTERNAL_PORT) \
-	FAROS_HUB_URL=$(EDGES_HUB_URL) \
-	FAROS_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
-	FAROS_HUB_TOKEN=$(EDGES_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=edges \
-	FAROS_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	FAROS_DEV_MODE=true \
+	RAILGRID_HUB_URL=$(EDGES_HUB_URL) \
+	RAILGRID_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
+	RAILGRID_HUB_TOKEN=$(EDGES_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=edges \
+	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	RAILGRID_DEV_MODE=true \
 		$(BINDIR)/edges-provider serve
 
 uninstall-provider-edges: ## Delete edges CatalogEntry + Provider
 	-kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
-		--server=$(EDGES_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(EDGES_MANIFEST) -f $(EDGES_PROVIDER_MANIFEST)
 
 docker-build-edges-provider: ## Build the edges provider image (context = providers/edges)
 	docker build \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/faroshq/faros-edges-provider:$(VERSION) \
+		-t ghcr.io/railgrid/railgrid-edges-provider:$(VERSION) \
 		providers/edges
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
@@ -291,20 +291,20 @@ build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + 
 build-code-provider: build-code-provider-portal ## Build the code provider binary (portal embedded)
 	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
 
-test-hub-chart: ## Lint and render the faros-hub chart's provider hardening values
+test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening values
 	@set -eu; \
 		tmp_parent="$${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"; \
 		mkdir -p "$$tmp_parent"; \
-		tmp_dir="$$(mktemp -d "$$tmp_parent/faros-hub-chart.XXXXXX")"; \
+		tmp_dir="$$(mktemp -d "$$tmp_parent/railgrid-hub-chart.XXXXXX")"; \
 		cleanup() { rm -rf -- "$$tmp_dir"; }; \
 		trap cleanup EXIT HUP INT TERM; \
-		chart=deploy/charts/faros-hub; url=https://faros.example.com; \
+		chart=deploy/charts/railgrid-hub; url=https://railgrid.example.com; \
 		helm lint "$$chart" --set hub.hubExternalURL="$$url"; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" >"$$tmp_dir/default.yaml"; \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" >"$$tmp_dir/default.yaml"; \
 		if grep -q -- '--provider-' "$$tmp_dir/default.yaml"; then \
 			echo "default values rendered a provider hardening flag; they must leave the binary default"; exit 1; \
 		fi; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
 			--set hub.security.providerHeartbeatAuth=enforce \
 			--set hub.security.providerDelegatedTokens=platform \
 			--set 'hub.security.providerDelegatedTokensExclude={edges,mcp}' \
@@ -314,36 +314,36 @@ test-hub-chart: ## Lint and render the faros-hub chart's provider hardening valu
 		grep -q -- '- --provider-delegated-tokens-exclude=edges$$' "$$tmp_dir/hardened.yaml"; \
 		grep -q -- '- --provider-delegated-tokens-exclude=mcp$$' "$$tmp_dir/hardened.yaml"; \
 		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/hardened.yaml"; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
 			--set hub.security.providerWorkspaceClusterAdmin=true >"$$tmp_dir/admin-true.yaml"; \
 		grep -q -- '- --provider-workspace-cluster-admin=true$$' "$$tmp_dir/admin-true.yaml"; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
 			--set-string hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/admin-false-string.yaml"; \
 		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/admin-false-string.yaml"; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
 			--set 'hub.extraArgs={--providers=edges\,infrastructure,--disable-token-login}' >"$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--providers=edges,infrastructure"$$' "$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--disable-token-login"$$' "$$tmp_dir/extra.yaml"; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
 			echo "invalid providerHeartbeatAuth unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerDelegatedTokens=some >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerDelegatedTokens=some >/dev/null 2>&1; then \
 			echo "invalid providerDelegatedTokens unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerWorkspaceClusterAdmin=maybe >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerWorkspaceClusterAdmin=maybe >/dev/null 2>&1; then \
 			echo "invalid providerWorkspaceClusterAdmin unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=maybe >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=maybe >/dev/null 2>&1; then \
 			echo "invalid providerHubAccessPlatformDefault unexpectedly rendered"; exit 1; \
 		fi; \
-		helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=false | grep -q -- '--provider-hub-access-platform-default=false'; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--dev-mode}' >/dev/null 2>&1; then \
+		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHubAccessPlatformDefault=false | grep -q -- '--provider-hub-access-platform-default=false'; \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--dev-mode}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating a modelled flag unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-heartbeat-auth=enforce}' >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-heartbeat-auth=enforce}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating --provider-heartbeat-auth unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template faros "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-delegated-tokens=platform}' >/dev/null 2>&1; then \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-delegated-tokens=platform}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating --provider-delegated-tokens unexpectedly rendered"; exit 1; \
 		fi
 
@@ -366,8 +366,8 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	# host cluster by the chart), so it stays in config/ only. Remove stale embed
 	# files first so deleted platform APIs cannot remain installed accidentally.
 	find providers/infrastructure/install/crds -maxdepth 1 -type f -name '*.yaml' -delete
-	cp providers/infrastructure/config/crds/infrastructure.faros.sh_templates.yaml \
-	   providers/infrastructure/config/crds/infrastructure.faros.sh_instances.yaml \
+	cp providers/infrastructure/config/crds/infrastructure.railgrid.ai_templates.yaml \
+	   providers/infrastructure/config/crds/infrastructure.railgrid.ai_instances.yaml \
 	   providers/infrastructure/install/crds/
 	./hack/ensure-boilerplate.sh
 
@@ -382,8 +382,8 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./hack/apigen.sh --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
 	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
-		cp providers/code/config/kcp/apiresourceschema-$$r.code.faros.sh.yaml \
-		   providers/code/deploy/chart/files/schemas/$$r.code.faros.sh.yaml; \
+		cp providers/code/config/kcp/apiresourceschema-$$r.code.railgrid.ai.yaml \
+		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -395,8 +395,8 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
 	@for r in agents connections schedules triggers toolsets; do \
-		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.faros.sh.yaml \
-		   providers/agents/deploy/chart/files/schemas/$$r.agents.faros.sh.yaml; \
+		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
+		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -407,12 +407,12 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
 	./hack/apigen.sh --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
-	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/projects.ai.faros.sh.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.faros.sh.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/studios.ai.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.railgrid.ai.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/projects.ai.railgrid.ai.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.railgrid.ai.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.railgrid.ai.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.railgrid.ai.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/studios.ai.railgrid.ai.yaml
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -616,11 +616,11 @@ $(KCP):
 	ln -sf $(notdir $(KCP)) $(TOOLSDIR)/kcp
 	@echo "kcp binary: $(KCP)"
 
-dev-login: build-faros
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify
+dev-login: build-railgrid
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/railgrid login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify
 
-dev-login-static: build-faros ## Login using static token auth (for use with run-hub-static)
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+dev-login-static: build-railgrid ## Login using static token auth (for use with run-hub-static)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/railgrid login --hub-url $(DEV_HUB_URL) --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
 # Values: kubernetes (default) | server
@@ -628,33 +628,33 @@ TYPE ?= kubernetes
 # Default DEV_EDGE_NAME is per-type so kubernetes and server edges can coexist.
 DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)
 
-dev-edge-create: build-faros ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
+dev-edge-create: build-railgrid ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
-dev-run-edge: build-faros ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
+dev-run-edge: build-railgrid ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
 	@test -f .env.edge.$(TYPE) || (echo "Run 'make dev-edge-create TYPE=$(TYPE)' first (expected .env.edge.$(TYPE))"; exit 1)
 ifeq ($(TYPE),server)
-	$(BINDIR)/faros agent run \
+	$(BINDIR)/railgrid agent run \
 		--hub-url=$(DEV_HUB_URL) \
 		--hub-insecure-skip-tls-verify \
-		--token=$(FAROS_EDGE_JOIN_TOKEN) \
+		--token=$(RAILGRID_EDGE_JOIN_TOKEN) \
 		--tunnel-url=$(DEV_HUB_URL) \
-		--edge-name=$(FAROS_EDGE_NAME) \
-		--cluster=$(FAROS_EDGE_CLUSTER) \
+		--edge-name=$(RAILGRID_EDGE_NAME) \
+		--cluster=$(RAILGRID_EDGE_CLUSTER) \
 		--type=server \
 		--ssh-proxy-port=2222 \
-		--ssh-user=faros \
+		--ssh-user=railgrid \
 		--ssh-password=password
 else
 	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/faros agent run \
+	$(BINDIR)/railgrid agent run \
 		--hub-url=$(DEV_HUB_URL) \
 		--hub-insecure-skip-tls-verify \
-		--token=$(FAROS_EDGE_JOIN_TOKEN) \
+		--token=$(RAILGRID_EDGE_JOIN_TOKEN) \
 		--tunnel-url=$(DEV_HUB_URL) \
-		--edge-name=$(FAROS_EDGE_NAME) \
-		--kubeconfig=.kubeconfig-faros-agent \
-		--cluster=$(FAROS_EDGE_CLUSTER) \
+		--edge-name=$(RAILGRID_EDGE_NAME) \
+		--kubeconfig=.kubeconfig-railgrid-agent \
+		--cluster=$(RAILGRID_EDGE_CLUSTER) \
 		--type=kubernetes
 endif
 
@@ -714,14 +714,14 @@ dev-run-ssh-server:
   -e TZ=Etc/UTC \
   -e PASSWORD_ACCESS=true \
   -e USER_PASSWORD=password \
-  -e USER_NAME=faros \
+  -e USER_NAME=railgrid \
   -p 2222:2222 \
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
 ## --- kube edge agent, in-cluster (dev) --------------------------------------
 # Runs the agent as a Deployment INSIDE the edge's kind cluster, the way the
-# faros-agent chart does in production — instead of `dev-run-edge`, which runs it
+# railgrid-agent chart does in production — instead of `dev-run-edge`, which runs it
 # on the host against the cluster's kubeconfig.
 #
 # This matters for the Service kind: a host-run agent can serve the k8s
@@ -730,12 +730,12 @@ dev-run-ssh-server:
 #
 # Networking: in Tiltfile.cluster the hub is a ClusterIP in the `kcp-tilt`
 # cluster, reachable from the host only via Tilt's 127.0.0.1 port-forward — no
-# use to a pod in the `faros-agent` cluster. Both clusters' nodes share the
+# use to a pod in the `railgrid-agent` cluster. Both clusters' nodes share the
 # `kind` docker network, so we expose the hub via a NodePort and dial the
 # kcp-tilt node IP directly.
-DEV_AGENT_IMAGE_REPO ?= ghcr.io/faroshq/faros-agent
-DEV_AGENT_NS         ?= faros-agent
-DEV_AGENT_KIND       ?= faros-agent
+DEV_AGENT_IMAGE_REPO ?= ghcr.io/railgrid/railgrid-agent
+DEV_AGENT_NS         ?= railgrid-agent
+DEV_AGENT_KIND       ?= railgrid-agent
 DEV_HUB_KIND         ?= kcp-tilt
 DEV_HUB_NODEPORT     ?= 30443
 # Resolved at recipe time: docker assigns the node IP when the cluster is created.
@@ -753,33 +753,33 @@ dev-edge-agent-incluster: docker-build-agent ## Run the kube edge agent IN the e
 	@echo "         checked from here — if the agent logs 'workspace access not permitted', this is why."
 	hack/scripts/ensure-kind-cluster.sh $(DEV_AGENT_KIND)
 	@echo "==> Exposing the hub to the $(DEV_AGENT_KIND) cluster (NodePort $(DEV_HUB_NODEPORT) on $(DEV_HUB_NODE_IP))"
-	kubectl --context kind-$(DEV_HUB_KIND) apply -f hack/dev/faros-hub-nodeport.yaml
+	kubectl --context kind-$(DEV_HUB_KIND) apply -f hack/dev/railgrid-hub-nodeport.yaml
 	@echo "==> Loading $(DEV_AGENT_IMAGE_REPO):$(VERSION) into kind/$(DEV_AGENT_KIND)"
 	kind load docker-image $(DEV_AGENT_IMAGE_REPO):$(VERSION) --name $(DEV_AGENT_KIND)
 	@# Source the edge env in-recipe rather than trusting the global
 	@# `-include .env.edge.$$(TYPE)`: an exported TYPE=server would otherwise
 	@# feed the server edge's name/cluster/token to the kubernetes agent.
 	set -a; . ./.env.edge.kubernetes; set +a; \
-	test -n "$$FAROS_EDGE_JOIN_TOKEN" || { echo "No FAROS_EDGE_JOIN_TOKEN in .env.edge.kubernetes — the token is cleared once an agent redeems it; re-run 'make dev-edge-create TYPE=kubernetes'"; exit 1; }; \
-	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) upgrade --install faros-agent deploy/charts/faros-agent \
+	test -n "$$RAILGRID_EDGE_JOIN_TOKEN" || { echo "No RAILGRID_EDGE_JOIN_TOKEN in .env.edge.kubernetes — the token is cleared once an agent redeems it; re-run 'make dev-edge-create TYPE=kubernetes'"; exit 1; }; \
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) upgrade --install railgrid-agent deploy/charts/railgrid-agent \
 		--namespace $(DEV_AGENT_NS) --create-namespace \
 		--set image.repository=$(DEV_AGENT_IMAGE_REPO) \
 		--set image.tag=$(VERSION) \
 		--set image.pullPolicy=IfNotPresent \
-		--set agent.edgeName=$$FAROS_EDGE_NAME \
-		--set agent.cluster=$$FAROS_EDGE_CLUSTER \
+		--set agent.edgeName=$$RAILGRID_EDGE_NAME \
+		--set agent.cluster=$$RAILGRID_EDGE_CLUSTER \
 		--set agent.hub.url=https://$(DEV_HUB_NODE_IP):$(DEV_HUB_NODEPORT) \
-		--set agent.hub.token=$$FAROS_EDGE_JOIN_TOKEN \
+		--set agent.hub.token=$$RAILGRID_EDGE_JOIN_TOKEN \
 		--set agent.hub.insecureSkipTLSVerify=true \
 		--wait --timeout=120s
-	@echo "==> Agent deployed. Logs: kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) logs -l app.kubernetes.io/name=faros-agent -f"
+	@echo "==> Agent deployed. Logs: kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) logs -l app.kubernetes.io/name=railgrid-agent -f"
 
 dev-edge-agent-incluster-logs: ## Tail the in-cluster edge agent
 	kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) \
-		logs -l app.kubernetes.io/name=faros-agent --tail=100 -f
+		logs -l app.kubernetes.io/name=railgrid-agent --tail=100 -f
 
 dev-edge-agent-incluster-down: ## Remove the in-cluster edge agent
-	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) uninstall faros-agent -n $(DEV_AGENT_NS) --ignore-not-found
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) uninstall railgrid-agent -n $(DEV_AGENT_NS) --ignore-not-found
 
 .PHONY: dev-edge-agent-incluster dev-edge-agent-incluster-logs dev-edge-agent-incluster-down
 
@@ -790,9 +790,9 @@ dev-edge-agent-incluster-down: ## Remove the in-cluster edge agent
 # providers/edges/contrib/manifests/homeassistant/README.md.
 HA_MANIFESTS  ?= providers/edges/contrib/manifests/homeassistant
 HA_NAMESPACE  ?= home
-HA_KUBECONFIG ?= .kubeconfig-faros-agent
+HA_KUBECONFIG ?= .kubeconfig-railgrid-agent
 
-dev-deploy-homeassistant: ## Deploy Home Assistant into the faros-agent kind cluster
+dev-deploy-homeassistant: ## Deploy Home Assistant into the railgrid-agent kind cluster
 	hack/scripts/ensure-kind-cluster.sh
 	kubectl --kubeconfig=$(HA_KUBECONFIG) apply -k $(HA_MANIFESTS)
 	@echo "Waiting for Home Assistant (first boot pulls a ~1.5GB image)..."
@@ -826,7 +826,7 @@ HUB_FLAGS_BASE := \
 # Auth: OIDC via Dex
 HUB_FLAGS_OIDC := \
 	--idp-issuer-url=https://localhost:5554/dex \
-	--idp-client-id=faros \
+	--idp-client-id=railgrid \
 	--idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0
 
 # Auth: Static token
@@ -836,10 +836,10 @@ HUB_FLAGS_STATIC := \
 
 # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
 # A static token's user is matched by its RBAC identity,
-# faros:static:<first 16 hex of sha256("static-token/<token>")> (see
-# identity.NewStaticToken) — for dev-token that's faros:static:47b9dce0e91570a1.
+# railgrid:static:<first 16 hex of sha256("static-token/<token>")> (see
+# identity.NewStaticToken) — for dev-token that's railgrid:static:47b9dce0e91570a1.
 # Override for OIDC dev with your real email.
-ADMIN_USERS ?= faros:static:$(shell printf 'static-token/%s' '$(STATIC_AUTH_TOKEN)' | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
+ADMIN_USERS ?= railgrid:static:$(shell printf 'static-token/%s' '$(STATIC_AUTH_TOKEN)' | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
 
 # KCP: External (requires running kcp separately)
 HUB_FLAGS_KCP_EXTERNAL := \
@@ -878,28 +878,28 @@ HUB_FLAGS_PORTAL_DEV := \
 run-hub: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
 	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
+	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
 
 ## External KCP + static token auth (requires: make dev-run-kcp)
 run-hub-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
+	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
 
 ## Embedded KCP + OIDC auth (requires: make run-dex)
 run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
+	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
 ## Embedded KCP + static token auth + portal dev proxy (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
+	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
 
 ## Embedded KCP + static token (fully standalone)
 run-hub-standalone: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
+	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
 
 # Local kcp checkout to iterate against. Defaults to the standard per-user Go
 # workspace path. Override on the CLI or via env:
@@ -913,7 +913,7 @@ TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
 TILT_TMPDIR ?= $(CURDIR)/.kcp/tmp/tilt
 # Tilt's own API/UI port. Only used to detect an already-running instance.
 TILT_PORT ?= 10350
-# Replicas for the hub + every faros provider Deployment in cluster mode.
+# Replicas for the hub + every railgrid provider Deployment in cluster mode.
 # Default 1 keeps the dev loop light; REPLICA_COUNT=2 exercises the HA paths
 # (leader election, tunnel-ownership relay, run claims, session failover):
 #   make tilt-cluster REPLICA_COUNT=2
@@ -921,7 +921,7 @@ REPLICA_COUNT ?= 1
 
 .PHONY: tilt tilt-cluster
 
-## faros-hub as a host binary with embedded kcp + host-run portal and providers.
+## railgrid-hub as a host binary with embedded kcp + host-run portal and providers.
 ## The default loop: no kind cluster for the hub itself, so it starts in seconds
 ## and every Go change is a plain rebuild. Use tilt-cluster when you need real
 ## multi-shard kcp, in-cluster deployment, or to iterate on a kcp checkout.
@@ -936,7 +936,7 @@ tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluste
 		echo "       Stop the other one first: tilt down -f Tiltfile.cluster"; \
 		exit 1; \
 	fi
-	@# A stray faros-hub or leftover port-forward on :9443 gets no such check
+	@# A stray railgrid-hub or leftover port-forward on :9443 gets no such check
 	@# from Tilt; it surfaces as an opaque bind failure inside the `hub`
 	@# resource long after `tilt up` looks healthy.
 	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:9443 -sTCP:LISTEN >/dev/null 2>&1; then \
@@ -947,7 +947,7 @@ tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluste
 	@mkdir -p "$(TILT_TMPDIR)"
 	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile
 
-## Full multi-shard kcp in a kind cluster + faros-hub in-cluster, against a local kcp checkout
+## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
 	@# Create the kind cluster + context BEFORE `tilt up`. If the cluster is
 	@# created from inside the Tiltfile, Tilt initializes its deploy client
@@ -986,13 +986,13 @@ QUICKSTART_MANIFEST ?= providers/quickstart/manifest.yaml
 # Declarative provisioning record: the hub's Provider controller creates the
 # sub-workspace + ServiceAccount + kubeconfig Secret from this.
 QUICKSTART_PROVIDER_MANIFEST ?= providers/quickstart/provider.yaml
-QUICKSTART_WORKSPACE_PATH ?= root:faros:providers:quickstart
+QUICKSTART_WORKSPACE_PATH ?= root:railgrid:providers:quickstart
 QUICKSTART_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/quickstart-runtime.kubeconfig
 
 # --- edges provider (single provider, both kinds) --------------------------
 # Runs SINGLE-REPLICA (revdial global dialer map). Reads a provider kubeconfig at
 # runtime (token validation + cross-tenant controllers), so the run target passes
-# FAROS_PROVIDER_KUBECONFIG unlike the broker providers.
+# RAILGRID_PROVIDER_KUBECONFIG unlike the broker providers.
 EDGES_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 EDGES_KCP_SERVER ?= https://localhost:6443
 EDGES_HUB_URL ?= $(DEV_HUB_URL)
@@ -1001,7 +1001,7 @@ EDGES_TOKEN ?= $(STATIC_AUTH_TOKEN)
 EDGES_PORT ?= 8088
 EDGES_MANIFEST ?= providers/edges/manifest.yaml
 EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
-EDGES_WORKSPACE_PATH ?= root:faros:providers:edges
+EDGES_WORKSPACE_PATH ?= root:railgrid:providers:edges
 EDGES_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/edges-runtime.kubeconfig
 EDGES_SCHEMAS_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files/schemas
 
@@ -1012,32 +1012,32 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	@echo "  hub:   $(QUICKSTART_HUB_URL)"
 	@echo "  token: $(QUICKSTART_TOKEN)"
 	PORT=$(QUICKSTART_PORT) \
-	FAROS_HUB_URL=$(QUICKSTART_HUB_URL) \
-	FAROS_HUB_TOKEN=$(QUICKSTART_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=quickstart \
+	RAILGRID_HUB_URL=$(QUICKSTART_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(QUICKSTART_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=quickstart \
 		$(BINDIR)/quickstart-provider
 
-## Apply the quickstart CatalogEntry into root:faros:providers. Idempotent.
+## Apply the quickstart CatalogEntry into root:railgrid:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into root:faros:providers
+install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(QUICKSTART_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(QUICKSTART_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(QUICKSTART_PROVIDER_MANIFEST) -f $(QUICKSTART_MANIFEST)
 
 ## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
 ## Lightweight — no kind/Helm, just two host binaries the suite drives over
-## HTTP + kcp dynamic clients. FAROS_E2E_KEEP_DATA=true preserves logs/data.
+## HTTP + kcp dynamic clients. RAILGRID_E2E_KEEP_DATA=true preserves logs/data.
 E2E_PROVIDER_TIMEOUT ?= 10m
 e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/18081/2380 are in use; stop any running faros-hub/quickstart-provider first"; \
+		echo "ports 19443/16443/18081/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1049,7 +1049,7 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 E2E_PROVIDER_FLAGS_TIMEOUT ?= 10m
 e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 	@test -z "$$(lsof -ti :19443 :16443 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/2380 are in use; stop any running faros-hub first (e.g. pkill faros-hub)"; \
+		echo "ports 19443/16443/2380 are in use; stop any running railgrid-hub first (e.g. pkill railgrid-hub)"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1067,22 +1067,22 @@ e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-fla
 E2E_INFRA_PROVIDER_TIMEOUT ?= 15m
 e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructure provider e2e suite
 	@test -z "$$(lsof -ti :19453 :16453 :18086 :2380 2>/dev/null)" || { \
-		echo "ports 19453/16453/18086/2380 are in use; stop any running faros-hub/infrastructure-provider first"; \
+		echo "ports 19453/16453/18086/2380 are in use; stop any running railgrid-hub/infrastructure-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Provider-actions E2E: embedded hub plus host-process App Studio and
 ## Databricks providers, a local TLS fake upstream, and a generated Node app
-## invoking the action through the hub. FAROS_E2E_KEEP_DATA=true preserves
+## invoking the action through the hub. RAILGRID_E2E_KEEP_DATA=true preserves
 ## logs and source/readiness/interaction evidence under the suite temp dir.
 E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
 .PHONY:
 ## Optional bounded smoke against an already-running local hub/provider setup.
-## Set FAROS_E2E_PROVIDER_ACTIONS_LIVE=true plus FAROS_LIVE_HUB_URL,
-## FAROS_LIVE_PROJECT, and FAROS_LIVE_ACTIONS_TOKEN_FILE.
+## Set RAILGRID_E2E_PROVIDER_ACTIONS_LIVE=true plus RAILGRID_LIVE_HUB_URL,
+## RAILGRID_LIVE_PROJECT, and RAILGRID_LIVE_ACTIONS_TOKEN_FILE.
 ## Optional registry-backed package smoke. The live-only flag keeps TestMain
-## from starting the full hub/provider stack; set FAROS_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
+## from starting the full hub/provider stack; set RAILGRID_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
 ## to use a non-default registry mirror.
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
@@ -1095,36 +1095,36 @@ E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
 E2E_EDGES_TIMEOUT ?= 15m
 e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 	@test -z "$$(lsof -ti :19463 :16463 :18088 :2380 2>/dev/null)" || { \
-		echo "ports 19463/16463/18088/2380 are in use; stop any running faros-hub/edges-provider first"; \
+		echo "ports 19463/16463/18088/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges DATA-PLANE connectivity e2e (embedded kcp over HTTPS + edges-provider
-## + a real faros agent against a kind cluster). Proves the reverse tunnel:
+## + a real railgrid agent against a kind cluster). Proves the reverse tunnel:
 ## registers a KubernetesCluster, enables edges + the edge-proxy grant, runs the
 ## agent, and streams `kubectl get nodes` down the tunnel (agent -> hub backend
 ## proxy -> out-of-process edges provider -> agent -> kind API server). Needs
 ## kind + docker + kubectl on PATH. Shares embedded-kcp etcd port 2380 — do not
 ## run concurrently with the other subprocess suites.
 E2E_EDGES_CONN_TIMEOUT ?= 15m
-e2e-edges-connectivity: build-hub build-edges-provider build-faros certs ## Run edges data-plane connectivity e2e (needs kind)
+e2e-edges-connectivity: build-hub build-edges-provider build-railgrid certs ## Run edges data-plane connectivity e2e (needs kind)
 	@test -z "$$(lsof -ti :19473 :16473 :18098 :2380 2>/dev/null)" || { \
-		echo "ports 19473/16473/18098/2380 are in use; stop any running faros-hub/edges-provider first"; \
+		echo "ports 19473/16473/18098/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
-## CLI suite: every user-facing `faros` command as a real subprocess against a
+## CLI suite: every user-facing `railgrid` command as a real subprocess against a
 ## live hub (embedded kcp over HTTPS, two static-token users so membership
 ## commands can be exercised, plus the edges-provider for edge/connect/ssh).
 ## The server-edge path uses the in-process test sshd; the Kubernetes-edge
 ## path needs kind and skips without it. Shares embedded-kcp etcd port 2380 —
 ## do not run concurrently with the other subprocess suites.
 E2E_CLI_TIMEOUT ?= 20m
-e2e-cli: build-hub build-edges-provider build-faros certs ## Run the faros CLI e2e suite (kind optional)
+e2e-cli: build-hub build-edges-provider build-railgrid certs ## Run the railgrid CLI e2e suite (kind optional)
 	@test -z "$$(lsof -ti :19483 :16483 :18108 :2380 2>/dev/null)" || { \
-		echo "ports 19483/16483/18108/2380 are in use; stop any running faros-hub/edges-provider first"; \
+		echo "ports 19483/16483/18108/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1135,33 +1135,33 @@ e2e-cli: build-hub build-edges-provider build-faros certs ## Run the faros CLI e
 ## to the live stack (kcp front-proxy via tilt-frontproxy.kubeconfig, the
 ## in-cluster hub, the host-run providers) and verifies the providers end-to-end:
 ## provider registration, the templates catalog/projection, MCP tool federation,
-## and the per-tenant identity gate. Endpoints override via FAROS_E2E_* env.
+## and the per-tenant identity gate. Endpoints override via RAILGRID_E2E_* env.
 E2E_TILT_TIMEOUT ?= 10m
 E2E_TILT_HUB_URL ?= $(DEV_HUB_URL)
 E2E_TILT_INFRA_URL ?= http://localhost:8082
 E2E_TILT_KCP_KUBECONFIG ?= $(CURDIR)/tilt-frontproxy.kubeconfig
-E2E_TILT_RUNTIME_KUBECONFIG ?= $(CURDIR)/.faros-cluster.kubeconfig
-E2E_TILT_OPERATOR_NAMESPACE ?= faros-infrastructure-operator
+E2E_TILT_RUNTIME_KUBECONFIG ?= $(CURDIR)/.railgrid-cluster.kubeconfig
+E2E_TILT_OPERATOR_NAMESPACE ?= railgrid-infrastructure-operator
 E2E_TILT_CONFIG_CONNECTOR_TIMEOUT ?= 30m
 E2E_TILT_TERRAFORM_TIMEOUT ?= 30m
 KCC_INSTALL_SCRIPT ?= providers/infrastructure/contrib/config-connector/install.sh
 KCC_ENABLE_SCRIPT ?= providers/infrastructure/contrib/config-connector/enable.sh
 KCC_TEMPLATE_FILE ?= providers/infrastructure/contrib/config-connector/pubsub-template.yaml
-KCC_PROVIDER_WORKSPACE ?= root:faros:providers:infrastructure
+KCC_PROVIDER_WORKSPACE ?= root:railgrid:providers:infrastructure
 TERRAFORM_INSTALL_SCRIPT ?= providers/infrastructure/contrib/terraform/install.sh
 TERRAFORM_ENABLE_SCRIPT ?= providers/infrastructure/contrib/terraform/enable.sh
 TERRAFORM_TEMPLATE_FILE ?= providers/infrastructure/contrib/terraform/terraform-stack-template.yaml
-TERRAFORM_PROVIDER_WORKSPACE ?= root:faros:providers:infrastructure
+TERRAFORM_PROVIDER_WORKSPACE ?= root:railgrid:providers:infrastructure
 TERRAFORM_KIND_CLUSTER_NAME ?= kcp-tilt
 INFRAKUBE_POC_COMMIT := 2fed999fb3c30e8415da5489eb8cf1eec8b765f0
 INFRAKUBE_POC_IMAGE_TAG := $(shell printf '%s' $(INFRAKUBE_POC_COMMIT) | cut -c1-12)
-INFRAKUBE_POC_CONTROLLER_IMAGE ?= faros/infrakube:$(INFRAKUBE_POC_IMAGE_TAG)
-INFRAKUBE_POC_TASK_IMAGE ?= faros/infrakube-task:$(INFRAKUBE_POC_IMAGE_TAG)
-# Public dev configuration uses FAROS_CONFIG_CONNECTOR_GCP_*; keep the older
-# FAROS_E2E_GCP_* names as an explicit compatibility fallback for callers that
+INFRAKUBE_POC_CONTROLLER_IMAGE ?= railgrid/infrakube:$(INFRAKUBE_POC_IMAGE_TAG)
+INFRAKUBE_POC_TASK_IMAGE ?= railgrid/infrakube-task:$(INFRAKUBE_POC_IMAGE_TAG)
+# Public dev configuration uses RAILGRID_CONFIG_CONNECTOR_GCP_*; keep the older
+# RAILGRID_E2E_GCP_* names as an explicit compatibility fallback for callers that
 # invoke these targets from an exported environment.
-KCC_GCP_PROJECT ?= $(or $(FAROS_CONFIG_CONNECTOR_GCP_PROJECT),$(FAROS_E2E_GCP_PROJECT))
-KCC_GCP_CREDENTIALS_FILE ?= $(or $(FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE),$(FAROS_E2E_GCP_CREDENTIALS_FILE))
+KCC_GCP_PROJECT ?= $(or $(RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT),$(RAILGRID_E2E_GCP_PROJECT))
+KCC_GCP_CREDENTIALS_FILE ?= $(or $(RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE),$(RAILGRID_E2E_GCP_CREDENTIALS_FILE))
 .PHONY: e2e-tilt-cluster
 e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster` running)
 	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { \
@@ -1196,10 +1196,10 @@ e2e-tilt-cluster-config-connector: ## Run the opt-in Config Connector compositio
 		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
 		exit 1; \
 	}
-	FAROS_E2E_CONFIG_CONNECTOR_COMPOSITION=1 \
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	RAILGRID_E2E_CONFIG_CONNECTOR_COMPOSITION=1 \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Real-cloud extension of the infrastructure-operator Config Connector
@@ -1214,10 +1214,10 @@ e2e-tilt-cluster-config-connector-gcp-install: ## Install pinned Config Connecto
 		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
 		exit 1; \
 	}
-	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy RAILGRID_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
 	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
 		$(KCC_INSTALL_SCRIPT)
 
 ## Enable the checked-in Pub/Sub Template in the infrastructure provider
@@ -1233,11 +1233,11 @@ e2e-tilt-cluster-config-connector-enable: ## Apply and wait for the opt-in Pub/S
 		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
 		exit 1; \
 	}
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_KCC_KCP_SERVER="$(KCC_KCP_SERVER)" \
-	FAROS_KCC_PROVIDER_WORKSPACE="$(KCC_PROVIDER_WORKSPACE)" \
-	FAROS_KCC_TEMPLATE_FILE="$(KCC_TEMPLATE_FILE)" \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_KCC_KCP_SERVER="$(KCC_KCP_SERVER)" \
+	RAILGRID_KCC_PROVIDER_WORKSPACE="$(KCC_PROVIDER_WORKSPACE)" \
+	RAILGRID_KCC_TEMPLATE_FILE="$(KCC_TEMPLATE_FILE)" \
 		$(KCC_ENABLE_SCRIPT)
 
 e2e-tilt-cluster-config-connector-gcp-run: ## Create then delete a real Pub/Sub topic through KRO and Config Connector
@@ -1249,15 +1249,15 @@ e2e-tilt-cluster-config-connector-gcp-run: ## Create then delete a real Pub/Sub 
 		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
 		exit 1; \
 	}
-	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
-	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT (or legacy RAILGRID_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy RAILGRID_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
 	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
-	FAROS_E2E_CONFIG_CONNECTOR_GCP=1 \
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
-	FAROS_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
-	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+	RAILGRID_E2E_CONFIG_CONNECTOR_GCP=1 \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
+	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
 		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Smoke only the already-enabled stable Pub/Sub Template. Installation and
@@ -1273,15 +1273,15 @@ e2e-tilt-cluster-config-connector-smoke: ## Create then delete one real Pub/Sub 
 		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
 		exit 1; \
 	}
-	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
-	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT (or legacy RAILGRID_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy RAILGRID_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
 	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
-	FAROS_E2E_CONFIG_CONNECTOR_GCP=1 \
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
-	FAROS_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
-	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+	RAILGRID_E2E_CONFIG_CONNECTOR_GCP=1 \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	RAILGRID_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
+	RAILGRID_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
 		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-tilt-cluster-config-connector-gcp-smoke: e2e-tilt-cluster-config-connector-smoke
@@ -1292,8 +1292,8 @@ config-connector-enable: e2e-tilt-cluster-config-connector-enable
 config-connector-smoke: e2e-tilt-cluster-config-connector-smoke
 
 e2e-tilt-cluster-config-connector-gcp: ## Install Config Connector and run the real Pub/Sub create/delete E2E
-	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
-	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT (or legacy RAILGRID_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy RAILGRID_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
 	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
 	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required before Config Connector is installed"; exit 1; }
 	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required before Config Connector is installed"; exit 1; }
@@ -1311,17 +1311,17 @@ e2e-tilt-cluster-terraform: ## Run the credential-free Terraform composition e2e
 	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
 	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { echo "hub must be healthy before the Terraform composition test"; exit 1; }
 	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { echo "infrastructure provider must be healthy before the Terraform composition test"; exit 1; }
-	FAROS_E2E_TERRAFORM_COMPOSITION=1 \
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	RAILGRID_E2E_TERRAFORM_COMPOSITION=1 \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestTerraformComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 .PHONY: e2e-tilt-cluster-terraform-install e2e-tilt-cluster-terraform-enable e2e-tilt-cluster-terraform-smoke e2e-tilt-cluster-terraform-infrakube
 e2e-tilt-cluster-terraform-install: ## Install pinned Infrakube into the operator-managed runtime
 	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_TERRAFORM_KIND_CLUSTER_NAME="$(TERRAFORM_KIND_CLUSTER_NAME)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_TERRAFORM_KIND_CLUSTER_NAME="$(TERRAFORM_KIND_CLUSTER_NAME)" \
 	INFRAKUBE_COMMIT="$(INFRAKUBE_POC_COMMIT)" \
 	CONTROLLER_IMAGE="$(INFRAKUBE_POC_CONTROLLER_IMAGE)" \
 	TASK_IMAGE="$(INFRAKUBE_POC_TASK_IMAGE)" \
@@ -1330,20 +1330,20 @@ e2e-tilt-cluster-terraform-install: ## Install pinned Infrakube into the operato
 e2e-tilt-cluster-terraform-enable: ## Enable and wait for the opt-in Terraform Template
 	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required; run make tilt-cluster first"; exit 1; }
 	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_TERRAFORM_KCP_SERVER="$(TERRAFORM_KCP_SERVER)" \
-	FAROS_TERRAFORM_PROVIDER_WORKSPACE="$(TERRAFORM_PROVIDER_WORKSPACE)" \
-	FAROS_TERRAFORM_TEMPLATE_FILE="$(TERRAFORM_TEMPLATE_FILE)" \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_TERRAFORM_KCP_SERVER="$(TERRAFORM_KCP_SERVER)" \
+	RAILGRID_TERRAFORM_PROVIDER_WORKSPACE="$(TERRAFORM_PROVIDER_WORKSPACE)" \
+	RAILGRID_TERRAFORM_TEMPLATE_FILE="$(TERRAFORM_TEMPLATE_FILE)" \
 		$(TERRAFORM_ENABLE_SCRIPT)
 
 e2e-tilt-cluster-terraform-smoke: ## Apply and destroy Terraform through the enabled Template
 	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required; run make tilt-cluster first"; exit 1; }
 	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
-	FAROS_E2E_TERRAFORM=1 \
-	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
-	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
-	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	RAILGRID_E2E_TERRAFORM=1 \
+	RAILGRID_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	RAILGRID_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
 		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestTerraformInfrakubeSmoke$$' -v -timeout $(E2E_TILT_TERRAFORM_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 .PHONY: terraform-install terraform-enable terraform-smoke
@@ -1375,21 +1375,21 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
 		"$(QUICKSTART_KCP_SERVER)/clusters/$(QUICKSTART_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(QUICKSTART_RUNTIME_KUBECONFIG)
 	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
-	FAROS_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=/nonexistent \
+	RAILGRID_SCHEMAS_DIR=/nonexistent \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
-## full teardown of root:faros:providers:quickstart (workspace, SA, APIExport)
+## full teardown of root:railgrid:providers:quickstart (workspace, SA, APIExport)
 ## via the controller's finalizer.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST) -f $(QUICKSTART_PROVIDER_MANIFEST)
 
@@ -1405,7 +1405,7 @@ KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
 KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
-KUERY_WORKSPACE_PATH ?= root:faros:providers:kuery
+KUERY_WORKSPACE_PATH ?= root:railgrid:providers:kuery
 KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
 # Dev runtime kubeconfig for the engagement controller, written by
 # init-provider-kuery from the provider SA token the hub mints.
@@ -1415,7 +1415,7 @@ KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 # production — because Postgres-only SQL (jsonb_array_elements, uuid columns,
 # …) diverges from SQLite and passing on SQLite has shipped real query bugs.
 # kuery-db-up starts a throwaway container matching KUERY_DEV_DATABASE_URL.
-KUERY_POSTGRES_CONTAINER ?= faros-kuery-postgres
+KUERY_POSTGRES_CONTAINER ?= railgrid-kuery-postgres
 # Pulled from Google's Docker Hub mirror (same official image, more reliable
 # pulls — Docker Hub has been dropping them with "unexpected EOF").
 KUERY_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
@@ -1488,29 +1488,29 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	fi; \
 	echo "  store: postgres ($$STORE_DSN)"; \
 	PORT=$(KUERY_PORT) \
-	FAROS_HUB_URL=$(KUERY_HUB_URL) \
-	FAROS_HUB_TOKEN=$(KUERY_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=kuery \
-	FAROS_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
-	FAROS_DEV_ALLOW_TENANT_QUERY=true \
+	RAILGRID_HUB_URL=$(KUERY_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(KUERY_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=kuery \
+	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
 		$(BINDIR)/kuery-provider
 
-install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:faros:providers
+install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(KUERY_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(KUERY_PROVIDER_MANIFEST) -f $(KUERY_MANIFEST)
 
 ## Dev bootstrap for the engagement controller. The Provider controller writes
-## the minted kubeconfig into a Secret in root:faros:providers, but host-binary
+## the minted kubeconfig into a Secret in root:railgrid:providers, but host-binary
 ## dev needs a host-reachable server URL — so we read the provider SA token from
 ## the sub-workspace (the same token the Provider controller minted) and write a
 ## dev kubeconfig with the local server URL, plus the APIExportEndpointSlice the
@@ -1531,7 +1531,7 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
 		"$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(KUERY_RUNTIME_KUBECONFIG)
 	@# No identity hashes: kuery claims no first-party resources — edge
@@ -1540,14 +1540,14 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	@# install.Bootstrap using the provider SA (cluster-admin → has `bind`),
 	@# not the admin kubeconfig.
 	@echo "Running kuery-provider init (schemas + APIExport + endpoint slice + bind grant)"
-	FAROS_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
+	RAILGRID_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KUERY_MANIFEST) -f $(KUERY_PROVIDER_MANIFEST)
 
@@ -1583,10 +1583,10 @@ APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 # Optional external HTTPS hub origin for generated development runtimes. Keep
 # unset unless the operator has configured a pod-reachable, certificate-valid
 # URL; the App Studio launcher must not invent an insecure localhost default.
-FAROS_ACTIONS_EXTERNAL_URL ?=
+RAILGRID_ACTIONS_EXTERNAL_URL ?=
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
-APP_STUDIO_WORKSPACE_PATH ?= root:faros:providers:app-studio
+APP_STUDIO_WORKSPACE_PATH ?= root:railgrid:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
 APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
@@ -1594,7 +1594,7 @@ APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
-APP_STUDIO_POSTGRES_CONTAINER ?= faros-app-studio-postgres
+APP_STUDIO_POSTGRES_CONTAINER ?= railgrid-app-studio-postgres
 APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 APP_STUDIO_POSTGRES_PORT ?= 55432
 APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
@@ -1612,7 +1612,7 @@ AGENTS_HUB_URL ?= $(DEV_HUB_URL)
 AGENTS_TOKEN ?= $(STATIC_AUTH_TOKEN)
 AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 AGENTS_KCP_SERVER ?= https://localhost:6443
-AGENTS_WORKSPACE_PATH ?= root:faros:providers:agents
+AGENTS_WORKSPACE_PATH ?= root:railgrid:providers:agents
 AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
 AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
 AGENTS_MANIFEST ?= providers/agents/manifest.yaml
@@ -1621,7 +1621,7 @@ AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
 # app-studio). Set AGENTS_IN_MEMORY_STORE=true for a non-durable quick run.
 AGENTS_IN_MEMORY_STORE ?=
 AGENTS_DEV_DATABASE_URL ?= postgres://agents:agents@localhost:55434/agents?sslmode=disable
-AGENTS_POSTGRES_CONTAINER ?= faros-agents-postgres
+AGENTS_POSTGRES_CONTAINER ?= railgrid-agents-postgres
 AGENTS_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 AGENTS_POSTGRES_PORT ?= 55434
 AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
@@ -1647,19 +1647,19 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 		echo "  kro:   <unset → stub catalog; run 'make dev-kro-up' for real RGDs>"; \
 	fi
 	PORT=$(KROMC_PORT) \
-	FAROS_HUB_URL=$(KROMC_HUB_URL) \
-	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=infrastructure \
-	FAROS_DEV_ALLOW_TENANT_QUERY=true \
+	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=infrastructure \
+	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
-	FAROS_APP_BASE_DOMAIN=$${FAROS_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
-	FAROS_GATEWAY_NAME=$${FAROS_GATEWAY_NAME:-cloudflare-tunnel} \
-	FAROS_GATEWAY_NAMESPACE=$${FAROS_GATEWAY_NAMESPACE:-cfgate-system} \
-	FAROS_APP_PUBLIC_PORT=$${FAROS_APP_PUBLIC_PORT-10443} \
-	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
+	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
+	RAILGRID_GATEWAY_NAME=$${RAILGRID_GATEWAY_NAME:-cloudflare-tunnel} \
+	RAILGRID_GATEWAY_NAMESPACE=$${RAILGRID_GATEWAY_NAMESPACE:-cfgate-system} \
+	RAILGRID_APP_PUBLIC_PORT=$${RAILGRID_APP_PUBLIC_PORT-10443} \
+	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider
 
 run-provider-infrastructure-operator: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
@@ -1672,26 +1672,26 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	@# `make install-provider-infrastructure` (admin-portal onboarding in prod)
 	@# first. It then reconciles the in-workspace bootstrap and seeds kro itself.
 	PORT=$(KROMC_PORT) \
-	FAROS_HUB_URL=$(KROMC_HUB_URL) \
-	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=infrastructure \
-	FAROS_DEV_ALLOW_TENANT_QUERY=true \
+	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=infrastructure \
+	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
+	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider operator
 
 # ── CRD-driven operator (controller) dev flow ───────────────────────────────
 # Replaces kro-mgmt-up + infrastructure-init: one host-binary controller that
 # bootstraps the workspace, helm-installs kro (with the kind hostAliases +
 # self-cluster patches), and (skip-serve in dev) leaves serve to the host binary.
-INFRA_OPERATOR_NS ?= faros-infrastructure-operator
+INFRA_OPERATOR_NS ?= railgrid-infrastructure-operator
 INFRA_OPERATOR_PROVIDER_KC ?= $(KROMC_KCP_KUBECONFIG)
 INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
 INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
-INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.faros.sh_infrastructureproviders.yaml
+INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.railgrid.ai_infrastructureproviders.yaml
 
 run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
 	@echo "Applying operator CRD + Secrets + CR into runtime cluster ($(INFRA_OPERATOR_RUNTIME_KC))"
@@ -1699,12 +1699,12 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl create namespace $(INFRA_OPERATOR_NS) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic provider-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_PROVIDER_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic runtime-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_RUNTIME_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
-	@printf 'apiVersion: infrastructure.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/faros-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	@printf 'apiVersion: infrastructure.railgrid.ai/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n  provider:\n    image:\n      repository: ghcr.io/railgrid/railgrid-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	@echo "Running infrastructure operator controller (KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC), skip-serve)"
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_OPERATOR_SKIP_SERVE=true \
-	FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
+	RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider controller
 
 ## Run the App Studio provider binary locally. Mirrors the other external
@@ -1791,9 +1791,9 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@# being absent until init writes it.
 	@# A new dev bundle must change the heartbeat version to refresh the hub SRI pin.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
-	FAROS_PROVIDER_VERSION="$${FAROS_PROVIDER_VERSION:-dev-$$(sha256sum providers/app-studio/portal/dist/main.js | cut -c1-16)}"; export FAROS_PROVIDER_VERSION; \
-	FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL:-$(FAROS_ACTIONS_EXTERNAL_URL)}"; \
-	FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL:-$(APP_STUDIO_HUB_PUBLIC_URL)}"; \
+	RAILGRID_PROVIDER_VERSION="$${RAILGRID_PROVIDER_VERSION:-dev-$$(sha256sum providers/app-studio/portal/dist/main.js | cut -c1-16)}"; export RAILGRID_PROVIDER_VERSION; \
+	RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL:-$(RAILGRID_ACTIONS_EXTERNAL_URL)}"; \
+	RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL:-$(APP_STUDIO_HUB_PUBLIC_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
 	APP_STUDIO_PREVIEW_BRIDGE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_BRIDGE_DEV_PRIVATE_KEY)")"; \
@@ -1802,13 +1802,13 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		echo "  store: in-memory (non-durable)"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
-		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
-		FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL}" \
-		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
-		FAROS_HUB_INSECURE=true \
-		FAROS_PROVIDER_NAME=app-studio \
-		FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
+		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
+		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
+		RAILGRID_HUB_INSECURE=true \
+		RAILGRID_PROVIDER_NAME=app-studio \
+		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1818,13 +1818,13 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
 		PORT=$(APP_STUDIO_PORT) \
-		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
-		FAROS_HUB_PUBLIC_URL="$${FAROS_HUB_PUBLIC_URL}" \
-		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
-		FAROS_HUB_INSECURE=true \
-		FAROS_PROVIDER_NAME=app-studio \
-		FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
+		RAILGRID_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL}" \
+		RAILGRID_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
+		RAILGRID_HUB_INSECURE=true \
+		RAILGRID_PROVIDER_NAME=app-studio \
+		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1833,15 +1833,15 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 			$(BINDIR)/app-studio-provider; \
 	fi
 
-## Apply the App Studio CatalogEntry into root:faros:providers. Idempotent.
-install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into root:faros:providers
+## Apply the App Studio CatalogEntry into root:railgrid:providers. Idempotent.
+install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(APP_STUDIO_PROVIDER_MANIFEST) -f $(APP_STUDIO_MANIFEST)
 
@@ -1849,7 +1849,7 @@ install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into ro
 ## its provider workspace so tenants can Enable it. Reads the provider-token the
 ## Provider controller minted on register, writes a dev provider kubeconfig, and
 ## runs the provider's `init` (sdkinstall.Bootstrap) with the shipped schemas.
-## FAROS_CATALOGENTRY_FILE is intentionally unset — the dev install target
+## RAILGRID_CATALOGENTRY_FILE is intentionally unset — the dev install target
 ## already applied the CatalogEntry to system:providers. Idempotent.
 init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIExport + write dev provider kubeconfig
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
@@ -1864,16 +1864,16 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
 	@# No identity hashes: app-studio claims no first-party resources. The
 	@# reconcilers act as workspace ServiceAccounts through each tenant's own
 	@# bindings, so no APIExport identityHash pinning is involved.
-	FAROS_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+	RAILGRID_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
@@ -1884,7 +1884,7 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		exit 1; \
 	}
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
@@ -1925,23 +1925,23 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 		echo "  store: $$AGENTS_DATABASE_URL"; \
 	fi; \
 	PORT=$(AGENTS_PORT) \
-	FAROS_HUB_URL=$(AGENTS_HUB_URL) \
-	FAROS_HUB_TOKEN=$(AGENTS_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=agents \
-	FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(AGENTS_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=agents \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
 	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
 		$(BINDIR)/agents-provider
 
-install-provider-agents: ## Apply agents Provider + CatalogEntry into root:faros:providers
+install-provider-agents: ## Apply agents Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(AGENTS_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(AGENTS_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
-		--server=$(AGENTS_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(AGENTS_PROVIDER_MANIFEST) -f $(AGENTS_MANIFEST)
 
@@ -1958,13 +1958,13 @@ init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + writ
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: railgrid\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: railgrid\n  context:\n    cluster: railgrid\n    user: railgrid\ncurrent-context: railgrid\nusers:\n- name: railgrid\n  user:\n    token: %s\n' \
 		"$(AGENTS_KCP_SERVER)/clusters/$(AGENTS_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(AGENTS_PROVIDER_KUBECONFIG)
 	@echo "Running agents-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	FAROS_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
 	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
+	RAILGRID_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
 		$(BINDIR)/agents-provider init
 
 uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
@@ -1974,7 +1974,7 @@ uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
 		exit 1; \
 	}
 	-kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
-		--server=$(AGENTS_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(AGENTS_MANIFEST) -f $(AGENTS_PROVIDER_MANIFEST)
 
@@ -1984,12 +1984,12 @@ uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
 # stdlib-only module; application dependencies are installed by each component
 # from its declared package manifest, not projected by this image.
 DEV_AGENT_DIR ?= providers/infrastructure/dev-agent
-DEV_AGENT_IMAGE ?= ghcr.io/faroshq/faros-dev-agent:latest
+DEV_AGENT_IMAGE ?= ghcr.io/railgrid/railgrid-dev-agent:latest
 DEV_AGENT_PLATFORM ?= linux/$(ARCH)
-UNIVERSAL_DEV_IMAGE ?= ghcr.io/faroshq/faros-universal-dev:latest
+UNIVERSAL_DEV_IMAGE ?= ghcr.io/railgrid/railgrid-universal-dev:latest
 UNIVERSAL_DEV_BASE_IMAGE ?= docker.io/library/node:22-bookworm
 
-docker-build-dev-agent: ## Build the faros-dev-agent injector image used by dev-mode components
+docker-build-dev-agent: ## Build the railgrid-dev-agent injector image used by dev-mode components
 	docker build -f $(DEV_AGENT_DIR)/Dockerfile \
 		--platform $(DEV_AGENT_PLATFORM) \
 		--provenance=false \
@@ -2010,16 +2010,16 @@ load-universal-dev-image: docker-build-universal-dev-image ## Load the universal
 	@echo ">>> loading $(UNIVERSAL_DEV_IMAGE) into kind cluster $(KRO_KIND_NAME)"
 	kind load docker-image $(UNIVERSAL_DEV_IMAGE) --name $(KRO_KIND_NAME)
 
-## Apply the infrastructure CatalogEntry into root:faros:providers. Idempotent.
+## Apply the infrastructure CatalogEntry into root:railgrid:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry into root:faros:providers
+install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply --validate=false -f $(KROMC_PROVIDER_MANIFEST) -f $(KROMC_MANIFEST)
 
@@ -2027,7 +2027,7 @@ install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry
 ## full teardown of the sub-workspace via the controller's finalizer).
 uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KROMC_MANIFEST) -f $(KROMC_PROVIDER_MANIFEST)
 
@@ -2039,7 +2039,7 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provi
 ##
 ## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
 ## kro.run/cluster=true Secret pointing at this workspace's VW.
-INFRASTRUCTURE_WORKSPACE_PATH ?= root:faros:providers:infrastructure
+INFRASTRUCTURE_WORKSPACE_PATH ?= root:railgrid:providers:infrastructure
 INFRASTRUCTURE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/infrastructure-runtime.kubeconfig
 init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrastructure provider workspace (CRDs, APIExport, SA, kubeconfig)
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
@@ -2072,44 +2072,44 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	@# env reach the provider without a manual export. See .env.example.
 	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
 	PORT=$(CODE_PORT) \
-	FAROS_HUB_URL=$(KROMC_HUB_URL) \
-	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
-	FAROS_HUB_INSECURE=true \
-	FAROS_PROVIDER_NAME=code \
-	FAROS_DEV_ALLOW_TENANT_QUERY=true \
+	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
+	RAILGRID_HUB_TOKEN=$(KROMC_TOKEN) \
+	RAILGRID_HUB_INSECURE=true \
+	RAILGRID_PROVIDER_NAME=code \
+	RAILGRID_DEV_ALLOW_TENANT_QUERY=true \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
-	FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
 	GITHUB_OAUTH_REDIRECT_URL=$${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:$(CODE_PORT)/oauth/github/callback} \
 	GITHUB_OAUTH_PORTAL_ORIGIN=$${GITHUB_OAUTH_PORTAL_ORIGIN:-$(KROMC_HUB_URL)} \
 		$(BINDIR)/code-provider serve
 
-install-provider-code: ## Apply the code Provider + CatalogEntry into root:faros:providers
+install-provider-code: ## Apply the code Provider + CatalogEntry into root:railgrid:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(CODE_PROVIDER_MANIFEST) -f $(CODE_MANIFEST)
 
 uninstall-provider-code: ## Delete the code CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:railgrid:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(CODE_MANIFEST) -f $(CODE_PROVIDER_MANIFEST)
 
-CODE_WORKSPACE_PATH ?= root:faros:providers:code
+CODE_WORKSPACE_PATH ?= root:railgrid:providers:code
 ## Dev bootstrap for the code provider. The hub mints a real provider
 ## kubeconfig only when it runs with a host cluster (--kubeconfig); the dev hubs
 ## (embedded + Tiltfile.cluster) do not, so we derive a runtime kubeconfig from
 ## the admin kubeconfig — reusing its working credential (a static token in
 ## embedded mode, a client cert in cluster mode) and retargeting only the server
 ## URL to the provider workspace — and ensure the APIExportEndpointSlice the
-## controller manager needs. run-provider-code reads it via FAROS_PROVIDER_KUBECONFIG.
+## controller manager needs. run-provider-code reads it via RAILGRID_PROVIDER_KUBECONFIG.
 ## Order: install-provider-code (creates the workspace) → init-provider-code →
 ## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
 ## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
@@ -2120,7 +2120,7 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		exit 1; \
 	}
 	@mkdir -p $(KCP_DATA_DIR)
-	@# The provider workspace (root:faros:providers:code) is created
+	@# The provider workspace (root:railgrid:providers:code) is created
 	@# declaratively by the Provider controller when code-register applies the
 	@# Provider CR — no need to create it here.
 	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
@@ -2129,31 +2129,31 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
 			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
 			--insecure-skip-tls-verify=true >/dev/null
-	FAROS_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
+	RAILGRID_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
-	FAROS_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
+	RAILGRID_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---
 
 # --- Experimental: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of a host binary. Exercises the full hub-minted
-#     flow: CatalogEntry -> hub mints + delivers faros-provider-kubeconfig
+#     flow: CatalogEntry -> hub mints + delivers railgrid-provider-kubeconfig
 #     (HostSecretWriter) -> init container bootstraps with it -> serve runs.
-#     Reuses the faros-kro kind cluster as the host cluster. Requires the hub
+#     Reuses the railgrid-kro kind cluster as the host cluster. Requires the hub
 #     to run with --kubeconfig=$(KRO_KIND_KUBECONFIG) and
 #     --hub-internal-url=$(HUB_INTERNAL_URL) (the Tiltfile sets
 #     both). Apply the CatalogEntry first: make install-provider-infrastructure
 INFRASTRUCTURE_NAMESPACE ?= infrastructure
-INFRASTRUCTURE_IMAGE ?= faros-infrastructure-provider:dev
+INFRASTRUCTURE_IMAGE ?= railgrid-infrastructure-provider:dev
 INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
 # Address provider pods in the kind cluster use to reach the hub front-proxy
 # (browsers use https://console.127.0.0.1.sslip.io:9443; host.docker.internal resolves to the
 # host from inside kind on Docker Desktop / Colima / OrbStack).
 HUB_INTERNAL_URL ?= https://host.docker.internal:9443
-helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into faros-kro (hub-minted bootstrap)
+helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into railgrid-kro (hub-minted bootstrap)
 	@command -v kind >/dev/null || { echo "kind not found; brew install kind"; exit 1; }
-	@test -f $(KRO_KIND_KUBECONFIG) || { echo "faros-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
+	@test -f $(KRO_KIND_KUBECONFIG) || { echo "railgrid-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
 	@echo ">>> building $(INFRASTRUCTURE_IMAGE)"
 	docker build -t $(INFRASTRUCTURE_IMAGE) -f providers/infrastructure/Dockerfile .
 	@echo ">>> loading image into kind cluster $(KRO_KIND_NAME)"
@@ -2161,23 +2161,23 @@ helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm in
 	@echo ">>> ensuring namespace + heartbeat token Secret in $(INFRASTRUCTURE_NAMESPACE)"
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(INFRASTRUCTURE_NAMESPACE) \
 		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic faros-infrastructure-hub-token \
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic railgrid-infrastructure-hub-token \
 		--from-literal=token=$(STATIC_AUTH_TOKEN) \
 		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
 	@echo ">>> helm install (bootstrap.enabled=true, kubeconfigSource=hubMinted)"
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install infrastructure $(INFRASTRUCTURE_CHART) \
 		--namespace $(INFRASTRUCTURE_NAMESPACE) \
-		--set image.repository=faros-infrastructure-provider \
+		--set image.repository=railgrid-infrastructure-provider \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
 		--set replicaCount=2 \
 		--set bootstrap.enabled=true \
 		--set hub.url=$(HUB_INTERNAL_URL) \
-		--set hub.tokenSecretRef.name=faros-infrastructure-hub-token \
+		--set hub.tokenSecretRef.name=railgrid-infrastructure-hub-token \
 		--set hub.insecure=true \
 		--set catalogEntry.enabled=false
 	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"
-	@echo "    the faros-provider-kubeconfig Secret (apply the CatalogEntry first:"
+	@echo "    the railgrid-provider-kubeconfig Secret (apply the CatalogEntry first:"
 	@echo "    make install-provider-infrastructure). Watch:"
 	@echo "    KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) get pods -w"
 
@@ -2190,21 +2190,21 @@ helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infr
 # flattened Instance kind, tenants author instances in kcp and the
 # infrastructure provider's instance controller materializes the
 # per-template kro CRs on this cluster — kro never talks to kcp, so
-# the retired faroshq/kro-multicluster fork is no longer used.
+# the retired railgrid/kro-multicluster fork is no longer used.
 #
-# The faros infrastructure provider points at this cluster via
+# The railgrid infrastructure provider points at this cluster via
 # KRO_KUBECONFIG so provisioning materializes real Deployments /
 # Services.
 #
-KRO_KIND_NAME ?= faros-kro
-KRO_KIND_KUBECONFIG ?= $(CURDIR)/.faros-kro.kubeconfig
+KRO_KIND_NAME ?= railgrid-kro
+KRO_KIND_KUBECONFIG ?= $(CURDIR)/.railgrid-kro.kubeconfig
 KRO_CHART ?= oci://registry.k8s.io/kro/charts/kro
 KRO_CHART_VERSION ?= 0.9.3
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
 # --- Local application-preview Gateway --------------------------------------
-# The base Tiltfile uses the faros-kro kind cluster for application-template
+# The base Tiltfile uses the railgrid-kro kind cluster for application-template
 # runtimes. Keep the Envoy Gateway install separate from the kro release so it
 # can be reconciled independently and so `dev-kro-down` remains the one command
 # that owns cluster teardown.
@@ -2282,15 +2282,15 @@ dev-preview-gateway-down: ## Remove the local preview Gateway and Secret (keep c
 # A throwaway kind cluster running STANDALONE kro (no kcp) — enough to validate
 # that every seeded Template authors a kro graph kro accepts. See
 # providers/infrastructure/backend/kro/e2e_test.go.
-E2E_KRO_KIND_NAME ?= faros-kro-e2e
-E2E_KRO_KUBECONFIG ?= $(CURDIR)/.faros-kro-e2e.kubeconfig
+E2E_KRO_KIND_NAME ?= railgrid-kro-e2e
+E2E_KRO_KUBECONFIG ?= $(CURDIR)/.railgrid-kro-e2e.kubeconfig
 # Envoy Gateway v1.8.x supports Gateway API v1.5.1 on Kubernetes 1.32–1.35.
 GATEWAY_API_VERSION ?= v1.5.1
 
 ## Bring up the management kro cluster + install upstream kro. Idempotent:
 ## re-running just helm-upgrades the chart (with an explicit CRD apply —
 ## helm never upgrades crds/-dir CRDs).
-dev-kro-up: ## Bring up the faros-kro kind cluster + install upstream kro
+dev-kro-up: ## Bring up the railgrid-kro kind cluster + install upstream kro
 	@command -v kind >/dev/null || { echo "kind not found; install: brew install kind"; exit 1; }
 	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
 	@if ! kind get clusters | grep -qx "$(KRO_KIND_NAME)"; then \
@@ -2348,7 +2348,7 @@ dev-kro-seed: ## Apply seed RGDs (providers/infrastructure/examples/rgds/) into 
 	done
 
 ## Tear down the management cluster + delete the kubeconfig file.
-dev-kro-down: ## Delete the faros-kro kind cluster + kubeconfig file
+dev-kro-down: ## Delete the railgrid-kro kind cluster + kubeconfig file
 	-kind delete cluster --name $(KRO_KIND_NAME)
 	-rm -f $(KRO_KIND_KUBECONFIG)
 
@@ -2431,7 +2431,7 @@ dev-clean-hooks: ## Clean up stale service hooks
 
 help-dev: ## Show development environment options
 	@echo ""
-	@echo "=== Faros Hub Development Modes ==="
+	@echo "=== Railgrid Hub Development Modes ==="
 	@echo ""
 	@echo "TILT (recommended — one command, portal + hub + providers):"
 	@echo "  make tilt                       - Hub binary, embedded kcp, host-run providers"
@@ -2480,41 +2480,41 @@ DOCKER_PLATFORM ?= linux/amd64
 
 docker-build: docker-build-hub docker-build-agent ## Build all container images
 
-docker-build-hub: ## Build faros-hub container image
+docker-build-hub: ## Build railgrid-hub container image
 	docker build -f deploy/Dockerfile.hub \
 		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t ghcr.io/faroshq/faros-hub:$(VERSION) .
+		-t ghcr.io/railgrid/railgrid-hub:$(VERSION) .
 
-docker-build-agent: ## Build faros-agent container image
+docker-build-agent: ## Build railgrid-agent container image
 	docker build -f deploy/Dockerfile.agent \
 		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t ghcr.io/faroshq/faros-agent:$(VERSION) .
+		-t ghcr.io/railgrid/railgrid-agent:$(VERSION) .
 
 docker-build-access-proxy: ## Build published-app access-proxy container image (infrastructure module)
 	docker build -f providers/infrastructure/Dockerfile.access-proxy \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/faroshq/faros-access-proxy:$(VERSION) providers/infrastructure
+		-t ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) providers/infrastructure
 
-docker-push-hub: docker-build-hub ## Build and push faros-hub container image
-	docker push ghcr.io/faroshq/faros-hub:$(VERSION)
+docker-push-hub: docker-build-hub ## Build and push railgrid-hub container image
+	docker push ghcr.io/railgrid/railgrid-hub:$(VERSION)
 
-docker-push-agent: docker-build-agent ## Build and push faros-agent container image
-	docker push ghcr.io/faroshq/faros-agent:$(VERSION)
+docker-push-agent: docker-build-agent ## Build and push railgrid-agent container image
+	docker push ghcr.io/railgrid/railgrid-agent:$(VERSION)
 
-docker-build-dex: ## Build faros-dex container image (custom dex with branded web overlay)
+docker-build-dex: ## Build railgrid-dex container image (custom dex with branded web overlay)
 	cd hack/dex && docker build \
 		--platform $(DOCKER_PLATFORM) \
 		-f Dockerfile \
-		-t ghcr.io/faroshq/faros-dex:$(VERSION) .
+		-t ghcr.io/railgrid/railgrid-dex:$(VERSION) .
 
-docker-push-dex: docker-build-dex ## Build and push faros-dex container image
-	docker push ghcr.io/faroshq/faros-dex:$(VERSION)
+docker-push-dex: docker-build-dex ## Build and push railgrid-dex container image
+	docker push ghcr.io/railgrid/railgrid-dex:$(VERSION)
 
 docker-push: docker-push-hub docker-push-agent ## Build and push all container images
 
@@ -2522,7 +2522,7 @@ clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)
 	rm -rf tmp
-	-kind delete cluster --name faros-agent 2>/dev/null
+	-kind delete cluster --name railgrid-agent 2>/dev/null
 
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
@@ -2548,70 +2548,70 @@ E2E_TIMEOUT ?= 20m
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/faros-agent:test .
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
-	FAROS_AGENT_IMAGE=ghcr.io/faroshq/faros-agent \
-	FAROS_AGENT_IMAGE_TAG=test \
-	FAROS_AGENT_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/railgrid/railgrid-agent:test .
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
+	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
+	RAILGRID_AGENT_IMAGE_TAG=test \
+	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Docs-install e2e. These suites execute the hack/install/ scripts that
 ## docs/install-external-kcp.md and docs/install-embedded-kcp.md quote,
 ## keeping the installation guides honest. They create their own kind
-## cluster (faros-e2e-install) and port-forward 8443/9443 — don't run them
+## cluster (railgrid-e2e-install) and port-forward 8443/9443 — don't run them
 ## concurrently with each other or with suites using those ports.
 E2E_INSTALL_TIMEOUT ?= 45m
 
 .PHONY: e2e-install-external e2e-install-embedded
 e2e-install-external: build ## Run docs install e2e (two-shard kcp via kcp-operator + gateway)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	FAROS_E2E_INSTALL=true \
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	RAILGRID_E2E_INSTALL=true \
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	FAROS_E2E_INSTALL=true \
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	RAILGRID_E2E_INSTALL=true \
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
-	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/faros-agent:test .
-	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
-	FAROS_HUB_IMAGE_TAG=test \
-	FAROS_HUB_IMAGE_PULL_POLICY=Never \
-	FAROS_AGENT_IMAGE=ghcr.io/faroshq/faros-agent \
-	FAROS_AGENT_IMAGE_TAG=test \
-	FAROS_AGENT_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/railgrid/railgrid-agent:test .
+	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
+	RAILGRID_HUB_IMAGE_TAG=test \
+	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
+	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
+	RAILGRID_AGENT_IMAGE_TAG=test \
+	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging

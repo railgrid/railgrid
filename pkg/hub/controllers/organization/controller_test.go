@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,31 +29,31 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/quota"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 )
 
 // fakeProvisioner is the test double for WorkspaceProvisioner. By default
 // each method succeeds and records its call; tests can override the
 // matching err field to simulate failure paths.
 type fakeProvisioner struct {
-	mu             sync.Mutex
-	wsCalls        []string
-	memCalls       []membershipCall
-	childCalls     []childWorkspaceCall
-	nameCalls      []displayNameCall
-	farosBindCalls []childWorkspaceCall
-	adminCalls     []workspaceAdminCall
-	mcpCalls       []childWorkspaceCall
-	clusterCalls   []childWorkspaceCall
-	wsErr          error
-	memErr         error
-	childErr       error
-	nameErr        error
-	farosBindErr   error
-	adminErr       error
-	mcpErr         error
-	clusterErr     error
+	mu                sync.Mutex
+	wsCalls           []string
+	memCalls          []membershipCall
+	childCalls        []childWorkspaceCall
+	nameCalls         []displayNameCall
+	railgridBindCalls []childWorkspaceCall
+	adminCalls        []workspaceAdminCall
+	mcpCalls          []childWorkspaceCall
+	clusterCalls      []childWorkspaceCall
+	wsErr             error
+	memErr            error
+	childErr          error
+	nameErr           error
+	railgridBindErr   error
+	adminErr          error
+	mcpErr            error
+	clusterErr        error
 	// clusterHash is the value returned by GetChildWorkspaceClusterName.
 	// Defaults to a fixed test hash; tests can override.
 	clusterHash string
@@ -118,11 +118,11 @@ func (f *fakeProvisioner) EnsureChildWorkspaceDisplayName(_ context.Context, org
 	return f.nameErr
 }
 
-func (f *fakeProvisioner) EnsureChildWorkspaceFarosBinding(_ context.Context, orgUUID, wsUUID string) error {
+func (f *fakeProvisioner) EnsureChildWorkspaceRailgridBinding(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.farosBindCalls = append(f.farosBindCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
-	return f.farosBindErr
+	f.railgridBindCalls = append(f.railgridBindCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	return f.railgridBindErr
 }
 
 func (f *fakeProvisioner) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
@@ -184,11 +184,11 @@ func (f *fakeProvisioner) DisplayNameCalls() []displayNameCall {
 	return out
 }
 
-func (f *fakeProvisioner) FarosBindCalls() []childWorkspaceCall {
+func (f *fakeProvisioner) RailgridBindCalls() []childWorkspaceCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]childWorkspaceCall, len(f.farosBindCalls))
-	copy(out, f.farosBindCalls)
+	out := make([]childWorkspaceCall, len(f.railgridBindCalls))
+	copy(out, f.railgridBindCalls)
 	return out
 }
 
@@ -279,8 +279,8 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionTrue, reasonDefaultWorkspaceProvisioned) {
 		t.Errorf("expected DefaultWorkspaceReady=True/DefaultWorkspaceProvisioned condition, got %#v", org.Status.Conditions)
 	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceFarosBound, metav1.ConditionTrue, reasonFarosBindingReady) {
-		t.Errorf("expected DefaultWorkspaceFarosBound=True/FarosBindingWritten condition, got %#v", org.Status.Conditions)
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceRailgridBound, metav1.ConditionTrue, reasonRailgridBindingReady) {
+		t.Errorf("expected DefaultWorkspaceRailgridBound=True/RailgridBindingWritten condition, got %#v", org.Status.Conditions)
 	}
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady, metav1.ConditionTrue, reasonWorkspaceAdminReady) {
 		t.Errorf("expected DefaultWorkspaceAdminReady=True/WorkspaceAdminGranted condition, got %#v", org.Status.Conditions)
@@ -316,9 +316,9 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if len(nameCalls) != 1 || nameCalls[0].OrgUUID != org.Name || nameCalls[0].WSUUID != wsUUID || nameCalls[0].DisplayName != defaultWorkspaceDisplayName {
 		t.Errorf("expected exactly one EnsureChildWorkspaceDisplayName call for %s/%s with %q, got %v", org.Name, wsUUID, defaultWorkspaceDisplayName, nameCalls)
 	}
-	farosCalls := prov.FarosBindCalls()
-	if len(farosCalls) != 1 || farosCalls[0].OrgUUID != org.Name || farosCalls[0].WSUUID != wsUUID {
-		t.Errorf("expected exactly one EnsureChildWorkspaceFarosBinding call for %s/%s, got %v", org.Name, wsUUID, farosCalls)
+	railgridCalls := prov.RailgridBindCalls()
+	if len(railgridCalls) != 1 || railgridCalls[0].OrgUUID != org.Name || railgridCalls[0].WSUUID != wsUUID {
+		t.Errorf("expected exactly one EnsureChildWorkspaceRailgridBinding call for %s/%s, got %v", org.Name, wsUUID, railgridCalls)
 	}
 	adminCalls := prov.AdminCalls()
 	if len(adminCalls) != 1 || adminCalls[0].OrgUUID != org.Name || adminCalls[0].WSUUID != wsUUID || adminCalls[0].RBACIdentity != "rbac-alice" {
@@ -753,8 +753,8 @@ func hasCondition(conds []metav1.Condition, t string, status metav1.ConditionSta
 // Sanity check that the package-level constants stay in sync — if anyone
 // changes the parent path they likely also need to update docs/.
 func TestOrgWorkspaceParentConstant(t *testing.T) {
-	if !strings.HasPrefix(orgWorkspaceParent, "root:faros:") {
-		t.Errorf("orgWorkspaceParent should live under root:faros, got %q", orgWorkspaceParent)
+	if !strings.HasPrefix(orgWorkspaceParent, "root:railgrid:") {
+		t.Errorf("orgWorkspaceParent should live under root:railgrid, got %q", orgWorkspaceParent)
 	}
 }
 

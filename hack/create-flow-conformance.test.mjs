@@ -26,7 +26,7 @@ function expectSkeleton(name, text, { wide = false } = {}) {
 }
 
 test('the canonical create-page vocabulary defines one shared hierarchy', async () => {
-  const css = await source('provider-sdk/portalkit/faros-ui.css')
+  const css = await source('provider-sdk/portalkit/railgrid-ui.css')
   for (const selector of [
     '.k-create-page',
     '.k-create-header',
@@ -47,7 +47,7 @@ test('the canonical create-page vocabulary defines one shared hierarchy', async 
 
 test('PortalKit defines shared first-run and guided-create widgets', async () => {
   const [css, firstRun, guidance, sync] = await Promise.all([
-    source('provider-sdk/portalkit/faros-ui.css'),
+    source('provider-sdk/portalkit/railgrid-ui.css'),
     source('provider-sdk/portalkit-vue/FirstRunGuide.vue'),
     source('provider-sdk/portalkit-vue/CreateGuidance.vue'),
     source('hack/sync-portalkit.sh'),
@@ -67,14 +67,14 @@ test('PortalKit defines shared first-run and guided-create widgets', async () =>
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.k-first-run__journey/)
 
   assert.match(firstRun, /<section class="k-first-run" :aria-labelledby="titleID">/)
-  assert.match(firstRun, /ensureFarosUIStyles\(\)/)
+  assert.match(firstRun, /ensureRailgridUIStyles\(\)/)
   assert.match(firstRun, /<ol v-if="steps\.length" class="k-first-run__journey"/)
   assert.match(firstRun, /:aria-current="index === boundedCurrentStep \? 'step' : undefined"/)
   assert.match(firstRun, /class="k-first-run__step-status"/)
   assert.match(firstRun, /index < boundedCurrentStep \? 'Completed step'/)
   assert.match(css, /\.k-first-run__step-status\s*\{[\s\S]*clip-path: inset\(50%\)[\s\S]*position: absolute/)
   assert.match(guidance, /<aside class="k-create-guidance" :aria-labelledby="titleID">/)
-  assert.match(guidance, /ensureFarosUIStyles\(\)/)
+  assert.match(guidance, /ensureRailgridUIStyles\(\)/)
   assert.match(guidance, /<dl class="k-create-guidance__values">/)
   assert.match(guidance, /<ol>[\s\S]*v-for="step in nextSteps"/)
   assert.match(sync, /CreateGuidance\.vue FirstRunGuide\.vue/)

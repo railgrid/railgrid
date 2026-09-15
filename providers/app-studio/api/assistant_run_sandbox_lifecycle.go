@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,9 +31,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func projectAssistantSandboxTargetFromTemplate(info projectTemplateInfo, name string) projectDevelopmentSyncTargetInfo {
@@ -412,9 +412,9 @@ func projectAssistantRunSandboxInstanceReadiness(obj *unstructured.Unstructured,
 	if strings.TrimSpace(runtimeNamespace) == "" {
 		return false, false, "status.runtimeNamespace is empty"
 	}
-	networkPhase, found, err := unstructured.NestedString(obj.Object, "status", "farosNetworkPhase")
+	networkPhase, found, err := unstructured.NestedString(obj.Object, "status", "railgridNetworkPhase")
 	if err != nil || !found || networkPhase != "runtime" {
-		return false, false, "status.farosNetworkPhase is not runtime"
+		return false, false, "status.railgridNetworkPhase is not runtime"
 	}
 	secretName, _, _ := unstructured.NestedString(obj.Object, "status", "controlSecretRef", "name")
 	if strings.TrimSpace(secretName) == "" {

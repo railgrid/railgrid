@@ -1,11 +1,11 @@
 import { createApp, h, reactive } from 'vue'
 import DashboardTile from './DashboardTile.vue'
 import { ensureAppStudioStyles } from './styles'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
-export function mount(element: HTMLElement, context: FarosContext | null) {
+export function mount(element: HTMLElement, context: RailgridContext | null) {
   ensureAppStudioStyles()
-  const state = reactive<{ ctx: FarosContext | null }>({ ctx: context })
+  const state = reactive<{ ctx: RailgridContext | null }>({ ctx: context })
   const host = document.createElement('div')
   host.className = 'app-studio-tile-host'
   element.replaceChildren()
@@ -17,7 +17,7 @@ export function mount(element: HTMLElement, context: FarosContext | null) {
   app.mount(host)
 
   return {
-    setContext(value: FarosContext | null) {
+    setContext(value: RailgridContext | null) {
       state.ctx = value
     },
     unmount() {

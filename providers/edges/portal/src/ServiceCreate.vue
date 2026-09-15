@@ -168,9 +168,9 @@ const servicePrerequisites = [
   'The protocol and port exposed by the target.',
 ]
 const serviceNextSteps = [
-  'Faros creates a cluster-scoped Service bound to the selected edge.',
+  'Railgrid creates a cluster-scoped Service bound to the selected edge.',
   'The controller probes the endpoint and reports status separately.',
-  'If authentication is required, add the credential on the Service detail page; Faros stores it in a workspace Secret.',
+  'If authentication is required, add the credential on the Service detail page; Railgrid stores it in a workspace Secret.',
   'Provider-declared tools become available through the Edges MCP endpoint when the Service is ready.',
 ]
 const canCreate = computed(() => {
@@ -254,7 +254,7 @@ onUnmounted(() => {
     <FirstRunGuide
       v-else-if="!error && edges.length === 0"
       title="Connect an edge first"
-      description="A Service must run beside an edge before Faros can expose its endpoint and tools."
+      description="A Service must run beside an edge before Railgrid can expose its endpoint and tools."
       primary-label="Connect edge"
       :steps="[
         { label: 'Edge', description: 'Connect the cluster or server that can reach the service.' },

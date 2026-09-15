@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -135,7 +135,7 @@ func resolveMember(members []memberView, query string) (memberView, error) {
 			return m, nil
 		}
 		if strings.EqualFold(m.Email, q) || strings.EqualFold(m.RBACIdentity, q) ||
-			strings.EqualFold(strings.TrimPrefix(m.RBACIdentity, "faros:"), q) ||
+			strings.EqualFold(strings.TrimPrefix(m.RBACIdentity, "railgrid:"), q) ||
 			(m.UserDisplayName != "" && strings.EqualFold(m.UserDisplayName, q)) {
 			hits = append(hits, m)
 		}
@@ -174,15 +174,15 @@ func newMembersCommand(sc membershipScope, target *hubTarget) *cobra.Command {
 		Use:     "members",
 		Aliases: []string{"member"},
 		Short:   fmt.Sprintf("List and change who has access to the %s", sc.noun),
-		Long: fmt.Sprintf(`Membership is the RBAC unit of a faros %[1]s: every member is either an
+		Long: fmt.Sprintf(`Membership is the RBAC unit of a railgrid %[1]s: every member is either an
 admin (may manage members and settings) or a member. Admins of an
 organization can manage every workspace in it.
 
-  faros %[2]s members                     # who has access, and as what
-  faros %[2]s members add alice@example.com --role member
-  faros %[2]s members add bob@example.com --role admin --invite   # not signed up yet
-  faros %[2]s members set-role alice@example.com admin
-  faros %[2]s members remove bob@example.com`, sc.noun, strings.TrimSuffix(sc.noun, "anization")),
+  railgrid %[2]s members                     # who has access, and as what
+  railgrid %[2]s members add alice@example.com --role member
+  railgrid %[2]s members add bob@example.com --role admin --invite   # not signed up yet
+  railgrid %[2]s members set-role alice@example.com admin
+  railgrid %[2]s members remove bob@example.com`, sc.noun, strings.TrimSuffix(sc.noun, "anization")),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmdContext(cmd)

@@ -11,7 +11,7 @@ import { createPinia, setActivePinia } from 'pinia'
 // metadata, while a late response from an older generation stays fenced out.
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-tenant-read-status'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-tenant-read-status'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,

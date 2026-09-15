@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	api "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
+	api "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
 )
 
 func TestCollaborationPinsRepositoryAndHeadBeforeCreatingPR(t *testing.T) {
@@ -162,7 +162,7 @@ func TestExistingOnlyRegistrationNeverCreatesOrDeletesRemote(t *testing.T) {
 	defer server.Close()
 	conn := &api.Connection{Spec: api.ConnectionSpec{Owner: "team", BaseURL: server.URL}}
 	repo := &api.Repository{Spec: api.RepositorySpec{Name: "demo"}}
-	repo.Annotations = map[string]string{"code.faros.sh/existing-only": "true"}
+	repo.Annotations = map[string]string{"code.railgrid.ai/existing-only": "true"}
 	implementation := New()
 	cred := backend.Credential{Token: "test-token"}
 	if _, err := implementation.EnsureRepository(context.Background(), conn, cred, repo); err == nil {

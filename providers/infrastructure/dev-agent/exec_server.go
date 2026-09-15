@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -247,7 +247,7 @@ func runPersistentExecWithContext(parent context.Context, workspace string, exec
 	cmd.Dir = workPath
 	cmd.Env = env
 	execMarker := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-	cmd.Env = append(cmd.Env, "FAROS_EXEC_SESSION="+execMarker)
+	cmd.Env = append(cmd.Env, "RAILGRID_EXEC_SESSION="+execMarker)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -472,7 +472,7 @@ func sanitizedExecEnvironment(workDir string, execEnv execContext) []string {
 	values := map[string]string{
 		"HOME":             "/tmp",
 		"LANG":             "C.UTF-8",
-		"NPM_CONFIG_CACHE": "/tmp/faros-cache/npm",
+		"NPM_CONFIG_CACHE": "/tmp/railgrid-cache/npm",
 		"PATH":             "/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin",
 		"PWD":              workDir,
 		"TMPDIR":           "/tmp",
@@ -481,7 +481,7 @@ func sanitizedExecEnvironment(workDir string, execEnv execContext) []string {
 		values["PORT"] = port
 	}
 	if component := strings.TrimSpace(execEnv.Component); component != "" && !strings.ContainsAny(component, "\x00\n") {
-		values["FAROS_COMPONENT"] = component
+		values["RAILGRID_COMPONENT"] = component
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {

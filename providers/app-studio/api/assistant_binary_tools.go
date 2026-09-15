@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // Binary placement tools. The model cannot author binary bytes, so these two
@@ -243,7 +243,7 @@ func projectAssistantDownload(ctx context.Context, rawURL, targetPath string) (p
 	if err != nil {
 		return projectAssistantDownloadedFile{}, err
 	}
-	req.Header.Set("User-Agent", "faros-app-studio/0.1 (+https://github.com/faroshq/faros)")
+	req.Header.Set("User-Agent", "railgrid-app-studio/0.1 (+https://github.com/railgrid/railgrid)")
 	resp, err := projectAssistantDownloadHTTPClient.Do(req)
 	if err != nil {
 		return projectAssistantDownloadedFile{}, fmt.Errorf("download %s: %w", u.Redacted(), err)

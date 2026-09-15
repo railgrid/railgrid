@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -111,7 +111,7 @@ type WorkloadSpec struct {
 // collapsed to an opaque object and rejects them).
 type WorkloadPodTemplate struct {
 	// Metadata carries labels/annotations stamped on every pod of the
-	// Deployment. The provider always adds its own edges.faros.sh/workload
+	// Deployment. The provider always adds its own edges.railgrid.ai/workload
 	// selector label on top; it cannot be overridden.
 	// +optional
 	Metadata *WorkloadPodTemplateMeta `json:"metadata,omitempty"`
@@ -167,7 +167,7 @@ type SimpleWorkloadSpec struct {
 	// ImagePullSecrets names docker-registry Secrets in the target namespace
 	// on the edge cluster that pull the image (a private registry). The
 	// Workload never carries the Secret itself — create it on every selected
-	// edge beforehand (e.g. through `faros kubeconfig edge`).
+	// edge beforehand (e.g. through `railgrid kubeconfig edge`).
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ type Client interface {
 
 	// EnsureTenantNamespace materializes the per-tenant namespace in
 	// the central kro cluster on first provision. Idempotent. Returns
-	// the namespace name (faros-tenants-<hash>).
+	// the namespace name (railgrid-tenants-<hash>).
 	EnsureTenantNamespace(ctx context.Context, tenantPath string) (string, error)
 
 	// CreateInstance writes the kro instance CR and bridges the
@@ -77,7 +77,7 @@ type CreateInstanceParams struct {
 // Env:
 //
 //	KRO_KUBECONFIG          - path to the central kro cluster kubeconfig
-//	KRO_NAMESPACE_PREFIX    - tenant-namespace prefix (default "faros-tenants-")
+//	KRO_NAMESPACE_PREFIX    - tenant-namespace prefix (default "railgrid-tenants-")
 func NewClient() (Client, error) {
 	path := os.Getenv("KRO_KUBECONFIG")
 	if path == "" {

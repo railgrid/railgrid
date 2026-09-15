@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,11 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 var projectGVR = schema.GroupVersionResource{
-	Group: "ai.faros.sh", Version: "v1alpha1", Resource: "projects",
+	Group: "ai.railgrid.ai", Version: "v1alpha1", Resource: "projects",
 }
 
 // ProjectScopeResolver verifies the request's Project object and derives the
@@ -73,7 +73,7 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 	if strings.TrimSpace(orgUUID) == "" || strings.TrimSpace(wsUUID) == "" {
 		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("tenant workspace is required")
 	}
-	if want := "root:faros:tenants:" + orgUUID + ":" + wsUUID; req.TenantPath != want {
+	if want := "root:railgrid:tenants:" + orgUUID + ":" + wsUUID; req.TenantPath != want {
 		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("tenantPath does not match selected workspace")
 	}
 

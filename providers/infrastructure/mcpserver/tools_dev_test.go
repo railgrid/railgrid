@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // devComponentPaths builds a development contract from name → workspacePath
@@ -118,8 +118,8 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	if got := h.req.Header.Get("Authorization"); got != "Bearer tok" {
 		t.Errorf("Authorization = %q, want caller bearer", got)
 	}
-	if got := h.req.Header.Get("X-Faros-Tenant"); got != "root:orgs:acme" {
-		t.Errorf("X-Faros-Tenant = %q", got)
+	if got := h.req.Header.Get("X-Railgrid-Tenant"); got != "root:orgs:acme" {
+		t.Errorf("X-Railgrid-Tenant = %q", got)
 	}
 	if h.body != `{"files":[]}` {
 		t.Errorf("body = %q", h.body)
@@ -366,7 +366,7 @@ func findPropertySchemas(schema any, name string) []any {
 func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 	h := &captureHandler{}
 	_, _, err := callDataPlane(context.Background(), h, identity{token: "tok"}, http.MethodGet, "simplewebapps", "x", "app", "log", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "X-Faros-Cluster") {
+	if err == nil || !strings.Contains(err.Error(), "X-Railgrid-Cluster") {
 		t.Fatalf("missing cluster ID must fail with an addressing error, got %v", err)
 	}
 	if h.req != nil {
@@ -376,7 +376,7 @@ func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 
 func TestTemplateDevelopmentFromSpec(t *testing.T) {
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
@@ -496,10 +496,10 @@ func TestDevSyncEstablishedComponentFromAgentStatus(t *testing.T) {
 
 func TestDevToolchainFromImageToken(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"${faros.devImage.node}", "node"},
-		{"  ${faros.devImage.python}  ", "python"},
+		{"${railgrid.devImage.node}", "node"},
+		{"  ${railgrid.devImage.python}  ", "python"},
 		{"docker.io/library/node:22-bookworm", ""},
-		{"${faros.devAgentImage}", ""},
+		{"${railgrid.devAgentImage}", ""},
 		{"", ""},
 	} {
 		if got := devToolchainFromImageToken(tc.in); got != tc.want {
@@ -518,7 +518,7 @@ func TestTemplateDevelopmentFromSpecCarriesRuntimeContract(t *testing.T) {
 				"components": map[string]any{
 					"backend": map[string]any{
 						"workspacePath": "api",
-						"devImage":      "${faros.devImage.node}",
+						"devImage":      "${railgrid.devImage.node}",
 						"startCommand":  "npm run dev || npm start",
 						"port":          "backend",
 					},

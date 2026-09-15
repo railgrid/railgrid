@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,18 +33,18 @@ func TestIsOrgWorkspacePath(t *testing.T) {
 		path   string
 		wantOK bool
 	}{
-		{"org workspace UUID", "root:faros:tenants:7f3a91d2-aaaa-bbbb-cccc-1111", true},
-		{"org workspace short", "root:faros:tenants:acme", true},
-		{"child team workspace", "root:faros:tenants:7f3a:9c4b", false},
-		{"child team workspace nested", "root:faros:tenants:acme:platform", false},
-		{"system tenants object store", "root:faros:system:tenants", false},
-		{"providers workspace", "root:faros:providers", false},
+		{"org workspace UUID", "root:railgrid:tenants:7f3a91d2-aaaa-bbbb-cccc-1111", true},
+		{"org workspace short", "root:railgrid:tenants:acme", true},
+		{"child team workspace", "root:railgrid:tenants:7f3a:9c4b", false},
+		{"child team workspace nested", "root:railgrid:tenants:acme:platform", false},
+		{"system tenants object store", "root:railgrid:system:tenants", false},
+		{"providers workspace", "root:railgrid:providers", false},
 		{"root", "root", false},
 		{"empty", "", false},
-		{"tenants parent (no org)", "root:faros:tenants:", false},
-		{"tenants parent (no trailing colon)", "root:faros:tenants", false},
+		{"tenants parent (no org)", "root:railgrid:tenants:", false},
+		{"tenants parent (no trailing colon)", "root:railgrid:tenants", false},
 		{"random workspace under root", "root:other", false},
-		{"path traversal attempt", "root:faros:tenants:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
+		{"path traversal attempt", "root:railgrid:tenants:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,9 +63,9 @@ func TestExtractClusterPathFromKCPPath(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"clusters with subpath", "/clusters/root:faros:tenants:7f3a/api/v1/pods", "root:faros:tenants:7f3a"},
+		{"clusters with subpath", "/clusters/root:railgrid:tenants:7f3a/api/v1/pods", "root:railgrid:tenants:7f3a"},
 		{"clusters with mount suffix", "/clusters/root:tenant:abc:mount1/api/v1/pods", "root:tenant:abc:mount1"},
-		{"clusters bare (no subpath)", "/clusters/root:faros:tenants:7f3a", "root:faros:tenants:7f3a"},
+		{"clusters bare (no subpath)", "/clusters/root:railgrid:tenants:7f3a", "root:railgrid:tenants:7f3a"},
 		{"non-clusters path", "/api/v1/pods", ""},
 		{"empty", "", ""},
 	}
@@ -80,7 +80,7 @@ func TestExtractClusterPathFromKCPPath(t *testing.T) {
 
 // TestWriteOrgWorkspaceForbidden verifies the 403 envelope is a valid
 // Kubernetes Status object so kubectl renders it nicely, and carries the
-// faros-specific reason + a pointer at the hub REST surface for CLI tooling.
+// railgrid-specific reason + a pointer at the hub REST surface for CLI tooling.
 func TestWriteOrgWorkspaceForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeOrgWorkspaceForbidden(w)

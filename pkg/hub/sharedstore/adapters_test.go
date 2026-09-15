@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 
 	kubefake "k8s.io/client-go/kubernetes/fake"
 
-	"github.com/faroshq/faros/pkg/browsersession"
-	"github.com/faroshq/faros/pkg/hub/appauth"
+	"github.com/railgrid/railgrid/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/hub/appauth"
 )
 
 // twoReplicaSessions returns two browsersession Stores backed by one API, which
@@ -51,7 +51,7 @@ func TestSessionIssuedOnOneReplicaResolvesOnAnother(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	if _, err := replicaA.IssueHTTP(context.Background(), response, browsersession.Identity{
-		UserID: "user-1", Email: "one@example.test", RBACIdentity: "faros:one@example.test",
+		UserID: "user-1", Email: "one@example.test", RBACIdentity: "railgrid:one@example.test",
 	}); err != nil {
 		t.Fatalf("issue on replica A: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestSessionIssuedOnOneReplicaResolvesOnAnother(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve on replica B: %v", err)
 	}
-	if session.Identity.UserID != "user-1" || session.Identity.RBACIdentity != "faros:one@example.test" {
+	if session.Identity.UserID != "user-1" || session.Identity.RBACIdentity != "railgrid:one@example.test" {
 		t.Fatalf("identity = %#v", session.Identity)
 	}
 }
@@ -133,13 +133,13 @@ func TestAppCodeMintedOnOneReplicaRedeemsOnAnother(t *testing.T) {
 
 	record := appauth.CodeRecord{
 		Ref: appauth.InstanceRef{
-			Cluster: "abc123cluster", Group: "infrastructure.faros.sh",
+			Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai",
 			Resource: "applications", Name: "my-shop",
 		},
-		RedirectHost: "my-shop-abcdef123456.apps.test.faros",
+		RedirectHost: "my-shop-abcdef123456.apps.test.railgrid",
 		Identity: browsersession.Identity{
 			UserID: "user-1", Email: "one@example.test", Name: "One",
-			RBACIdentity: "faros:one@example.test",
+			RBACIdentity: "railgrid:one@example.test",
 		},
 		ExpiresAt: time.Now().Add(2 * time.Minute),
 	}
@@ -158,7 +158,7 @@ func TestAppCodeMintedOnOneReplicaRedeemsOnAnother(t *testing.T) {
 		t.Fatalf("redirectHost = %q, want %q", got.RedirectHost, record.RedirectHost)
 	}
 	if got.Identity.UserID != "user-1" || got.Identity.Name != "One" ||
-		got.Identity.RBACIdentity != "faros:one@example.test" {
+		got.Identity.RBACIdentity != "railgrid:one@example.test" {
 		t.Fatalf("identity = %#v", got.Identity)
 	}
 

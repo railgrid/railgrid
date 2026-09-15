@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,14 +36,14 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
 // hubURLEnv names the environment variable consulted when --hub-url is not
-// given. There is no hosted faros hub, so there is no built-in default.
-const hubURLEnv = "FAROS_HUB_URL"
+// given. There is no hosted railgrid hub, so there is no built-in default.
+const hubURLEnv = "RAILGRID_HUB_URL"
 
 func newLoginCommand() *cobra.Command {
 	var (
@@ -54,17 +54,17 @@ func newLoginCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Log in to a faros hub (browser OIDC flow, or a static token)",
-		Long: `Authenticate against a hub and write a kubeconfig context named "faros"
+		Short: "Log in to a railgrid hub (browser OIDC flow, or a static token)",
+		Long: `Authenticate against a hub and write a kubeconfig context named "railgrid"
 whose credentials refresh automatically (OIDC) or carry the static token.
 
-  faros login --hub-url https://hub.example.com        # opens the browser
-  faros login --hub-url https://hub.example.com -i     # …then pick org/workspace
-  faros login --hub-url https://hub.example.com --token <token>
-  export FAROS_HUB_URL=https://hub.example.com          # instead of --hub-url
+  railgrid login --hub-url https://hub.example.com        # opens the browser
+  railgrid login --hub-url https://hub.example.com -i     # …then pick org/workspace
+  railgrid login --hub-url https://hub.example.com --token <token>
+  export RAILGRID_HUB_URL=https://hub.example.com          # instead of --hub-url
 
-On a self-signed hub add --insecure-skip-tls-verify. After login, 'faros use'
-switches organization and workspace and 'faros whoami' shows the session.`,
+On a self-signed hub add --insecure-skip-tls-verify. After login, 'railgrid use'
+switches organization and workspace and 'railgrid whoami' shows the session.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			insecureSkipTLSVerify := globalInsecureTLS
@@ -87,7 +87,7 @@ switches organization and workspace and 'faros whoami' shows the session.`,
 					return err
 				}
 				if !oidcEnabled {
-					return fmt.Errorf("hub at %s does not have OIDC configured — use: faros login --hub-url %s --token <token>", hubURL, hubURL)
+					return fmt.Errorf("hub at %s does not have OIDC configured — use: railgrid login --hub-url %s --token <token>", hubURL, hubURL)
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
@@ -194,7 +194,7 @@ func printLoginSuccess(out io.Writer, email, userID, contextName string, expires
 	if expiresAt != nil {
 		_, _ = fmt.Fprintf(out, "Token valid for %s; it refreshes automatically.\n", formatDuration(time.Until(*expiresAt)))
 	}
-	_, _ = fmt.Fprintf(out, "\nNext:\n  faros use          pick an organization and workspace\n  faros edge list    see connected clusters and servers\n  faros whoami       show this session\n")
+	_, _ = fmt.Fprintf(out, "\nNext:\n  railgrid use          pick an organization and workspace\n  railgrid edge list    see connected clusters and servers\n  railgrid whoami       show this session\n")
 }
 
 func runLogin(ctx context.Context, out io.Writer, hubURL string) error {
@@ -277,12 +277,12 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 		return "", fmt.Errorf("parsing received kubeconfig: %w", err)
 	}
 
-	// The hub emits the exec credential plugin with Command="faros", which
+	// The hub emits the exec credential plugin with Command="railgrid", which
 	// only resolves on PATH for the curl/tar.gz install. Krew installs the
-	// binary as `kubectl-faros` — there is no `faros` symlink — so kubectl
+	// binary as `kubectl-railgrid` — there is no `railgrid` symlink — so kubectl
 	// would fail to exec the plugin. Rewrite to the absolute path of the
 	// running binary so both install modes work.
-	rewriteFarosExecCommand(newConfig)
+	rewriteRailgridExecCommand(newConfig)
 
 	// Load the existing kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
@@ -295,7 +295,7 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 	// Merge: overwrite clusters, contexts, and auth infos from the new config.
 	for k, v := range newConfig.Clusters {
 		// Re-login always points the cluster at the home workspace. When the
-		// user previously switched workspaces with `faros use` on the same
+		// user previously switched workspaces with `railgrid use` on the same
 		// hub, keep that selection — only credentials and TLS settings are
 		// refreshed. Logging into a different hub still takes the new URL.
 		if prev := existingConfig.Clusters[k]; prev != nil && strings.Contains(prev.Server, "/clusters/") {
@@ -325,12 +325,12 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 	return existingConfig.CurrentContext, nil
 }
 
-// rewriteFarosExecCommand replaces the sentinel `faros` command in any exec
+// rewriteRailgridExecCommand replaces the sentinel `railgrid` command in any exec
 // credential plugin with the absolute path of the currently running binary.
 // This makes the kubeconfig work regardless of how the CLI was installed —
-// curl/tar.gz (binary named `faros`), krew (binary named `kubectl-faros`), or
+// curl/tar.gz (binary named `railgrid`), krew (binary named `kubectl-railgrid`), or
 // any custom path.
-func rewriteFarosExecCommand(cfg *clientcmdapi.Config) {
+func rewriteRailgridExecCommand(cfg *clientcmdapi.Config) {
 	exe, err := os.Executable()
 	if err != nil || exe == "" {
 		// Fall back to leaving the kubeconfig untouched — better than writing
@@ -345,7 +345,7 @@ func rewriteFarosExecCommand(cfg *clientcmdapi.Config) {
 		// rename still emit it. Rewriting it too keeps the new CLI working
 		// against an old hub instead of shelling out to a stale `kedge`
 		// binary (which reads a different token cache and fails to refresh).
-		if ai.Exec.Command == "faros" || ai.Exec.Command == "kedge" {
+		if ai.Exec.Command == "railgrid" || ai.Exec.Command == "kedge" {
 			ai.Exec.Command = exe
 		}
 	}

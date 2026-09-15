@@ -7,8 +7,8 @@ require kind
 
 "$(dirname "${BASH_SOURCE[0]}")/port-forward.sh" stop || true
 
-if kind get clusters 2>/dev/null | grep -qx "${FAROS_INSTALL_CLUSTER}"; then
-  kind delete cluster --name "${FAROS_INSTALL_CLUSTER}"
+if kind get clusters 2>/dev/null | grep -qx "${RAILGRID_INSTALL_CLUSTER}"; then
+  kind delete cluster --name "${RAILGRID_INSTALL_CLUSTER}"
 fi
 
-rm -rf "${FAROS_INSTALL_STATE_DIR}"
+rm -rf "${RAILGRID_INSTALL_STATE_DIR}"

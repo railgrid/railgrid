@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +14,18 @@ import (
 	"log"
 	"os"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 )
 
 const (
-	apiExportName = "kuery.providers.faros.sh"
+	apiExportName = "kuery.providers.railgrid.ai"
 )
 
 // runInitCmd applies kuery's in-workspace objects (APIResourceSchemas,
 // APIExport, APIExportEndpointSlice, bind grant) using the workspace-admin
 // kubeconfig the admin onboarded. Idempotent.
 //
-// kuery's APIExport deliberately claims NO first-party (*.faros.sh)
+// kuery's APIExport deliberately claims NO first-party (*.railgrid.ai)
 // resources. Such a claim must pin the serving APIExport's identityHash, and
 // an export can pin exactly one identity per claimed resource — for every
 // consuming workspace at once — which breaks the moment one org self-hosts
@@ -36,7 +36,7 @@ const (
 func runInitCmd(ctx context.Context) error {
 	config, err := loadProviderConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set RAILGRID_PROVIDER_KUBECONFIG): %w", err)
 	}
 	// Empty means "the workspace this kubeconfig already points at": kcp
 	// resolves an unset APIExportEndpointSlice export path to the slice's own
@@ -44,12 +44,12 @@ func runInitCmd(ctx context.Context) error {
 	// both the platform workspace and an org's self-hosted copy. Set the env
 	// var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("KUERY_WORKSPACE_PATH")
-	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
+	schemasDir := os.Getenv("RAILGRID_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/faros/schemas"
+		schemasDir = "/etc/railgrid/schemas"
 	}
 
-	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("RAILGRID_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:        config,

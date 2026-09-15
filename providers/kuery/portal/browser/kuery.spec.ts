@@ -60,10 +60,10 @@ async function mountKuery(page: Page, theme: 'dark' | 'light'): Promise<void> {
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; background: var(--color-surface); color: var(--color-text-primary); font-family: sans-serif; }
     body { padding: 32px; }
-  </style></head><body><faros-provider-kuery id="kuery"></faros-provider-kuery></body></html>`)
+  </style></head><body><railgrid-provider-kuery id="kuery"></railgrid-provider-kuery></body></html>`)
   await page.addScriptTag({ path: asset('main.js') })
   await page.locator('#kuery').evaluate((element, resolvedTheme) => {
-    ;(element as HTMLElement & { farosContext: unknown }).farosContext = {
+    ;(element as HTMLElement & { railgridContext: unknown }).railgridContext = {
       basePath: '/ui/providers/kuery/', token: 'test-token', orgUUID: 'org', workspaceUUID: 'workspace', theme: resolvedTheme,
     }
   }, theme)
@@ -135,17 +135,17 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.route('**/api/edges', route => route.fulfill({ json: { edges: ['edge-<one>&'] } }))
   await page.setContent(`<!doctype html><html class="light"><head><base href="https://kuery.test/"></head><body>
-    <faros-dashboard-tile-kuery id="tile"></faros-dashboard-tile-kuery>
+    <railgrid-dashboard-tile-kuery id="tile"></railgrid-dashboard-tile-kuery>
   </body></html>`)
   await page.addScriptTag({ path: asset('main.js') })
   await page.locator('#tile').evaluate(element => {
-    const target = element as HTMLElement & { farosContext: unknown }
+    const target = element as HTMLElement & { railgridContext: unknown }
     ;(window as typeof window & { tileNavigation?: unknown }).tileNavigation = null
-    target.addEventListener('faros-navigate', event => {
+    target.addEventListener('railgrid-navigate', event => {
       ;(window as typeof window & { tileNavigation?: unknown }).tileNavigation = (event as CustomEvent).detail
     })
-    target.farosContext = {
-      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: 'root:faros:tenant', orgUUID: 'org', workspaceUUID: 'workspace', theme: 'light',
+    target.railgridContext = {
+      basePath: '/ui/providers/kuery/', token: 'test-token', tenant: 'root:railgrid:tenant', orgUUID: 'org', workspaceUUID: 'workspace', theme: 'light',
     }
   })
 

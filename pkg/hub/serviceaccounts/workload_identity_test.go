@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,13 +32,13 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 	defer resetTestClientset()
 
 	scope := WorkloadIdentityScope{
-		TenantPath:  "root:faros:tenants:org:workspace",
+		TenantPath:  "root:railgrid:tenants:org:workspace",
 		Project:     "project",
 		ProjectUID:  "project-uid",
 		Environment: "development",
 		Instance:    "project-dev",
 		ProviderResources: []ProviderResourceScope{{
-			APIVersion: "example.faros.sh/v1alpha1",
+			APIVersion: "example.railgrid.ai/v1alpha1",
 			Kind:       "Example",
 			Resource:   "examples",
 			Name:       "example",
@@ -115,7 +115,7 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 }
 
 func TestWorkloadServiceAccountNameChangesWhenProjectUIDChanges(t *testing.T) {
-	scope := WorkloadIdentityScope{TenantPath: "root:faros:tenants:o:w", Project: "p", ProjectUID: "uid-a", Environment: "development", Instance: "p-dev"}
+	scope := WorkloadIdentityScope{TenantPath: "root:railgrid:tenants:o:w", Project: "p", ProjectUID: "uid-a", Environment: "development", Instance: "p-dev"}
 	other := scope
 	other.ProjectUID = "uid-b"
 	if WorkloadServiceAccountName(scope) == WorkloadServiceAccountName(other) {
@@ -133,7 +133,7 @@ func TestEnsureWorkloadIdentityRejectsTokenExpiryBeyondPolicy(t *testing.T) {
 		}}, nil
 	})
 	_, err := m.EnsureWorkloadIdentity(context.Background(), "org", "workspace", WorkloadIdentityScope{
-		TenantPath:  "root:faros:tenants:org:workspace",
+		TenantPath:  "root:railgrid:tenants:org:workspace",
 		Project:     "project",
 		ProjectUID:  "project-uid",
 		Environment: "development",

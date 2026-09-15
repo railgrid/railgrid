@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,8 +31,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/commitbundle"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/commitbundle"
 )
 
 // checkoutFixture stands in for the checkout controller: every created

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ const (
 // The default, "secret", suits an appliance behind one long-lived token: the
 // caller's hub credential is meaningless to it, so the provider swaps in the
 // token from spec.authSecretRef. "passthrough" suits an upstream that
-// authorizes the END USER — a self-hosted faros provider backend, whose whole
+// authorizes the END USER — a self-hosted railgrid provider backend, whose whole
 // authorization model is the caller's own bearer (see
 // docs/byo-provider-edge-transport.md E-5). Substituting a shared token there
 // would collapse per-user RBAC into "anyone who can reach the tunnel".
@@ -128,7 +128,7 @@ type KubeServiceRef struct {
 // agents can drive it.
 //
 // Discovery-created objects are named "<edge>-<type>" and carry the labels
-// edges.faros.sh/edge=<edge> and edges.faros.sh/discovered=true.
+// edges.railgrid.ai/edge=<edge> and edges.railgrid.ai/discovered=true.
 // Users may also create Services manually.
 type Service struct {
 	metav1.TypeMeta   `json:",inline"`

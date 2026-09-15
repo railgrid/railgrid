@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -229,13 +229,13 @@ func projectAssistantFollowUpResponse(
 func init() {
 	gob.Register(map[string]any{})
 	gob.Register([]any{})
-	schema.RegisterName[*projectEinoPermissionInterruptInfo]("faros_app_studio_eino_permission_interrupt_info")
-	schema.RegisterName[*projectEinoPermissionInterruptState]("faros_app_studio_eino_permission_interrupt_state")
-	schema.RegisterName[*projectEinoPermissionResumeData]("faros_app_studio_eino_permission_resume_data")
-	schema.RegisterName[*projectEinoFollowUpInterruptInfo]("faros_app_studio_eino_follow_up_interrupt_info")
-	schema.RegisterName[*projectEinoFollowUpInterruptState]("faros_app_studio_eino_follow_up_interrupt_state")
-	schema.RegisterName[*projectEinoFollowUpResumeData]("faros_app_studio_eino_follow_up_resume_data")
-	schema.RegisterName[*projectAssistantExecCommandInput]("faros_app_studio_exec_command_input")
+	schema.RegisterName[*projectEinoPermissionInterruptInfo]("railgrid_app_studio_eino_permission_interrupt_info")
+	schema.RegisterName[*projectEinoPermissionInterruptState]("railgrid_app_studio_eino_permission_interrupt_state")
+	schema.RegisterName[*projectEinoPermissionResumeData]("railgrid_app_studio_eino_permission_resume_data")
+	schema.RegisterName[*projectEinoFollowUpInterruptInfo]("railgrid_app_studio_eino_follow_up_interrupt_info")
+	schema.RegisterName[*projectEinoFollowUpInterruptState]("railgrid_app_studio_eino_follow_up_interrupt_state")
+	schema.RegisterName[*projectEinoFollowUpResumeData]("railgrid_app_studio_eino_follow_up_resume_data")
+	schema.RegisterName[*projectAssistantExecCommandInput]("railgrid_app_studio_exec_command_input")
 }
 
 func projectAssistantFollowUpPrompt(questions []projectAssistantFollowUpQuestion) string {

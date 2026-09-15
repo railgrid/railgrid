@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,11 +30,11 @@ func TestConfigForRejectsUnsafeLogicalClusterIDs(t *testing.T) {
 			}
 		})
 	}
-	cfg, err := factory.configFor("root:faros-org_1.2", "caller-token")
+	cfg, err := factory.configFor("root:railgrid-org_1.2", "caller-token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(cfg.Host, "/clusters/root:faros-org_1.2") {
+	if !strings.HasSuffix(cfg.Host, "/clusters/root:railgrid-org_1.2") {
 		t.Fatalf("cluster host = %q", cfg.Host)
 	}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 const (
 	// GroupName is the API group for code-provider types. Tenant-authored
 	// desired-state resources and observed helper resources share this group.
-	GroupName = "code.faros.sh"
+	GroupName = "code.railgrid.ai"
 	// Version pins the served + storage version. Bumping to v1 will
 	// require a conversion plan — keep all in-tree changes additive
 	// until then.

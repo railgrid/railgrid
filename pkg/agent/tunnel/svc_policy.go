@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ const (
 	// SvcPolicyEnforce refuses a disallowed target with 403 and never dials it.
 	SvcPolicyEnforce SvcPolicy = "enforce"
 	// SvcPolicyWarn dials a disallowed target anyway but logs the denial and
-	// stamps X-Faros-Svc-Policy: warn on the response, so operators can find
+	// stamps X-Railgrid-Svc-Policy: warn on the response, so operators can find
 	// the Services that need --svc-allow-cidr before flipping to enforce.
 	SvcPolicyWarn SvcPolicy = "warn"
 	// SvcPolicyAllowAny disables the allow list entirely (loudly logged at
@@ -87,8 +87,8 @@ func ParseSvcAllowedCIDRs(raw []string) ([]netip.Prefix, error) {
 }
 
 // SvcProxyOptions is the operator-configured part of the /svc proxy policy,
-// set from --svc-allow-cidr / --svc-policy (or FAROS_AGENT_SVC_ALLOW_CIDR /
-// FAROS_AGENT_SVC_POLICY) and threaded from agent.Options down to the tunnel's
+// set from --svc-allow-cidr / --svc-policy (or RAILGRID_AGENT_SVC_ALLOW_CIDR /
+// RAILGRID_AGENT_SVC_POLICY) and threaded from agent.Options down to the tunnel's
 // remote server.
 type SvcProxyOptions struct {
 	// AllowedCIDRs are the literal-IP ranges (and resolved-hostname ranges)

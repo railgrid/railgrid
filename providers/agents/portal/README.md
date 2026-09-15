@@ -1,7 +1,7 @@
 # Agents portal
 
 Vite + TypeScript + [Vue 3](https://vuejs.org) micro-frontend for the agents
-provider, mounted in the faros portal under `/ui/providers/agents/`. The Go
+provider, mounted in the railgrid portal under `/ui/providers/agents/`. The Go
 binary embeds `portal/dist` via `assets.go`.
 
 ```
@@ -15,21 +15,21 @@ npm test
 
 There is **no iframe and no postMessage**. The host
 (`portal/src/pages/ProviderFrame.vue`) injects `/ui/providers/agents/main.js`,
-which registers the custom element `faros-provider-agents`, then appends the
-element and assigns a `farosContext` **property** on it:
+which registers the custom element `railgrid-provider-agents`, then appends the
+element and assigns a `railgridContext` **property** on it:
 
 ```ts
-el.farosContext = { subPath, token, user, tenant, orgUUID, workspaceUUID, theme, basePath }
+el.railgridContext = { subPath, token, user, tenant, orgUUID, workspaceUUID, theme, basePath }
 ```
 
 The element renders in **light DOM**, so the portal's `:root` design tokens
 cascade in and light/dark themes match without any extra plumbing. Its own
 stylesheet (`src/style.css`) is injected once, with every selector namespaced
-under `faros-provider-agents`.
+under `railgrid-provider-agents`.
 
 API calls go to `basePath` with `/ui/providers/` rewritten to
 `/services/providers/` (the hub's service proxy), carrying the bearer token and
-the `X-Faros-Org` / `X-Faros-Workspace` tenant headers — see
+the `X-Railgrid-Org` / `X-Railgrid-Workspace` tenant headers — see
 `src/portalkit/tenant.ts`. The host context is authoritative for the tenant; the
 localStorage copy is only a fallback.
 
@@ -41,7 +41,7 @@ router.
 ```
 src/
   main.ts               entry: registers the custom element + injects style.css
-  element.ts            thin <faros-provider-agents> Vue mount boundary
+  element.ts            thin <railgrid-provider-agents> Vue mount boundary
   App.vue               nav, routing, authority rotation, and store lifecycle
   api.ts                typed REST client + a spec-correct SSE reader
   store.ts              Slice<T> {data, loading, error} collections + /api/events subscription

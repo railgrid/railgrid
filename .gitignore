@@ -1,8 +1,8 @@
 # Binaries
 bin/
-/faros
-/faros-hub
-/faros-agent
+/railgrid
+/railgrid-hub
+/railgrid-agent
 # `go build` inside providers/quickstart drops the module binary next to main.go
 /providers/quickstart/provider-quickstart
 /providers/quickstart/quickstart
@@ -80,18 +80,18 @@ data/
 # Dev tools and certs
 hack/tools/
 certs/
-# Per-cluster dev CA exported by `faros dev init` (<hub-cluster-name>-ca.crt)
+# Per-cluster dev CA exported by `railgrid dev init` (<hub-cluster-name>-ca.crt)
 *-ca.crt
 dex.db
 .kcp/
-# hack/install state (kubeconfigs, pidfiles, hub-token); e2e uses .faros-install-e2e
-.faros-install*/
+# hack/install state (kubeconfigs, pidfiles, hub-token); e2e uses .railgrid-install-e2e
+.railgrid-install*/
 .env
 .kind-kubeconfig
 .edge-kubeconfig
 .hooks/
 
-.kubeconfig-faros-agent
+.kubeconfig-railgrid-agent
 docs/Gemfile.lock
 edge-kubeconfig
 *.kubeconfig

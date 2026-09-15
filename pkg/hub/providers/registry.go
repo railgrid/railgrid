@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 )
 
 // HeartbeatTTL is how long a provider's last heartbeat is considered fresh.
@@ -51,9 +51,9 @@ const SweepInterval = 30 * time.Second
 type Provider struct {
 	Name string
 	// OrgUUID is empty for platform-global providers (those under
-	// root:faros:providers) and set to the owning Org's UUID for org-owned
+	// root:railgrid:providers) and set to the owning Org's UUID for org-owned
 	// "bring your own" providers, which live at
-	// root:faros:tenants:<org>:providers:<name>. The catalog reconciler derives
+	// root:railgrid:tenants:<org>:providers:<name>. The catalog reconciler derives
 	// it from the workspace path the CatalogEntry was observed in — never from
 	// a field on the entry itself, which the provider's own init writes and so
 	// cannot be trusted to attribute ownership.
@@ -95,8 +95,8 @@ type Provider struct {
 	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js
 	Children         []NavChild // sub-nav entries surfaced indented under this provider
 	Version          string     // CatalogEntry.spec.version (chart-declared)
-	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:faros:providers:cost)
-	APIExportName    string     // APIExport name (e.g. cost.providers.faros.sh)
+	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:railgrid:providers:cost)
+	APIExportName    string     // APIExport name (e.g. cost.providers.railgrid.ai)
 	PermissionClaims []PermissionClaim
 	// SelfHosting carries the provider's own deployment recipe, from which the
 	// hub renders per-organization install instructions. Nil when the provider
@@ -112,7 +112,7 @@ type Provider struct {
 	// enforced only as accepted by a tenant (pkg/hub/hubaccess).
 	HubAccess []providersv1alpha1.ProviderHubAccess
 	// WorkspaceCluster is the logical cluster ID of the provider's
-	// sub-workspace (Workspace.spec.cluster of root:faros:providers:{name}).
+	// sub-workspace (Workspace.spec.cluster of root:railgrid:providers:{name}).
 	// It anchors the qualified RBAC subject the edge-proxy grant binds —
 	// the same cluster ID kcp puts in the provider SA's token claims. Set
 	// via SetWorkspaceCluster after provisioning; empty until then.
@@ -390,7 +390,7 @@ func CompileProviderActionSchema(raw json.RawMessage, name string) (*jsonschema.
 	// omits an explicit draft vocabulary declaration.
 	compiler.AssertFormat()
 	compiler.UseLoader(noExternalSchemaLoader{})
-	location := "urn:faros:provider-action:" + url.PathEscape(name)
+	location := "urn:railgrid:provider-action:" + url.PathEscape(name)
 	if err := compiler.AddResource(location, document); err != nil {
 		return nil, fmt.Errorf("add schema resource: %w", err)
 	}

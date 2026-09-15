@@ -1,4 +1,4 @@
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -9,12 +9,12 @@
 # This is an opt-in development fixture. It deliberately lives outside
 # install/templates so a normal provider bootstrap never enables a cloud
 # resource or advertises a GCP-specific catalog entry.
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: gcp-pubsub-topic
   labels:
-    faros.sh/config-connector: pubsub
+    railgrid.ai/config-connector: pubsub
 spec:
   displayName: GCP Pub/Sub topic
   description: Creates a Google Cloud Pub/Sub topic through Config Connector.
@@ -22,7 +22,7 @@ spec:
   version: 0.0.1
   backend: kro
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: gcppubsubtopics
     kind: GCPPubSubTopic

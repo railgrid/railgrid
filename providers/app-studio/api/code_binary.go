@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/hubmcp"
 )
 
 // Binary files and the Code provider. App Studio never sends base64 to, or

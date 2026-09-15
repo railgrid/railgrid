@@ -1,7 +1,7 @@
 # Models form visual fixture
 
 This fixture mounts the real App Studio, Agents, and Databricks provider entry
-points in one Vite document. It supplies the host `farosContext`, tenant
+points in one Vite document. It supplies the host `railgridContext`, tenant
 storage, and deterministic empty API responses used by the visual comparator.
 The stylesheet imports the portal's real `main.css` and scans the provider
 sources so utility classes are compiled in the external fixture root.

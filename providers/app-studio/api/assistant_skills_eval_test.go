@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,10 +27,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
-	"github.com/faroshq/provider-app-studio/workspace"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestEvaluationSkillDisclosureAndAuthorityBoundaries(t *testing.T) {
@@ -180,7 +180,7 @@ func TestEvaluationSkillExportImportPreservesDocumentAndResources(t *testing.T) 
 	if err := json.Unmarshal(exportResponse.Body.Bytes(), &exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	if exported.Format != "faros.skill.v1" || len(exported.Files) != 2 || exported.Package.Instructions != "body with exact spacing\nsecond line" {
+	if exported.Format != "railgrid.skill.v1" || len(exported.Files) != 2 || exported.Package.Instructions != "body with exact spacing\nsecond line" {
 		t.Fatalf("export lost package fidelity: %#v", exported)
 	}
 
@@ -245,7 +245,7 @@ func evaluationProjectSkillSnapshot(t *testing.T, count, disabledIndex int) apps
 func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) {
 	t.Helper()
 	proxy := tenanttest.NewServer(t)
-	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"))
 	files := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(proxy.Client(), nil, files, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
@@ -258,9 +258,9 @@ var evaluationSkillRequest = func(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer caller-token")
-	req.Header.Set("X-Faros-User", "alice")
-	req.Header.Set("X-Faros-Tenant", "cluster-a")
-	req.Header.Set("X-Faros-Cluster", "cluster-a")
+	req.Header.Set("X-Railgrid-User", "alice")
+	req.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	req.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return req
 }
 

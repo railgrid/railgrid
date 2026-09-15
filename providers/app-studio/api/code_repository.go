@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,29 +31,29 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 const projectRepositoryCommitViewMaxItems = 100
 
 const (
-	codeAPIGroup   = "code.faros.sh"
+	codeAPIGroup   = "code.railgrid.ai"
 	codeAPIVersion = "v1alpha1"
 
 	codeConditionReady     = "Ready"
 	codeConditionValidated = "Validated"
-	codeLabelRepository    = "code.faros.sh/repository"
+	codeLabelRepository    = "code.railgrid.ai/repository"
 
-	projectRepositoryProjectAnnotation = "app-studio.ai.faros.sh/project"
-	projectRepositoryUIDAnnotation     = "app-studio.ai.faros.sh/project-uid"
+	projectRepositoryProjectAnnotation = "app-studio.ai.railgrid.ai/project"
+	projectRepositoryUIDAnnotation     = "app-studio.ai.railgrid.ai/project-uid"
 
-	projectRepositoryProjectLabel = "app-studio.ai.faros.sh/project"
+	projectRepositoryProjectLabel = "app-studio.ai.railgrid.ai/project"
 
 	// projectRepositoryAdoptedAnnotation marks a Repository App Studio
 	// adopted (repository import) rather than created — deleting the project
 	// releases the claim but never deletes an adopted repository.
-	projectRepositoryAdoptedAnnotation = "app-studio.ai.faros.sh/adopted"
+	projectRepositoryAdoptedAnnotation = "app-studio.ai.railgrid.ai/adopted"
 
 	projectRepositoryStatusReady             = "Ready"
 	projectRepositoryStatusProvisioning      = "Provisioning"
@@ -65,7 +65,7 @@ const (
 	// projectReconcilerFinalizer mirrors the Project reconciler's finalizer
 	// (controller/project). Until it is present the reconciler has not run
 	// for the Project yet, so a missing Repository CR is still pending.
-	projectReconcilerFinalizer = "ai.faros.sh/instances"
+	projectReconcilerFinalizer = "ai.railgrid.ai/instances"
 	// projectRepositoryCreationGrace bounds how long after Project creation a
 	// missing reconciler-created Repository CR reads as provisioning rather
 	// than missing.

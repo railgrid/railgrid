@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,12 +44,12 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/browsersession"
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	"github.com/faroshq/faros/pkg/util/identity"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/browsersession"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // defaultStaticTokenRateLimit is the default number of token-login requests allowed per minute per IP.
@@ -65,7 +65,7 @@ type KCPProxy struct {
 	passthroughTransport http.RoundTripper // TLS-only transport; no credentials injected
 	verifier             *oidc.IDTokenVerifier
 	verifyCtx            context.Context // context with HTTP client for OIDC key fetches
-	farosClient          *farosclient.Client
+	railgridClient       *railgridclient.Client
 	bootstrapper         *kcp.Bootstrapper
 	staticAuthTokens     []string
 	hubExternalURL       string
@@ -103,7 +103,7 @@ func (p *KCPProxy) SetBrowserSessionStore(store *browsersession.Store) {
 // NewKCPProxy creates a reverse proxy to kcp.
 // It validates bearer tokens as OIDC id_tokens before proxying.
 // verifier may be nil when only static token auth is used.
-func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, farosClient *farosclient.Client, bootstrapper *kcp.Bootstrapper, staticAuthTokens []string, hubExternalURL string, devMode bool) (*KCPProxy, error) {
+func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, railgridClient *railgridclient.Client, bootstrapper *kcp.Bootstrapper, staticAuthTokens []string, hubExternalURL string, devMode bool) (*KCPProxy, error) {
 	target, err := url.Parse(kcpConfig.Host)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, farosCl
 
 	authorizer := newClusterAuthorizer(
 		func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
-			return farosClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
+			return railgridClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 		},
 		bootstrapper.GetChildWorkspaceClusterName,
 		// Team workspaces only. An Org workspace can also hold the `providers`
@@ -163,7 +163,7 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, farosCl
 		passthroughTransport: passthroughTransport,
 		verifier:             verifier,
 		verifyCtx:            verifyCtx,
-		farosClient:          farosClient,
+		railgridClient:       railgridClient,
 		bootstrapper:         bootstrapper,
 		staticAuthTokens:     staticAuthTokens,
 		hubExternalURL:       hubExternalURL,
@@ -405,7 +405,7 @@ func isConflictError(err error) bool {
 // scrubStaticTokenUserSpec makes a static-token User show only its RBAC
 // identity: no email, display name = RBAC identity. Fellow org and workspace
 // members can read both fields from the member list, and hubs before this
-// change wrote the token text into them ("static-<token>@faros.local" /
+// change wrote the token text into them ("static-<token>@railgrid.local" /
 // "Static Token User (<token>)"), which handed every co-member a working
 // credential. Returns true when the spec changed and needs writing.
 func scrubStaticTokenUserSpec(user *tenancyv1alpha1.User, id identity.StaticToken) bool {
@@ -434,7 +434,7 @@ func (p *KCPProxy) scrubStaticTokenUser(ctx context.Context, user *tenancyv1alph
 	if !scrubStaticTokenUserSpec(user, id) {
 		return user, nil
 	}
-	updated, err := p.farosClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+	updated, err := p.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("removing token text from user %s: %w", user.Name, err)
 	}
@@ -451,7 +451,7 @@ func (p *KCPProxy) scrubStaticTokenPersonalOrg(ctx context.Context, user *tenanc
 	if user.Status.PersonalOrg == "" {
 		return nil
 	}
-	org, err := p.farosClient.Organizations().Get(ctx, user.Status.PersonalOrg, metav1.GetOptions{})
+	org, err := p.railgridClient.Organizations().Get(ctx, user.Status.PersonalOrg, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -466,7 +466,7 @@ func (p *KCPProxy) scrubStaticTokenPersonalOrg(ctx context.Context, user *tenanc
 
 	// Index rows first: if a write fails, the Org keeps the old name and the
 	// next pass (login or hub start) finds and retries it.
-	indices, err := p.farosClient.UserMembershipIndices().List(ctx, metav1.ListOptions{})
+	indices, err := p.railgridClient.UserMembershipIndices().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("listing membership indices: %w", err)
 	}
@@ -482,13 +482,13 @@ func (p *KCPProxy) scrubStaticTokenPersonalOrg(ctx context.Context, user *tenanc
 		if !changed {
 			continue
 		}
-		if _, err := p.farosClient.UserMembershipIndices().Update(ctx, idx, metav1.UpdateOptions{}); err != nil {
+		if _, err := p.railgridClient.UserMembershipIndices().Update(ctx, idx, metav1.UpdateOptions{}); err != nil {
 			return fmt.Errorf("renaming organization %s in membership index %s: %w", org.Name, idx.Name, err)
 		}
 	}
 
 	org.Spec.DisplayName = newName
-	if _, err := p.farosClient.Organizations().Update(ctx, org, metav1.UpdateOptions{}); err != nil {
+	if _, err := p.railgridClient.Organizations().Update(ctx, org, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("renaming personal organization %s: %w", org.Name, err)
 	}
 	p.logger.Info("removed token text from static-token user's personal organization", "user", user.Name, "org", org.Name)
@@ -506,7 +506,7 @@ func (p *KCPProxy) ScrubStaticTokenUsers(ctx context.Context) error {
 			continue
 		}
 		id := identity.NewStaticToken(token)
-		users, err := p.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: "tenants.faros.sh/sub=" + id.Sub})
+		users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: "tenants.railgrid.ai/sub=" + id.Sub})
 		if err != nil {
 			return fmt.Errorf("listing static-token users: %w", err)
 		}
@@ -521,8 +521,8 @@ func (p *KCPProxy) ScrubStaticTokenUsers(ctx context.Context) error {
 
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
 func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.StaticToken) (*tenancyv1alpha1.User, error) {
-	labelSelector := fmt.Sprintf("tenants.faros.sh/sub=%s", id.Sub)
-	users, err := p.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", id.Sub)
+	users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
@@ -545,7 +545,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 		// Update status with last login (best-effort, ignore conflicts here).
 		user.Status.Active = true
 		user.Status.LastLogin = &now
-		_, _ = p.farosClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
+		_, _ = p.railgridClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
 
 		// Workspace creation and User.spec.DefaultCluster patching are
 		// owned by the organization bootstrap controller (it materializes
@@ -571,8 +571,8 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 		ObjectMeta: metav1.ObjectMeta{
 			Name: id.UserName,
 			Labels: map[string]string{
-				"tenants.faros.sh/sub":       id.Sub,
-				"tenants.faros.sh/auth-type": "static-token",
+				"tenants.railgrid.ai/sub":       id.Sub,
+				"tenants.railgrid.ai/auth-type": "static-token",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -580,14 +580,14 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 			RBACIdentity: id.RBACIdentity,
 		},
 	}
-	user.APIVersion = "tenants.faros.sh/v1alpha1"
+	user.APIVersion = "tenants.railgrid.ai/v1alpha1"
 	user.Kind = "User"
 
-	created, err := p.farosClient.Users().Create(ctx, user, metav1.CreateOptions{})
+	created, err := p.railgridClient.Users().Create(ctx, user, metav1.CreateOptions{})
 	if err != nil {
 		// Concurrent login won the race — reuse the existing user by name.
 		if apierrors.IsAlreadyExists(err) {
-			existing, getErr := p.farosClient.Users().Get(ctx, id.UserName, metav1.GetOptions{})
+			existing, getErr := p.railgridClient.Users().Get(ctx, id.UserName, metav1.GetOptions{})
 			if getErr != nil {
 				return nil, fmt.Errorf("getting user after create conflict: %w", getErr)
 			}
@@ -599,7 +599,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 	// Update status (best-effort).
 	created.Status.Active = true
 	created.Status.LastLogin = &now
-	_, _ = p.farosClient.Users().UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	_, _ = p.railgridClient.Users().UpdateStatus(ctx, created, metav1.UpdateOptions{})
 
 	// Workspace creation + User.spec.DefaultCluster patching is owned
 	// by the organization bootstrap controller, not the auth path.
@@ -725,24 +725,24 @@ func writeUnauthorized(w http.ResponseWriter) {
 }
 
 // orgWorkspacePathPrefix is the kcp logical-cluster path under which every
-// Organization workspace lives (root:faros:orgs:{org-uuid}). The proxy
+// Organization workspace lives (root:railgrid:orgs:{org-uuid}). The proxy
 // uses this prefix together with the structural rule "an Organization
 // workspace has exactly one segment after orgs:" to decide whether a
 // requested target is an Org workspace.
-const orgWorkspacePathPrefix = "root:faros:tenants:"
+const orgWorkspacePathPrefix = "root:railgrid:tenants:"
 
 // orgWorkspaceForbiddenBody is the JSON the proxy returns when refusing a
 // direct request to an Organization workspace per docs/organizations.md
 // decision O-10 ("Org workspaces are hub-mediated only"). The body uses
 // the standard Kubernetes Status envelope so kubectl renders the message
-// nicely while also carrying a faros-specific reason + a pointer at the
+// nicely while also carrying a railgrid-specific reason + a pointer at the
 // hub REST surface so CLI tooling can suggest the right endpoint.
-const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenants.faros.sh"}}`
+const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenants.railgrid.ai"}}`
 
 // isOrgWorkspacePath reports whether clusterPath addresses a kcp
-// Organization workspace (path root:faros:orgs:{single-segment}). Child
+// Organization workspace (path root:railgrid:orgs:{single-segment}). Child
 // "team" workspaces under an Org, which look like
-// root:faros:orgs:{org-uuid}:{ws-uuid}, do NOT match — those remain
+// root:railgrid:orgs:{org-uuid}:{ws-uuid}, do NOT match — those remain
 // tenant-accessible per the design.
 //
 // The check is structural rather than annotation-based on purpose: every
@@ -759,7 +759,7 @@ func isOrgWorkspacePath(clusterPath string) bool {
 		return false
 	}
 	// Exactly one segment after `orgs:` ⇒ an Org workspace. A second
-	// colon ⇒ child team Workspace (root:faros:orgs:{org}:{ws}).
+	// colon ⇒ child team Workspace (root:railgrid:orgs:{org}:{ws}).
 	return !strings.Contains(rest, ":")
 }
 
@@ -915,8 +915,8 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("tenants.faros.sh/sub=%s", subHash)
-	users, err := p.farosClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", subHash)
+	users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
@@ -944,7 +944,7 @@ func (p *KCPProxy) waitForDefaultCluster(ctx context.Context, user *tenancyv1alp
 	start := time.Now()
 	deadline := start.Add(pollTimeout)
 	for {
-		fresh, err := p.farosClient.Users().Get(ctx, user.Name, metav1.GetOptions{})
+		fresh, err := p.railgridClient.Users().Get(ctx, user.Name, metav1.GetOptions{})
 		if err == nil && fresh.Spec.DefaultCluster != "" {
 			if elapsed := time.Since(start); elapsed > pollInterval {
 				p.logger.Info("Waited for bootstrap controller to populate User.spec.defaultCluster", "user", user.Name, "waited", elapsed.String())
@@ -1071,21 +1071,21 @@ func (p *KCPProxy) generateStaticTokenKubeconfig(user *tenancyv1alpha1.User, tok
 		serverURL = apiurl.HubServerURL(p.hubExternalURL, user.Spec.DefaultCluster)
 	}
 
-	config.Clusters["faros"] = &clientcmdapi.Cluster{
+	config.Clusters["railgrid"] = &clientcmdapi.Cluster{
 		Server:                serverURL,
 		InsecureSkipTLSVerify: p.devMode,
 	}
 
-	config.AuthInfos["faros"] = &clientcmdapi.AuthInfo{
+	config.AuthInfos["railgrid"] = &clientcmdapi.AuthInfo{
 		Token: token,
 	}
 
-	config.Contexts["faros"] = &clientcmdapi.Context{
-		Cluster:  "faros",
-		AuthInfo: "faros",
+	config.Contexts["railgrid"] = &clientcmdapi.Context{
+		Cluster:  "railgrid",
+		AuthInfo: "railgrid",
 	}
 
-	config.CurrentContext = "faros"
+	config.CurrentContext = "railgrid"
 
 	return clientcmd.Write(*config)
 }

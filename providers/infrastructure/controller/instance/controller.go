@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 //     defaults, CEL) — the work the retired per-template CRDs did at
 //     admission — reporting Valid=False instead of syncing anything invalid;
 //   - stamp the platform-computed fields into spec.values (expose.fqdn,
-//     farosCluster, credentialsSecretName), exactly the fields the retired
+//     railgridCluster, credentialsSecretName), exactly the fields the retired
 //     application controller stamped, with the per-kind treatment now
 //     derived from the Template's schema instead of a hardcoded kind table;
 //   - bridge cross-cluster Secrets (BYO OIDC client secret, registry pull
@@ -59,16 +59,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/apiexportprovider"
 	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/instancespec"
-	"github.com/faroshq/provider-infrastructure/networkpolicy"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/instancespec"
+	"github.com/railgrid/provider-infrastructure/networkpolicy"
 )
 
 // instanceGVK is the flattened tenant-facing kind this controller watches.
@@ -108,9 +108,9 @@ type Config struct {
 	// clients, and the Template catalog reads.
 	ProviderConfig *rest.Config
 	// APIExportName is the provider's APIExport
-	// ("infrastructure.providers.faros.sh").
+	// ("infrastructure.providers.railgrid.ai").
 	APIExportName string
-	// BaseDomain is the zone apps are exposed under (FAROS_APP_BASE_DOMAIN,
+	// BaseDomain is the zone apps are exposed under (RAILGRID_APP_BASE_DOMAIN,
 	// e.g. "apps.example.com"). Optional: when empty, instances of
 	// publishable templates report a Valid=False condition when they ask to
 	// be exposed; internal templates work normally.
@@ -327,7 +327,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	currentRuntime, _ := c.currentRuntime(ctx, tenant, tmpl, inst)
 	if tmpl.Spec.Development != nil {
-		stampedValues[infrav1alpha1.FarosNetworkPhaseField] = desiredNetworkPhase(currentRuntime)
+		stampedValues[infrav1alpha1.RailgridNetworkPhaseField] = desiredNetworkPhase(currentRuntime)
 	}
 	runtimeObj, err := c.syncRuntime(ctx, tenant, tmpl, inst, stampedValues)
 	if err != nil {
@@ -363,19 +363,19 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 // authorize the phase transition.
 func desiredNetworkPhase(runtimeObj *unstructured.Unstructured) string {
 	if runtimeObj == nil {
-		return infrav1alpha1.FarosNetworkPhaseSetup
+		return infrav1alpha1.RailgridNetworkPhaseSetup
 	}
 
-	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.FarosNetworkPhaseField)
-	if err == nil && found && phase == infrav1alpha1.FarosNetworkPhaseRuntime {
-		return infrav1alpha1.FarosNetworkPhaseRuntime
+	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.RailgridNetworkPhaseField)
+	if err == nil && found && phase == infrav1alpha1.RailgridNetworkPhaseRuntime {
+		return infrav1alpha1.RailgridNetworkPhaseRuntime
 	}
 	// Keep the coarse readiness check as a cheap guard; the generation-aware
 	// predicate is the authority for this transition.
 	if runtimeReady(runtimeObj) && runtimeReadyForNetwork(runtimeObj) {
-		return infrav1alpha1.FarosNetworkPhaseRuntime
+		return infrav1alpha1.RailgridNetworkPhaseRuntime
 	}
-	return infrav1alpha1.FarosNetworkPhaseSetup
+	return infrav1alpha1.RailgridNetworkPhaseSetup
 }
 
 // instanceRequeueAfter keeps development Instances on the short convergence
@@ -390,7 +390,7 @@ func instanceRequeueAfter(now time.Time, created metav1.Time, tmpl *infrav1alpha
 	}
 	if development != nil {
 		phase, ok := runtimeNetworkPhase(tmpl, runtimeObj)
-		if !ok || phase != infrav1alpha1.FarosNetworkPhaseRuntime {
+		if !ok || phase != infrav1alpha1.RailgridNetworkPhaseRuntime {
 			return requeueNotReady
 		}
 	}

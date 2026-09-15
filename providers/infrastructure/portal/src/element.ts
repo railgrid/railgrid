@@ -1,16 +1,16 @@
 import type { ProviderFetch } from './portalkit/tenant'
 
-// InfrastructureElement is the custom element the faros portal
+// InfrastructureElement is the custom element the railgrid portal
 // renders. Mounts a Vue 3 app rooted in the element's own light-DOM
 // container. The element survives portal re-renders by keeping a
 // single Vue app instance whose props are driven by the
-// .farosContext setter.
+// .railgridContext setter.
 
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
 import DashboardTile from './DashboardTile.vue'
 
-export interface FarosContext {
+export interface RailgridContext {
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).
@@ -29,13 +29,13 @@ export class InfrastructureElement extends HTMLElement {
   private _vueApp: VueApp | null = null
   // Reactive container shared with the Vue app — assigning to
   // _ctx.value triggers re-renders without re-mounting.
-  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: RailgridContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set farosContext(v: FarosContext | null) {
+  set railgridContext(v: RailgridContext | null) {
     this._state.ctx = v
   }
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this._state.ctx
   }
 
@@ -64,7 +64,7 @@ export class InfrastructureElement extends HTMLElement {
 
 // InfrastructureDashboardTileElement is the per-provider tile the
 // portal's <DashboardTile> component mounts on the dashboard page.
-// Same farosContext setter contract as the page element above so the
+// Same railgridContext setter contract as the page element above so the
 // shell can push token / theme / basePath through the identical hook
 // — only the rendered component differs.
 //
@@ -74,13 +74,13 @@ export class InfrastructureElement extends HTMLElement {
 // the full provider app.
 export class InfrastructureDashboardTileElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: RailgridContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set farosContext(v: FarosContext | null) {
+  set railgridContext(v: RailgridContext | null) {
     this._state.ctx = v
   }
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this._state.ctx
   }
 

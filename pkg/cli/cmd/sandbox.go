@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -137,12 +137,12 @@ Component paths are relative to the component's workspacePath: for the
 application template, sync api/ to component "api" and web/ to "web".
 Production instances answer 409.
 
-  faros sandbox sync    shop-dev api ./api
-  faros sandbox exec    shop-dev api -- node -e 'console.log(1)'
-  faros sandbox logs    shop-dev api -f
-  faros sandbox restart shop-dev api
-  faros sandbox env     shop-dev api PULSE_URL=https://… --restart
-  faros sandbox status  shop-dev [api]`,
+  railgrid sandbox sync    shop-dev api ./api
+  railgrid sandbox exec    shop-dev api -- node -e 'console.log(1)'
+  railgrid sandbox logs    shop-dev api -f
+  railgrid sandbox restart shop-dev api
+  railgrid sandbox env     shop-dev api PULSE_URL=https://… --restart
+  railgrid sandbox status  shop-dev [api]`,
 	}
 	target.addFlags(cmd)
 	cmd.AddCommand(
@@ -182,7 +182,7 @@ when the component's dev agent advertises base64 sync (at most 25 MiB per
 binary file, 48 MiB per sync); against an older agent they are skipped with a
 warning.
 
-For an App Studio project's <project>-dev instance, 'faros app sync <project>'
+For an App Studio project's <project>-dev instance, 'railgrid app sync <project>'
 pushes App Studio's own file set instead; a sandbox sync replaces that set.`,
 		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -237,7 +237,7 @@ func runSandboxSync(ctx context.Context, out, errOut io.Writer, target hubTarget
 		return err
 	}
 	if len(skipped) > 0 {
-		_, _ = fmt.Fprintf(errOut, "faros sandbox: skipping %d binary file(s); %s/%s's dev agent does not advertise base64 sync (update the instance to sync them): %s\n",
+		_, _ = fmt.Fprintf(errOut, "railgrid sandbox: skipping %d binary file(s); %s/%s's dev agent does not advertise base64 sync (update the instance to sync them): %s\n",
 			len(skipped), instance, component, strings.Join(skipped, ", "))
 	}
 	if len(files) == 0 {
@@ -250,7 +250,7 @@ func runSandboxSync(ctx context.Context, out, errOut io.Writer, target hubTarget
 		SourceRevision: revision,
 		SourceDigest:   sourceDigest(files),
 	}
-	_, _ = fmt.Fprintf(errOut, "faros sandbox: syncing %d file(s) to %s/%s\n", len(files), instance, component)
+	_, _ = fmt.Fprintf(errOut, "railgrid sandbox: syncing %d file(s) to %s/%s\n", len(files), instance, component)
 	var raw json.RawMessage
 	if err := s.do(ctx, http.MethodPost, componentURL(s, instance, component, "sync"), req, &raw); err != nil {
 		return err
@@ -263,7 +263,7 @@ func runSandboxSync(ctx context.Context, out, errOut io.Writer, target hubTarget
 	_, err = fmt.Fprintf(out, "%s: %d changed, %d deleted, restarted=%v, revision %d\n",
 		formatStringOrDash(res.Phase), len(res.Changed), len(res.Deleted), res.Restarted, res.SourceRevision)
 	if res.ReloadError != "" {
-		_, _ = fmt.Fprintf(errOut, "faros sandbox: reload error: %s\n", res.ReloadError)
+		_, _ = fmt.Fprintf(errOut, "railgrid sandbox: reload error: %s\n", res.ReloadError)
 	}
 	return err
 }
@@ -412,15 +412,15 @@ func newSandboxExecCommand(target *hubTarget) *cobra.Command {
 		Use:   "exec <instance> <component> -- <argv...>",
 		Short: "Run a command in the component and exit with its exit code",
 		Long: `Run argv (no shell) against the component's last authoritative sync, print its
-stdout and stderr, and exit with its exit code. Run 'faros sandbox sync' first
-(for an App Studio <project>-dev instance, 'faros app sync <project>').
+stdout and stderr, and exit with its exit code. Run 'railgrid sandbox sync' first
+(for an App Studio <project>-dev instance, 'railgrid app sync <project>').
 The command gets PORT (the component's dev server port, so it can reach the
-running app) and FAROS_COMPONENT, but not the app's own environment or
+running app) and RAILGRID_COMPONENT, but not the app's own environment or
 secrets (DATABASE_URL and the like).`,
 		Args: cobra.MinimumNArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dash := cmd.ArgsLenAtDash(); dash >= 0 && dash != 2 {
-				return fmt.Errorf("usage: faros sandbox exec <instance> <component> -- <argv...>")
+				return fmt.Errorf("usage: railgrid sandbox exec <instance> <component> -- <argv...>")
 			}
 			code, err := runSandboxExec(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), *target, args[0], args[1], args[2:], workdir, timeout)
 			if err != nil {
@@ -459,9 +459,9 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 	}
 	if proc.SourceRevision == 0 || proc.SourceDigest == "" {
 		if project := appStudioProjectForInstance(ctx, s, instance); project != "" {
-			return 0, fmt.Errorf("%s/%s has no source revision; run 'faros app sync %s' first (exec needs an authoritative sync, and %s is managed by App Studio project %s, so 'faros sandbox sync' would replace its file set)", instance, component, project, instance, project)
+			return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid app sync %s' first (exec needs an authoritative sync, and %s is managed by App Studio project %s, so 'railgrid sandbox sync' would replace its file set)", instance, component, project, instance, project)
 		}
-		return 0, fmt.Errorf("%s/%s has no source revision; run 'faros sandbox sync %s %s <dir>' first (exec needs an authoritative sync)", instance, component, instance, component)
+		return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid sandbox sync %s %s <dir>' first (exec needs an authoritative sync)", instance, component, instance, component)
 	}
 	execURL := componentURL(s, instance, component, "exec")
 	start := execRequest{
@@ -500,10 +500,10 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 	_, _ = io.WriteString(out, res.Stdout)
 	_, _ = io.WriteString(errOut, res.Stderr)
 	if res.Truncated {
-		_, _ = fmt.Fprintln(errOut, "faros sandbox: output truncated")
+		_, _ = fmt.Fprintln(errOut, "railgrid sandbox: output truncated")
 	}
 	if res.ExitCode == nil {
-		_, _ = fmt.Fprintf(errOut, "faros sandbox: command ended in state %q without an exit code\n", res.State)
+		_, _ = fmt.Fprintf(errOut, "railgrid sandbox: command ended in state %q without an exit code\n", res.State)
 		return 1, nil
 	}
 	return int(*res.ExitCode), nil
@@ -512,12 +512,12 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 // appStudioInstanceProjectLabel mirrors providers/app-studio/bindings.ProjectLabel:
 // App Studio labels every instance it creates for a project (<project>-dev,
 // <project>-prod) with the project name.
-const appStudioInstanceProjectLabel = "app-studio.faros.sh/project"
+const appStudioInstanceProjectLabel = "app-studio.railgrid.ai/project"
 
 // instanceAPIURL is the tenant kube API path of an infrastructure Instance
 // (cluster-scoped) in the session's workspace.
 func instanceAPIURL(s *hubSession, name string) string {
-	return fmt.Sprintf("%s/clusters/%s/apis/infrastructure.faros.sh/v1alpha1/instances/%s",
+	return fmt.Sprintf("%s/clusters/%s/apis/infrastructure.railgrid.ai/v1alpha1/instances/%s",
 		s.Hub, url.PathEscape(s.Cluster), url.PathEscape(name))
 }
 
@@ -542,7 +542,7 @@ func appStudioProjectForInstance(ctx context.Context, s *hubSession, instance st
 			return project
 		}
 		for _, o := range inst.Metadata.OwnerReferences {
-			if o.Kind == "Project" && strings.HasPrefix(o.APIVersion, "ai.faros.sh/") && o.Name != "" {
+			if o.Kind == "Project" && strings.HasPrefix(o.APIVersion, "ai.railgrid.ai/") && o.Name != "" {
 				return o.Name
 			}
 		}
@@ -565,7 +565,7 @@ func execTerminal(state string) bool {
 func newIdempotencyKey() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
-	return "faros-cli-" + hex.EncodeToString(b)
+	return "railgrid-cli-" + hex.EncodeToString(b)
 }
 
 func newSandboxLogsCommand(target *hubTarget) *cobra.Command {
@@ -663,7 +663,7 @@ func newSandboxEnvCommand(target *hubTarget) *cobra.Command {
 		Long: `Set environment variables on a development-mode component through the data
 plane's env verb. This changes the live process only: a running pod reads its
 env at start, so changing the Instance's values.env with kubectl is not seen
-until the pod is re-rendered, and 'faros sandbox restart' restarts the process
+until the pod is re-rendered, and 'railgrid sandbox restart' restarts the process
 with the env it already has. Pass --restart to restart right after applying so
 the new values take effect; keep the Instance's values.env in sync yourself if
 the change must survive a re-render.
@@ -706,7 +706,7 @@ the process environment in clear.`,
 				_, err = fmt.Fprintf(cmd.OutOrStdout(), "set %s on %s/%s and restarted the process\n", strings.Join(applied, ", "), args[0], args[1])
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "set %s on %s/%s (run 'faros sandbox restart %s %s' for the process to pick them up)\n", strings.Join(applied, ", "), args[0], args[1], args[0], args[1])
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "set %s on %s/%s (run 'railgrid sandbox restart %s %s' for the process to pick them up)\n", strings.Join(applied, ", "), args[0], args[1], args[0], args[1])
 			return err
 		},
 	}

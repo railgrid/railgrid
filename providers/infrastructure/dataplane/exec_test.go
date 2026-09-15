@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 type fakeDevelopmentGetter struct {
@@ -131,12 +131,12 @@ func execInstance() *unstructured.Unstructured {
 		"metadata": map[string]any{"name": "app", "generation": int64(2)},
 		"spec":     map[string]any{"template": infrav1alpha1.UniversalCodingSandboxTemplateName},
 		"status": map[string]any{
-			"farosNetworkPhase":  infrav1alpha1.FarosNetworkPhaseRuntime,
-			"phase":              "Ready",
-			"observedGeneration": int64(2),
-			"conditions":         []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}},
-			"runtimeNamespace":   "ws-default",
-			"controlSecretRef":   map[string]any{"name": "app-control", "namespace": "ws-default"},
+			"railgridNetworkPhase": infrav1alpha1.RailgridNetworkPhaseRuntime,
+			"phase":                "Ready",
+			"observedGeneration":   int64(2),
+			"conditions":           []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}},
+			"runtimeNamespace":     "ws-default",
+			"controlSecretRef":     map[string]any{"name": "app-control", "namespace": "ws-default"},
 			"components": map[string]any{"backend": map[string]any{
 				"controlServiceRef": map[string]any{"name": "app-backend-control", "namespace": "ws-default"},
 			}},
@@ -150,7 +150,7 @@ func TestHandlerExecDeniesSetupPhaseBeforeExecutorOrAuthorizer(t *testing.T) {
 	h := newExecHandler(t, executor, authorizer, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	instance := h.instances.(*fakeInstanceGetter).instance
 	status := instance.Object["status"].(map[string]any)
-	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
 	status["phase"] = "Ready"
 
@@ -184,11 +184,11 @@ func TestHandlerExecIgnoresTamperedTenantSpecPhase(t *testing.T) {
 	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	instance := h.instances.(*fakeInstanceGetter).instance
 	status := instance.Object["status"].(map[string]any)
-	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
 	status["phase"] = "Ready"
 	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
-		infrav1alpha1.FarosNetworkPhaseField: infrav1alpha1.FarosNetworkPhaseRuntime,
+		infrav1alpha1.RailgridNetworkPhaseField: infrav1alpha1.RailgridNetworkPhaseRuntime,
 	}
 
 	rec := httptest.NewRecorder()
@@ -202,12 +202,12 @@ func TestHandlerExecDeniesStaleReadyMirrorDuringRuntimeConvergence(t *testing.T)
 	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	instance := h.instances.(*fakeInstanceGetter).instance
 	status := instance.Object["status"].(map[string]any)
-	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseRuntime
+	status[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseRuntime
 	status["phase"] = "Ready"
 	status["observedGeneration"] = int64(2)
 	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}
 	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
-		infrav1alpha1.FarosNetworkPhaseField: infrav1alpha1.FarosNetworkPhaseRuntime,
+		infrav1alpha1.RailgridNetworkPhaseField: infrav1alpha1.RailgridNetworkPhaseRuntime,
 	}
 
 	rec := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestHandlerExecPreservesOrdinaryDevelopmentCompatibility(t *testing.T) {
 	h := newExecHandler(t, &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	instance := h.instances.(*fakeInstanceGetter).instance
 	instance.Object["spec"].(map[string]any)["template"] = "ordinary-development"
-	instance.Object["status"].(map[string]any)[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+	instance.Object["status"].(map[string]any)[infrav1alpha1.RailgridNetworkPhaseStatusField] = infrav1alpha1.RailgridNetworkPhaseSetup
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))

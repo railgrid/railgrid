@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,11 +32,11 @@ import (
 )
 
 const (
-	testHost    = "my-shop-abcdef123456.apps.test.faros"
+	testHost    = "my-shop-abcdef123456.apps.test.railgrid"
 	testHubURL  = "https://hub.internal.test"
 	testHubPub  = "https://hub.public.test"
 	testCluster = "abc123cluster"
-	testGroup   = "infrastructure.faros.sh"
+	testGroup   = "infrastructure.railgrid.ai"
 	testRes     = "applications"
 	testName    = "my-shop"
 )
@@ -280,7 +280,7 @@ func TestHostMismatchIsRejectedBeforeUpstream(t *testing.T) {
 	upstream, record := newUpstream(t, nil)
 	p := newProxy(t, publicConfig(upstream.URL))
 	r := appRequest("/")
-	r.Host = "other-app.apps.test.faros"
+	r.Host = "other-app.apps.test.railgrid"
 	rec := doRequest(p, r)
 	if rec.Code != http.StatusMisdirectedRequest {
 		t.Fatalf("status = %d, want 421", rec.Code)
@@ -535,7 +535,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	r := appRequest("/")
 	r.Header.Set("Authorization", "Bearer user-token")
 	r.Header.Set("X-Forwarded-For", "6.6.6.6")
-	r.Header.Set("X-Faros-Anything", "spoof")
+	r.Header.Set("X-Railgrid-Anything", "spoof")
 	r.Header.Set("Via", "evil")
 	r.Header.Set("X-Custom-App", "keep-me")
 	r.AddCookie(&http.Cookie{Name: returnCookieName("in-flight"), Value: "platform-state"})
@@ -547,7 +547,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	h := record.headers[0]
-	for _, banned := range []string{"Authorization", "X-Forwarded-For", "X-Faros-Anything", "Via"} {
+	for _, banned := range []string{"Authorization", "X-Forwarded-For", "X-Railgrid-Anything", "Via"} {
 		if h.Get(banned) != "" {
 			t.Errorf("%s reached upstream: %q", banned, h.Get(banned))
 		}
@@ -562,7 +562,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 
 func TestUpstreamSetCookieDomainIsStripped(t *testing.T) {
 	upstream, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.faros; Path=/; Secure")
+		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.railgrid; Path=/; Secure")
 		w.Header().Add("Set-Cookie", SessionCookieName+"=forged; Path=/")
 		w.Header().Add("Set-Cookie", returnCookieName("forged")+"=forged; Path=/")
 		_, _ = w.Write([]byte("ok"))

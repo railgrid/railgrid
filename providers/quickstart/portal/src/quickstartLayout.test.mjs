@@ -18,8 +18,8 @@ test('Quickstart keeps code dumps flat inside the two card panels', async () => 
 
 test('Quickstart comparison geometry is locally bounded and container responsive', async () => {
   const styles = await read('./style.css')
-  const grid = styles.match(/faros-provider-quickstart \.quickstart-grid\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
-  const dump = styles.match(/faros-provider-quickstart \.quickstart-dump\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const grid = styles.match(/railgrid-provider-quickstart \.quickstart-grid\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const dump = styles.match(/railgrid-provider-quickstart \.quickstart-dump\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
 
   assert.match(grid, /width:\s*100%/)
   assert.match(grid, /max-width:\s*64rem/)

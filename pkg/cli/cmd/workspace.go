@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,12 +33,12 @@ func newWorkspaceCommand() *cobra.Command {
 		Long: `A workspace is the Kubernetes-style API you work in: edges, providers and
 their resources live there, and access is per workspace.
 
-  faros workspace list                      # workspaces in the current org
-  faros workspace list --org acme
-  faros workspace members                   # members of the current workspace
-  faros workspace members --workspace platform
-  faros workspace create "Platform"
-  faros use --workspace platform            # make it the kubectl target`,
+  railgrid workspace list                      # workspaces in the current org
+  railgrid workspace list --org acme
+  railgrid workspace members                   # members of the current workspace
+  railgrid workspace members --workspace platform
+  railgrid workspace create "Platform"
+  railgrid use --workspace platform            # make it the kubectl target`,
 	}
 	target.addFlags(cmd)
 	cmd.AddCommand(newWorkspaceListCommand(&target), newWorkspaceCreateCommand(&target), newMembersCommand(workspaceScope, &target))
@@ -123,7 +123,7 @@ func newWorkspaceCreateCommand(target *hubTarget) *cobra.Command {
 			if err := s.orgScoped().do(ctx, http.MethodPost, s.Hub+"/api/orgs/"+s.Org.UUID+"/workspaces", map[string]string{"displayName": args[0]}, &created); err != nil {
 				return fmt.Errorf("creating workspace: %w", err)
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q created (%s) in organization %q.\nSwitch to it with: faros use --org %s --workspace %s\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q created (%s) in organization %q.\nSwitch to it with: railgrid use --org %s --workspace %s\n",
 				displayLabel(created.DisplayName, created.UUID), created.UUID, displayLabel(s.Org.DisplayName, s.Org.UUID), s.Org.UUID, created.UUID)
 			return nil
 		},

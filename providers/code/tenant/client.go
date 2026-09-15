@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 
 // For returns a dynamic client scoped to the workspace's logical-cluster ID,
 // authenticating as the caller via token. Cached per (cluster, token). The
-// cluster MUST be the kcp logical-cluster ID (X-Faros-Cluster), never a
+// cluster MUST be the kcp logical-cluster ID (X-Railgrid-Cluster), never a
 // workspace path — the hub proxy rejects path-form addressing.
 func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
 	if token == "" {

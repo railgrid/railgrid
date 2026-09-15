@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package externalkcp implements e2e tests for faros running with an external
+// Package externalkcp implements e2e tests for railgrid running with an external
 // kcp instance (deployed via Helm into the hub kind cluster) instead of
 // embedded kcp.  Static token authentication is used; no Dex/OIDC required.
 package externalkcp
@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 
 	testenv = env.NewWithConfig(cfg)
 
-	if os.Getenv("FAROS_USE_EXISTING_CLUSTERS") == "true" {
+	if os.Getenv("RAILGRID_USE_EXISTING_CLUSTERS") == "true" {
 		testenv.Setup(framework.UseExistingClustersWithExternalKCP(repoRoot))
 	} else {
 		testenv.Setup(framework.SetupClustersWithExternalKCP(repoRoot))

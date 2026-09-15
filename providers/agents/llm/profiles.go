@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package llm resolves a tenant's model credentials and builds Eino chat
-// models. Credentials live in a Secret (faros-agents-llm) in the tenant
+// models. Credentials live in a Secret (railgrid-agents-llm) in the tenant
 // workspace, holding one or more named profiles; agents map run purposes
 // (chat, background, compaction) to profile names.
 package llm
@@ -38,15 +38,15 @@ const (
 	// SecretName is the legacy single-credential Secret (kept for back-compat
 	// with LoadProfiles). New code uses named credentials — see
 	// ModelCredentialPrefix.
-	SecretName = "faros-agents-llm"
+	SecretName = "railgrid-agents-llm"
 	// SecretNamespace is the namespace credential Secrets live in.
 	SecretNamespace = "default"
 
 	// ModelCredentialPrefix is the Secret-name prefix for a named model
-	// credential: faros-agents-model-<name>. Each credential is its own Secret
+	// credential: railgrid-agents-model-<name>. Each credential is its own Secret
 	// so it can be shared/assigned independently, and agents reference one by
 	// name (Agent.spec.models["chat"]).
-	ModelCredentialPrefix = "faros-agents-model-"
+	ModelCredentialPrefix = "railgrid-agents-model-"
 
 	// DefaultProfile is used when an agent does not map a purpose to a profile.
 	DefaultProfile = "chat"
@@ -67,7 +67,7 @@ const (
 func CredentialSecretName(name string) string { return ModelCredentialPrefix + name }
 
 // LoadCredential reads a single named model credential Secret
-// (faros-agents-model-<name>) and returns its profile. The Secret carries flat
+// (railgrid-agents-model-<name>) and returns its profile. The Secret carries flat
 // keys: provider, baseURL, model, apiKey.
 func LoadCredential(ctx context.Context, c SecretGetter, name string) (Profile, error) {
 	sec, err := c.GetSecret(ctx, SecretNamespace, CredentialSecretName(name))

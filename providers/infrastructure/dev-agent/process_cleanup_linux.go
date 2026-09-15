@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -266,7 +266,7 @@ func execProcessHasMarker(pid int, marker string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	want := []byte("FAROS_EXEC_SESSION=" + marker)
+	want := []byte("RAILGRID_EXEC_SESSION=" + marker)
 	for _, field := range bytes.Split(environ, []byte{0}) {
 		if bytes.Equal(field, want) {
 			return true, nil

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -66,27 +66,27 @@ const (
 	// ServiceAccount that a tenant member cannot write for themselves; every
 	// other label, annotation, and even the object name is derived from public
 	// inputs inside a workspace where members hold cluster-admin.
-	AnnotationDelegatedProof = "faros.sh/delegated-user-proof"
+	AnnotationDelegatedProof = "railgrid.ai/delegated-user-proof"
 
 	// delegatedProofDomain versions and domain-separates the MAC input, so a
 	// proof can never be replayed into a different keyed construction should
 	// one ever share this key.
-	delegatedProofDomain = "faros.sh/delegated-user-proof/v1"
+	delegatedProofDomain = "railgrid.ai/delegated-user-proof/v1"
 
 	// AnnotationDelegatedProofVersion records which MAC construction signed
 	// the account. Version 2 also covers the provider's owner org
 	// (AnnotationDelegatedProviderOrg); an account without it carries a v1
 	// proof, which names the provider but not whose it is.
-	AnnotationDelegatedProofVersion = "faros.sh/delegated-user-proof-version"
+	AnnotationDelegatedProofVersion = "railgrid.ai/delegated-user-proof-version"
 	delegatedProofVersionCurrent    = "2"
-	delegatedProofDomainV2          = "faros.sh/delegated-user-proof/v2"
+	delegatedProofDomainV2          = "railgrid.ai/delegated-user-proof/v2"
 
 	// delegatedProofKeySecretName is the Secret holding the HMAC key, in the
 	// hub-internal workspace/namespace the hub already uses for its
-	// cross-replica state (root:faros:system:controllers, namespace
-	// faros-hub — see pkg/hub/kcp.HubSystemNamespace). Nothing grants a
+	// cross-replica state (root:railgrid:system:controllers, namespace
+	// railgrid-hub — see pkg/hub/kcp.HubSystemNamespace). Nothing grants a
 	// tenant, provider, or user identity access to that workspace.
-	delegatedProofKeySecretName = "faros-delegated-user-proof-key"
+	delegatedProofKeySecretName = "railgrid-delegated-user-proof-key"
 	delegatedProofKeySecretKey  = "key"
 
 	// delegatedProofKeyLength is what a freshly generated key gets. Existing
@@ -133,7 +133,7 @@ type KCPProofKeySource struct {
 // segment), and the namespace within it.
 //
 // SECURITY: the workspace this config points at must be one no tenant,
-// provider, or user identity can reach. root:faros:system:controllers is that
+// provider, or user identity can reach. root:railgrid:system:controllers is that
 // workspace today; it also holds the hub's leader-election Lease and the
 // shared session Secrets, so a leak there is already a total compromise.
 func NewKCPProofKeySource(config *rest.Config, namespace string) (*KCPProofKeySource, error) {

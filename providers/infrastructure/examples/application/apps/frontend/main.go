@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -71,7 +71,7 @@ const pageHTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>faros · 3-tier demo</title>
+  <title>railgrid · 3-tier demo</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
@@ -88,7 +88,7 @@ const pageHTML = `<!doctype html>
   </style>
 </head>
 <body>
-  <h1>faros 3-tier demo</h1>
+  <h1>railgrid 3-tier demo</h1>
   <p class="sub">UI (served at <code>/</code>) → API (<code>/api</code>) → Postgres. The list below is fetched from the backend in your browser; the exposure layer routes <code>/api</code> to the backend service.</p>
 
   <form id="form">

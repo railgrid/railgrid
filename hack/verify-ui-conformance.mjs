@@ -803,7 +803,7 @@ function isTokenAuthorityDeclaration(source, masked, index) {
   const brace = masked.lastIndexOf('{', index - 1)
   const declarationStart = Math.max(lineStart, semicolon, brace) + 1
   const prefix = masked.slice(declarationStart, index)
-  return /--(?:color|faros)-[A-Za-z0-9_-]+\s*:\s*[^;{}]*$/.test(prefix)
+  return /--(?:color|railgrid)-[A-Za-z0-9_-]+\s*:\s*[^;{}]*$/.test(prefix)
 }
 
 function scanColors(diagnostics, source, masked, starts) {
@@ -1036,9 +1036,9 @@ function main() {
       console.log(usage())
       return
     }
-    const envCanonical = process.env.FAROS_UI_CONFORMANCE_CANONICAL_ROOTS ?? process.env.UI_CONFORMANCE_CANONICAL_ROOTS
-    const envProvider = process.env.FAROS_UI_CONFORMANCE_PROVIDER_ROOTS ?? process.env.UI_CONFORMANCE_PROVIDER_ROOTS
-    const envExceptions = process.env.FAROS_UI_CONFORMANCE_EXCEPTIONS ?? process.env.UI_CONFORMANCE_EXCEPTIONS
+    const envCanonical = process.env.RAILGRID_UI_CONFORMANCE_CANONICAL_ROOTS ?? process.env.UI_CONFORMANCE_CANONICAL_ROOTS
+    const envProvider = process.env.RAILGRID_UI_CONFORMANCE_PROVIDER_ROOTS ?? process.env.UI_CONFORMANCE_PROVIDER_ROOTS
+    const envExceptions = process.env.RAILGRID_UI_CONFORMANCE_EXCEPTIONS ?? process.env.UI_CONFORMANCE_EXCEPTIONS
     if (envCanonical && !options.canonicalRoots) options.canonicalRoots = splitOverride(envCanonical)
     if (envProvider && !options.providerRoots) options.providerRoots = splitOverride(envProvider)
     if (envExceptions && !options.exceptionsPath) options.exceptionsPath = envExceptions

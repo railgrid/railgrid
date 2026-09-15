@@ -1,7 +1,7 @@
 name: Split code provider
 
 # Publishes providers/code from this monorepo to the standalone,
-# read-only mirror at faroshq/provider-code, preserving git history.
+# read-only mirror at railgrid/provider-code, preserving git history.
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
@@ -18,7 +18,7 @@ name: Split code provider
 #
 # Required secret: CODE_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
-#   faroshq/provider-code. (A deploy key is scoped to one repo, so this is a
+#   railgrid/provider-code. (A deploy key is scoped to one repo, so this is a
 #   distinct key from the other provider mirrors.)
 
 on:
@@ -43,7 +43,7 @@ concurrency:
 
 env:
   PREFIX: providers/code
-  TARGET_REPO: git@github.com:faroshq/provider-code.git
+  TARGET_REPO: git@github.com:railgrid/provider-code.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 

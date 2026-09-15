@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-const SIDEBAR_EXPANDED_KEY = 'faros-sidebar-expanded'
+const SIDEBAR_EXPANDED_KEY = 'railgrid-sidebar-expanded'
 
 function readSidebarExpansion(): boolean {
   try {

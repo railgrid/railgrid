@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ func TestParseClusterServiceTargetAccepts(t *testing.T) {
 		scheme string
 	}{{
 		name: "what the infrastructure chart writes in operator mode",
-		url:  "http://infrastructure-faros-infrastructure-provider.faros-infrastructure-provider.svc.cluster.local:8081",
-		svc:  "infrastructure-faros-infrastructure-provider",
-		ns:   "faros-infrastructure-provider", port: 8081, scheme: "http",
+		url:  "http://infrastructure-railgrid-infrastructure-provider.railgrid-infrastructure-provider.svc.cluster.local:8081",
+		svc:  "infrastructure-railgrid-infrastructure-provider",
+		ns:   "railgrid-infrastructure-provider", port: 8081, scheme: "http",
 	}, {
 		name: "short cluster-DNS form",
-		url:  "http://code.faros-provider-code.svc:8083",
-		svc:  "code", ns: "faros-provider-code", port: 8083, scheme: "http",
+		url:  "http://code.railgrid-provider-code.svc:8083",
+		svc:  "code", ns: "railgrid-provider-code", port: 8083, scheme: "http",
 	}, {
 		name: "https defaults to 443",
 		url:  "https://x.y.svc.cluster.local",

@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.foundations.colors","title":"Violet Circuit color tokens","kind":"token","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The host and standalone stylesheet authorities expose the shared token vocabulary and dark fallbacks; the conformance scanner records the one accepted text-muted migration value."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/colors.md#color-tokens","role":"design"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"provider-sdk/portalkit/faros-ui.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/verify-ui-conformance.mjs","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[]}
+{"schema":1,"id":"design.foundations.colors","title":"Violet Circuit color tokens","kind":"token","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"The host and standalone stylesheet authorities expose the shared token vocabulary and dark fallbacks; the conformance scanner records the one accepted text-muted migration value."},"appliesTo":["portal","provider-portals","portalkit","dex"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/colors.md#color-tokens","role":"design"},{"path":"portal/src/assets/main.css","role":"implementation"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"},{"path":"hack/dex/web/static/main.css","role":"implementation"},{"path":"hack/verify-ui-conformance.mjs","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"command","ref":"make verify-ui-conformance","status":"passing"}]},"relatedDocuments":[]}
 ---
 
 # Color tokens
@@ -7,7 +7,7 @@
 Tokens are defined once in `portal/src/assets/main.css` (`@theme` is the dark
 base and `html.light` is the override). They cascade into every light-DOM
 provider. The light column below describes portal and provider themes; Dex is a
-fixed-dark standalone surface and uses its local `--faros-*` dark namespace.
+fixed-dark standalone surface and uses its local `--railgrid-*` dark namespace.
 Standalone pages otherwise use the same values in their local fallback
 namespace.
 

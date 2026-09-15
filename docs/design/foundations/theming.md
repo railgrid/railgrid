@@ -14,7 +14,7 @@ necessary, inspect the warning in `main.css` first.
 
 Dex auth is a fixed-dark standalone exception, not a participant in the
 portal theme toggle. `hack/dex/web/static/main.css` sets `color-scheme: dark`
-and the dark `--faros-*` palette. Dex's dark and light theme hook files remain
+and the dark `--railgrid-*` palette. Dex's dark and light theme hook files remain
 available for its URL contract, but the light hook contains no alternate
 palette; do not document or expose a Dex light mode.
 

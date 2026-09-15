@@ -24,7 +24,7 @@ describe('Edges portal conformance', () => {
   })
 
   it('keeps route-owned creation and detail surfaces out of collection overlays', () => {
-    expect(styles).toMatch(/faros-provider-edges \.edges-app \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*gap: 16px;/)
+    expect(styles).toMatch(/railgrid-provider-edges \.edges-app \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*gap: 16px;/)
     expect(app).toMatch(/<WorkloadCreate[\s\S]*route\.deploy\?\.resource === 'workload'/)
     expect(app).toMatch(/<ServiceCreate[\s\S]*route\.create\?\.resource === 'service'/)
     expect(app).toMatch(/<Wizard[\s\S]*route\.connect\?\.resource === 'edge'/)
@@ -32,7 +32,7 @@ describe('Edges portal conformance', () => {
     expect(app).not.toMatch(/const selected = ref/)
     expect(services).not.toMatch(/const showCreate = ref/)
     expect(workloads).not.toMatch(/const showCreate = ref/)
-    const sharedStyles = readSource('portalkit/faros-ui.css')
+    const sharedStyles = readSource('portalkit/railgrid-ui.css')
     expect(readSource('Wizard.vue')).toMatch(/class="wiz-steps k-wizard-steps"/)
     expect(sharedStyles).toMatch(/\.k-wizard-steps\s*\{[^}]*grid-auto-columns:\s*minmax\(0, 1fr\)/)
     expect(sharedStyles).toMatch(/\.k-wizard-steps > li\[aria-current='step'\]\s*\{[^}]*border-bottom-color:\s*var\(--color-accent/)

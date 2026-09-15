@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ You may obtain a copy of the License at
 // web_search rides the workspace's shared searxng instance (the Studio
 // singleton, controller/studio) through the infrastructure data plane with
 // the caller's bearer — the instance has no public URL and no credential of
-// its own; the caller's faros RBAC on the instance is the gate.
+// its own; the caller's railgrid RBAC on the instance is the gate.
 
 package api
 
@@ -120,7 +120,7 @@ func projectAssistantWebFetch(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "faros-app-studio/0.1 (+https://github.com/faroshq/faros)")
+	req.Header.Set("User-Agent", "railgrid-app-studio/0.1 (+https://github.com/railgrid/railgrid)")
 	resp, err := webGuardedClient.Do(req)
 	if err != nil {
 		return "", err

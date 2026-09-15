@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,8 +40,8 @@ var (
 )
 
 // normalizeHubURL ensures the URL has a scheme. If no scheme is present,
-// https:// is prepended. This allows users to type just "hub.faros.sh" instead
-// of "https://hub.faros.sh".
+// https:// is prepended. This allows users to type just "hub.railgrid.ai" instead
+// of "https://hub.railgrid.ai".
 func normalizeHubURL(u string) string {
 	if u == "" {
 		return u
@@ -53,8 +53,8 @@ func normalizeHubURL(u string) string {
 }
 
 // loadRestConfig returns the client config for talking to the hub. It uses
-// the "faros" context whenever the kubeconfig has one, so hub commands keep
-// working while 'faros connect' has pointed kubectl's current context at an
+// the "railgrid" context whenever the kubeconfig has one, so hub commands keep
+// working while 'railgrid connect' has pointed kubectl's current context at an
 // edge; without one it falls back to the current context (or in-cluster).
 func loadRestConfig() (*rest.Config, error) {
 	var config *rest.Config
@@ -65,8 +65,8 @@ func loadRestConfig() (*rest.Config, error) {
 	}
 	overrides := &clientcmd.ConfigOverrides{}
 	if raw, rerr := loadingRules.Load(); rerr == nil {
-		if _, ok := raw.Contexts[farosContextName]; ok {
-			overrides.CurrentContext = farosContextName
+		if _, ok := raw.Contexts[railgridContextName]; ok {
+			overrides.CurrentContext = railgridContextName
 		}
 	}
 	if kubeconfig != "" || overrides.CurrentContext != "" {

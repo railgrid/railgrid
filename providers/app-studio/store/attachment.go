@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,7 +77,7 @@ var (
 // AttachmentStorageFinalizer is held by the Project controller while its
 // attachment scope is being closed. Keeping the name in the storage package
 // prevents the API and controller from drifting onto different finalizers.
-const AttachmentStorageFinalizer = "ai.faros.sh/attachment-storage"
+const AttachmentStorageFinalizer = "ai.railgrid.ai/attachment-storage"
 
 // AttachmentQuota controls attachment storage admission. WorkspaceMaxBytes
 // applies to bound and draft rows across every project in a workspace. The

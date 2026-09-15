@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/faroshq/provider-app-studio/workspace"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // projectAssistantToolDisclosureMinimal keeps the action feed opaque: product
@@ -1206,7 +1206,7 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 		}
 	}
 	if category == "runtime" && projectAssistantPreviewHubOriginUnconfigured(value) {
-		return "Private preview inspection is unavailable: this App Studio deployment has no usable FAROS_HUB_PUBLIC_URL (Helm chart value hub.publicURL). Ask the platform operator to set it."
+		return "Private preview inspection is unavailable: this App Studio deployment has no usable RAILGRID_HUB_PUBLIC_URL (Helm chart value hub.publicURL). Ask the platform operator to set it."
 	}
 	return map[string]string{
 		"timeout":    "The action did not finish before its time limit.",
@@ -1222,7 +1222,7 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 // errPrivatePreviewHubOriginUnconfigured text: a deployment configuration gap
 // that surfaces as a preview failure.
 func projectAssistantPreviewHubOriginUnconfigured(value string) bool {
-	return strings.Contains(value, "no usable faros_hub_public_url")
+	return strings.Contains(value, "no usable railgrid_hub_public_url")
 }
 
 func projectAssistantActionDiagnosticCategory(raw string) string {

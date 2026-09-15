@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,14 +27,14 @@ import (
 	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func applicationTemplateObject() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
@@ -45,7 +45,7 @@ func applicationTemplateObject() *unstructured.Unstructured {
 				},
 			},
 			"instanceCRD": map[string]any{
-				"group":    "infrastructure.faros.sh",
+				"group":    "infrastructure.railgrid.ai",
 				"version":  "v1alpha1",
 				"resource": "applications",
 				"kind":     "Application",
@@ -55,14 +55,14 @@ func applicationTemplateObject() *unstructured.Unstructured {
 				"components": map[string]any{
 					"frontend": map[string]any{
 						"workspacePath": "web",
-						"devImage":      "${faros.devImage.node}",
+						"devImage":      "${railgrid.devImage.node}",
 						"startCommand":  "npm run dev",
 						"port":          "frontend",
 						"imageInput":    "frontendImage",
 					},
 					"backend": map[string]any{
 						"workspacePath": "api",
-						"devImage":      "${faros.devImage.node}",
+						"devImage":      "${railgrid.devImage.node}",
 						"startCommand":  "npm run dev || npm start",
 						"port":          "backend",
 						"imageInput":    "backendImage",
@@ -78,7 +78,7 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectTemplateInfoFromUnstructured: %v", err)
 	}
-	if info.APIVersion != "infrastructure.faros.sh/v1alpha1" || info.Kind != "Instance" || info.Resource != "instances" {
+	if info.APIVersion != "infrastructure.railgrid.ai/v1alpha1" || info.Kind != "Instance" || info.Resource != "instances" {
 		t.Errorf("instance coordinates = %s/%s/%s", info.APIVersion, info.Kind, info.Resource)
 	}
 	// The runtime half of the contract must survive extraction: without the
@@ -208,8 +208,8 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
 		t.Fatalf("values: %v", err)
 	}
-	if values["name"] != "shop-dev" || values["farosMode"] != "development" || values["access"] != "private" {
-		t.Errorf("values = %v, want name=shop-dev farosMode=development access=private", values)
+	if values["name"] != "shop-dev" || values["railgridMode"] != "development" || values["access"] != "private" {
+		t.Errorf("values = %v, want name=shop-dev railgridMode=development access=private", values)
 	}
 }
 
@@ -245,7 +245,7 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
 		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
 		ActionsCABundle:    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
-		TenantPath:         "root:faros:tenants:org:ws",
+		TenantPath:         "root:railgrid:tenants:org:ws",
 		Org:                "org",
 		Workspace:          "ws",
 		Project:            "shop",
@@ -261,12 +261,12 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		"farosActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
-		"farosActionsBaseURL":     "https://hub.example/services/providers/app-studio",
-		"farosActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
-		"farosActionsTenantPath":  "root:faros:tenants:org:ws",
-		"farosActionsProjectUID":  "test-project-uid-shop",
-		"farosActionsInstance":    "shop-dev",
+		"railgridActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
+		"railgridActionsBaseURL":     "https://hub.example/services/providers/app-studio",
+		"railgridActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+		"railgridActionsTenantPath":  "root:railgrid:tenants:org:ws",
+		"railgridActionsProjectUID":  "test-project-uid-shop",
+		"railgridActionsInstance":    "shop-dev",
 	} {
 		if values[key] != want {
 			t.Errorf("%s = %v, want %q", key, values[key], want)
@@ -371,19 +371,19 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		Values: runtime.RawExtension{Raw: []byte(`{
 			"name":"shop-dev",
-			"farosMode":"development",
-			"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-			"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
-			"farosActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----",
-			"farosActionsTenantPath":"stale-tenant",
-			"farosActionsProject":"stale-project"
+			"railgridMode":"development",
+			"railgridActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"railgridActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"railgridActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----",
+			"railgridActionsTenantPath":"stale-tenant",
+			"railgridActionsProject":"stale-project"
 		}`)},
 	}
 
 	updated, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup}).projectDevelopmentRuntimeBinding(binding, p, identity{
 		tenant:        "cluster-a",
 		clusterID:     "cluster-a",
-		workspacePath: "root:faros:tenants:org:ws",
+		workspacePath: "root:railgrid:tenants:org:ws",
 		orgUUID:       "org",
 		workspaceUUID: "ws",
 	})
@@ -394,19 +394,19 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
 		t.Fatalf("updated values: %v", err)
 	}
-	for _, key := range []string{"farosActionsExchangeURL", "farosActionsBaseURL", "farosActionsCABundle"} {
+	for _, key := range []string{"railgridActionsExchangeURL", "railgridActionsBaseURL", "railgridActionsCABundle"} {
 		if _, found := values[key]; found {
 			t.Errorf("stale %s survived missing external URL: %v", key, values[key])
 		}
 	}
 	for key, want := range map[string]string{
-		"farosActionsTenantPath":  "root:faros:tenants:org:ws",
-		"farosActionsOrg":         "org",
-		"farosActionsWorkspace":   "ws",
-		"farosActionsProject":     "shop",
-		"farosActionsProjectUID":  "project-uid",
-		"farosActionsEnvironment": projectDevelopmentEnvironmentName,
-		"farosActionsInstance":    "shop-dev",
+		"railgridActionsTenantPath":  "root:railgrid:tenants:org:ws",
+		"railgridActionsOrg":         "org",
+		"railgridActionsWorkspace":   "ws",
+		"railgridActionsProject":     "shop",
+		"railgridActionsProjectUID":  "project-uid",
+		"railgridActionsEnvironment": projectDevelopmentEnvironmentName,
+		"railgridActionsInstance":    "shop-dev",
 	} {
 		if values[key] != want {
 			t.Errorf("%s = %v, want rebuilt trusted value %q", key, values[key], want)
@@ -432,9 +432,9 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		Values: runtime.RawExtension{Raw: []byte(`{
 			"name":"shop-dev",
-			"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-			"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
-			"farosActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----"
+			"railgridActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"railgridActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"railgridActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----"
 		}`)},
 	}
 
@@ -446,7 +446,7 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
 		t.Fatalf("updated values: %v", err)
 	}
-	for _, key := range []string{"farosActionsExchangeURL", "farosActionsBaseURL", "farosActionsCABundle"} {
+	for _, key := range []string{"railgridActionsExchangeURL", "railgridActionsBaseURL", "railgridActionsCABundle"} {
 		if _, found := values[key]; found {
 			t.Errorf("revoked grant left stale %s: %v", key, values[key])
 		}
@@ -675,9 +675,9 @@ func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
 	server.Register(router)
 
 	request := httptest.NewRequest(http.MethodPut, "/api/projects/demo/template", strings.NewReader(`{"template":"universal-coding-sandbox"}`))
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-User", "alice")
 	request.Header.Set("Authorization", "Bearer test-token")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -734,7 +734,7 @@ func TestProjectDevelopmentTargetRefs(t *testing.T) {
 	target := projectDevelopmentSyncTargetInfo{
 		Resource:     "applications",
 		Kind:         "Application",
-		APIVersion:   "infrastructure.faros.sh/v1alpha1",
+		APIVersion:   "infrastructure.railgrid.ai/v1alpha1",
 		ResourceName: "shop-dev",
 		Components:   devComponentPaths(map[string]string{"frontend": "web", "backend": "api"}),
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/faros/pkg/util/identity"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // devStaticTokens are the static bearer tokens used by the dev setup. The
@@ -81,9 +81,9 @@ const (
 	// kcpImageTag pins the kcp container image to a specific build. The chart
 	// default (chart appVersion v0.30.0) panics on startup with:
 	//   "WorkspacesByMountReference … no matches for kind Edge in version
-	//    faros.sh/v1alpha1"
-	// when a Workspace with a faros mount-reference exists in etcd before the
-	// faros APIBinding is wired up. This commit (matches go.mod
+	//    railgrid.ai/v1alpha1"
+	// when a Workspace with a railgrid mount-reference exists in etcd before the
+	// railgrid APIBinding is wired up. This commit (matches go.mod
 	// github.com/kcp-dev/kcp v0.31.1-0.20260429083913-36c9ef30f3f1) carries the
 	// upstream fix that tolerates a missing REST mapping in the indexer.
 	kcpImageTag = "36c9ef30f"
@@ -112,8 +112,8 @@ const (
 	certManagerVersion = "v1.17.2"
 
 	// kcp admin certificate (issued by kcp's cert-manager Issuer)
-	kcpAdminCertName   = "faros-e2e-admin"
-	kcpAdminSecretName = "faros-e2e-admin"
+	kcpAdminCertName   = "railgrid-e2e-admin"
+	kcpAdminSecretName = "railgrid-e2e-admin"
 
 	// Secret name for kcp admin kubeconfig (mounted into hub pod)
 	kcpAdminKubeconfigSecret = "kcp-admin-kubeconfig"
@@ -136,7 +136,7 @@ func ensureKCPHelmRepo() error {
 	return nil
 }
 
-const selfSignedClusterIssuerName = "faros-selfsigned"
+const selfSignedClusterIssuerName = "railgrid-selfsigned"
 
 // ensureSelfSignedClusterIssuer creates a self-signed ClusterIssuer for KCP TLS.
 // Idempotent — safe to call on an existing issuer.
@@ -161,7 +161,7 @@ spec:
 
 // ensureDexCertificate creates the cert-manager Certificate that issues Dex's
 // TLS cert (secret devDexTLSSecret in devDexNamespace). Issued via the
-// faros-selfsigned ClusterIssuer. Also creates the namespace so the Certificate
+// railgrid-selfsigned ClusterIssuer. Also creates the namespace so the Certificate
 // has somewhere to land before the Dex Helm install runs.
 //
 // DNS SANs include the in-cluster service name (used by hub/kcp) plus
@@ -185,11 +185,11 @@ spec:
   secretName: %s
   duration: 8760h    # 1y
   renewBefore: 720h  # 30d
-  commonName: dex.faros-system.svc.cluster.local
+  commonName: dex.railgrid-system.svc.cluster.local
   dnsNames:
-    - dex.faros-system.svc.cluster.local
-    - dex.faros-system.svc
-    - dex.faros-system
+    - dex.railgrid-system.svc.cluster.local
+    - dex.railgrid-system.svc
+    - dex.railgrid-system
     - dex
     - localhost
   issuerRef:
@@ -373,7 +373,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 	}
 
 	// kcp advertises its internal APIExport endpoint URLs using the short
-	// hostname "kcp" (the Service name). The hub pod runs in faros-system, a
+	// hostname "kcp" (the Service name). The hub pod runs in railgrid-system, a
 	// different namespace, so "kcp" does not resolve via cluster DNS.
 	// Patch CoreDNS to rewrite "kcp" → "kcp.kcp.svc.cluster.local" so that
 	// the hub can reach kcp's virtual workspace API.
@@ -487,7 +487,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  commonName: faros-e2e-admin
+  commonName: railgrid-e2e-admin
   issuerRef:
     name: kcp-client-issuer
     kind: Issuer
@@ -508,7 +508,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  commonName: faros-e2e-admin
+  commonName: railgrid-e2e-admin
   issuerRef:
     name: kcp-front-proxy-client-issuer
     kind: Issuer
@@ -583,7 +583,7 @@ spec:
 	// is that identity.
 	//
 	// The hub pod also needs hostAliases so the short name "kcp" resolves in
-	// the faros-system namespace (handled by the faros-hub chart).
+	// the railgrid-system namespace (handled by the railgrid-hub chart).
 	_ = externalClientCert
 	_ = externalClientKey
 	inClusterServer := "https://kcp:6443/clusters/root"
@@ -608,34 +608,34 @@ spec:
 		return fmt.Errorf("writing external kcp kubeconfig: %w", err)
 	}
 
-	// --- 8. Ensure faros-system namespace exists ---
-	_, err = clientset.CoreV1().Namespaces().Get(ctx, "faros-system", metav1.GetOptions{})
+	// --- 8. Ensure railgrid-system namespace exists ---
+	_, err = clientset.CoreV1().Namespaces().Get(ctx, "railgrid-system", metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "faros-system"}}
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "railgrid-system"}}
 		if _, err := clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating faros-system namespace: %w", err)
+			return fmt.Errorf("creating railgrid-system namespace: %w", err)
 		}
 	} else if err != nil {
-		return fmt.Errorf("checking faros-system namespace: %w", err)
+		return fmt.Errorf("checking railgrid-system namespace: %w", err)
 	}
 
-	// --- 9. Create (or update) kcp-admin-kubeconfig Secret in faros-system ---
+	// --- 9. Create (or update) kcp-admin-kubeconfig Secret in railgrid-system ---
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      kcpAdminKubeconfigSecret,
-			Namespace: "faros-system",
+			Namespace: "railgrid-system",
 		},
 		Data: map[string][]byte{
 			"admin.kubeconfig": inClusterBytes,
 		},
 	}
-	_, err = clientset.CoreV1().Secrets("faros-system").Get(ctx, kcpAdminKubeconfigSecret, metav1.GetOptions{})
+	_, err = clientset.CoreV1().Secrets("railgrid-system").Get(ctx, kcpAdminKubeconfigSecret, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if _, err := clientset.CoreV1().Secrets("faros-system").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		if _, err := clientset.CoreV1().Secrets("railgrid-system").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("creating kcp-admin-kubeconfig secret: %w", err)
 		}
 	} else if err == nil {
-		if _, err := clientset.CoreV1().Secrets("faros-system").Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+		if _, err := clientset.CoreV1().Secrets("railgrid-system").Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
 			return fmt.Errorf("updating kcp-admin-kubeconfig secret: %w", err)
 		}
 	} else {
@@ -672,11 +672,11 @@ func buildKubeconfigWithCerts(server string, caCert, clientCert, clientKey []byt
 	return cfg
 }
 
-// installHelmChartWithExternalKCP installs or upgrades the faros-hub Helm chart
+// installHelmChartWithExternalKCP installs or upgrades the railgrid-hub Helm chart
 // with external kcp configuration.
 func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restConfig *rest.Config) error {
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "faros-system"}, "faros-system", "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "railgrid-system"}, "railgrid-system", "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
@@ -694,7 +694,7 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 	// its --shard-base-url (https://kcp:6443), and the hub's multicluster
 	// provider dials those URLs verbatim. The short name `kcp` only resolves
 	// via cluster DNS inside the `kcp` namespace, so the hub (in
-	// `faros-system`) needs an explicit /etc/hosts entry.
+	// `railgrid-system`) needs an explicit /etc/hosts entry.
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return fmt.Errorf("creating clientset for kcp service lookup: %w", err)
@@ -767,18 +767,18 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 
 	histClient := action.NewHistory(actionConfig)
 	histClient.Max = 1
-	if _, err := histClient.Run("faros-hub"); err == nil {
+	if _, err := histClient.Run("railgrid-hub"); err == nil {
 		upg := action.NewUpgrade(actionConfig)
-		upg.Namespace = "faros-system"
+		upg.Namespace = "railgrid-system"
 		upg.Wait = true
 		upg.Timeout = o.WaitForReadyTimeout
-		if _, err := upg.Run("faros-hub", chartObj, values); err != nil {
+		if _, err := upg.Run("railgrid-hub", chartObj, values); err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
 		}
 	} else {
 		inst := action.NewInstall(actionConfig)
-		inst.ReleaseName = "faros-hub"
-		inst.Namespace = "faros-system"
+		inst.ReleaseName = "railgrid-hub"
+		inst.Namespace = "railgrid-system"
 		inst.CreateNamespace = false // namespace already created in buildKCPKubeconfigs
 		inst.Wait = true
 		inst.Timeout = o.WaitForReadyTimeout

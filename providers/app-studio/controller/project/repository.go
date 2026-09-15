@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,17 +21,17 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // repositoryGVK is the code provider's Repository resource.
-var repositoryGVK = schema.GroupVersionKind{Group: "code.faros.sh", Version: "v1alpha1", Kind: "Repository"}
+var repositoryGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "Repository"}
 
 // projectRepositoryLabel matches the api layer's claim label/annotation so
 // handler-side cleanup and adoption keep recognizing reconciler-created
 // repositories.
-const projectRepositoryLabel = "app-studio.ai.faros.sh/project"
-const projectRepositoryUIDAnnotation = "app-studio.ai.faros.sh/project-uid"
+const projectRepositoryLabel = "app-studio.ai.railgrid.ai/project"
+const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
 
 // ensureRepository creates the Repository CR the spec binding names, if any
 // (autoInit creates the repo on the git host), and returns the observed
@@ -77,7 +77,7 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 		"metadata": map[string]any{
 			"name":        b.RepositoryRef,
 			"labels":      map[string]any{projectRepositoryLabel: p.Name},
-			"annotations": map[string]any{projectRepositoryLabel: p.Name, projectRepositoryUIDAnnotation: string(p.UID), "code.faros.sh/create-only": "true"},
+			"annotations": map[string]any{projectRepositoryLabel: p.Name, projectRepositoryUIDAnnotation: string(p.UID), "code.railgrid.ai/create-only": "true"},
 		},
 		"spec": map[string]any{
 			"connectionRef": b.ConnectionRef,

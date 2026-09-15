@@ -31,12 +31,12 @@ let stopped = false
 // SSH terminals dock at the bottom of the host portal (survives page
 // navigation) rather than rendering inline here. The provider is an isolated
 // micro-frontend and can't reach the host's Pinia terminal store directly, so
-// it dispatches a window-scoped "faros-terminal-open" CustomEvent that the
+// it dispatches a window-scoped "railgrid-terminal-open" CustomEvent that the
 // host TerminalDock listens for (see portal/src/components/TerminalDock.vue).
 function openTerminal() {
   if (!props.cluster) return
   window.dispatchEvent(
-    new CustomEvent('faros-terminal-open', {
+    new CustomEvent('railgrid-terminal-open', {
       detail: { edgeName: props.name, cluster: props.cluster, displayName: props.name },
     }),
   )
@@ -141,10 +141,10 @@ const macosJoinDisplay = computed(() => macosJoinSnippet(props.name, props.clust
 const macosJoinCommand = computed(() => macosJoinSnippet(props.name, props.cluster, edge.value?.joinToken ?? ''))
 const joinDisplay = computed(() => props.type === 'macos'
   ? macosJoinDisplay.value
-  : `faros agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
+  : `railgrid agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
 const joinCommand = computed(() => props.type === 'macos'
   ? macosJoinCommand.value
-  : `faros agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
+  : `railgrid agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
 
 const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : props.type === 'macos' ? 'macOS host' : 'Kubernetes cluster')
 const edgeDeleteLabel = computed(() => props.type === 'server' ? 'server' : props.type === 'macos' ? 'macOS host' : 'cluster')
@@ -170,7 +170,7 @@ const metadataRows = computed(() => {
   return [
     { label: 'Resource name', value: value?.name || props.name, mono: true },
     { label: 'Kind', value: value?.kind || (props.type === 'server' ? 'LinuxServer' : props.type === 'macos' ? 'MacOSServer' : 'KubernetesCluster'), mono: false },
-    { label: 'API version', value: value?.apiVersion || 'edges.faros.sh/v1alpha1', mono: true },
+    { label: 'API version', value: value?.apiVersion || 'edges.railgrid.ai/v1alpha1', mono: true },
     { label: 'Workspace', value: value?.workspacePath || '—', mono: true },
     { label: 'Namespace', value: value?.namespace || '—', mono: true },
     { label: 'UID', value: value?.uid || '—', mono: true },
@@ -261,17 +261,17 @@ const targetVersion = computed(() => {
   const m = upgradeCond.value?.message?.match(/upgrade available to (\S+?)\.?$/)
   return m?.[1] ?? 'latest'
 })
-const upgradeCliCommand = computed(() => `faros agent upgrade ${props.name}`)
+const upgradeCliCommand = computed(() => `railgrid agent upgrade ${props.name}`)
 const upgradeHelmSnippet = computed(
-  () => `helm upgrade faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\
-  --namespace faros-agent \\
+  () => `helm upgrade railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\
+  --namespace railgrid-agent \\
   --reuse-values \\
   --set agent.image.tag=${targetVersion.value}`,
 )
 const upgradeServerSnippet = computed(
-  () => `curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz
-sudo mv kubectl-faros /usr/local/bin/faros
-sudo systemctl restart faros-agent-${props.name}`,
+  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz
+sudo mv kubectl-railgrid /usr/local/bin/railgrid
+sudo systemctl restart railgrid-agent-${props.name}`,
 )
 
 // ─── Services ────────────────────────────────────────────────────────
@@ -612,7 +612,7 @@ onUnmounted(() => {
                   <div class="edge-disclosure__body">
                     <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : type === 'macos' ? 'Mac host' : 'cluster' }}:</p>
                     <div class="snippet">
-                      <div class="snippet-head"><span>faros agent join</span>
+                      <div class="snippet-head"><span>railgrid agent join</span>
                         <button
                           type="button"
                           class="k-icon-action snippet-copy"
@@ -643,12 +643,12 @@ onUnmounted(() => {
                           class="k-icon-action snippet-copy"
                           :aria-label="copyControlLabel('kube', 'kubectl command')"
                           :data-k-tip="copyControlLabel('kube', 'kubectl command')"
-                          @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
+                          @click="copy(`railgrid kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube', 'kubectl command')"
                         >
                           <component :is="copied === 'kube' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
-                      <pre>faros kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
+                      <pre>railgrid kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                     </div>
                   </div>
@@ -663,18 +663,18 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                   <div class="edge-disclosure__body">
                     <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
                     <div class="snippet">
-                      <div class="snippet-head"><span>faros ssh</span>
+                      <div class="snippet-head"><span>railgrid ssh</span>
                         <button
                           type="button"
                           class="k-icon-action snippet-copy"
                           :aria-label="copyControlLabel('ssh', 'SSH command')"
                           :data-k-tip="copyControlLabel('ssh', 'SSH command')"
-                          @click="copy(`faros ssh ${name}`, 'ssh', 'SSH command')"
+                          @click="copy(`railgrid ssh ${name}`, 'ssh', 'SSH command')"
                         >
                           <component :is="copied === 'ssh' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
-                      <pre>faros ssh {{ name }}</pre>
+                      <pre>railgrid ssh {{ name }}</pre>
                     </div>
                   </div>
                 </details>

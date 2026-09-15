@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ func TestCleanupExecProcessesTargetsOnlyPostBaselineExecutionProcesses(t *testin
 	}
 
 	marked := exec.Command("/bin/sleep", "30")
-	marked.Env = append(os.Environ(), "FAROS_EXEC_SESSION="+marker)
+	marked.Env = append(os.Environ(), "RAILGRID_EXEC_SESSION="+marker)
 	marked.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := marked.Start(); err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestCleanupExecProcessesTargetsOnlyPostBaselineExecutionProcesses(t *testin
 	markedDone := make(chan error, 1)
 	go func() { markedDone <- marked.Wait() }()
 	unmarkedDescendant := exec.Command("/bin/sleep", "30")
-	unmarkedDescendant.Env = append(os.Environ(), "FAROS_EXEC_SESSION=")
+	unmarkedDescendant.Env = append(os.Environ(), "RAILGRID_EXEC_SESSION=")
 	unmarkedDescendant.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := unmarkedDescendant.Start(); err != nil {
 		t.Fatal(err)

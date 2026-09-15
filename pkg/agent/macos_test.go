@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -50,11 +50,11 @@ func TestMacOSAgentIsServiceOnly(t *testing.T) {
 }
 
 func TestAgentConfigPersistenceRoundTripsClusterWithOwnerPermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".faros", "agent-macbook-01.json")
+	path := filepath.Join(t.TempDir(), ".railgrid", "agent-macbook-01.json")
 	want := AgentConfig{
 		HubURL:  "https://hub.example",
 		Token:   "durable-token",
-		Cluster: "root:faros:tenant",
+		Cluster: "root:railgrid:tenant",
 	}
 	if err := SaveAgentConfigAt(path, want); err != nil {
 		t.Fatalf("SaveAgentConfigAt: %v", err)
@@ -87,7 +87,7 @@ func TestAgentConfigPersistenceRoundTripsClusterWithOwnerPermissions(t *testing.
 }
 
 func TestSaveAgentConfigAtRepairsPermissionsOnExistingCredentialFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".faros", "agent-macbook-01.json")
+	path := filepath.Join(t.TempDir(), ".railgrid", "agent-macbook-01.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +131,10 @@ func TestSaveAgentKubeconfigRepairsPermissionsOnExistingCredentialFile(t *testin
 
 func TestAgentCredentialPathsUseWorkerHome(t *testing.T) {
 	home := filepath.Join("/Users", "worker")
-	if got, want := AgentConfigPathForHome(home, "macbook-01"), filepath.Join(home, ".faros", "agent-macbook-01.json"); got != want {
+	if got, want := AgentConfigPathForHome(home, "macbook-01"), filepath.Join(home, ".railgrid", "agent-macbook-01.json"); got != want {
 		t.Fatalf("AgentConfigPathForHome = %q, want %q", got, want)
 	}
-	if got, want := AgentKubeconfigPathForHome(home, "macbook-01"), filepath.Join(home, ".faros", "agent-macbook-01.kubeconfig"); got != want {
+	if got, want := AgentKubeconfigPathForHome(home, "macbook-01"), filepath.Join(home, ".railgrid", "agent-macbook-01.kubeconfig"); got != want {
 		t.Fatalf("AgentKubeconfigPathForHome = %q, want %q", got, want)
 	}
 }

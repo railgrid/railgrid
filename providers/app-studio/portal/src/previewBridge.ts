@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 The Faros Authors.
+ * Copyright 2026 The Railgrid Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 export const PREVIEW_BRIDGE_PROTOCOL_VERSION = 1
 
-export const PREVIEW_BRIDGE_ANNOTATION_START = 'faros.preview-bridge.annotation.start'
-export const PREVIEW_BRIDGE_ANNOTATION_STOP = 'faros.preview-bridge.annotation.stop'
-export const PREVIEW_BRIDGE_ANNOTATION_PINS = 'faros.preview-bridge.annotation.pins'
-export const PREVIEW_BRIDGE_ANNOTATION_PINS_RENDERED = 'faros.preview-bridge.annotation.pins-rendered'
-export const PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER = 'faros.preview-bridge.annotation.pin-hover'
-export const PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED = 'faros.preview-bridge.annotation.pin-selected'
-export const PREVIEW_BRIDGE_ANNOTATION_SELECTED = 'faros.preview-bridge.annotation.selected'
-export const PREVIEW_BRIDGE_ANNOTATION_CANCELLED = 'faros.preview-bridge.annotation.cancelled'
-export const PREVIEW_BRIDGE_ANNOTATION_MODE = 'faros.preview-bridge.annotation.mode'
+export const PREVIEW_BRIDGE_ANNOTATION_START = 'railgrid.preview-bridge.annotation.start'
+export const PREVIEW_BRIDGE_ANNOTATION_STOP = 'railgrid.preview-bridge.annotation.stop'
+export const PREVIEW_BRIDGE_ANNOTATION_PINS = 'railgrid.preview-bridge.annotation.pins'
+export const PREVIEW_BRIDGE_ANNOTATION_PINS_RENDERED = 'railgrid.preview-bridge.annotation.pins-rendered'
+export const PREVIEW_BRIDGE_ANNOTATION_PIN_HOVER = 'railgrid.preview-bridge.annotation.pin-hover'
+export const PREVIEW_BRIDGE_ANNOTATION_PIN_SELECTED = 'railgrid.preview-bridge.annotation.pin-selected'
+export const PREVIEW_BRIDGE_ANNOTATION_SELECTED = 'railgrid.preview-bridge.annotation.selected'
+export const PREVIEW_BRIDGE_ANNOTATION_CANCELLED = 'railgrid.preview-bridge.annotation.cancelled'
+export const PREVIEW_BRIDGE_ANNOTATION_MODE = 'railgrid.preview-bridge.annotation.mode'
 export const PREVIEW_BRIDGE_MAX_ANNOTATION_PINS = 64
 
 export type PreviewBridgeConnectionState =
@@ -116,7 +116,7 @@ interface PreviewBridgeControllerOptions {
 }
 
 interface BridgeReadyMessage {
-  type: 'faros.preview-bridge.ready'
+  type: 'railgrid.preview-bridge.ready'
   version: number
   documentID?: string
   path?: string
@@ -204,7 +204,7 @@ export class PreviewBridgeController {
       // be missed. The bridge's document ID is the immutable generation; a new
       // document therefore cannot replay a capability issued to its predecessor.
       this.getFrame()?.contentWindow?.postMessage({
-        type: 'faros.preview-bridge.probe',
+        type: 'railgrid.preview-bridge.probe',
         version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
       }, this.expectedOrigin)
     } catch (error) {
@@ -452,7 +452,7 @@ export class PreviewBridgeController {
       // The capability stays on the bridge-created MessagePort. It is never
       // included in a window message visible to same-document app scripts.
       this.port.postMessage({
-        type: 'faros.preview-bridge.start',
+        type: 'railgrid.preview-bridge.start',
         version: PREVIEW_BRIDGE_PROTOCOL_VERSION,
         sessionID: session.sessionID,
         generation: session.generation,
@@ -473,7 +473,7 @@ export class PreviewBridgeController {
       message.generation !== session.generation
     ) return
 
-    if (message.type === 'faros.preview-bridge.connected') {
+    if (message.type === 'railgrid.preview-bridge.connected') {
       if (this.connectionTimer !== undefined) {
         window.clearTimeout(this.connectionTimer)
         this.connectionTimer = undefined
@@ -624,7 +624,7 @@ function clonePreviewBridgeAnnotationTarget(target: PreviewBridgeAnnotationTarge
 function isBridgeReadyMessage(value: unknown): value is BridgeReadyMessage {
   if (!value || typeof value !== 'object') return false
   const message = value as Partial<BridgeReadyMessage>
-  return message.type === 'faros.preview-bridge.ready' && message.version === PREVIEW_BRIDGE_PROTOCOL_VERSION
+  return message.type === 'railgrid.preview-bridge.ready' && message.version === PREVIEW_BRIDGE_PROTOCOL_VERSION
 }
 
 function isBridgePortMessage(value: unknown): value is BridgePortMessage {

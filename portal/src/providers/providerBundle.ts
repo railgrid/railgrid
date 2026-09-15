@@ -2,7 +2,7 @@ import type { ProviderDTO } from '@/stores/providers'
 
 // GrantFetch is the authenticated transport the grant request goes through:
 // auth/session authFetch, which injects the bearer and, with tenant: true,
-// the X-Faros-Org / X-Faros-Workspace selection the hub verifies membership
+// the X-Railgrid-Org / X-Railgrid-Workspace selection the hub verifies membership
 // against. Passed in rather than imported so this module stays free of
 // browser session state and testable on its own, like providerFetch.ts.
 export type GrantFetch = (

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,14 +28,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/kro"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // PathPrefix is where the handler is mounted on the provider's serve mux. It is
 // reached through the hub backend proxy at
 // /services/providers/infrastructure/dataplane/... with the caller's bearer
-// token forwarded as-is and X-Faros-* identity headers injected.
+// token forwarded as-is and X-Railgrid-* identity headers injected.
 const PathPrefix = "/dataplane/"
 
 // InstanceGetter authorizes and fetches a workload instance AS THE CALLER. The
@@ -430,7 +430,7 @@ func instanceReadyForExec(instance *unstructured.Unstructured, templateName stri
 	// be present and runtime. Ordinary development templates predate the
 	// universal network-phase contract; when their controller has not yet
 	// mirrored a phase, preserve their existing Ready-based exec behavior.
-	rawPhase, found, err := unstructured.NestedFieldNoCopy(instance.Object, "status", infrav1alpha1.FarosNetworkPhaseStatusField)
+	rawPhase, found, err := unstructured.NestedFieldNoCopy(instance.Object, "status", infrav1alpha1.RailgridNetworkPhaseStatusField)
 	if err != nil {
 		return false
 	}
@@ -439,7 +439,7 @@ func instanceReadyForExec(instance *unstructured.Unstructured, templateName stri
 			return false
 		}
 		networkPhase, ok := rawPhase.(string)
-		return ok && networkPhase == infrav1alpha1.FarosNetworkPhaseRuntime
+		return ok && networkPhase == infrav1alpha1.RailgridNetworkPhaseRuntime
 	}
 	return true
 }
@@ -524,7 +524,7 @@ func resolveExecWorkdir(requested, base string) (string, error) {
 //	/dataplane/clusters/<id>/<resource>/<name>/components/<component>/<verb>[/<tail...>]
 //
 // The cluster segment is the workspace's kcp logical-cluster ID (the hub-injected
-// X-Faros-Cluster that app-studio puts in the URL), NOT a workspace path — the
+// X-Railgrid-Cluster that app-studio puts in the URL), NOT a workspace path — the
 // instance getter addresses kcp by /clusters/<id>, which the hub proxy requires.
 // "components" is reserved as a verb name by the second form.
 func parsePath(p string) (request, bool) {

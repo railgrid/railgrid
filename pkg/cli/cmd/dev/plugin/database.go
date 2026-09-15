@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@ import (
 // keeps it.
 const (
 	devDBImage    = "postgres:16-alpine"
-	devDBUser     = "faros"
-	devDBPassword = "faros-dev"
+	devDBUser     = "railgrid"
+	devDBPassword = "railgrid-dev"
 	devDBPort     = 5432
 )
 
@@ -61,7 +61,7 @@ func ensureProviderDatabase(ctx context.Context, clientset kubernetes.Interface,
 		"app.kubernetes.io/name":       name,
 		"app.kubernetes.io/component":  "database",
 		"app.kubernetes.io/part-of":    provider,
-		"app.kubernetes.io/managed-by": "faros-dev",
+		"app.kubernetes.io/managed-by": "railgrid-dev",
 	}
 	selector := map[string]string{"app.kubernetes.io/name": name}
 

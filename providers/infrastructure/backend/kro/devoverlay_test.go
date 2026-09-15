@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // devTestTemplate is a minimal two-tier application-shaped Template with a
@@ -31,7 +31,7 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 	tmpl.Spec.Version = "0.1.0"
 	tmpl.Spec.Backend = Name
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "webapps", Kind: "WebApp",
+		Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "webapps", Kind: "WebApp",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{
 		"type": "object",
@@ -97,12 +97,12 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 		Components: map[string]infrav1alpha1.TemplateDevelopmentComponent{
 			"frontend": {
 				WorkspacePath: "web",
-				DevImage:      "${faros.devImage.node}",
+				DevImage:      "${railgrid.devImage.node}",
 				StartCommand:  "npm run dev",
 			},
 			"backend": {
 				WorkspacePath: "api",
-				DevImage:      "${faros.devImage.python}",
+				DevImage:      "${railgrid.devImage.python}",
 				StartCommand:  "uvicorn main:app --reload",
 				Reload: &infrav1alpha1.TemplateDevelopmentReload{
 					Strategy: "process",
@@ -118,7 +118,7 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 
 func devTestTokens() map[string]string {
 	tokens := testTokens()
-	tokens["${faros.devImage.python}"] = "docker.io/library/python:3.12"
+	tokens["${railgrid.devImage.python}"] = "docker.io/library/python:3.12"
 	tokens[devImageTokenPrefix+"universal}"] = "ghcr.io/example/universal-dev@sha256:" + strings.Repeat("a", 64)
 	tokens[devAgentImageToken] = "ghcr.io/example/dev-agent@sha256:" + strings.Repeat("b", 64)
 	return tokens
@@ -275,7 +275,7 @@ func assertDevProbes(t *testing.T, container map[string]any) {
 			continue
 		}
 		switch containerName {
-		case "faros-platform-coordinator":
+		case "railgrid-platform-coordinator":
 			httpGet, ok := probe["httpGet"].(map[string]any)
 			wantPath := "/healthz"
 			if name == "readinessProbe" {
@@ -289,7 +289,7 @@ func assertDevProbes(t *testing.T, container map[string]any) {
 			}
 		case "backend", "frontend":
 			assertDevExecProbeCommand(t, containerName, name, probe, devRuntimeAddress)
-		case "faros-exec-runner":
+		case "railgrid-exec-runner":
 			assertDevExecProbeCommand(t, containerName, name, probe, devExecutorAddress)
 		default:
 			t.Errorf("unexpected container %q while checking %s", containerName, name)
@@ -305,7 +305,7 @@ func assertDevExecProbeCommand(t *testing.T, containerName, probeName string, pr
 		return
 	}
 	command, _ := execProbe["command"].([]any)
-	want := []string{devAgentBinDir + "/faros-dev-agent", "--healthcheck", address}
+	want := []string{devAgentBinDir + "/railgrid-dev-agent", "--healthcheck", address}
 	if len(command) != len(want) {
 		t.Errorf("%s %s command = %v, want %v", containerName, probeName, command, want)
 		return
@@ -350,7 +350,7 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		"backendDevCABundle",
 		"frontendDevDeployment", "frontendDevWorkspace", "frontendDevPlatformState", "frontendDevControlService",
 		"frontendDevCABundle",
-		"farosDevControlSecret", "farosDevTokenJob",
+		"railgridDevControlSecret", "railgridDevTokenJob",
 	} {
 		res, ok := byID[id]
 		if !ok {
@@ -362,26 +362,26 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		}
 	}
 
-	// The RGD schema accepts the injected farosMode field.
-	mode, found, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", infrav1alpha1.FarosModeField)
+	// The RGD schema accepts the injected railgridMode field.
+	mode, found, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", infrav1alpha1.RailgridModeField)
 	if !found || !strings.Contains(mode, "production,development") || !strings.Contains(mode, `default="production"`) {
-		t.Errorf("RGD schema farosMode = %q, want enum production,development with production default", mode)
+		t.Errorf("RGD schema railgridMode = %q, want enum production,development with production default", mode)
 	}
 
 	// Provider Actions is optional. Every expression is still present in the
 	// synthesized dev workload, so omitted action context must be materialized
 	// as an empty string instead of making kro fail on a missing schema key.
 	for _, field := range []string{
-		"farosActionsExchangeURL",
-		"farosActionsBaseURL",
-		"farosActionsTenantPath",
-		"farosActionsOrg",
-		"farosActionsWorkspace",
-		"farosActionsProject",
-		"farosActionsProjectUID",
-		"farosActionsEnvironment",
-		"farosActionsInstance",
-		"farosActionsCABundle",
+		"railgridActionsExchangeURL",
+		"railgridActionsBaseURL",
+		"railgridActionsTenantPath",
+		"railgridActionsOrg",
+		"railgridActionsWorkspace",
+		"railgridActionsProject",
+		"railgridActionsProjectUID",
+		"railgridActionsEnvironment",
+		"railgridActionsInstance",
+		"railgridActionsCABundle",
 	} {
 		value, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", field)
 		if err != nil || !found || value != devActionsSchemaFieldMarker {
@@ -405,13 +405,13 @@ func TestDevOverlayUniversalControlTokenJobIsRetainedForWarmCache(t *testing.T) 
 	firstResources := rgdResources(t, first)
 	secondResources := rgdResources(t, second)
 
-	firstSecret := firstResources["farosDevControlSecret"]
-	secondSecret := secondResources["farosDevControlSecret"]
+	firstSecret := firstResources["railgridDevControlSecret"]
+	secondSecret := secondResources["railgridDevControlSecret"]
 	if !reflect.DeepEqual(firstSecret, secondSecret) {
 		t.Fatalf("control Secret changed across an equivalent graph rebuild:\nfirst=%v\nsecond=%v", firstSecret, secondSecret)
 	}
-	firstJob := firstResources["farosDevTokenJob"]
-	secondJob := secondResources["farosDevTokenJob"]
+	firstJob := firstResources["railgridDevTokenJob"]
+	secondJob := secondResources["railgridDevTokenJob"]
 	if !reflect.DeepEqual(firstJob, secondJob) {
 		t.Fatalf("control token Job changed across an equivalent graph rebuild:\nfirst=%v\nsecond=%v", firstJob, secondJob)
 	}
@@ -427,7 +427,7 @@ func TestDevOverlayOrdinaryControlTokenJobKeepsShortTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build RGD: %v", err)
 	}
-	job := rgdResources(t, rgd)["farosDevTokenJob"]
+	job := rgdResources(t, rgd)["railgridDevTokenJob"]
 	template, _ := job["template"].(map[string]any)
 	spec, _ := template["spec"].(map[string]any)
 	if got := numberValue(spec["ttlSecondsAfterFinished"]); got != 600 {
@@ -444,7 +444,7 @@ func TestDevOverlayControlTokenBootstrapIsScopedAndHardened(t *testing.T) {
 	}
 	byID := rgdResources(t, rgd)
 
-	job := byID["farosDevTokenJob"]["template"].(map[string]any)
+	job := byID["railgridDevTokenJob"]["template"].(map[string]any)
 	spec := job["spec"].(map[string]any)
 	if got := numberValue(spec["activeDeadlineSeconds"]); got <= 0 {
 		t.Fatalf("token Job activeDeadlineSeconds = %d, want positive deadline", got)
@@ -467,7 +467,7 @@ func TestDevOverlayControlTokenBootstrapIsScopedAndHardened(t *testing.T) {
 	if container["image"] != "ghcr.io/example/dev-agent@sha256:"+strings.Repeat("b", 64) {
 		t.Fatalf("token bootstrap image = %q, want immutable dev-agent image", container["image"])
 	}
-	if got := container["command"]; !reflect.DeepEqual(got, []any{"/faros-dev-agent", "--bootstrap-control-token", "${farosDevControlSecret.metadata.name}"}) {
+	if got := container["command"]; !reflect.DeepEqual(got, []any{"/railgrid-dev-agent", "--bootstrap-control-token", "${railgridDevControlSecret.metadata.name}"}) {
 		t.Fatalf("token bootstrap command = %v", got)
 	}
 	containerSecurity := container["securityContext"].(map[string]any)
@@ -479,10 +479,10 @@ func TestDevOverlayControlTokenBootstrapIsScopedAndHardened(t *testing.T) {
 		t.Fatalf("token container capabilities = %v, want drop ALL", capabilities)
 	}
 
-	role := byID["farosDevTokenRole"]["template"].(map[string]any)
+	role := byID["railgridDevTokenRole"]["template"].(map[string]any)
 	rules := role["rules"].([]any)
 	rule := rules[0].(map[string]any)
-	if !reflect.DeepEqual(rule["resourceNames"], []any{"${farosDevControlSecret.metadata.name}"}) {
+	if !reflect.DeepEqual(rule["resourceNames"], []any{"${railgridDevControlSecret.metadata.name}"}) {
 		t.Fatalf("token Role resourceNames = %v, want exact control Secret", rule["resourceNames"])
 	}
 }
@@ -497,9 +497,9 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	spec, _, _ := nestedMap(dep, "spec")
 	podSpec, _, _ := nestedMap(spec, "template", "spec")
 	containers, _ := podSpec["containers"].([]any)
-	coordinator := namedContainer(t, containers, "faros-platform-coordinator")
+	coordinator := namedContainer(t, containers, "railgrid-platform-coordinator")
 	app := namedContainer(t, containers, "backend")
-	wantEmpty := `${schema.spec.farosActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
+	wantEmpty := `${schema.spec.railgridActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
 	for _, container := range []map[string]any{coordinator, app} {
 		if _, ok := testEnvValue(container, "SSL_CERT_FILE"); ok {
 			t.Errorf("%s sets SSL_CERT_FILE, which can replace system trust", container["name"])
@@ -508,8 +508,8 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	if got, ok := testEnvValue(app, "NODE_EXTRA_CA_CERTS"); !ok || got != wantEmpty {
 		t.Errorf("app NODE_EXTRA_CA_CERTS = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
 	}
-	if got, ok := testEnvValue(coordinator, "FAROS_ACTIONS_CA_FILE"); !ok || got != wantEmpty {
-		t.Errorf("coordinator FAROS_ACTIONS_CA_FILE = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
+	if got, ok := testEnvValue(coordinator, "RAILGRID_ACTIONS_CA_FILE"); !ok || got != wantEmpty {
+		t.Errorf("coordinator RAILGRID_ACTIONS_CA_FILE = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
 	}
 
 	caResource := byID["backendDevCABundle"]
@@ -519,7 +519,7 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	}
 	caTemplate, _ := caResource["template"].(map[string]any)
 	data, _ := caTemplate["data"].(map[string]any)
-	if data["ca-bundle.pem"] != "${schema.spec.farosActionsCABundle}" {
+	if data["ca-bundle.pem"] != "${schema.spec.railgridActionsCABundle}" {
 		t.Fatalf("CA ConfigMap data = %v, want empty-default schema field", data)
 	}
 	volumes, _ := podSpec["volumes"].([]any)
@@ -564,14 +564,14 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if len(containers) != 3 {
 		t.Fatalf("containers = %d, want coordinator + app + executor", len(containers))
 	}
-	coordinator := namedContainer(t, containers, "faros-platform-coordinator")
+	coordinator := namedContainer(t, containers, "railgrid-platform-coordinator")
 	app := namedContainer(t, containers, "backend")
-	executor := namedContainer(t, containers, "faros-exec-runner")
+	executor := namedContainer(t, containers, "railgrid-exec-runner")
 
 	if image, _ := coordinator["image"].(string); image != tokens[devAgentImageToken] {
 		t.Errorf("coordinator image = %q, want agent image %q", image, tokens[devAgentImageToken])
 	}
-	assertCommand(t, coordinator, "/faros-dev-agent")
+	assertCommand(t, coordinator, "/railgrid-dev-agent")
 	for _, port := range []int64{devAgentPort, devExecPort} {
 		if !hasTestContainerPort(coordinator, port) {
 			t.Errorf("coordinator does not expose port %d", port)
@@ -584,24 +584,24 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if image, _ := app["image"].(string); image != "docker.io/library/python:3.12" {
 		t.Errorf("app image = %q, want resolved dev image", image)
 	}
-	assertCommand(t, app, devAgentBinDir+"/faros-dev-agent", "--runtime-supervisor")
+	assertCommand(t, app, devAgentBinDir+"/railgrid-dev-agent", "--runtime-supervisor")
 	if !hasTestContainerPort(app, devRuntimePort) {
 		t.Errorf("app does not expose internal runtime port %d", devRuntimePort)
 	}
-	if !hasTestEnv(app, "DATABASE_URL") || !hasTestEnv(app, "FAROS_DEV_START_COMMAND") || !hasTestEnv(app, "FAROS_DEV_RELOAD_RULES") {
+	if !hasTestEnv(app, "DATABASE_URL") || !hasTestEnv(app, "RAILGRID_DEV_START_COMMAND") || !hasTestEnv(app, "RAILGRID_DEV_RELOAD_RULES") {
 		t.Error("app lost production or runtime-supervisor environment")
 	}
-	if hasTestEnv(app, "FAROS_DEV_CONTROL_TOKEN") {
+	if hasTestEnv(app, "RAILGRID_DEV_CONTROL_TOKEN") {
 		t.Error("control token is present on app")
 	}
-	if !hasTestEnv(coordinator, "FAROS_ACTIONS_EXCHANGE_URL") || !hasTestEnv(coordinator, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+	if !hasTestEnv(coordinator, "RAILGRID_ACTIONS_EXCHANGE_URL") || !hasTestEnv(coordinator, "RAILGRID_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
 		t.Error("coordinator lacks the Provider Actions exchange contract")
 	}
-	if hasTestEnv(app, "FAROS_ACTIONS_EXCHANGE_URL") || hasTestEnv(app, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+	if hasTestEnv(app, "RAILGRID_ACTIONS_EXCHANGE_URL") || hasTestEnv(app, "RAILGRID_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
 		t.Error("app received the coordinator-only Provider Actions exchange/bootstrap configuration")
 	}
 	for _, c := range []map[string]any{coordinator, app} {
-		for _, envName := range []string{"FAROS_ACTIONS_TOKEN_FILE", "FAROS_ACTIONS_BASE_URL", "FAROS_PROJECT", "FAROS_ACTIONS_ENVIRONMENT", "FAROS_ACTIONS_INSTANCE"} {
+		for _, envName := range []string{"RAILGRID_ACTIONS_TOKEN_FILE", "RAILGRID_ACTIONS_BASE_URL", "RAILGRID_PROJECT", "RAILGRID_ACTIONS_ENVIRONMENT", "RAILGRID_ACTIONS_INSTANCE"} {
 			if !hasTestEnv(c, envName) {
 				t.Errorf("%s lacks Provider Actions env %s", c["name"], envName)
 			}
@@ -619,24 +619,24 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if image, _ := executor["image"].(string); image != "docker.io/library/python:3.12" {
 		t.Errorf("executor image = %q, want resolved dev image", image)
 	}
-	assertCommand(t, executor, devAgentBinDir+"/faros-dev-agent", "--executor")
+	assertCommand(t, executor, devAgentBinDir+"/railgrid-dev-agent", "--executor")
 	if !hasTestContainerPort(executor, devExecRunnerPort) {
 		t.Errorf("executor does not expose internal port %d", devExecRunnerPort)
 	}
 	// Exec'd commands need to reach the dev server, so the executor learns the
 	// app port (surfaced as PORT by the agent) and its component name, but
 	// nothing from the app's own environment.
-	appPort, ok := testEnvValue(app, "FAROS_DEV_PORT")
+	appPort, ok := testEnvValue(app, "RAILGRID_DEV_PORT")
 	if !ok || appPort == "" {
-		t.Fatalf("app FAROS_DEV_PORT = %q (present=%t), want the production container port", appPort, ok)
+		t.Fatalf("app RAILGRID_DEV_PORT = %q (present=%t), want the production container port", appPort, ok)
 	}
-	if got, ok := testEnvValue(executor, "FAROS_DEV_PORT"); !ok || got != appPort {
-		t.Errorf("executor FAROS_DEV_PORT = %q (present=%t), want app port %q", got, ok, appPort)
+	if got, ok := testEnvValue(executor, "RAILGRID_DEV_PORT"); !ok || got != appPort {
+		t.Errorf("executor RAILGRID_DEV_PORT = %q (present=%t), want app port %q", got, ok, appPort)
 	}
-	if got, ok := testEnvValue(executor, "FAROS_COMPONENT"); !ok || got != "backend" {
-		t.Errorf("executor FAROS_COMPONENT = %q (present=%t), want backend", got, ok)
+	if got, ok := testEnvValue(executor, "RAILGRID_COMPONENT"); !ok || got != "backend" {
+		t.Errorf("executor RAILGRID_COMPONENT = %q (present=%t), want backend", got, ok)
 	}
-	for _, envName := range []string{"FAROS_DEV_START_COMMAND", "FAROS_DEV_RELOAD_RULES", "PORT"} {
+	for _, envName := range []string{"RAILGRID_DEV_START_COMMAND", "RAILGRID_DEV_RELOAD_RULES", "PORT"} {
 		if hasTestEnv(executor, envName) {
 			t.Errorf("executor received %s, which belongs to the app/runtime supervisor", envName)
 		}
@@ -646,7 +646,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		if hasTestEnv(c, "DATABASE_URL") && containerName != "backend" {
 			t.Error("production database environment leaked from app")
 		}
-		if hasTestEnv(c, "FAROS_DEV_CONTROL_TOKEN") && containerName != "faros-platform-coordinator" {
+		if hasTestEnv(c, "RAILGRID_DEV_CONTROL_TOKEN") && containerName != "railgrid-platform-coordinator" {
 			t.Error("control token leaked from coordinator")
 		}
 		assertDevProbes(t, c)
@@ -655,23 +655,23 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	assertSecureDevContainer(t, app, false)
 	assertSecureDevContainer(t, executor, true)
 
-	if value, ok := testEnvValue(coordinator, "FAROS_DEV_STATE_DIR"); !ok || value != devPlatformStateDir {
+	if value, ok := testEnvValue(coordinator, "RAILGRID_DEV_STATE_DIR"); !ok || value != devPlatformStateDir {
 		t.Errorf("coordinator state directory = %q, want %q", value, devPlatformStateDir)
 	}
-	if value, ok := testEnvValue(coordinator, "FAROS_DEV_RUNTIME_URL"); !ok || value != "http://"+devRuntimeAddress {
+	if value, ok := testEnvValue(coordinator, "RAILGRID_DEV_RUNTIME_URL"); !ok || value != "http://"+devRuntimeAddress {
 		t.Errorf("coordinator runtime address = %q, want %q", value, devRuntimeAddress)
 	}
-	if value, ok := testEnvValue(coordinator, "FAROS_DEV_EXECUTOR_URL"); !ok || value != "http://"+devExecutorAddress {
+	if value, ok := testEnvValue(coordinator, "RAILGRID_DEV_EXECUTOR_URL"); !ok || value != "http://"+devExecutorAddress {
 		t.Errorf("coordinator executor address = %q, want %q", value, devExecutorAddress)
 	}
-	if !hasTestEnv(coordinator, "FAROS_DEV_RELOAD_STRATEGY") || !hasTestEnv(coordinator, "FAROS_DEV_RELOAD_RULES") {
+	if !hasTestEnv(coordinator, "RAILGRID_DEV_RELOAD_STRATEGY") || !hasTestEnv(coordinator, "RAILGRID_DEV_RELOAD_RULES") {
 		t.Error("coordinator lacks the template reload contract")
 	}
-	tokenEnv, ok := testEnv(coordinator, "FAROS_DEV_CONTROL_TOKEN")
+	tokenEnv, ok := testEnv(coordinator, "RAILGRID_DEV_CONTROL_TOKEN")
 	if !ok {
 		t.Fatal("coordinator has no control-token environment")
 	}
-	if secret, _, _ := nestedMap(tokenEnv, "valueFrom", "secretKeyRef"); secret["name"] != "${farosDevControlSecret.metadata.name}" {
+	if secret, _, _ := nestedMap(tokenEnv, "valueFrom", "secretKeyRef"); secret["name"] != "${railgridDevControlSecret.metadata.name}" {
 		t.Errorf("coordinator control token source = %v", secret)
 	}
 
@@ -686,7 +686,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		}
 	}
 	stateMount := testMount(t, coordinator, devPlatformStateDir)
-	if stateMount["name"] != "faros-dev-platform-state" {
+	if stateMount["name"] != "railgrid-dev-platform-state" {
 		t.Errorf("coordinator state mount = %v", stateMount)
 	}
 	if _, ok := findMount(executor, devPlatformStateDir); ok {
@@ -696,14 +696,14 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Error("app mounts platform state")
 	}
 	for _, c := range []map[string]any{coordinator, app} {
-		mount := testMount(t, c, "/etc/faros/actions-ca")
+		mount := testMount(t, c, "/etc/railgrid/actions-ca")
 		if mount["name"] != devActionsCABundleVolumeName || mount["readOnly"] != true {
 			t.Errorf("%s CA mount = %v", c["name"], mount)
 		}
 	}
 	coordSA := testMount(t, coordinator, devServiceAccountDir)
 	execSA := testMount(t, executor, devServiceAccountDir)
-	if coordSA["name"] != "faros-dev-no-serviceaccount" || execSA["name"] != "faros-dev-no-serviceaccount" {
+	if coordSA["name"] != "railgrid-dev-no-serviceaccount" || execSA["name"] != "railgrid-dev-no-serviceaccount" {
 		t.Errorf("service-account masks = %v, %v", coordSA, execSA)
 	}
 	if _, ok := findMount(app, devServiceAccountDir); ok {
@@ -756,7 +756,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Fatalf("CA trust object kind = %v, want ConfigMap", caConfigMap["kind"])
 	}
 	caData, _ := caConfigMap["data"].(map[string]any)
-	if caData["ca-bundle.pem"] != "${schema.spec.farosActionsCABundle}" {
+	if caData["ca-bundle.pem"] != "${schema.spec.railgridActionsCABundle}" {
 		t.Errorf("CA ConfigMap data = %v, want schema-resolved public bundle", caData)
 	}
 	caVolumeFound := false
@@ -791,17 +791,17 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Fatalf("initContainers = %d, want one agent installer", len(inits))
 	}
 	installer, _ := inits[0].(map[string]any)
-	assertCommand(t, installer, "/faros-dev-agent", "--install", devAgentBinDir)
+	assertCommand(t, installer, "/railgrid-dev-agent", "--install", devAgentBinDir)
 	assertSecureDevContainer(t, installer, true)
 	if _, ok := findMount(installer, devPlatformStateDir); ok {
 		t.Error("agent installer mounts platform state")
 	}
 	if !hasTestMount(installer, devAgentBinDir) {
-		t.Error("agent installer does not mount /faros/bin")
+		t.Error("agent installer does not mount /railgrid/bin")
 	}
 
 	encoded, _ := json.Marshal(dep)
-	for _, forbidden := range []string{".faros-platform", "FAROS_DEV_DROP_CHILD_GROUPS", "SETUID", "SETGID", "CHOWN", "--exec-worker"} {
+	for _, forbidden := range []string{".railgrid-platform", "RAILGRID_DEV_DROP_CHILD_GROUPS", "SETUID", "SETGID", "CHOWN", "--exec-worker"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Errorf("dev deployment contains removed legacy wiring %q", forbidden)
 		}
@@ -881,7 +881,7 @@ func TestDevOverlaySharedWorkspaceSubPathHasSeparatePlatformState(t *testing.T) 
 		if mount["name"] != "existing-workspace" || mount["subPath"] != "components/backend" {
 			t.Fatalf("workspace mount was not shared with its existing subPath: %v", mount)
 		}
-		if _, ok := findMount(container, "/workspace/.faros-platform"); ok {
+		if _, ok := findMount(container, "/workspace/.railgrid-platform"); ok {
 			t.Fatalf("legacy platform subPath mount remains: %v", container)
 		}
 	}
@@ -907,7 +907,7 @@ func TestDevOverlayStatusAdditions(t *testing.T) {
 	}
 	raw, _ := json.Marshal(status)
 	for _, want := range []string{
-		`"runtimeNamespace":"${farosDevControlSecret.metadata.namespace}"`,
+		`"runtimeNamespace":"${railgridDevControlSecret.metadata.namespace}"`,
 		`"controlSecretRef"`,
 		`"frontend":{"controlServiceRef"`,
 		`"backend":{"controlServiceRef"`,
@@ -938,7 +938,7 @@ func TestDevOverlayCodingOnlyDisablesProviderActionsAndAutomaticSAToken(t *testi
 		if _, ok := container["resources"]; !ok {
 			t.Errorf("coding-only container %q has no resource ceiling", container["name"])
 		}
-		if hasTestEnv(container, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") || hasTestEnv(container, "FAROS_ACTIONS_TOKEN_FILE") {
+		if hasTestEnv(container, "RAILGRID_ACTIONS_BOOTSTRAP_TOKEN_FILE") || hasTestEnv(container, "RAILGRID_ACTIONS_TOKEN_FILE") {
 			t.Errorf("coding-only container %q received Provider Actions environment", container["name"])
 		}
 		if _, ok := findMount(container, devActionsBootstrapDir); ok {
@@ -954,7 +954,7 @@ func TestDevOverlayErrors(t *testing.T) {
 	t.Run("unknown component workload", func(t *testing.T) {
 		tmpl := devTestTemplate(t)
 		tmpl.Spec.Development.Components["worker"] = infrav1alpha1.TemplateDevelopmentComponent{
-			WorkspacePath: "jobs", DevImage: "${faros.devImage.node}", StartCommand: "npm run worker",
+			WorkspacePath: "jobs", DevImage: "${railgrid.devImage.node}", StartCommand: "npm run worker",
 		}
 		if _, err := buildRGD(tmpl, devTestTokens()); err == nil || !strings.Contains(err.Error(), "worker") {
 			t.Fatalf("buildRGD = %v, want unknown-workload error naming the component", err)
@@ -962,10 +962,10 @@ func TestDevOverlayErrors(t *testing.T) {
 	})
 	t.Run("unconfigured dev image token", func(t *testing.T) {
 		tokens := devTestTokens()
-		delete(tokens, "${faros.devImage.python}")
+		delete(tokens, "${railgrid.devImage.python}")
 		_, err := buildRGD(devTestTemplate(t), tokens)
-		if err == nil || !strings.Contains(err.Error(), "FAROS_DEV_IMAGE_PYTHON") {
-			t.Fatalf("buildRGD = %v, want missing-token error naming FAROS_DEV_IMAGE_PYTHON", err)
+		if err == nil || !strings.Contains(err.Error(), "RAILGRID_DEV_IMAGE_PYTHON") {
+			t.Fatalf("buildRGD = %v, want missing-token error naming RAILGRID_DEV_IMAGE_PYTHON", err)
 		}
 	})
 	t.Run("reserved graph id collision", func(t *testing.T) {

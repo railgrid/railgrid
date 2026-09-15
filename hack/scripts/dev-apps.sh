@@ -4,9 +4,9 @@ set -euo pipefail
 
 trap 'kill 0; wait' EXIT
 
-./bin/faros-hub \
+./bin/railgrid-hub \
   --idp-issuer-url=https://localhost:5554/dex \
-  --idp-client-id=faros \
+  --idp-client-id=railgrid \
   --idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \

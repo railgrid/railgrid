@@ -53,7 +53,7 @@ the same slice today and throws the URL away
 (`controller_manager.go:656-672`).
 
 **kuery's engagement path is dead code, and its store is a derived cache.**
-The reconciler watches the retired `faros.sh/v1alpha1 Edge` kind and dials the
+The reconciler watches the retired `railgrid.ai/v1alpha1 Edge` kind and dials the
 removed `/services/edges-proxy` hub mount (`engagement/controller.go:66,371-374`;
 tracked in `cross-provider-simplification.md:110-118`). All synced data lives
 in one SQL store (SQLite file on an RWO PVC by default, Postgres supported and
@@ -166,7 +166,7 @@ Behavioral deltas to accept: a tenant without a Ready APIBinding gets a kcp
 ### kuery — medium; blocked on fixing the dead sync path first
 
 1. **Revive the data path** (already-tracked defect): watch
-   `edges.faros.sh/{KubernetesCluster,LinuxServer}`, dial the edges provider's
+   `edges.railgrid.ai/{KubernetesCluster,LinuxServer}`, dial the edges provider's
    `edgeproxy` URL from `status.URL` instead of the removed hub mount.
 2. **Postgres required for >1 replica** (chart gate: refuse `replicaCount > 1`
    with the SQLite/RWO-PVC store). The store is a derived cache — migration is
@@ -231,7 +231,7 @@ store-polling). Two work streams:
    - **(a) Shared RWX volume** (NFS/Filestore/EFS): smallest code delta —
      the `mutationMu` process mutex must become a claim-based per-project
      lock (P2), and `fsGroup`/locking semantics need validation on the chosen
-     filesystem. Ops burden: an RWX storage class everywhere faros deploys.
+     filesystem. Ops burden: an RWX storage class everywhere railgrid deploys.
    - **(b) Replica-pinned projects** (P2 claim per project + P3 forwarding
      for all workspace-touching routes): no storage dependency; a replica
      crash loses uncommitted workspace state for its projects (recovered by

@@ -52,7 +52,7 @@ the same cluster as the workloads it manages, so provider→workload
 (`services/proxy` against its own runtime kubeconfig) is already local and
 unchanged. The tunnel is needed for hub→provider-backend and nothing else.
 
-**The mechanism already exists and is in production.** `edges.faros.sh/Service`
+**The mechanism already exists and is in production.** `edges.railgrid.ai/Service`
 with `spec.edgeRef.kind: KubernetesCluster` and a `spec.targetRef` is exactly
 "reverse-proxy HTTP to a Kubernetes Service inside a tenant cluster over the
 agent's tunnel." The type comment on `KubeServiceRef`
@@ -140,8 +140,8 @@ which workspaces hold which clusters.
 ### E-4 — The hub owns the `Service` object, the tenant does not
 
 At registration the hub creates
-`edges.faros.sh/Service` named `provider-<name>` in the target Workspace,
-pointing at `{name}.faros-provider-<name>.svc:<port>`, and marks it hub-owned.
+`edges.railgrid.ai/Service` named `provider-<name>` in the target Workspace,
+pointing at `{name}.railgrid-provider-<name>.svc:<port>`, and marks it hub-owned.
 The tenant does not hand-write it and cannot repoint it at something else
 without the hub noticing — `spec.host` on a `Service` is otherwise free-form,
 and [svc.go](../pkg/agent/tunnel/svc.go)'s `isAllowedSvcHost` currently returns
@@ -176,10 +176,10 @@ meaning.
 
 ### E-6 — The caller's kcp identity must survive the hop
 
-The hub backend proxy strips inbound `X-Faros-User` / `X-Faros-Tenant` /
-`X-Faros-Cluster` and re-injects them from its own resolvers
+The hub backend proxy strips inbound `X-Railgrid-User` / `X-Railgrid-Tenant` /
+`X-Railgrid-Cluster` and re-injects them from its own resolvers
 ([proxy.go](../pkg/hub/providers/proxy.go)) — that is the identity the provider
-trusts. The agent's `/svc` handler deletes only `X-Faros-Svc-Target`, so those
+trusts. The agent's `/svc` handler deletes only `X-Railgrid-Svc-Target`, so those
 headers already survive. This is a property to test, not code to write; it is
 listed because breaking it silently downgrades the provider's notion of who is
 calling.
@@ -196,24 +196,24 @@ through an edge would appear to hang. Same for SSE and for the
 
 ```
 browser (user token)
-  → hub /services/providers/app-studio/api/…            (injects X-Faros-{User,Tenant,Cluster})
+  → hub /services/providers/app-studio/api/…            (injects X-Railgrid-{User,Tenant,Cluster})
   → app-studio                                          (holds no runtime credential)
   → hub /services/providers/{org-infra}/dataplane/…
       │ registry resolves org-owned → edge-fronted transport
       ▼
-    edges provider /edgeproxy/clusters/{ws}/apis/edges.faros.sh/v1alpha1/
+    edges provider /edgeproxy/clusters/{ws}/apis/edges.railgrid.ai/v1alpha1/
                    services/provider-{name}/proxy/dataplane/…
       │ SAR: proxy on services/provider-{name}; Service is hub-owned; auth=passthrough
       ▼
     revdial WebSocket ──▶ agent in tenant cluster
-      │ X-Faros-Svc-Target: http://{name}.faros-provider-{name}.svc:8081
+      │ X-Railgrid-Svc-Target: http://{name}.railgrid-provider-{name}.svc:8081
       ▼
     infrastructure provider (tenant cluster)
       │ RBAC gate = GET the Instance as the caller
       ▼
     runtime kube-apiserver services/proxy   ← local, unchanged
       ▼
-    faros-dev-agent in the workload pod
+    railgrid-dev-agent in the workload pod
 ```
 
 Compared to a platform provider the added hops are hub→edges-provider (in
@@ -251,7 +251,7 @@ Two deviations from the design as written, both forced by what the hub can
 actually know:
 
 - **The Service target is read from the provider's own CatalogEntry, not
-  derived.** E-4 assumed `{name}.faros-provider-{name}.svc`, but the address
+  derived.** E-4 assumed `{name}.railgrid-provider-{name}.svc`, but the address
   is the chart's to choose — an operator-mode install lands on
   `<release>-<chart>.<serve-ns>.svc`, which the hub cannot predict. The hub
   therefore reads `spec.backend.url` but does not trust it: it must parse as

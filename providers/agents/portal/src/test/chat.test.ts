@@ -166,7 +166,7 @@ describe('chat streaming', () => {
       })),
     })
     try {
-      localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+      localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
       const { el } = await mountChat(scripted([]), {
         listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Second chat')]),
       })
@@ -352,7 +352,7 @@ describe('chat streaming', () => {
   })
 
   it('keeps the last loaded chat list when its background refresh fails', async () => {
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const listSessions = vi.fn()
       .mockResolvedValueOnce([session('s1', 'First chat'), session('s2', 'Second chat')])
       .mockRejectedValueOnce(new Error('session refresh failed'))
@@ -423,7 +423,7 @@ describe('chat streaming', () => {
       yield { event: 'start', data: { runID: `r${seen.length}`, sessionID: 'server-session' } }
       yield { event: 'done', data: { runID: `r${seen.length}`, content: 'done' } }
     })
-    localStorage.setItem('faros:agents:session:org:ws:scout', 'seed-session')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'seed-session')
     const { el } = await mountChat(chatStream, { listSessions: () => Promise.resolve([session('seed-session')]) })
 
     await send(el, 'first')
@@ -439,7 +439,7 @@ describe('chat streaming', () => {
       scripted(
         [
           { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
-          { event: 'tool_start', data: { id: 't1', name: 'github__list_issues', args: '{"repo":"faros"}' } },
+          { event: 'tool_start', data: { id: 't1', name: 'github__list_issues', args: '{"repo":"railgrid"}' } },
         ],
         gate,
       ),
@@ -796,7 +796,7 @@ describe('chat streaming', () => {
 
   it('does not show a failed deletion after the user leaves its agent', async () => {
     const deletion = deferred<void>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const { el, view } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1')]),
       deleteSession: () => deletion.promise,
@@ -815,7 +815,7 @@ describe('chat streaming', () => {
   })
 
   it('shows a current-agent error when deleting an inactive session fails', async () => {
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const deleteSession = vi.fn().mockRejectedValue(new Error('inactive deletion failed'))
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')]),
@@ -835,7 +835,7 @@ describe('chat streaming', () => {
 
   it('clears a pending session-list refresh when deleting an inactive session', async () => {
     const pendingRefresh = deferred<ReturnType<typeof session>[]>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const listSessions = vi.fn()
       .mockResolvedValueOnce([session('s1', 'Active chat'), session('s2', 'Old chat')])
       .mockRejectedValueOnce(new Error('session refresh failed'))
@@ -874,7 +874,7 @@ describe('chat streaming', () => {
       ? activeHistory.promise
       : Promise.resolve([] as TranscriptMessage[]))
     const deleteSession = vi.fn().mockResolvedValue(undefined)
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')]),
       listMessages,
@@ -900,7 +900,7 @@ describe('chat streaming', () => {
   it('keeps chat deletion single-flight through confirmation and deletion', async () => {
     const deletion = deferred<void>()
     const deleteSession = vi.fn(() => deletion.promise)
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1')]),
       deleteSession,
@@ -1016,7 +1016,7 @@ describe('chat read ownership', () => {
 
   it('does not let initial session discovery replace a new chat the user opened', async () => {
     const sessions = deferred<ReturnType<typeof session>[]>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 'remembered-session')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'remembered-session')
     const api = stubApi({ listSessions: () => sessions.promise })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
@@ -1025,14 +1025,14 @@ describe('chat read ownership', () => {
 
     view.element.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
-    const userSession = localStorage.getItem('faros:agents:session:org:ws:scout')
+    const userSession = localStorage.getItem('railgrid:agents:session:org:ws:scout')
     expect(userSession).toBeTruthy()
     expect(userSession).not.toBe('remembered-session')
 
     sessions.resolve([session('remembered-session', 'Remembered chat')])
     await settle(6)
 
-    expect(localStorage.getItem('faros:agents:session:org:ws:scout')).toBe(userSession)
+    expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).toBe(userSession)
     expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('New chat')
   })
 
@@ -1041,7 +1041,7 @@ describe('chat read ownership', () => {
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string) {
       yield { event: 'done', data: { runID: 'r1', content: 'current reply' } }
     })
-    localStorage.setItem('faros:agents:session:org:ws:scout', 'remembered-session')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'remembered-session')
     const api = stubApi({ listSessions: () => sessions.promise, chatStream })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
@@ -1056,13 +1056,13 @@ describe('chat read ownership', () => {
     sessions.resolve([session('remembered-session', 'Remembered chat')])
     await settle(6)
 
-    expect(localStorage.getItem('faros:agents:session:org:ws:scout')).toBe(activeSession)
+    expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).toBe(activeSession)
     expect(text(view.element)).toContain('current reply')
   })
 
   it('does not let a late message read overwrite a newer session', async () => {
     const first = deferred<Array<{ id: string; role: string; content: string }>>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const listMessages = vi.fn((_agent: string, id: string) => id === 's1'
       ? first.promise
       : Promise.resolve([{ id: 'new', role: 'user', content: 'new session' }]))
@@ -1084,7 +1084,7 @@ describe('chat read ownership', () => {
 
   it('does not let a pending history read overwrite a completed streamed turn', async () => {
     const history = deferred<Array<{ id: string; role: string; content: string }>>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const chatStream = vi.fn(async function* () {
       yield { event: 'done', data: { runID: 'r1', content: 'fresh reply' } }
     })
@@ -1137,7 +1137,7 @@ describe('chat read ownership', () => {
 
   it('does not surface an orphan result from a session the user left', async () => {
     const firstRuns = deferred<{ items: ReturnType<typeof runRowForRead>[] }>()
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const listRuns = vi.fn((filter: { session?: string }) => filter.session === 's1'
       ? firstRuns.promise
       : Promise.resolve({ items: [] }))
@@ -1223,7 +1223,7 @@ describe('transcript rehydration', () => {
     // The API returns newest-first; the component reverses it.
     const listMessages = vi.fn().mockResolvedValue([
       { id: '3', role: 'assistant', content: 'done', runID: 'r1' },
-      { id: '2', role: 'tool', content: 'ok', runID: 'r1', metadata: { tool: 'web_search', args: '{"q":"faros"}', durationMS: 90 } },
+      { id: '2', role: 'tool', content: 'ok', runID: 'r1', metadata: { tool: 'web_search', args: '{"q":"railgrid"}', durationMS: 90 } },
       { id: '1', role: 'user', content: 'search', runID: 'r1' },
     ])
     const api = stubApi({ listMessages })
@@ -1245,7 +1245,7 @@ describe('transcript rehydration', () => {
   })
 
   it('shows one stable run link on the last assistant segment and falls back to an available message', async () => {
-    localStorage.setItem('faros:agents:session:org:ws:scout', 's1')
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const listMessages = vi.fn().mockResolvedValue([
       { id: '4', role: 'user', content: 'fallback', runID: 'r2' },
       { id: '3', role: 'assistant', content: 'second segment', runID: 'r1' },

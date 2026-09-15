@@ -1,14 +1,14 @@
 <!doctype html>
 <!--
   Standalone fallback shown when a user visits the provider's URL directly
-  (outside the faros portal). The real entry point is /main.js; this page
+  (outside the railgrid portal). The real entry point is /main.js; this page
   exists so debugging the provider's HTTP server in a browser shows
   something readable instead of a 404.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>infrastructure provider · faros</title>
+<title>infrastructure provider · railgrid</title>
 <style>
   :root {
     color-scheme: dark;
@@ -48,11 +48,11 @@
 </style>
 </head>
 <body>
-<h1>faros infrastructure provider</h1>
-<p>This binary is a faros <em>provider</em> that brokers application templates
+<h1>railgrid infrastructure provider</h1>
+<p>This binary is a railgrid <em>provider</em> that brokers application templates
 from a central kro (Kube Resource Orchestrator) cluster. It is designed to
-mount inside the faros portal as a custom element
-(<code>&lt;faros-provider-infrastructure&gt;</code>), loaded from
+mount inside the railgrid portal as a custom element
+(<code>&lt;railgrid-provider-infrastructure&gt;</code>), loaded from
 <code>/main.js</code>. You're seeing this fallback page because you opened
 the provider URL directly.</p>
 <p>Visit the portal at <a href="/ui/providers">/ui/providers</a> to see it

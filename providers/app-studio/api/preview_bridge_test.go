@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,10 +28,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 )
 
 func TestPreviewBridgeCapabilityRoundTripAndTamperResistance(t *testing.T) {
@@ -224,7 +224,7 @@ func TestPreviewBridgeSessionHTTPFlowUsesCurrentPreviewAndCallerScope(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectYAML := `apiVersion: ai.faros.sh/v1alpha1
+	projectYAML := `apiVersion: ai.railgrid.ai/v1alpha1
 kind: Project
 metadata:
   name: demo
@@ -237,7 +237,7 @@ spec:
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 	proxy.Add(templatesGVR, tenanttest.ObjectFromYAML(t, string(templateJSON)))
-	proxy.Add(tenant.InfrastructureInstancesResource.GVR, tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`))
+	proxy.Add(tenant.InfrastructureInstancesResource.GVR, tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.railgrid.ai/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`))
 
 	server := NewWithWorkspace(proxy.Client(), nil, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
@@ -323,7 +323,7 @@ spec:
 func setPreviewBridgeTestHeaders(request *http.Request, actor, clusterID string) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Faros-User", actor)
-	request.Header.Set("X-Faros-Tenant", clusterID)
-	request.Header.Set("X-Faros-Cluster", clusterID)
+	request.Header.Set("X-Railgrid-User", actor)
+	request.Header.Set("X-Railgrid-Tenant", clusterID)
+	request.Header.Set("X-Railgrid-Cluster", clusterID)
 }

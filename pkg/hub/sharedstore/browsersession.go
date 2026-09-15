@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,11 +25,11 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/browsersession"
 )
 
 // SessionKind is the shared-store collection holding browser sessions.
-const SessionKind = "faros-session"
+const SessionKind = "railgrid-session"
 
 // SessionBackend adapts Store to browsersession.Backend so every hub replica
 // resolves and revokes the same cookies.

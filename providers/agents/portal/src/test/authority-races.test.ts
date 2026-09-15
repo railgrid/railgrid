@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
-import type { Connection, FarosContext } from '../types'
+import type { Connection, RailgridContext } from '../types'
 import { settleVue } from './vue-helper'
 
-if (!customElements.get('faros-provider-agents')) customElements.define('faros-provider-agents', AgentsElement)
+if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
 
-const context = (token: string): FarosContext => ({
+const context = (token: string): RailgridContext => ({
   basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', token, user: { sub: 'alice' },
 })
 
@@ -20,8 +20,8 @@ afterEach(() => vi.restoreAllMocks())
 
 async function shell(hash: string): Promise<AgentsElement> {
   history.replaceState(null, '', hash)
-  const element = document.createElement('faros-provider-agents') as AgentsElement
-  element.farosContext = context('token-a')
+  const element = document.createElement('railgrid-provider-agents') as AgentsElement
+  element.railgridContext = context('token-a')
   document.body.appendChild(element)
   await settleVue(6)
   return element
@@ -40,7 +40,7 @@ describe('public shell authority rotation', () => {
     const oldSurface = element.querySelector('.agents-detail')
     const oldDisconnect = vi.spyOn(oldStore, 'disconnect')
 
-    element.farosContext = context('token-b')
+    element.railgridContext = context('token-b')
 
     expect(element.store).not.toBe(oldStore)
     expect(element.api).not.toBe(oldApi)
@@ -74,7 +74,7 @@ describe('public shell authority rotation', () => {
     const confirm = document.querySelector<HTMLButtonElement>('.k-modal-btn--confirm')!
     expect(confirm).toBeTruthy()
 
-    element.farosContext = context('token-b')
+    element.railgridContext = context('token-b')
     confirm.click()
     await settleVue()
 
@@ -109,7 +109,7 @@ describe('public shell authority rotation', () => {
     expect(streamSignal?.aborted).toBe(false)
     const removeListener = vi.spyOn(oldStore, 'removeEventListener')
 
-    element.farosContext = context('token-b')
+    element.railgridContext = context('token-b')
     await settleVue(4)
 
     expect(streamSignal?.aborted).toBe(true)

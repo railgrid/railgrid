@@ -10,7 +10,7 @@
 > `CatalogEntry` in the Org workspace, explicitly with "no managed
 > ServiceAccount, no kcp provider workspace bootstrap". What shipped instead
 > gives an org-owned provider a real provider workspace at
-> `root:faros:tenants:{org}:providers:{name}` and a real APIExport, so it can
+> `root:railgrid:tenants:{org}:providers:{name}` and a real APIExport, so it can
 > contribute CRDs and not just a UI. The `CatalogEntry` therefore lives in the
 > provider's own workspace, not the Org workspace, and P-1's UUID/slug identity
 > scheme is not implemented — providers are still named, with cross-scope
@@ -52,11 +52,11 @@ Don't re-litigate; the doc body assumes these.
 | # | Decision | Rationale |
 |---|---|---|
 | P-1 | **CatalogEntry identity = UUID.** `metadata.name` is a server-assigned UUID; `spec.displayName` and `spec.slug` (URL-safe display string) are separate. Two Orgs can each register a "vault" provider with no collision. | Mirrors O-1. Removes the "name collision in URL path" problem entirely; the proxy's `splitProviderPath` resolves by `{entry-uuid}` not slug. |
-| P-2 | **Enforcement of "no provider APIBindings in Org workspaces" = api-proxy mediation.** Tenants never receive a kubeconfig that reaches an Org workspace; all Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) go through hub REST endpoints. The faros kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths under `root:faros:orgs:{uuid}` (without a child `:{ws-uuid}` segment). Tenants *physically cannot* `kubectl apply` an APIBinding there. | Strongest possible enforcement (network-level, not RBAC) and zero kcp changes. See [organizations.md](./organizations.md) §"Org workspaces are hub-mediated only." |
-| P-3 | **`bind` verb scope = per-Org `ClusterRole`, controller-maintained.** A controller watches CatalogEntries + Memberships and keeps `faros:org:{uuid}:bind` up-to-date with `resourceNames` = all that Org's APIExports + the Global ones, subjects = every Org Membership. | Standing privilege but matches the Org-membership model; auditable via `kubectl get clusterrole faros:org:*:bind`. |
+| P-2 | **Enforcement of "no provider APIBindings in Org workspaces" = api-proxy mediation.** Tenants never receive a kubeconfig that reaches an Org workspace; all Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) go through hub REST endpoints. The railgrid kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths under `root:railgrid:orgs:{uuid}` (without a child `:{ws-uuid}` segment). Tenants *physically cannot* `kubectl apply` an APIBinding there. | Strongest possible enforcement (network-level, not RBAC) and zero kcp changes. See [organizations.md](./organizations.md) §"Org workspaces are hub-mediated only." |
+| P-3 | **`bind` verb scope = per-Org `ClusterRole`, controller-maintained.** A controller watches CatalogEntries + Memberships and keeps `railgrid:org:{uuid}:bind` up-to-date with `resourceNames` = all that Org's APIExports + the Global ones, subjects = every Org Membership. | Standing privilege but matches the Org-membership model; auditable via `kubectl get clusterrole railgrid:org:*:bind`. |
 | P-4 | **Builtin providers require explicit Enable too** (not auto-bound in new Workspaces). Membership APIs are the only thing the `workspace` WorkspaceType auto-binds. | Consistent rule: every provider, builtin or third-party, Enable is a deliberate Workspace action. Avoids the "this just showed up, what is it?" surprise on new Workspaces. |
 | P-5 | **Permission claim acceptance = per-Workspace Enable** for all scopes (Global, Org, Personal). Same flow as today (`providers.md` #9 auto-accepts `tenantScoped` claims at Enable time). Org admin's CatalogEntry create does *not* pre-accept on behalf of members. | One consistent flow; the trust decision stays with the workspace that gains the binding. |
-| P-6 | **No `requireWorkspaceContext` migration flag.** Workspace headers (`X-Faros-Org`, `X-Faros-Workspace`) are **required** from day one. Follows from clean-slate migration (O-2). | No legacy users to keep working; the fallback flag was solving a problem we don't have. |
+| P-6 | **No `requireWorkspaceContext` migration flag.** Workspace headers (`X-Railgrid-Org`, `X-Railgrid-Workspace`) are **required** from day one. Follows from clean-slate migration (O-2). | No legacy users to keep working; the fallback flag was solving a problem we don't have. |
 | P-7 | **Disable = kcp handles the cascade; hub gates on confirm.** `DELETE .../providers/{uuid}/enable` returns 409 + a preview body (counts of CRs that will be affected, per kind) unless `?confirm=true` is passed. Hub doesn't try to delete CRs itself — kcp's APIBinding deletion semantics own that. | Fat-finger protection without re-implementing what kcp already does. |
 | P-8 | **Breaking CatalogEntry fields are immutable via CEL.** `spec.apiExport.schemas`, `spec.apiExport.permissionClaims`, `spec.apiExport.path`, `spec.apiExport.name`, and `spec.backend.url` carry a `+kubebuilder:validation:XValidation` rule of `self == oldSelf`. Display fields (`displayName`, `iconURL`, `category`, `version`) stay mutable. Changing a locked field requires deleting the CatalogEntry and creating a new one. | Kcp/CRD-layer enforcement; hub doesn't need to inspect updates. Producers expressing "this is the same provider" by reusing the slug get to control breaking-change UX explicitly. |
 | P-9 | **Org soft-delete grace behavior (during the 30-day O-13 window):** the deleting Org's CatalogEntries are hidden from `/api/providers` everywhere; the per-Org `bind` ClusterRole (P-3) is removed so no *new* `APIBinding` can be created; existing `APIBindings` keep working until cascade-day. Undelete restores listings + RBAC. | Honors deletion intent without breaking running workloads mid-flight. |
@@ -70,9 +70,9 @@ Don't re-litigate; the doc body assumes these.
 
 | Scope | CatalogEntry lives in | Visible to (which workspaces) | Who can register |
 |---|---|---|---|
-| **Global** | `root:faros:providers` | every Workspace on the platform | platform admin (Helm install) |
-| **Org** | `root:faros:orgs:{org-uuid}` | every Workspace under that Org | Org admin |
-| **Personal** | `root:faros:orgs:{personal-org-uuid}` (the Org marked `spec.personal: true` on the User) | every Workspace under the personal Org | the user (sole admin of their personal Org) |
+| **Global** | `root:railgrid:providers` | every Workspace on the platform | platform admin (Helm install) |
+| **Org** | `root:railgrid:orgs:{org-uuid}` | every Workspace under that Org | Org admin |
+| **Personal** | `root:railgrid:orgs:{personal-org-uuid}` (the Org marked `spec.personal: true` on the User) | every Workspace under the personal Org | the user (sole admin of their personal Org) |
 
 Personal collapses to "Org-scoped in the personal Org" — same code
 path, same admission rules. It's only a distinct *user-facing concept*
@@ -114,8 +114,8 @@ type CatalogEntrySpec struct {
     Slug string `json:"slug"`
 
     // Scope is informational. The catalog controller derives it from
-    // the workspace this CatalogEntry lives in (root:faros:providers
-    // → Global, root:faros:orgs:{uuid} → Org or Personal depending on
+    // the workspace this CatalogEntry lives in (root:railgrid:providers
+    // → Global, root:railgrid:orgs:{uuid} → Org or Personal depending on
     // Organization.spec.personal). Overwritten on reconcile.
     //
     // +kubebuilder:validation:Enum=Global;Org;Personal
@@ -155,10 +155,10 @@ Per [organizations.md](./organizations.md): all tenant work lives in
 **child Workspaces**, not in the Org workspace. That carries straight
 through here:
 
-- A `CatalogEntry` in `root:faros:orgs:{org-uuid}` says "this provider
+- A `CatalogEntry` in `root:railgrid:orgs:{org-uuid}` says "this provider
   is *available* to Workspaces under that Org."
 - The `APIBinding` that actually Enables the provider lives in a
-  specific Workspace — `root:faros:orgs:{org-uuid}:{ws-uuid}`.
+  specific Workspace — `root:railgrid:orgs:{org-uuid}:{ws-uuid}`.
 - Sibling Workspaces in the same Org are *eligible* to Enable the
   same provider but are not bound until each one explicitly creates
   its own `APIBinding`.
@@ -177,10 +177,10 @@ without.
 
 | You want… | You do… | Who has to approve |
 |---|---|---|
-| The whole platform | Submit a Helm chart that installs a `CatalogEntry` into `root:faros:providers` on the host cluster | Platform admin |
-| Your Org only | As Org admin, `POST /api/orgs/{org}/catalog` (creates a `CatalogEntry` in `root:faros:orgs:{org}`) pointing at your backend / chart you've installed | You (Org admin) |
+| The whole platform | Submit a Helm chart that installs a `CatalogEntry` into `root:railgrid:providers` on the host cluster | Platform admin |
+| Your Org only | As Org admin, `POST /api/orgs/{org}/catalog` (creates a `CatalogEntry` in `root:railgrid:orgs:{org}`) pointing at your backend / chart you've installed | You (Org admin) |
 | Just yourself | Same as above, in your **personal Org** (the auto-bootstrapped Org with `spec.personal: true`) | You |
-| Promote your Org provider to platform-wide | (v2) `POST /api/orgs/{org}/catalog/{name}/submit` opens a request to the platform admin to clone the entry into `root:faros:providers` | Platform admin reviews + accepts |
+| Promote your Org provider to platform-wide | (v2) `POST /api/orgs/{org}/catalog/{name}/submit` opens a request to the platform admin to clone the entry into `root:railgrid:providers` | Platform admin reviews + accepts |
 
 Org-scoped and Personal-scoped providers don't get the same hub-side
 guarantees as Global ones — no host-cluster Helm chart, no managed
@@ -197,8 +197,8 @@ Today: `GET /api/providers` returns the whole registry. After:
 
 ```
 GET /api/providers
-  X-Faros-Org:        7f3a91d2-...     (required, Org UUID)
-  X-Faros-Workspace:  9c4b8e1f-...     (required, Workspace UUID)
+  X-Railgrid-Org:        7f3a91d2-...     (required, Org UUID)
+  X-Railgrid-Workspace:  9c4b8e1f-...     (required, Workspace UUID)
 ```
 
 Resolution, in order:
@@ -207,10 +207,10 @@ Resolution, in order:
    `{org-uuid}/{ws-uuid}` (per [organizations.md](./organizations.md)
    §Tenant middleware). Else 403.
 2. Catalog list fetches CatalogEntries from:
-   - `root:faros:providers` (Global)
-   - `root:faros:orgs:{org-uuid}` (Org)
+   - `root:railgrid:providers` (Global)
+   - `root:railgrid:orgs:{org-uuid}` (Org)
 3. Per entry, the list computes `enabled` by checking for an
-   `APIBinding` in `root:faros:orgs:{org-uuid}:{ws-uuid}` whose
+   `APIBinding` in `root:railgrid:orgs:{org-uuid}:{ws-uuid}` whose
    `reference.export.path` matches the provider's APIExport. One List
    call total, not one per provider.
 4. Response shape gains:
@@ -256,10 +256,10 @@ the user is a member of and every REST endpoint they can call. A provider needs
 far less — it acts in one workspace, on the caller's behalf.
 
 A **delegated user token** replaces it: a ServiceAccount token minted by the hub
-in the caller's *current* workspace (`faros-du-<hash>` in `default`,
+in the caller's *current* workspace (`railgrid-du-<hash>` in `default`,
 `pkg/hub/serviceaccounts/delegated_user_token.go`), audience-bound, ten minutes
 long, bound to the same role the caller holds there, and annotated with the human
-it stands in for. `X-Faros-User` / `X-Faros-Tenant` / `X-Faros-Cluster` are
+it stands in for. `X-Railgrid-User` / `X-Railgrid-Tenant` / `X-Railgrid-Cluster` are
 unchanged, so a provider still attributes work to the person. A provider calling
 back into the hub with it resolves to that person
 (`pkg/hub/provider_tenant_resolver.go`).
@@ -268,8 +268,8 @@ Who gets one:
 
 | Provider scope | Credential |
 |---|---|
-| Org-owned (`root:faros:tenants:{org}:providers:{name}`) | **Always** the delegated token. Its backend runs in a tenant's own cluster; the caller's hub bearer must never cross that line. |
-| Platform (`root:faros:providers`) | Per `--provider-delegated-tokens`. |
+| Org-owned (`root:railgrid:tenants:{org}:providers:{name}`) | **Always** the delegated token. Its backend runs in a tenant's own cluster; the caller's hub bearer must never cross that line. |
+| Platform (`root:railgrid:providers`) | Per `--provider-delegated-tokens`. |
 
 `--provider-delegated-tokens=off|platform|all` (hub flag, `pkg/hub/options.go`):
 
@@ -287,7 +287,7 @@ error is a 503. Nothing falls back to forwarding the bearer. Anonymous requests
 (health probes) carry no credential and are forwarded as-is.
 
 **Requests need a workspace.** The delegated account lives in a team workspace,
-so a request made in the portal's organization-only mode (no `X-Faros-Workspace`)
+so a request made in the portal's organization-only mode (no `X-Railgrid-Workspace`)
 has nowhere to mint one and is refused. Org workspaces are hub-mediated only
 (P-2 / O-10) and kcp will not honour an SA token bound there, so minting in the
 org workspace is not an option. In practice the portal's provider frames require
@@ -296,9 +296,9 @@ both headers.
 
 ### Provider identity and hub access
 
-The delegated account's proof (`faros.sh/delegated-user-proof`, version 2)
+The delegated account's proof (`railgrid.ai/delegated-user-proof`, version 2)
 covers the provider's name **and its owner org**
-(`faros.sh/delegated-provider-org`, absent for platform providers), and the
+(`railgrid.ai/delegated-provider-org`, absent for platform providers), and the
 account name hashes the owner in too. An org-owned provider sharing a platform
 provider's name is therefore a different identity everywhere it matters. Accounts
 signed before version 2 are re-signed in place on the next mint (platform
@@ -316,18 +316,18 @@ Every consumer of the forwarded bearer, and whether a workspace-scoped SA token
 serves it. The recurring answer is yes, because no provider parses the bearer as
 a JWT — a repo-wide search for `ParseUnverified` / `jwt.Parse` / `ParseSigned`
 under `providers/` and `provider-sdk/` finds nothing that inspects the *caller's*
-token — and every provider takes identity from `X-Faros-User` / `X-Faros-Tenant`
+token — and every provider takes identity from `X-Railgrid-User` / `X-Railgrid-Tenant`
 instead.
 
 | Consumer | What it does with the bearer | Verdict |
 |---|---|---|
 | `provider-sdk/tenantaccess` `NewClient` | `rest.Config{Host: {hub}/clusters/{id}, BearerToken: …}` | **Works.** Also never fed a caller bearer today — its four callers pass a reconciler-minted SA token. |
 | `providers/infrastructure/dataplane/identity.go`, `authorizer.go` | `SelfSubjectAccessReview` on `<resource>/exec`, plus a caller-scoped instance GET | **Works.** SSAR asks "what can *this* credential do", so the delegated SA's workspace role is evaluated, matching the user's. No username or groups are supplied. |
-| `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Faros-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
+| `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Railgrid-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
 | `providers/edges` — tunnel, k8s subresource, `services/{name}/proxy` | TokenReview then SAR (`verb: proxy`) through the APIExport VW for the addressed cluster | **Works.** A delegated token authenticates in the workspace that minted it — the same one being addressed — keeps its groups, and its `cluster-admin` binding passes the SAR. Already exercised: the org-provider tunnel carries delegated tokens today. |
-| `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:faros-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Faros-User`. |
-| `providers/app-studio` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Faros-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate, to provider action routes, and to the infrastructure data plane | **Works.** All hops are hub surfaces that accept an SA token; each re-forwards `X-Faros-*` alongside. |
-| `providers/agents` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Faros-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint and the infrastructure data plane | **Works.** Its own TokenReview/SAR path is the *s2s* endpoint, which is not hub-proxied and is unaffected. |
+| `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:railgrid-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Railgrid-User`. |
+| `providers/app-studio` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate, to provider action routes, and to the infrastructure data plane | **Works.** All hops are hub surfaces that accept an SA token; each re-forwards `X-Railgrid-*` alongside. |
+| `providers/agents` (`tenant/scope.go`) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint and the infrastructure data plane | **Works.** Its own TokenReview/SAR path is the *s2s* endpoint, which is not hub-proxied and is unaffected. |
 | `providers/databricks` | `{hub}/clusters/{id}` client + SSAR per action | **Works.** The Databricks-facing PAT is a workspace Secret, unrelated to the caller's bearer. |
 | `providers/kuery`, `providers/quickstart` | Echo the token's length/fingerprint only | **Works.** Neither uses it as a credential. |
 | Hub kcp proxy (`/clusters/{cluster}`, `pkg/server/proxy/proxy.go`) | Dispatches by token shape and dials `{front-proxy}/clusters/{cluster}` as the caller; user tokens are gated by workspace membership | **Works.** kcp pins an SA token to its own cluster claim, which is the workspace the delegated account was minted in. |
@@ -347,8 +347,8 @@ minutes and is scoped to one workspace instead of being a live hub credential.
 workspace from the tenant middleware. The slug (P-1) is resolved to a
 CatalogEntry UUID by looking it up in:
 
-1. The Global catalog (`root:faros:providers`), then
-2. The active Org's catalog (`root:faros:orgs:{org-uuid}`).
+1. The Global catalog (`root:railgrid:providers`), then
+2. The active Org's catalog (`root:railgrid:orgs:{org-uuid}`).
 
 First match wins. This means a Global slug shadows a same-named Org
 slug — document this; portal validation rejects Org slug creates that
@@ -424,7 +424,7 @@ DELETE /api/orgs/{org-uuid}/catalog/{entry-uuid}                       delete it
 POST   /api/orgs/{org-uuid}/workspaces/{ws-uuid}/providers/{entry-uuid}/enable   create APIBinding in the workspace
 DELETE /api/orgs/{org-uuid}/workspaces/{ws-uuid}/providers/{entry-uuid}/enable   delete the APIBinding
 
-GET    /api/providers                                                  (existing) — now requires X-Faros-Org + X-Faros-Workspace
+GET    /api/providers                                                  (existing) — now requires X-Railgrid-Org + X-Railgrid-Workspace
 ```
 
 All identifiers in paths are UUIDs; display names are returned in
@@ -451,7 +451,7 @@ and to centralize permission-claim acceptance.
 ## Migration story
 
 Per O-2 (clean slate), there is no production data to migrate. Existing
-dev/test CatalogEntries in `root:faros:providers` are already Global
+dev/test CatalogEntries in `root:railgrid:providers` are already Global
 and stay where they are. There are no production Users whose old
 single-workspace UX needs preserving, so per P-6 the workspace context
 headers are **required** on `/api/providers` and the proxies from day
@@ -462,10 +462,10 @@ Concretely, on first deploy after this lands:
 1. The bootstrap controller creates a personal Org + default Workspace
    for every existing User CR.
 2. The portal pins the User's personal Org UUID as the default
-   `X-Faros-Org` (from `User.status.personalOrg`, per
+   `X-Railgrid-Org` (from `User.status.personalOrg`, per
    [organizations.md](./organizations.md)) and the default Workspace
-   UUID as `X-Faros-Workspace`.
-3. The previous `root:faros:users:{userId}` workspaces are deleted by
+   UUID as `X-Railgrid-Workspace`.
+3. The previous `root:railgrid:users:{userId}` workspaces are deleted by
    a one-shot cleanup job (they were dev data per O-2).
 
 ---
@@ -482,13 +482,13 @@ kcp-proxy Org gate from O-10 don't exist). Then in this doc's order:
    from the workspace path. Bi-directional slug-uniqueness admission
    from P-11 lands here too.
 2. **Multi-source registry.** Catalog controller watches both sources
-   (`root:faros:providers`, `root:faros:orgs:*`) and feeds the
+   (`root:railgrid:providers`, `root:railgrid:orgs:*`) and feeds the
    in-memory `Registry`. Keys become `(scope, ownerOrg, uuid)`; slug
    resolution lookups happen at request time, not at registry-write
    time. The registry filters out CatalogEntries whose owning Org has
    `status.deletionRequestedAt` set (P-9).
 3. **Per-Org `bind` ClusterRole controller (P-3).** Watches
-   CatalogEntries + Memberships, maintains `faros:org:{uuid}:bind`.
+   CatalogEntries + Memberships, maintains `railgrid:org:{uuid}:bind`.
    Also reconciles P-9: when an Org enters soft-delete, the controller
    removes its bind ClusterRole; undelete restores it.
 4. **Backend URL probe controller (P-12).** Periodically GETs
@@ -529,7 +529,7 @@ Open after this round of decisions:
 - **Catalog controller startup cost.** Listing CatalogEntries across
   every Org workspace is O(orgs). Fine for hundreds, awkward at tens
   of thousands. Pre-aggregated index workspace
-  (`root:faros:catalog-index` mirroring all entries) is the obvious
+  (`root:railgrid:catalog-index` mirroring all entries) is the obvious
   scale fix; defer until we measure pain.
 - **Empty-state UX details.** Per Q11 the portal renders a "Suggested
   for you" rail (mcp / edges / server-edges) for fresh Workspaces with

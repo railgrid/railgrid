@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,11 +37,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 type CreateProjectRequest struct {
@@ -447,8 +447,8 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			// org/workspace UUIDs the hub derives from the tenant path.
 			// Commit convergence reads these back.
 			Annotations: map[string]string{
-				"ai.faros.sh/org-uuid":       id.orgUUID,
-				"ai.faros.sh/workspace-uuid": id.workspaceUUID,
+				"ai.railgrid.ai/org-uuid":       id.orgUUID,
+				"ai.railgrid.ai/workspace-uuid": id.workspaceUUID,
 			},
 		},
 		Spec: defaultProjectSpec(name, req.DisplayName, req.Description, repoPlan.projectBinding()),

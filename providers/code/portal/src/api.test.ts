@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api, setAPIContext } from './api'
 
-const GROUP = 'code.faros.sh'
+const GROUP = 'code.railgrid.ai'
 const API_ROOT = `/apis/${GROUP}/v1alpha1`
 
 interface FetchCall {
@@ -190,7 +190,7 @@ describe('getRepository health snapshot', () => {
   it('retains conditions and provider health facts from one successful read', async () => {
     setAPIContext({ tenant: 'repository-snapshot', token: 'repository-snapshot-token' })
     const calls = stubFetch(() => response({
-      apiVersion: 'code.faros.sh/v1alpha1',
+      apiVersion: 'code.railgrid.ai/v1alpha1',
       kind: 'Repository',
       metadata: {
         name: 'orders',
@@ -202,7 +202,7 @@ describe('getRepository health snapshot', () => {
       spec: {
         connectionRef: 'github',
         name: 'orders',
-        owner: 'faros',
+        owner: 'railgrid',
         visibility: 'private',
         defaultBranch: 'main',
         autoInit: true,
@@ -211,7 +211,7 @@ describe('getRepository health snapshot', () => {
         repoID: 'repo-42',
         htmlURL: 'https://github.example/orders',
         cloneURL: 'https://github.example/orders.git',
-        sshURL: 'git@github.example:faros/orders.git',
+        sshURL: 'git@github.example:railgrid/orders.git',
         observedGeneration: 3,
         conditions: [{ type: 'Ready', status: 'True', reason: 'Synced', message: 'Repository is ready', lastTransitionTime: '2026-08-24T00:01:00Z' }],
       },
@@ -224,7 +224,7 @@ describe('getRepository health snapshot', () => {
       repoID: 'repo-42',
       htmlURL: 'https://github.example/orders',
       cloneURL: 'https://github.example/orders.git',
-      sshURL: 'git@github.example:faros/orders.git',
+      sshURL: 'git@github.example:railgrid/orders.git',
       conditions: [{ type: 'Ready', status: 'True', reason: 'Synced' }],
     })
     expect(repository).not.toHaveProperty('rawObject')
@@ -273,14 +273,14 @@ describe('getRepository health snapshot', () => {
       status: {
         htmlURL: 'https://github.example/orders',
         cloneURL: 'https://github.example/orders.git',
-        sshURL: 'git@github.example:faros/orders.git',
+        sshURL: 'git@github.example:railgrid/orders.git',
       },
     }]))
 
     await expect(api.listRepositories()).resolves.toMatchObject([{
       htmlURL: 'https://github.example/orders',
       cloneURL: 'https://github.example/orders.git',
-      sshURL: 'git@github.example:faros/orders.git',
+      sshURL: 'git@github.example:railgrid/orders.git',
     }])
     expect(calls[0].method).toBe('GET')
     expect(calls[0].path).toBe(`/clusters/repository-list-urls${API_ROOT}/repositories`)
@@ -295,7 +295,7 @@ describe('Kubernetes deletion state', () => {
       load: () => api.listConnections(),
       item: {
         metadata: { name: 'connection', uid: 'connection-uid', deletionTimestamp },
-        spec: { provider: 'github', type: 'pat', owner: 'faros', secretRef: { name: 'token' } },
+        spec: { provider: 'github', type: 'pat', owner: 'railgrid', secretRef: { name: 'token' } },
       },
     },
     {
@@ -349,7 +349,7 @@ describe('Kubernetes deletion state', () => {
     setAPIContext({ tenant: 'malformed-deletion-time', token: 'malformed-token' })
     stubFetch(() => kubeList([{
       metadata: { name: 'connection', uid: 'connection-uid', deletionTimestamp: 42 },
-      spec: { provider: 'github', type: 'pat', owner: 'faros', secretRef: { name: 'token' } },
+      spec: { provider: 'github', type: 'pat', owner: 'railgrid', secretRef: { name: 'token' } },
     }]))
 
     await expect(api.listConnections()).rejects.toMatchObject({ reason: 'ProtocolError' })
@@ -359,7 +359,7 @@ describe('Kubernetes deletion state', () => {
 describe('Kubernetes cursor list pages', () => {
   const connection = {
     metadata: { name: 'connection', uid: 'connection-uid' },
-    spec: { provider: 'github', type: 'pat', owner: 'faros', secretRef: { name: 'token' } },
+    spec: { provider: 'github', type: 'pat', owner: 'railgrid', secretRef: { name: 'token' } },
   }
   const repository = {
     metadata: { name: 'repository', uid: 'repository-uid' },
@@ -426,7 +426,7 @@ describe('Kubernetes cursor list pages', () => {
     })
     expect(calls[0].path).toBe(`/clusters/page-label${API_ROOT}/packages`)
     expect(calls[0].query).toEqual({
-      labelSelector: 'code.faros.sh/repository=repository',
+      labelSelector: 'code.railgrid.ai/repository=repository',
       limit: '2',
       continue: 'opaque-package',
     })
@@ -613,7 +613,7 @@ describe('connect', () => {
   it('keeps explicit reconnect semantics: adopts the Connection and replaces its owned Secret', async () => {
     setAPIContext({ tenant: 'connect-reconnect', token: 'connect-reconnect-token' })
     const connection = {
-      apiVersion: 'code.faros.sh/v1alpha1',
+      apiVersion: 'code.railgrid.ai/v1alpha1',
       kind: 'Connection',
       metadata: { name: 'github-prod', uid: 'existing-connection-uid' },
       spec: {
@@ -648,7 +648,7 @@ describe('connect', () => {
     expect(calls[0].path).toBe(`/clusters/connect-reconnect${API_ROOT}/connections/github-prod`)
     expect(calls[0].query).toEqual({ fieldManager: 'provider-code', force: 'true' })
     expect(calls[0].body).toMatchObject({
-      apiVersion: 'code.faros.sh/v1alpha1',
+      apiVersion: 'code.railgrid.ai/v1alpha1',
       kind: 'Connection',
       metadata: { name: 'github-prod' },
       spec: {
@@ -669,7 +669,7 @@ describe('connect', () => {
         name: 'github-prod-token',
         namespace: 'default',
         ownerReferences: [{
-          apiVersion: 'code.faros.sh/v1alpha1',
+          apiVersion: 'code.railgrid.ai/v1alpha1',
           kind: 'Connection',
           name: 'github-prod',
           uid: 'existing-connection-uid',
@@ -682,7 +682,7 @@ describe('connect', () => {
   it('rejects an apply response for a different object than requested', async () => {
     setAPIContext({ tenant: 'connect-mismatch', token: 'connect-mismatch-token' })
     stubFetch(() => response({
-      apiVersion: 'code.faros.sh/v1alpha1',
+      apiVersion: 'code.railgrid.ai/v1alpha1',
       kind: 'Connection',
       metadata: { name: 'someone-else', uid: 'other-uid' },
       spec: { provider: 'github', type: 'pat', owner: 'octocat', secretRef: { name: 'x' } },

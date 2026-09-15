@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // restRuntime is the production Runtime: it wraps the runtime cluster's
@@ -126,7 +126,7 @@ func (r *restRuntime) RecordActivity(ctx context.Context, instance *unstructured
 	patch, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{
 			"annotations": map[string]string{
-				infrav1alpha1.FarosLastActivityAnnotation: time.Now().UTC().Format(time.RFC3339Nano),
+				infrav1alpha1.RailgridLastActivityAnnotation: time.Now().UTC().Format(time.RFC3339Nano),
 			},
 		},
 	})

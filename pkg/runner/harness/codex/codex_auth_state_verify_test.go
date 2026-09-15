@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ func fakeCodexBinaryMissingAccount(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.147.0; exit 0; fi\nFAROS_FAKE_MISSING_ACCOUNT_CHILD=1 exec %q -test.run=TestFakeMissingAccountAppServerProcess\n", os.Args[0])
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.147.0; exit 0; fi\nRAILGRID_FAKE_MISSING_ACCOUNT_CHILD=1 exec %q -test.run=TestFakeMissingAccountAppServerProcess\n", os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func fakeCodexBinaryMissingAccount(t *testing.T) string {
 }
 
 func TestFakeMissingAccountAppServerProcess(t *testing.T) {
-	if os.Getenv("FAROS_FAKE_MISSING_ACCOUNT_CHILD") != "1" {
+	if os.Getenv("RAILGRID_FAKE_MISSING_ACCOUNT_CHILD") != "1" {
 		return
 	}
 	scanner := bufio.NewScanner(os.Stdin)

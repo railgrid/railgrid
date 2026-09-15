@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,10 +28,10 @@ import (
 	"github.com/spf13/cobra"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
-// whoamiView is what 'faros whoami' resolves. It is also the -o json shape.
+// whoamiView is what 'railgrid whoami' resolves. It is also the -o json shape.
 type whoamiView struct {
 	Hub       string `json:"hub"`
 	Context   string `json:"context"`
@@ -138,7 +138,7 @@ func describeKubectlTarget(raw *clientcmdapi.Config) (string, string) {
 	switch {
 	case cur == "":
 		return "", "none (no current context)"
-	case cur == farosContextName:
+	case cur == railgridContextName:
 		return cur, "hub workspace"
 	case isEdgeContext(cur):
 		return cur, "edge " + strings.TrimPrefix(cur, edgeContextPrefix)
@@ -165,7 +165,7 @@ func describeAuth(v *whoamiView, auth *clientcmdapi.AuthInfo) {
 		}
 		cache, err := cliauth.LoadTokenCache(issuer, clientID)
 		if err != nil {
-			v.TokenInfo = "no cached token (run 'faros login')"
+			v.TokenInfo = "no cached token (run 'railgrid login')"
 			return
 		}
 		t := time.Unix(cache.ExpiresAt, 0)
@@ -182,7 +182,7 @@ func describeAuth(v *whoamiView, auth *clientcmdapi.AuthInfo) {
 }
 
 // execOIDCArgs extracts the issuer and client id from the exec plugin args
-// 'faros login' wrote (--oidc-issuer-url=… --oidc-client-id=…).
+// 'railgrid login' wrote (--oidc-issuer-url=… --oidc-client-id=…).
 func execOIDCArgs(exec *clientcmdapi.ExecConfig) (issuer, clientID string) {
 	for i := 0; i < len(exec.Args); i++ {
 		a := exec.Args[i]

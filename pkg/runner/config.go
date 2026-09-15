@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -109,7 +109,7 @@ func (c *Config) applyDefaults() error {
 		return fmt.Errorf("unsupported runner protocol version %q", c.ProtocolVersion)
 	}
 	if c.RunnerID == "" {
-		c.RunnerID = "faros-runner-" + runtime.GOOS + "-" + runtime.GOARCH
+		c.RunnerID = "railgrid-runner-" + runtime.GOOS + "-" + runtime.GOARCH
 	}
 	if c.Version == "" {
 		c.Version = "dev"
@@ -122,7 +122,7 @@ func (c *Config) applyDefaults() error {
 		if err != nil {
 			return fmt.Errorf("resolve default runner state directory: %w", err)
 		}
-		c.StateDir = filepath.Join(base, "faros-runner")
+		c.StateDir = filepath.Join(base, "railgrid-runner")
 	}
 	abs, err := filepath.Abs(c.StateDir)
 	if err != nil {

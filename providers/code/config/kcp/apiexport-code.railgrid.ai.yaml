@@ -1,0 +1,47 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: code.railgrid.ai
+spec:
+  resources:
+  - group: code.railgrid.ai
+    name: collaborators
+    schema: v260609-fc69fa2.collaborators.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: connections
+    schema: v260609-fc69fa2.connections.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: deploykeys
+    schema: v260609-fc69fa2.deploykeys.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: packages
+    schema: v260712-dabfd8e.packages.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositories
+    schema: v260609-fc69fa2.repositories.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorybuildstatuses
+    schema: v260712-dabfd8e.repositorybuildstatuses.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorycheckouts
+    schema: v260704-6d52bca.repositorycheckouts.code.railgrid.ai
+    storage:
+      crd: {}
+  - group: code.railgrid.ai
+    name: repositorycommits
+    schema: v260802-8d0bfc17.repositorycommits.code.railgrid.ai
+    storage:
+      crd: {}
+status: {}

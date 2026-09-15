@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 )
 
 func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testing.T) {
@@ -42,7 +42,7 @@ func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testi
 			DisplayName: "Mutate",
 			Description: "Mutates one bound resource.",
 			Resource: ProviderActionResource{
-				APIVersion: "example.faros.sh/v1alpha1",
+				APIVersion: "example.railgrid.ai/v1alpha1",
 				Kind:       "Widget",
 				Resource:   "widgets",
 			},

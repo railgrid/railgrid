@@ -2,7 +2,7 @@
 
 Status: **Design proposal.**
 Author: 2026-06-11
-Related: [kuery](https://github.com/faroshq/kuery) (the query engine this wraps),
+Related: [kuery](https://github.com/railgrid/kuery) (the query engine this wraps),
 `providers/infrastructure/` (the standalone-provider pattern this is modeled on),
 `pkg/hub/providers/` (CatalogEntry provisioning), `pkg/virtual/builder/edges_proxy_builder.go`
 (edge data path), `docs/providers.md`, `docs/code-provider-architecture.md`.
@@ -19,7 +19,7 @@ rotate?") and a portal UI.
 
 Realistic value ranking, which drives the phasing below:
 
-1. **Fleet-wide search/inventory** — the differentiated piece; nothing in faros answers
+1. **Fleet-wide search/inventory** — the differentiated piece; nothing in railgrid answers
    cross-edge questions today without per-edge fan-out.
 2. **MCP query tools** — a far better agent surface than the per-edge `kubernetes_*` tools:
    one query instead of dozens of tunneled kubectl calls (latency *and* token cost).
@@ -31,7 +31,7 @@ Realistic value ranking, which drives the phasing below:
 4. **Graph visualization** — demo layer on top; single-cluster object graphs are commodity
    (Lens, Headlamp, ArgoCD tree).
 
-It wraps [kuery](https://github.com/faroshq/kuery): a read-only, multi-cluster Kubernetes
+It wraps [kuery](https://github.com/railgrid/kuery): a read-only, multi-cluster Kubernetes
 query engine that syncs objects from N clusters into SQLite/Postgres via dynamic informers
 and exposes a single POST-only API (`kuery.io/v1alpha1 Query`) supporting relationship
 traversal that plain list/watch can't do:
@@ -49,7 +49,7 @@ Kuery is already kcp-aware (APIExport identity disambiguation in `internal/sync/
 has an Engage/Disengage cluster lifecycle. It has **no UI and no authz** — both are this
 provider's job:
 
-- faros supplies the **clusters** (connected edges, reachable through the hub's edges-proxy)
+- railgrid supplies the **clusters** (connected edges, reachable through the hub's edges-proxy)
   and the **tenant boundary**;
 - the provider supplies **tenant-scoped query access** and the **visualization** (inventory,
   object graph, impact view).
@@ -61,7 +61,7 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/kuery/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Faros-Cluster (tenant kcp cluster ID) + X-Faros-User
+   │  proxy injects X-Railgrid-Cluster (tenant kcp cluster ID) + X-Railgrid-User
    ▼
 kuery provider pod
    │
@@ -79,7 +79,7 @@ kuery provider pod
 ### Repository layout
 
 ```
-providers/kuery/                      module github.com/faroshq/provider-kuery
+providers/kuery/                      module github.com/railgrid/provider-kuery
 ├── main.go                           init | serve (same pattern as infrastructure provider)
 ├── engagement/                       controller: watch Edge CRs → Engage/Disengage kuery clusters
 ├── server/                           tenant-scoped REST: /api/query, /api/impact, /api/edges
@@ -101,7 +101,7 @@ Host = apiurl.EdgeProxyURL(hubBase, cluster, edgeName, "k8s")
 ```
 
 — the exact pattern `pkg/virtual/builder/mcp_provider.go` already uses for the kubernetes
-MCP tools — authenticating as the workspace-local `faros-kuery` ServiceAccount the
+MCP tools — authenticating as the workspace-local `railgrid-kuery` ServiceAccount the
 engagement controller provisions in that tenant (see "Edges-proxy authorization" below
 for why it is not the provider SA), wraps it in a controller-runtime `cluster.Cluster`,
 and `Engage`s it into kuery's sync controller under the name `{clusterID}/{edgeName}`,
@@ -119,19 +119,19 @@ they are then reaped within their TTL of their last heartbeat, without manual cl
 The tenant key is the **kcp logical-cluster ID** of the tenant workspace — everywhere: the
 engaged cluster name (`{clusterID}/{edge}`), the `tenant` cluster label the query API scopes
 by, `/api/edges`, `/api/status`, and `objects[].cluster` in query results. Workspace paths
-(`root:faros:tenants:…`) are display names, never identity: they are not stored, not accepted
+(`root:railgrid:tenants:…`) are display names, never identity: they are not stored, not accepted
 in identity headers, and not translated.
 
 ### Tenant isolation
 
 Kuery has no authorization of its own, so its API is **never exposed directly**. The
-provider backend is the only entry point: it takes `X-Faros-Cluster` (the tenant's kcp
+provider backend is the only entry point: it takes `X-Railgrid-Cluster` (the tenant's kcp
 logical-cluster ID, injected by the hub's backend proxy and by the MCP aggregate's federation
 client) and forcibly rewrites every query's `spec.cluster` filter to the tenant's own
 cluster-name prefix (`{clusterID}/…`) and `tenant` label before forwarding to the engine.
-`X-Faros-Tenant` is honoured only when `X-Faros-Cluster` is absent and only if it carries a
+`X-Railgrid-Tenant` is honoured only when `X-Railgrid-Cluster` is absent and only if it carries a
 cluster ID; a workspace path there is a `400`. One shared store, isolation enforced at the
-single choke point. `FAROS_DEV_ALLOW_TENANT_QUERY` (`?tenant=<clusterID>`) mirrors the
+single choke point. `RAILGRID_DEV_ALLOW_TENANT_QUERY` (`?tenant=<clusterID>`) mirrors the
 infrastructure provider's dev escape hatch.
 
 Kuery's relationship to the **edge providers** also follows the platform
@@ -198,7 +198,7 @@ There are two halves, both small:
 
 **Authn — teach authorize() about provider SA tokens.** authorize() currently runs the
 TokenReview *in the target tenant workspace*. kcp SA tokens are logical-cluster-scoped, so
-the provider's SA token (home: `root:faros:providers:kuery`) fails authentication there
+the provider's SA token (home: `root:railgrid:providers:kuery`) fails authentication there
 before RBAC is consulted. The front proxy already handles this pattern
 (`pkg/server/proxy/proxy.go`: `parseServiceAccountToken` → route to the token's home
 cluster). Extend authorize() the same way:
@@ -214,7 +214,7 @@ cluster). Extend authorize() the same way:
    (`EffectiveUsers` in the fork's `pkg/registry/rbac/validation/kcp.go`; proven
    cross-workspace by kcp's e2e `TestAPIResourceSchemaVirtualWorkspaceAuthorization`).
    Emitting the same format means the Enable-time grant binding also authorizes the
-   provider SA on kcp-native paths, not just faros's delegated SAR.
+   provider SA on kcp-native paths, not just railgrid's delegated SAR.
 
 **Authz — materialize the grant on Enable.**
 
@@ -223,8 +223,8 @@ cluster). Extend authorize() the same way:
   your edges" — same consent model as tenant-scoped claims.
 - The existing server-side Enable endpoint (`pkg/hub/restapi/providers_enable.go`, which
   already creates the APIBinding) additionally applies in the tenant workspace:
-  - ClusterRole `faros:provider:{name}:edges-proxy` — **two rules**: verb `proxy` on
-    `edges.faros.sh`, plus verb `access` on nonResourceURL `/`. The second is
+  - ClusterRole `railgrid:provider:{name}:edges-proxy` — **two rules**: verb `proxy` on
+    `edges.railgrid.ai`, plus verb `access` on nonResourceURL `/`. The second is
     required: kcp's workspaceContentAuthorizer checks `access` before any resource RBAC,
     and a foreign SA is not covered by the tenant workspace's `system:authenticated`
     grants (the SAR also drops its groups). kcp's own cross-workspace SA e2e pairs the
@@ -244,11 +244,11 @@ own workspace by prepending `/clusters/{callerHome}`. The review lands on
 answers 403, and every engage fails with `discovery failed ... Forbidden`. The e2e that
 covers the branch probes with the edges provider's own SA, whose home equals the
 caller's, so the rewrite is a no-op there. Kuery therefore dials the edgeproxy as the
-per-workspace `faros-kuery` ServiceAccount it already provisions for edge discovery
+per-workspace `railgrid-kuery` ServiceAccount it already provisions for edge discovery
 (`engagement/controller.go` `edgeProxyConfig`). That token is issued in the consumer
 workspace, so the edges proxy takes its native path — TokenReview and SAR through the
-APIExport VW, the same as edge-agent and delegated `faros-du-*` tokens — and a separate
-`faros-kuery-edgeproxy` ClusterRole + binding grants that SA verb `proxy` on
+APIExport VW, the same as edge-agent and delegated `railgrid-du-*` tokens — and a separate
+`railgrid-kuery-edgeproxy` ClusterRole + binding grants that SA verb `proxy` on
 `kubernetesclusters` (the same per-edge grant shape the edges provider writes for its
 agents). It is a separate, created object rather than a verb on the identity's own role
 because kuery claims only get/list/watch/create on clusterroles and a claim on an existing
@@ -284,7 +284,7 @@ Full-object sync of every edge through the tunnels is the cost center.
 ## Phasing
 
 - **Phase 0 — unblock.** Kuery upstream refactor (`internal/` → `pkg/`) — **done**
-  ([kuery#3](https://github.com/faroshq/kuery/pull/3), merged 2026-06-11); hub-side
+  ([kuery#3](https://github.com/railgrid/kuery/pull/3), merged 2026-06-11); hub-side
   `proxy`-on-`edges` grant for provider ServiceAccounts on tenant Enable — **implemented**
   (design above, key decision 2): SA-aware `authorize()` in
   `pkg/virtual/builder/auth.go`, qualified identities in `pkg/util/identity`,
@@ -296,14 +296,14 @@ Full-object sync of every edge through the tunnels is the cost center.
   the portal catalog.
 - **Phase 2 — data + MCP.** **Implemented** (providers/kuery: `core/`, `engagement/`,
   `queryapi/`, `mcpserver/`). Engagement controller (watch Edges via permission claim
-  `edges.faros.sh` get/list/watch, tenantScoped) + embedded kuery sync +
+  `edges.railgrid.ai` get/list/watch, tenantScoped) + embedded kuery sync +
   tenant-scoped `/api/query` + MCP tools (`kuery_query`, `kuery_impact`) into the
   aggregator. This is the value milestone: agents can query the fleet.
   Implementation notes vs. this design: tenant scoping rides on kuery *cluster
   labels* (`tenant`, a bare identifier). Both upstream kuery follow-ups are done:
-  label keys are bound SQL parameters ([kuery#4](https://github.com/faroshq/kuery/pull/4)
+  label keys are bound SQL parameters ([kuery#4](https://github.com/railgrid/kuery/pull/4)
   — the query API still replaces caller-supplied cluster labels wholesale, defense
-  in depth), and sync supports a whitelist ([kuery#5](https://github.com/faroshq/kuery/pull/5))
+  in depth), and sync supports a whitelist ([kuery#5](https://github.com/railgrid/kuery/pull/5))
   which the chart now defaults to the workloads/config/RBAC/networking set.
   End-to-end suite with a real connected edge is a Phase 3 work item.
 - **Phase 3 — UI.** **Implemented** (inventory + impact list): portal micro-frontend
@@ -313,7 +313,7 @@ Full-object sync of every edge through the tunnels is the cost center.
   list view covers the daily-use cases; e2e with a real connected agent is the
   remaining Phase 3 work item.
 - **Phase 4 — polish.** SavedView reconciliation, Postgres chart option,
-  `split-kuery.yaml` workflow + `faroshq/provider-kuery` mirror with deploy key (see
+  `split-kuery.yaml` workflow + `railgrid/provider-kuery` mirror with deploy key (see
   `docs/provider-publishing.md`).
 
 ## Open questions

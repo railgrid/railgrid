@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestLifecycleDueHardExpiryAndIdleActivity(t *testing.T) {
@@ -33,7 +33,7 @@ func TestLifecycleDueHardExpiryAndIdleActivity(t *testing.T) {
 		t.Fatalf("hard expiry = %q/%v", reason, due)
 	}
 	runtimeObj := &unstructured.Unstructured{Object: map[string]any{"metadata": map[string]any{"annotations": map[string]any{
-		infrav1alpha1.FarosLastActivityAnnotation: created.Add(2 * time.Second).Format(time.RFC3339Nano),
+		infrav1alpha1.RailgridLastActivityAnnotation: created.Add(2 * time.Second).Format(time.RFC3339Nano),
 	}}}}
 	if reason, due := lifecycleDue(created.Add(6*time.Second), created, dev, runtimeObj); reason != "SandboxIdle" || !due {
 		t.Fatalf("idle expiry = %q/%v", reason, due)

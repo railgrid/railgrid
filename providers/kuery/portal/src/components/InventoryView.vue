@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ObjectResult } from '../api'
-import type { FarosContext } from '../element'
+import type { RailgridContext } from '../element'
 import {
   applyInventoryPage, beginInventoryRequest, changeInventoryPager, createInventoryPager,
   isCurrentInventoryRequest, normalizeInventoryFilter,
@@ -11,7 +11,7 @@ import { age, edgeName, errorMessage, resourceLabel, useKueryApi } from '../kuer
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import type { ResourceTableChange, TableFilterDefinition } from '../portalkit/table'
 
-const props = defineProps<{ context: FarosContext | null; edges: string[] }>()
+const props = defineProps<{ context: RailgridContext | null; edges: string[] }>()
 const emit = defineEmits<{ inspect: [row: ObjectResult] }>()
 const context = computed(() => props.context)
 const { api } = useKueryApi(context)

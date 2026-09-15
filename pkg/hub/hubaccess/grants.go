@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,8 +25,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // DefaultGrantCacheTTL bounds how long a replica serves a cached grant (or
@@ -44,10 +44,10 @@ func (k GrantKey) Name() string {
 	return GrantName(k.OrgUUID, k.WorkspaceUUID, k.Provider, k.ProviderOrgUUID)
 }
 
-// Store reads and writes provider Grants in root:faros:system:tenants, with a
+// Store reads and writes provider Grants in root:railgrid:system:tenants, with a
 // short cache on the read path the gate uses per request.
 type Store struct {
-	client *farosclient.Client
+	client *railgridclient.Client
 	ttl    time.Duration
 	now    func() time.Time
 
@@ -61,8 +61,8 @@ type cachedGrant struct {
 }
 
 // NewStore returns a Store over the hub's tenancy client (the one bound to
-// root:faros:system:tenants).
-func NewStore(client *farosclient.Client) *Store {
+// root:railgrid:system:tenants).
+func NewStore(client *railgridclient.Client) *Store {
 	return &Store{client: client, ttl: DefaultGrantCacheTTL, now: time.Now, cache: map[string]cachedGrant{}}
 }
 

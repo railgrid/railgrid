@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,8 +34,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	"github.com/faroshq/faros/utils/testfakes"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/utils/testfakes"
 )
 
 func wantSRI(t *testing.T, body string) string {
@@ -50,7 +50,7 @@ func wantSRI(t *testing.T, body string) string {
 // status, and a heartbeat that reports a new version must re-hash.
 func TestCatalogReconcilerPinsProviderUIBundle(t *testing.T) {
 	var body atomic.Value
-	body.Store("customElements.define('faros-provider-cost', class extends HTMLElement {})")
+	body.Store("customElements.define('railgrid-provider-cost', class extends HTMLElement {})")
 	var fetches atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ui/main.js" {

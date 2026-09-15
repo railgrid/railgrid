@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -67,12 +67,12 @@ test("plugin injects the v1 bridge before application scripts", async () => {
   const tags = plugin.transformIndexHtml();
   assert.equal(plugin.apply, "serve");
   assert.equal(tags[0].injectTo, "head-prepend");
-  assert.equal(tags[0].attrs["data-faros-preview-bridge"], "v1");
-  assert.match(tags[0].children, /faros\.preview-bridge\.ready/);
-  assert.doesNotMatch(tags[0].children, /__FAROS_PREVIEW_BRIDGE_VERIFICATION_KEYS__/);
+  assert.equal(tags[0].attrs["data-railgrid-preview-bridge"], "v1");
+  assert.match(tags[0].children, /railgrid\.preview-bridge\.ready/);
+  assert.doesNotMatch(tags[0].children, /__RAILGRID_PREVIEW_BRIDGE_VERIFICATION_KEYS__/);
   assert.doesNotMatch(tags[0].children, /window\.console/);
   assert.doesNotMatch(tags[0].children, /unhandledrejection/);
-  assert.doesNotMatch(tags[0].children, /faros\.preview-bridge\.events/);
+  assert.doesNotMatch(tags[0].children, /railgrid\.preview-bridge\.events/);
 });
 
 test("bridge ignores attacker-supplied keys and accepts a platform-trusted capability", async () => {
@@ -179,7 +179,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   assert.equal(window.console.log, fakeConsole.log, "bridge must not wrap window.console");
 
   assert.equal(parentMessages.length, 1);
-  assert.equal(parentMessages[0].message.type, "faros.preview-bridge.ready");
+  assert.equal(parentMessages[0].message.type, "railgrid.preview-bridge.ready");
   const documentID = parentMessages[0].message.documentID;
   assert.match(documentID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   const parentOrigin = "https://studio.test";
@@ -201,14 +201,14 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-bridge.probe", version: 1 },
+    data: { type: "railgrid.preview-bridge.probe", version: 1 },
     ports: [],
   });
   assert.equal(parentMessages.at(-1).origin, parentOrigin);
 
   const attackerPort = parentMessages.at(-1).ports[0];
   attackerPort.postMessage({
-    type: "faros.preview-bridge.start",
+    type: "railgrid.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
@@ -222,22 +222,22 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-bridge.probe", version: 1 },
+    data: { type: "railgrid.preview-bridge.probe", version: 1 },
     ports: [],
   });
   const trustedPort = parentMessages.at(-1).ports[0];
   trustedPort.postMessage({
-    type: "faros.preview-bridge.start",
+    type: "railgrid.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
     capability: await capability(trusted, claims),
   });
-  assert.ok(await waitForPortMessage(trustedPort, "faros.preview-bridge.connected"));
+  assert.ok(await waitForPortMessage(trustedPort, "railgrid.preview-bridge.connected"));
 
-  assert.equal(trustedPort.messages.find((message) => message.type === "faros.preview-bridge.connected").type, "faros.preview-bridge.connected");
+  assert.equal(trustedPort.messages.find((message) => message.type === "railgrid.preview-bridge.connected").type, "railgrid.preview-bridge.connected");
   assert.equal(trustedPort.messages[0].generation, documentID);
-  assert.equal(trustedPort.messages.some((message) => message.type === "faros.preview-bridge.events"), false, "connected bridge must not emit console events");
+  assert.equal(trustedPort.messages.some((message) => message.type === "railgrid.preview-bridge.events"), false, "connected bridge must not emit console events");
   assert.equal(window.console.error, fakeConsole.error, "bridge must not wrap window.console");
   assert.equal(window.console.log, fakeConsole.log, "bridge must not wrap window.console");
 
@@ -250,40 +250,40 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-bridge.probe", version: 1 },
+    data: { type: "railgrid.preview-bridge.probe", version: 1 },
   });
   const renewalPort = parentMessages.at(-1).ports[0];
   renewalPort.postMessage({
-    type: "faros.preview-bridge.start",
+    type: "railgrid.preview-bridge.start",
     version: 1,
     sessionID: renewalClaims.sid,
     generation: documentID,
     capability: renewalCapability,
   });
-  assert.ok(await waitForPortMessage(renewalPort, "faros.preview-bridge.connected"));
+  assert.ok(await waitForPortMessage(renewalPort, "railgrid.preview-bridge.connected"));
   assert.equal(trustedPort.closed, true);
-  assert.equal(renewalPort.messages.find((message) => message.type === "faros.preview-bridge.connected").type, "faros.preview-bridge.connected");
+  assert.equal(renewalPort.messages.find((message) => message.type === "railgrid.preview-bridge.connected").type, "railgrid.preview-bridge.connected");
 
   window.console.log("console observation is disabled");
   await tick();
-  assert.equal(renewalPort.messages.some((message) => message.type === "faros.preview-bridge.events"), false, "console calls must not emit event batches");
+  assert.equal(renewalPort.messages.some((message) => message.type === "railgrid.preview-bridge.events"), false, "console calls must not emit event batches");
 
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-bridge.probe", version: 1 },
+    data: { type: "railgrid.preview-bridge.probe", version: 1 },
   });
   const replayPort = parentMessages.at(-1).ports[0];
   replayPort.postMessage({
-    type: "faros.preview-bridge.start",
+    type: "railgrid.preview-bridge.start",
     version: 1,
     sessionID: renewalClaims.sid,
     generation: documentID,
     capability: renewalCapability,
   });
-  await waitForPortMessage(replayPort, "faros.preview-bridge.connected");
+  await waitForPortMessage(replayPort, "railgrid.preview-bridge.connected");
   assert.equal(replayPort.closed, true);
-  assert.equal(replayPort.messages.some((message) => message.type === "faros.preview-bridge.connected"), false);
+  assert.equal(replayPort.messages.some((message) => message.type === "railgrid.preview-bridge.connected"), false);
   assert.equal(renewalPort.closed, false);
 });
 
@@ -511,21 +511,21 @@ test("authenticated annotation mode captures bounded targets without activating 
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "faros.preview-bridge.probe", version: 1 },
+    data: { type: "railgrid.preview-bridge.probe", version: 1 },
     ports: [],
   });
   const port = parentMessages.at(-1).ports[0];
   port.postMessage({
-    type: "faros.preview-bridge.start",
+    type: "railgrid.preview-bridge.start",
     version: 1,
     sessionID,
     generation: documentID,
     capability: await capability(trusted, claims),
   });
-  assert.ok(await waitForPortMessage(port, "faros.preview-bridge.connected"));
+  assert.ok(await waitForPortMessage(port, "railgrid.preview-bridge.connected"));
 
   const target = new FakeElement("button", "Account settings");
-  target.setAttribute("data-faros-id", "account-card");
+  target.setAttribute("data-railgrid-id", "account-card");
   target.setAttribute("aria-label", "Open account settings");
   target.setAttribute("value", "secret-value");
   target.setAttribute("style", "color: red");
@@ -536,7 +536,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   document.body.append(new FakeElement("button", "Duplicate label"));
 
   port.postMessage({
-      type: "faros.preview-bridge.annotation.start",
+      type: "railgrid.preview-bridge.annotation.start",
       version: 1,
       sessionID,
       generation: documentID,
@@ -545,27 +545,27 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(documentListeners.has("pointermove"), true);
   assert.equal(documentListeners.has("click"), true);
   assert.equal(documentListeners.has("keydown"), true);
-  assert.equal(document.documentElement.getAttribute("data-faros-annotation-mode"), "true");
-  const cursorStyle = document.documentElement.children.find((child) => child.getAttribute("data-faros-annotation-cursor") === "true");
+  assert.equal(document.documentElement.getAttribute("data-railgrid-annotation-mode"), "true");
+  const cursorStyle = document.documentElement.children.find((child) => child.getAttribute("data-railgrid-annotation-cursor") === "true");
   assert.ok(cursorStyle);
   assert.match(cursorStyle.textContent, /data:image\/svg\+xml/);
   assert.match(cursorStyle.textContent, /crosshair !important/);
 
   port.postMessage({
-      type: "faros.preview-bridge.annotation.pins",
+      type: "railgrid.preview-bridge.annotation.pins",
       version: 1,
       sessionID,
       generation: documentID,
       pins: [
-        { id: "first", number: 1, documentID, pagePath: "/app", boundingRect: { x: 12, y: 24, width: 16, height: 16 }, target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" }, anchor: { x: 0.25, y: 0.75 }, comment: "Make this blue" },
+        { id: "first", number: 1, documentID, pagePath: "/app", boundingRect: { x: 12, y: 24, width: 16, height: 16 }, target: { locator: '[data-railgrid-id="account-card"]', locatorStrategy: "css" }, anchor: { x: 0.25, y: 0.75 }, comment: "Make this blue" },
         { id: "stale", number: 99, documentID: "stale-document", boundingRect: { x: 40, y: 50, width: 16, height: 16 } },
-        { id: "second", number: 2, documentID, pagePath: "/app", boundingRect: { x: 64, y: 72, width: 16, height: 16 }, target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" }, comment: "Clarify this heading" },
+        { id: "second", number: 2, documentID, pagePath: "/app", boundingRect: { x: 64, y: 72, width: 16, height: 16 }, target: { locator: '[data-railgrid-id="account-card"]', locatorStrategy: "css" }, comment: "Clarify this heading" },
         { id: "ambiguous", number: 3, documentID, pagePath: "/app", target: { locator: "Duplicate label", locatorStrategy: "text" } },
-        { id: "invalid-anchor", number: 4, documentID, pagePath: "/app", target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" }, anchor: { x: 2, y: 0.5 } },
+        { id: "invalid-anchor", number: 4, documentID, pagePath: "/app", target: { locator: '[data-railgrid-id="account-card"]', locatorStrategy: "css" }, anchor: { x: 2, y: 0.5 } },
       ],
   });
   await tick();
-  const pinLayer = document.body.children.find((child) => child.getAttribute("data-faros-annotation-pins") === "true");
+  const pinLayer = document.body.children.find((child) => child.getAttribute("data-railgrid-annotation-pins") === "true");
   assert.ok(pinLayer);
   assert.equal(pinLayer.parentElement, document.documentElement, "pins must be rooted outside a positioned/transformed body");
   assert.deepEqual(pinLayer.children.map((child) => child.textContent), ["1", "2", "3"]);
@@ -576,7 +576,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(firstPin.style.left, "38px");
   assert.equal(firstPin.style.top, "34px");
   assert.equal(firstPin.children.length, 1, "the preview marker must not render a comment tooltip");
-  const renderedPins = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pins-rendered");
+  const renderedPins = port.messages.find((message) => message.type === "railgrid.preview-bridge.annotation.pins-rendered");
   assert.deepEqual(JSON.parse(JSON.stringify(renderedPins.pins)), [
     { id: "first", resolved: true },
     { id: "second", resolved: true },
@@ -587,7 +587,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   firstPin.onmouseleave();
   firstPin.onblur();
   const pinHoverMessages = port.messages
-    .filter((message) => message.type === "faros.preview-bridge.annotation.pin-hover")
+    .filter((message) => message.type === "railgrid.preview-bridge.annotation.pin-hover")
     .map(({ id, active, rect }) => ({ id, active, rect }));
   assert.deepEqual(pinHoverMessages, [
     { id: "first", active: true, rect: { x: 52, y: 48, width: 0, height: 0 } },
@@ -608,9 +608,9 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(pinClick.prevented, true);
   assert.equal(pinClick.stopped, true);
   assert.equal(pinClick.immediateStopped, true);
-  const selectedPin = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pin-selected");
+  const selectedPin = port.messages.find((message) => message.type === "railgrid.preview-bridge.annotation.pin-selected");
   assert.deepEqual(JSON.parse(JSON.stringify(selectedPin)), {
-    type: "faros.preview-bridge.annotation.pin-selected",
+    type: "railgrid.preview-bridge.annotation.pin-selected",
     version: 1,
     sessionID,
     generation: documentID,
@@ -620,11 +620,11 @@ test("authenticated annotation mode captures bounded targets without activating 
     rect: { x: 52, y: 48, width: 0, height: 0 },
     viewport: { width: 1024, height: 768 },
   });
-  assert.equal(port.messages.some((message) => message.type === "faros.preview-bridge.annotation.selected"), false, "clicking a pin must edit it instead of selecting the marker DOM");
+  assert.equal(port.messages.some((message) => message.type === "railgrid.preview-bridge.annotation.selected"), false, "clicking a pin must edit it instead of selecting the marker DOM");
 
   const pinTail = firstPin.children[0];
-  const pinSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pin-selected").length;
-  const newSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length;
+  const pinSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.pin-selected").length;
+  const newSelectionsBeforeTailClick = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length;
   const pinTailClick = {
     target: pinTail,
     composedPath() { return [pinTail, firstPin, pinLayer, document.documentElement, window]; },
@@ -634,18 +634,18 @@ test("authenticated annotation mode captures bounded targets without activating 
   };
   windowListeners.get("click")(pinTailClick);
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pin-selected").length,
+    port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.pin-selected").length,
     pinSelectionsBeforeTailClick + 1,
     "clicking marker chrome must select the existing annotation",
   );
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length,
+    port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length,
     newSelectionsBeforeTailClick,
     "marker descendants must never become new annotation targets",
   );
 
   const stalePin = new FakeElement("button", "9");
-  stalePin.setAttribute("data-faros-annotation-pin", "true");
+  stalePin.setAttribute("data-railgrid-annotation-pin", "true");
   document.body.append(stalePin);
   windowListeners.get("click")({
     target: stalePin,
@@ -655,7 +655,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopImmediatePropagation() {},
   });
   assert.equal(
-    port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").length,
+    port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").length,
     newSelectionsBeforeTailClick,
     "stale annotation chrome must fail closed instead of becoming a new annotation",
   );
@@ -673,7 +673,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   context.location.pathname = "/admin.html";
   windowListeners.get("scroll")({});
   assert.equal(firstPin.hidden, true, "a pin must hide when its annotated page is not active");
-  const offRoute = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered").at(-1);
+  const offRoute = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.pins-rendered").at(-1);
   assert.equal(offRoute.path, "/admin.html");
   assert.deepEqual(JSON.parse(JSON.stringify(offRoute.pins)), [
     { id: "first", resolved: false },
@@ -683,7 +683,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   context.location.pathname = "/app";
   windowListeners.get("scroll")({});
   assert.equal(firstPin.hidden, false, "a route-bound pin must re-resolve when its page becomes active again");
-  const returnedRoute = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered").at(-1);
+  const returnedRoute = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.pins-rendered").at(-1);
   assert.equal(returnedRoute.path, "/app");
   assert.deepEqual(JSON.parse(JSON.stringify(returnedRoute.pins)), [
     { id: "first", resolved: true },
@@ -696,25 +696,25 @@ test("authenticated annotation mode captures bounded targets without activating 
     number: index + 1,
     documentID,
     pagePath: "/app",
-    target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" },
+    target: { locator: '[data-railgrid-id="account-card"]', locatorStrategy: "css" },
   }));
   port.postMessage({
-    type: "faros.preview-bridge.annotation.pins",
+    type: "railgrid.preview-bridge.annotation.pins",
     version: 1,
     sessionID,
     generation: documentID,
     pins: acceptedPins,
   });
   await tick();
-  const acceptedPinLayer = document.body.children.find((child) => child.getAttribute("data-faros-annotation-pins") === "true");
+  const acceptedPinLayer = document.body.children.find((child) => child.getAttribute("data-railgrid-annotation-pins") === "true");
   assert.equal(acceptedPinLayer.children.length, 64, "the bridge must render all 64 accepted pins");
   const acceptedRenderedPins = port.messages
-    .filter((message) => message.type === "faros.preview-bridge.annotation.pins-rendered")
+    .filter((message) => message.type === "railgrid.preview-bridge.annotation.pins-rendered")
     .at(-1);
   assert.equal(acceptedRenderedPins.pins.length, 64);
 
   documentListeners.get("pointermove")({ target });
-  const overlay = document.body.children.find((child) => child.getAttribute("data-faros-annotation-overlay") === "true");
+  const overlay = document.body.children.find((child) => child.getAttribute("data-railgrid-annotation-overlay") === "true");
   assert.equal(overlay.hidden, false);
   assert.equal(overlay.style.left, "12px");
   assert.equal(overlay.style.top, "24px");
@@ -736,7 +736,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(click.prevented, true);
   assert.equal(click.stopped, true);
   assert.equal(click.immediateStopped, true);
-  const selected = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.selected");
+  const selected = port.messages.find((message) => message.type === "railgrid.preview-bridge.annotation.selected");
   assert.deepEqual(JSON.parse(JSON.stringify(selected.target)), {
     tag: "button",
     role: "button",
@@ -744,7 +744,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     text: "Account settings",
     rect: { x: 12, y: 24, width: 160, height: 32 },
     ancestors: ["body"],
-    locator: '[data-faros-id="account-card"]',
+    locator: '[data-railgrid-id="account-card"]',
     locatorStrategy: "css",
   });
   assert.deepEqual(JSON.parse(JSON.stringify(selected.anchor)), { x: 0.25, y: 0.75 });
@@ -756,7 +756,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   editor.setAttribute("contenteditable", "true");
   editor.setAttribute("role", "textbox");
   editor.setAttribute("aria-label", "Description");
-  editor.setAttribute("data-faros-id", "description-editor");
+  editor.setAttribute("data-railgrid-id", "description-editor");
   document.body.append(editor);
   const editorClick = {
     target: editor,
@@ -767,7 +767,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopImmediatePropagation() {},
   };
   windowListeners.get("click")(editorClick);
-  const selectedEditor = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").at(-1);
+  const selectedEditor = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").at(-1);
   assert.equal(selectedEditor.target.text, "", "contenteditable values must not be exposed as annotation text");
 
   const numericID = new FakeElement("button", "Numeric ID");
@@ -781,7 +781,7 @@ test("authenticated annotation mode captures bounded targets without activating 
     stopPropagation() {},
     stopImmediatePropagation() {},
   });
-  const selectedNumericID = port.messages.filter((message) => message.type === "faros.preview-bridge.annotation.selected").at(-1);
+  const selectedNumericID = port.messages.filter((message) => message.type === "railgrid.preview-bridge.annotation.selected").at(-1);
   assert.equal(selectedNumericID.target.locator, '[id="123"]', "numeric IDs must use a valid attribute selector");
 
   const extractionFailure = {
@@ -799,7 +799,7 @@ test("authenticated annotation mode captures bounded targets without activating 
   assert.equal(extractionFailure.stopImmediatePropagationCalled, true);
 
   port.postMessage({
-    type: "faros.preview-bridge.annotation.pins",
+    type: "railgrid.preview-bridge.annotation.pins",
     version: 1,
     sessionID,
     generation: documentID,
@@ -807,11 +807,11 @@ test("authenticated annotation mode captures bounded targets without activating 
       id: "oversized-" + index,
       number: index + 1,
       documentID,
-      target: { locator: '[data-faros-id="account-card"]', locatorStrategy: "css" },
+      target: { locator: '[data-railgrid-id="account-card"]', locatorStrategy: "css" },
     })),
   });
   await tick();
-  const rejectedPins = port.messages.find((message) => message.type === "faros.preview-bridge.annotation.pins-rendered" && message.rejectedCount);
+  const rejectedPins = port.messages.find((message) => message.type === "railgrid.preview-bridge.annotation.pins-rendered" && message.rejectedCount);
   assert.equal(rejectedPins.rejectedCount, 1, "oversized pin state must report rejection instead of truncating silently");
   assert.equal(acceptedPinLayer.removed, true, "a rejected replacement must clean up the previous marker layer");
 
@@ -840,21 +840,21 @@ test("authenticated annotation mode captures bounded targets without activating 
   });
   assert.equal(documentListeners.has("click"), false);
   assert.equal(windowListeners.has("click"), true, "the early window guard remains installed while inactive");
-  assert.equal(document.documentElement.getAttribute("data-faros-annotation-mode"), null);
+  assert.equal(document.documentElement.getAttribute("data-railgrid-annotation-mode"), null);
   assert.equal(cursorStyle.removed, true);
-  assert.equal(port.messages.at(-2).type, "faros.preview-bridge.annotation.mode");
+  assert.equal(port.messages.at(-2).type, "railgrid.preview-bridge.annotation.mode");
   assert.equal(port.messages.at(-2).active, false);
-  assert.equal(port.messages.at(-1).type, "faros.preview-bridge.annotation.cancelled");
+  assert.equal(port.messages.at(-1).type, "railgrid.preview-bridge.annotation.cancelled");
 
   port.postMessage({
-      type: "faros.preview-bridge.annotation.start",
+      type: "railgrid.preview-bridge.annotation.start",
       version: 1,
       sessionID,
       generation: documentID,
   });
   await tick();
   port.postMessage({
-      type: "faros.preview-bridge.annotation.stop",
+      type: "railgrid.preview-bridge.annotation.stop",
       version: 1,
       sessionID,
       generation: documentID,

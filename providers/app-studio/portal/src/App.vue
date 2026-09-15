@@ -326,7 +326,7 @@ import { reconcileHistorySelection, repositoryCommitSelectable, selectedHistoryC
 import type {
   DevelopmentTemplate,
   ImportRepository,
-  FarosContext,
+  RailgridContext,
   Project,
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
@@ -360,7 +360,7 @@ import type {
 } from './types'
 
 const props = defineProps<{
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   navigate: (path: string, options?: { replace?: boolean }) => void
   requestFullBleed?: (fullBleed: boolean) => void
 }>()
@@ -373,7 +373,7 @@ interface ProjectRequestGuard {
 interface ProjectThumbnailRequestGuard {
   serial: number
   contextFingerprint: string
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
 }
 
 interface LLMModelMutationGuard {
@@ -382,7 +382,7 @@ interface LLMModelMutationGuard {
   routePath: string
 }
 
-function appContextFingerprint(ctx: FarosContext | null): string {
+function appContextFingerprint(ctx: RailgridContext | null): string {
   return JSON.stringify([
     ctx?.token ?? '',
     ctx?.tenant ?? '',
@@ -394,7 +394,7 @@ function appContextFingerprint(ctx: FarosContext | null): string {
   ])
 }
 
-function projectContextFingerprint(ctx: FarosContext | null): string {
+function projectContextFingerprint(ctx: RailgridContext | null): string {
   return JSON.stringify([
     appContextFingerprint(ctx),
     ctx?.subPath ?? '',
@@ -517,7 +517,7 @@ interface ProjectDevelopmentPreviewAuthorization {
   previewAccessModes: Array<'private' | 'public'>
 }
 
-const SPLIT_WIDTH_KEY = 'faros:projects:split-width'
+const SPLIT_WIDTH_KEY = 'railgrid:projects:split-width'
 const SPLIT_MIN_PERCENT = 32
 const SPLIT_MAX_PERCENT = 68
 const CONVERSATION_BASE_MIN_WIDTH = 240
@@ -538,7 +538,7 @@ const appStudioSectionTabs = [
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = portalHref('/ui/providers/code/connections')
 const CODE_PROVIDER_CATALOG_URL = portalHref('/providers')
-const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
+const PUBLISHING_DOMAIN_SUFFIX = '.railgrid.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const assistantMarkdown = new MarkdownIt({
@@ -557,7 +557,7 @@ assistantMarkdown.renderer.rules.link_open = (tokens, index, options, env, self)
 const projects = ref<Project[]>([])
 const projectDeletion = createProjectDeletionController()
 const APP_STUDIO_ICON_URL = '/ui/providers/app-studio/icon.svg'
-const PROJECTS_LAYOUT_PREFERENCE_KEY = 'faros:portal:app-studio:projects-layout'
+const PROJECTS_LAYOUT_PREFERENCE_KEY = 'railgrid:portal:app-studio:projects-layout'
 const projectLayout = ref<LayoutMode>(readLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KEY))
 watch(projectLayout, mode => writeLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KEY, mode))
 const projectThumbnailURLs = ref<Record<string, string>>({})
@@ -1994,7 +1994,7 @@ function resetAssistantStopState() {
   if (conversationStatus.value === 'Stopping') conversationStatus.value = ''
 }
 
-function assistantStopContextFingerprint(ctx: FarosContext | null): string {
+function assistantStopContextFingerprint(ctx: RailgridContext | null): string {
   return JSON.stringify([
     ctx?.tenant ?? '', ctx?.orgUUID ?? '', ctx?.workspaceUUID ?? '',
     ctx?.user?.userId ?? '', ctx?.user?.sub ?? '', ctx?.user?.email ?? '',
@@ -2159,7 +2159,7 @@ const llmApiKeyHint = computed(() =>
   llmEditingModelID.value && !llmCredentialRequired.value && !llmApiKey.value.trim()
     ? 'Leave blank to keep the current credential.'
     : isGoogleServiceAccountMode.value
-      ? 'Paste the complete Google service-account JSON key. Faros exchanges it for a short-lived OAuth token.'
+      ? 'Paste the complete Google service-account JSON key. Railgrid exchanges it for a short-lived OAuth token.'
       : isGoogleGeminiProvider.value
         ? 'Paste a Gemini API key string, not an OAuth or JWT token.'
         : 'Stored for this workspace and never returned to the browser.',
@@ -8157,10 +8157,10 @@ async function mountActiveProviderTool() {
     await ensureProviderScript(tool)
     if (serial !== toolLoadSerial || activeProviderTool.value?.id !== tool.id) return
 
-    const el = document.createElement(tag) as HTMLElement & { farosContext?: unknown }
+    const el = document.createElement(tag) as HTMLElement & { railgridContext?: unknown }
     el.className = 'block h-full min-h-0 w-full overflow-auto'
     el.style.height = '100%'
-    el.addEventListener('faros-navigate', onNestedProviderNavigate)
+    el.addEventListener('railgrid-navigate', onNestedProviderNavigate)
     host.replaceChildren(el)
     mountedToolEl.value = el
     pushToolContext()
@@ -8185,7 +8185,7 @@ async function ensureProviderScript(tool: ProviderTool) {
   const tag = tagForProvider(tool.providerName)
   if (customElements.get(tag)) return
 
-  const scriptID = `faros-project-tool-${tool.providerName}`
+  const scriptID = `railgrid-project-tool-${tool.providerName}`
   if (!document.getElementById(scriptID)) {
     await new Promise<void>((resolve, reject) => {
       const script = document.createElement('script')
@@ -8205,10 +8205,10 @@ async function ensureProviderScript(tool: ProviderTool) {
 }
 
 function pushToolContext() {
-  const el = mountedToolEl.value as (HTMLElement & { farosContext?: unknown }) | null
+  const el = mountedToolEl.value as (HTMLElement & { railgridContext?: unknown }) | null
   const tool = activeProviderTool.value
   if (!el || !tool) return
-  el.farosContext = {
+  el.railgridContext = {
     subPath: tool.path,
     token: props.ctx?.token,
     user: props.ctx?.user,
@@ -8241,7 +8241,7 @@ function onNestedProviderNavigate(e: Event) {
 
 function detachMountedTool() {
   if (mountedToolEl.value) {
-    mountedToolEl.value.removeEventListener('faros-navigate', onNestedProviderNavigate)
+    mountedToolEl.value.removeEventListener('railgrid-navigate', onNestedProviderNavigate)
   }
   toolHostRef.value?.replaceChildren()
   mountedToolEl.value = null
@@ -8397,7 +8397,7 @@ function readSplitWidth(): number {
 }
 
 function tagForProvider(name: string): string {
-  return `faros-provider-${name}`
+  return `railgrid-provider-${name}`
 }
 
 function projectTimestamp(project: Project): string {
@@ -8947,10 +8947,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <div class="mx-auto w-full max-w-[860px]">
               <GitRecommendationBanner v-if="!gitConnectionCreateReady" class="mb-8" :readiness="createReadiness" :checking="createReadinessChecking" :error="createReadinessError || ''" @retry="loadCreateReadiness" />
               <h2 class="text-left text-[28px] font-semibold leading-8 text-text-primary sm:text-[32px] sm:leading-9">
-                What are we building in Faros today?
+                What are we building in Railgrid today?
               </h2>
               <p class="mt-2 max-w-[68ch] text-left text-[14px] leading-6 text-text-secondary">
-                Describe what you want to build. Faros turns your idea into a blueprint you can review before anything is created.
+                Describe what you want to build. Railgrid turns your idea into a blueprint you can review before anything is created.
               </p>
             </div>
 

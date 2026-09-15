@@ -6,28 +6,28 @@
  * the portal's :root CSS custom properties (--color-accent, etc.) cascade
  * in for free — palette parity with the portal without re-declaring tokens.
  *
- * Every selector is namespaced under the faros-provider-kuery tag so
+ * Every selector is namespaced under the railgrid-provider-kuery tag so
  * these styles cannot leak into the portal even though they live in the
  * portal's stylesheet scope.
  */
 
-faros-provider-kuery {
+railgrid-provider-kuery {
   display: block;
 }
 
-faros-provider-kuery .kuery-shell {
+railgrid-provider-kuery .kuery-shell {
   display: grid;
   gap: 12px;
   width: 100%;
 }
 
-faros-provider-kuery .kuery-collection-surfaces {
+railgrid-provider-kuery .kuery-collection-surfaces {
   display: grid;
   gap: 12px;
   width: 100%;
 }
 
-faros-provider-kuery .kuery-topbar {
+railgrid-provider-kuery .kuery-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -35,12 +35,12 @@ faros-provider-kuery .kuery-topbar {
   flex-wrap: wrap;
 }
 
-faros-provider-kuery .kuery-panel {
+railgrid-provider-kuery .kuery-panel {
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-kuery .kuery-panel-head {
+railgrid-provider-kuery .kuery-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -49,12 +49,12 @@ faros-provider-kuery .kuery-panel-head {
   flex-wrap: wrap;
 }
 
-faros-provider-kuery .kuery-panel-head > div,
-faros-provider-kuery .kuery-panel > .meta {
+railgrid-provider-kuery .kuery-panel-head > div,
+railgrid-provider-kuery .kuery-panel > .meta {
   max-width: 75ch;
 }
 
-faros-provider-kuery .kuery-panel-title {
+railgrid-provider-kuery .kuery-panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -63,7 +63,7 @@ faros-provider-kuery .kuery-panel-title {
   text-transform: uppercase;
 }
 
-faros-provider-kuery pre {
+railgrid-provider-kuery pre {
   margin: 0;
   background: var(--color-surface-overlay);
   color: var(--color-text-primary, inherit);
@@ -75,7 +75,7 @@ faros-provider-kuery pre {
   overflow-x: auto;
 }
 
-faros-provider-kuery code {
+railgrid-provider-kuery code {
   background: var(--color-surface-overlay);
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
@@ -84,19 +84,19 @@ faros-provider-kuery code {
   font-size: 11px;
 }
 
-faros-provider-kuery .meta {
+railgrid-provider-kuery .meta {
   margin: 0 0 8px;
   font-size: 11px;
   color: var(--color-text-muted, inherit);
 }
 
-faros-provider-kuery .muted {
+railgrid-provider-kuery .muted {
   color: var(--color-text-muted, inherit);
 }
 
 /* ── inventory toolbar ─────────────────────────────────────────────── */
 
-faros-provider-kuery .kuery-toolbar {
+railgrid-provider-kuery .kuery-toolbar {
   display: flex;
   align-items: flex-end;
   gap: 6px;
@@ -104,27 +104,27 @@ faros-provider-kuery .kuery-toolbar {
   flex-wrap: wrap;
 }
 
-faros-provider-kuery .kuery-toolbar .kuery-control {
+railgrid-provider-kuery .kuery-toolbar .kuery-control {
   min-width: 120px;
   width: auto;
 }
 
-faros-provider-kuery .kuery-inventory-filters {
+railgrid-provider-kuery .kuery-inventory-filters {
   max-width: 42rem;
 }
 
-faros-provider-kuery .kuery-inventory-filters > label {
+railgrid-provider-kuery .kuery-inventory-filters > label {
   flex: 1 1 200px;
   min-width: 0;
 }
 
-faros-provider-kuery .kuery-inventory-filters .kuery-control {
+railgrid-provider-kuery .kuery-inventory-filters .kuery-control {
   width: 100%;
   min-width: 0;
 }
 
-faros-provider-kuery .kuery-topology-controls > label,
-faros-provider-kuery .kuery-example {
+railgrid-provider-kuery .kuery-topology-controls > label,
+railgrid-provider-kuery .kuery-example {
   display: grid;
   gap: 4px;
   min-width: 150px;
@@ -135,9 +135,9 @@ faros-provider-kuery .kuery-example {
   text-transform: uppercase;
 }
 
-faros-provider-kuery .kuery-inline-error,
-faros-provider-kuery .kuery-warning,
-faros-provider-kuery .kuery-read-state {
+railgrid-provider-kuery .kuery-inline-error,
+railgrid-provider-kuery .kuery-warning,
+railgrid-provider-kuery .kuery-read-state {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -150,12 +150,12 @@ faros-provider-kuery .kuery-read-state {
   font-size: 12px;
 }
 
-faros-provider-kuery .kuery-inline-error {
+railgrid-provider-kuery .kuery-inline-error {
   border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
   color: var(--color-danger);
 }
 
-faros-provider-kuery .kuery-warning {
+railgrid-provider-kuery .kuery-warning {
   margin-top: 10px;
   border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);
   color: var(--color-warning);
@@ -163,31 +163,31 @@ faros-provider-kuery .kuery-warning {
 
 /* ── inventory table ───────────────────────────────────────────────── */
 
-faros-provider-kuery .kuery-inventory-table {
+railgrid-provider-kuery .kuery-inventory-table {
   width: 100%;
   max-width: 96rem;
 }
 
-faros-provider-kuery .name {
+railgrid-provider-kuery .name {
   font-weight: 600;
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-kuery .kuery-error {
+railgrid-provider-kuery .kuery-error {
   color: var(--color-danger, currentColor);
 }
 
 /* ── impact graph ──────────────────────────────────────────────────── */
 
 /* Segmented Graph / List toggle. */
-faros-provider-kuery .kuery-view-switch {
+railgrid-provider-kuery .kuery-view-switch {
   display: inline-flex;
   border: 1px solid var(--color-border-subtle);
   border-radius: 4px;
   overflow: hidden;
 }
 
-faros-provider-kuery .kuery-view-btn {
+railgrid-provider-kuery .kuery-view-btn {
   background: transparent;
   color: var(--color-text-muted, inherit);
   border: none;
@@ -199,23 +199,23 @@ faros-provider-kuery .kuery-view-btn {
   cursor: pointer;
 }
 
-faros-provider-kuery .kuery-view-btn[aria-pressed="true"] {
+railgrid-provider-kuery .kuery-view-btn[aria-pressed="true"] {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   color: var(--color-accent, #8b6bff);
 }
 
-faros-provider-kuery .kuery-view-btn:focus-visible {
+railgrid-provider-kuery .kuery-view-btn:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: -2px;
 }
 
-faros-provider-kuery .kuery-view-btn:hover {
+railgrid-provider-kuery .kuery-view-btn:hover {
   filter: none;
   color: var(--color-text-primary, inherit);
 }
 
 /* Cytoscape needs an explicitly sized box; it draws to a canvas inside. */
-faros-provider-kuery .kuery-graph {
+railgrid-provider-kuery .kuery-graph {
   width: 100%;
   height: clamp(440px, calc(100vh - 380px), 1440px);
   border: 1px solid var(--color-border-subtle);
@@ -224,34 +224,34 @@ faros-provider-kuery .kuery-graph {
   outline: none;
 }
 
-faros-provider-kuery .kuery-tree-edge + .kuery-tree-edge {
+railgrid-provider-kuery .kuery-tree-edge + .kuery-tree-edge {
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--color-border-subtle, transparent);
 }
 
-faros-provider-kuery .kuery-tree-edge h3,
-faros-provider-kuery .kuery-tree-edge h4,
-faros-provider-kuery .kuery-impact-list h2,
-faros-provider-kuery .kuery-workbench-title {
+railgrid-provider-kuery .kuery-tree-edge h3,
+railgrid-provider-kuery .kuery-tree-edge h4,
+railgrid-provider-kuery .kuery-impact-list h2,
+railgrid-provider-kuery .kuery-workbench-title {
   margin: 8px 0;
   color: var(--color-text-secondary, currentColor);
   font-size: 11px;
   font-weight: 600;
 }
 
-faros-provider-kuery .kuery-impact {
+railgrid-provider-kuery .kuery-impact {
   display: grid;
   gap: 12px;
 }
 
-faros-provider-kuery .kuery-impact-list ul {
+railgrid-provider-kuery .kuery-impact-list ul {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-faros-provider-kuery .kuery-related {
+railgrid-provider-kuery .kuery-related {
   width: 100%;
   min-height: 36px;
   padding: 6px 8px;
@@ -263,12 +263,12 @@ faros-provider-kuery .kuery-related {
   cursor: pointer;
 }
 
-faros-provider-kuery .kuery-related:hover,
-faros-provider-kuery .kuery-related:focus-visible {
+railgrid-provider-kuery .kuery-related:hover,
+railgrid-provider-kuery .kuery-related:focus-visible {
   background: var(--color-surface-hover, transparent);
 }
 
-faros-provider-kuery .kuery-sr-only {
+railgrid-provider-kuery .kuery-sr-only {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -281,38 +281,38 @@ faros-provider-kuery .kuery-sr-only {
 }
 
 @media (pointer: coarse) {
-  faros-provider-kuery .kuery-toolbar > button,
-  faros-provider-kuery .kuery-view-btn,
-  faros-provider-kuery .kuery-topology-resource,
-  faros-provider-kuery .kuery-related {
+  railgrid-provider-kuery .kuery-toolbar > button,
+  railgrid-provider-kuery .kuery-view-btn,
+  railgrid-provider-kuery .kuery-topology-resource,
+  railgrid-provider-kuery .kuery-related {
     min-height: 44px;
   }
 }
 
 @media (max-width: 680px) {
-  faros-provider-kuery .kuery-panel { padding: 12px; }
-  faros-provider-kuery .kuery-topology-controls > label,
-  faros-provider-kuery .kuery-example { width: 100%; }
-  faros-provider-kuery .kuery-toolbar > button { width: 100%; justify-content: center; }
-  faros-provider-kuery .kuery-graph { height: 60vh; min-height: 360px; }
-  faros-provider-kuery .kuery-inventory-filters > label { flex-basis: 100%; width: 100%; }
+  railgrid-provider-kuery .kuery-panel { padding: 12px; }
+  railgrid-provider-kuery .kuery-topology-controls > label,
+  railgrid-provider-kuery .kuery-example { width: 100%; }
+  railgrid-provider-kuery .kuery-toolbar > button { width: 100%; justify-content: center; }
+  railgrid-provider-kuery .kuery-graph { height: 60vh; min-height: 360px; }
+  railgrid-provider-kuery .kuery-inventory-filters > label { flex-basis: 100%; width: 100%; }
 }
 
-faros-provider-kuery .kuery-graph:focus-visible {
+railgrid-provider-kuery .kuery-graph:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
 }
 
 /* Pointer-free topology fallback. The nested list mirrors the graph's Edge →
    Namespace → Resource structure; only actual synced objects are buttons. */
-faros-provider-kuery .kuery-topology-list {
+railgrid-provider-kuery .kuery-topology-list {
   border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
   background: var(--color-surface-raised);
   padding: 12px;
 }
 
-faros-provider-kuery .kuery-topology-resource {
+railgrid-provider-kuery .kuery-topology-resource {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -328,18 +328,18 @@ faros-provider-kuery .kuery-topology-resource {
   cursor: pointer;
 }
 
-faros-provider-kuery .kuery-topology-resource:hover {
+railgrid-provider-kuery .kuery-topology-resource:hover {
   border-color: var(--color-border-subtle);
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
 }
 
-faros-provider-kuery .kuery-topology-resource:focus-visible {
+railgrid-provider-kuery .kuery-topology-resource:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 1px;
 }
 
 /* Fullscreen: the panel fills the viewport and the graph grows to match. */
-faros-provider-kuery .kuery-panel.kuery-full {
+railgrid-provider-kuery .kuery-panel.kuery-full {
   position: fixed;
   inset: 0;
   z-index: var(--k-layer-fullscreen, 2000);
@@ -349,54 +349,54 @@ faros-provider-kuery .kuery-panel.kuery-full {
   background: var(--color-surface-overlay);
 }
 
-faros-provider-kuery .kuery-panel.kuery-full .kuery-graph {
+railgrid-provider-kuery .kuery-panel.kuery-full .kuery-graph {
   height: calc(100vh - 150px);
 }
 
 /* Fullscreen API path: the panel itself is the fullscreen element. Give it a
    solid background (the API default is black) and let the graph fill it. */
-faros-provider-kuery .kuery-panel:fullscreen {
+railgrid-provider-kuery .kuery-panel:fullscreen {
   overflow: auto;
   padding: 16px;
   background: var(--color-surface-overlay);
 }
 
-faros-provider-kuery .kuery-panel:fullscreen .kuery-graph {
+railgrid-provider-kuery .kuery-panel:fullscreen .kuery-graph {
   height: calc(100vh - 150px);
 }
 
-faros-provider-kuery .pg-split {
+railgrid-provider-kuery .pg-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   align-items: stretch;
 }
 
-faros-provider-kuery .pg-split > section {
+railgrid-provider-kuery .pg-split > section {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 @media (min-width: 821px) {
-  faros-provider-kuery .pg-split {
+  railgrid-provider-kuery .pg-split {
     height: clamp(360px, calc(100vh - 380px), 1440px);
   }
 
-  faros-provider-kuery .pg-editor,
-  faros-provider-kuery .pg-fallback,
-  faros-provider-kuery .pg-result {
+  railgrid-provider-kuery .pg-editor,
+  railgrid-provider-kuery .pg-fallback,
+  railgrid-provider-kuery .pg-result {
     min-height: 0;
   }
 }
 
 @media (max-width: 820px) {
-  faros-provider-kuery .pg-split {
+  railgrid-provider-kuery .pg-split {
     grid-template-columns: 1fr;
   }
 }
 
-faros-provider-kuery .pg-editor {
+railgrid-provider-kuery .pg-editor {
   flex: 1 1 360px;
   min-height: 360px;
   border: 1px solid var(--color-border-default);
@@ -404,7 +404,7 @@ faros-provider-kuery .pg-editor {
   overflow: hidden;
 }
 
-faros-provider-kuery .pg-editor .CodeMirror {
+railgrid-provider-kuery .pg-editor .CodeMirror {
   height: 100%;
   min-height: 360px;
   font-size: 12px;
@@ -413,50 +413,50 @@ faros-provider-kuery .pg-editor .CodeMirror {
   caret-color: var(--color-accent);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-gutters {
+railgrid-provider-kuery .pg-editor .CodeMirror-gutters {
   border-right: 1px solid var(--color-border-subtle);
   background: var(--color-surface-overlay);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-linenumber,
-faros-provider-kuery .pg-editor .cm-comment {
+railgrid-provider-kuery .pg-editor .CodeMirror-linenumber,
+railgrid-provider-kuery .pg-editor .cm-comment {
   color: var(--color-text-muted);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-cursor {
+railgrid-provider-kuery .pg-editor .CodeMirror-cursor {
   border-left-color: var(--color-accent);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-selected,
-faros-provider-kuery .pg-editor .CodeMirror-focused .CodeMirror-selected {
+railgrid-provider-kuery .pg-editor .CodeMirror-selected,
+railgrid-provider-kuery .pg-editor .CodeMirror-focused .CodeMirror-selected {
   background: var(--color-accent-subtle);
 }
 
-faros-provider-kuery .pg-editor .cm-property,
-faros-provider-kuery .pg-editor .cm-def {
+railgrid-provider-kuery .pg-editor .cm-property,
+railgrid-provider-kuery .pg-editor .cm-def {
   color: var(--color-accent);
 }
 
-faros-provider-kuery .pg-editor .cm-string {
+railgrid-provider-kuery .pg-editor .cm-string {
   color: var(--color-success);
 }
 
-faros-provider-kuery .pg-editor .cm-number,
-faros-provider-kuery .pg-editor .cm-atom {
+railgrid-provider-kuery .pg-editor .cm-number,
+railgrid-provider-kuery .pg-editor .cm-atom {
   color: var(--color-warning);
 }
 
-faros-provider-kuery .pg-editor .cm-error {
+railgrid-provider-kuery .pg-editor .cm-error {
   color: var(--color-danger);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-matchingbracket {
+railgrid-provider-kuery .pg-editor .CodeMirror-matchingbracket {
   color: var(--color-text-primary);
   background: var(--color-accent-subtle);
   outline: 1px solid var(--color-accent);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-hints {
+railgrid-provider-kuery .pg-editor .CodeMirror-hints {
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
   background: var(--color-surface-overlay);
@@ -464,12 +464,12 @@ faros-provider-kuery .pg-editor .CodeMirror-hints {
   color: var(--color-text-primary);
 }
 
-faros-provider-kuery .pg-editor .CodeMirror-hint-active {
+railgrid-provider-kuery .pg-editor .CodeMirror-hint-active {
   background: var(--color-accent-subtle);
   color: var(--color-accent);
 }
 
-faros-provider-kuery .pg-fallback {
+railgrid-provider-kuery .pg-fallback {
   flex: 1 1 360px;
   width: 100%;
   min-height: 360px;
@@ -479,7 +479,7 @@ faros-provider-kuery .pg-fallback {
   box-sizing: border-box;
 }
 
-faros-provider-kuery .pg-result {
+railgrid-provider-kuery .pg-result {
   flex: 1 1 360px;
   box-sizing: border-box;
   margin: 0;
@@ -495,29 +495,29 @@ faros-provider-kuery .pg-result {
   word-break: break-word;
 }
 
-faros-provider-kuery .pg-result.error {
+railgrid-provider-kuery .pg-result.error {
   color: var(--color-danger, currentColor);
 }
 
-faros-provider-kuery .pg-docs {
+railgrid-provider-kuery .pg-docs {
   margin-top: 12px;
   font-size: 13px;
 }
 
-faros-provider-kuery .pg-docs summary {
+railgrid-provider-kuery .pg-docs summary {
   cursor: pointer;
   font-weight: 600;
   color: var(--color-text-muted, #5d5f78);
 }
 
-faros-provider-kuery .legend {
+railgrid-provider-kuery .legend {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
   margin: 0 0 8px;
 }
 
-faros-provider-kuery .legend-item {
+railgrid-provider-kuery .legend-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -525,19 +525,19 @@ faros-provider-kuery .legend-item {
   color: var(--color-text-secondary, inherit);
 }
 
-faros-provider-kuery .legend-item dt {
+railgrid-provider-kuery .legend-item dt {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font-weight: 600;
 }
 
-faros-provider-kuery .legend-item dd {
+railgrid-provider-kuery .legend-item dd {
   margin: 0;
   color: var(--color-text-muted, inherit);
 }
 
-faros-provider-kuery .legend-swatch {
+railgrid-provider-kuery .legend-swatch {
   width: 18px;
   height: 0;
   border-top-width: 2px;
@@ -545,9 +545,9 @@ faros-provider-kuery .legend-swatch {
 }
 
 /* --- dashboard tile (console dashboard card) --------------------------- */
-faros-dashboard-tile-kuery { display: block; font-size: 13px; }
-faros-dashboard-tile-kuery .kuery-tile-live {
+railgrid-dashboard-tile-kuery { display: block; font-size: 13px; }
+railgrid-dashboard-tile-kuery .kuery-tile-live {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-faros-dashboard-tile-kuery .kuery-tile-dot--success { background: var(--color-success); }
+railgrid-dashboard-tile-kuery .kuery-tile-dot--success { background: var(--color-success); }

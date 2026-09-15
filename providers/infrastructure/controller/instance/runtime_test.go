@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/dataplane"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/dataplane"
 )
 
 func developmentTemplate() *infrav1alpha1.Template {
@@ -39,7 +39,7 @@ func runtimeForNetwork(generation, observedGeneration int64, phase string, ready
 			"generation": generation,
 		},
 		"spec": map[string]any{
-			infrav1alpha1.FarosNetworkPhaseField: phase,
+			infrav1alpha1.RailgridNetworkPhaseField: phase,
 		},
 		"status": map[string]any{
 			"conditions": []any{map[string]any{
@@ -59,27 +59,27 @@ func TestRuntimeNetworkPhaseMirrorsOnlyCurrentReadyRuntime(t *testing.T) {
 	}{
 		{
 			name:    "setup phase",
-			runtime: runtimeForNetwork(1, 1, infrav1alpha1.FarosNetworkPhaseSetup, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseSetup,
+			runtime: runtimeForNetwork(1, 1, infrav1alpha1.RailgridNetworkPhaseSetup, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 		{
 			name:    "current runtime generation ready",
-			runtime: runtimeForNetwork(2, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+			runtime: runtimeForNetwork(2, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseRuntime,
 		},
 		{
 			name:    "stale ready condition from setup generation",
-			runtime: runtimeForNetwork(2, 1, infrav1alpha1.FarosNetworkPhaseRuntime, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseSetup,
+			runtime: runtimeForNetwork(2, 1, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 		{
 			name:    "current generation not ready",
-			runtime: runtimeForNetwork(2, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "False"),
-			want:    infrav1alpha1.FarosNetworkPhaseSetup,
+			runtime: runtimeForNetwork(2, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "False"),
+			want:    infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 		{
 			name: "runtime absent",
-			want: infrav1alpha1.FarosNetworkPhaseSetup,
+			want: infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 	}
 	for _, test := range tests {
@@ -100,27 +100,27 @@ func TestDesiredNetworkPhaseDoesNotOscillateDuringRuntimeRollout(t *testing.T) {
 	}{
 		{
 			name: "runtime absent stays setup",
-			want: infrav1alpha1.FarosNetworkPhaseSetup,
+			want: infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 		{
 			name:    "setup generation not ready stays setup",
-			runtime: runtimeForNetwork(2, 1, infrav1alpha1.FarosNetworkPhaseSetup, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseSetup,
+			runtime: runtimeForNetwork(2, 1, infrav1alpha1.RailgridNetworkPhaseSetup, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseSetup,
 		},
 		{
 			name:    "setup generation ready transitions to runtime",
-			runtime: runtimeForNetwork(2, 2, infrav1alpha1.FarosNetworkPhaseSetup, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+			runtime: runtimeForNetwork(2, 2, infrav1alpha1.RailgridNetworkPhaseSetup, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseRuntime,
 		},
 		{
 			name:    "selected runtime stays runtime while rollout is unready",
-			runtime: runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "False"),
-			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+			runtime: runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "False"),
+			want:    infrav1alpha1.RailgridNetworkPhaseRuntime,
 		},
 		{
 			name:    "selected runtime stays runtime while readiness is stale",
-			runtime: runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True"),
-			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+			runtime: runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"),
+			want:    infrav1alpha1.RailgridNetworkPhaseRuntime,
 		},
 	}
 	for _, test := range tests {
@@ -138,17 +138,17 @@ func TestInstanceRequeueAfterWaitsForCurrentRuntimeNetwork(t *testing.T) {
 	now := time.Time{}
 
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True"), true); got != requeueNotReady {
+		runtimeForNetwork(3, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"), true); got != requeueNotReady {
 		t.Fatalf("stale runtime requeue = %s, want convergence interval %s", got, requeueNotReady)
 	}
 	if got := instanceRequeueAfter(now, created, tmpl,
-		runtimeForNetwork(3, 3, infrav1alpha1.FarosNetworkPhaseRuntime, "True"), true); got != requeueReady {
+		runtimeForNetwork(3, 3, infrav1alpha1.RailgridNetworkPhaseRuntime, "True"), true); got != requeueReady {
 		t.Fatalf("current runtime requeue = %s, want ready interval %s", got, requeueReady)
 	}
 }
 
 func TestRuntimeReadyForNetworkAcceptsStatusObservedGeneration(t *testing.T) {
-	runtime := runtimeForNetwork(3, 0, infrav1alpha1.FarosNetworkPhaseRuntime, "True")
+	runtime := runtimeForNetwork(3, 0, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")
 	status := runtime.Object["status"].(map[string]any)
 	status["phase"] = "Ready"
 	status["observedGeneration"] = int64(3)
@@ -173,7 +173,7 @@ func TestStampConditionObservedGenerationUsesTenantGeneration(t *testing.T) {
 
 func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) {
 	instance := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
 		"metadata": map[string]any{
 			"name":       "app",
@@ -192,7 +192,7 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 		Group: infrav1alpha1.GroupName, Version: infrav1alpha1.Version,
 		Resource: infrav1alpha1.InstancesResource, Kind: "Instance",
 	}
-	runtimeObj := runtimeForNetwork(2, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True")
+	runtimeObj := runtimeForNetwork(2, 2, infrav1alpha1.RailgridNetworkPhaseRuntime, "True")
 	runtimeObj.SetName("app")
 	runtimeObj.SetNamespace("ws-default")
 	tenantClient := mirroredStatusClient{}
@@ -205,11 +205,11 @@ func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) 
 	if err != nil || !found {
 		t.Fatalf("mirrored status = %#v/%v (err %v), want status", status, found, err)
 	}
-	if got := status[infrav1alpha1.FarosNetworkPhaseStatusField]; got != infrav1alpha1.FarosNetworkPhaseRuntime {
+	if got := status[infrav1alpha1.RailgridNetworkPhaseStatusField]; got != infrav1alpha1.RailgridNetworkPhaseRuntime {
 		t.Fatalf("mirrored network phase = %#v, want runtime", got)
 	}
-	if values, _, _ := unstructured.NestedMap(instance.Object, "spec", "values"); values[infrav1alpha1.FarosNetworkPhaseField] != nil {
-		t.Fatalf("tenant spec carried network phase %#v; controller status must be authoritative", values[infrav1alpha1.FarosNetworkPhaseField])
+	if values, _, _ := unstructured.NestedMap(instance.Object, "spec", "values"); values[infrav1alpha1.RailgridNetworkPhaseField] != nil {
+		t.Fatalf("tenant spec carried network phase %#v; controller status must be authoritative", values[infrav1alpha1.RailgridNetworkPhaseField])
 	}
 
 	contract := &infrav1alpha1.TemplateDataPlane{

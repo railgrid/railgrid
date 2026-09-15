@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 
 const vite = await createServer({
   appType: 'custom', configFile: false, root: new URL('../../', import.meta.url).pathname,
-  cacheDir: join(tmpdir(), 'faros-scoped-navigation-test'),
+  cacheDir: join(tmpdir(), 'railgrid-scoped-navigation-test'),
   resolve: { alias: { '@': new URL('../', import.meta.url).pathname } },
   optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false, ws: false },
 })
@@ -40,8 +40,8 @@ function setup({ authenticated = true } = {}) {
   globalThis.localStorage = storage()
   globalThis.sessionStorage = storage()
   globalThis.window = { location: { pathname: '/ui' + resource.split('?')[0] }, dispatchEvent() {} }
-  localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: B, workspaceUUID: B }))
-  if (authenticated) localStorage.setItem('faros-auth', JSON.stringify({ idToken: 'test-token', expiresAt: 9999999999, email: 'teammate@example.test', userId: 'teammate' }))
+  localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: B, workspaceUUID: B }))
+  if (authenticated) localStorage.setItem('railgrid-auth', JSON.stringify({ idToken: 'test-token', expiresAt: 9999999999, email: 'teammate@example.test', userId: 'teammate' }))
   setActivePinia(createPinia())
   const auth = useAuthStore()
   auth.initialized = true
@@ -75,8 +75,8 @@ test('canonical routes resolve exact IDs and preserve provider suffix, query and
   assert.equal(tenant.workspaceUUID, W)
   assert.equal(auth.clusterName, `cluster-${W}`)
   assert.deepEqual(calls.map(call => call.path), [`/api/orgs/${O}`, `/api/orgs/${O}/workspaces/${W}`])
-  assert.equal(calls[1].headers.get('X-Faros-Workspace'), W)
-  assert.equal(calls[1].headers.get('X-Faros-Org'), O)
+  assert.equal(calls[1].headers.get('X-Railgrid-Workspace'), W)
+  assert.equal(calls[1].headers.get('X-Railgrid-Org'), O)
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer test-token')
   assert.equal(portalRoutePath(router.currentRoute.value.path), '/providers/infrastructure/instances/shared')
   assert.equal(scopedPath('/settings/workspaces', tenant), `/${O}/settings/workspaces`)
@@ -106,7 +106,7 @@ test('unauthenticated deep links survive a per-tab single-use login continuation
 test('cross-tab storage changes cannot retarget a hosted page or native link', async () => {
   const { router, tenant } = setup()
   await router.push(resource)
-  localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: B, workspaceUUID: B }))
+  localStorage.setItem('railgrid:portal:tenant', JSON.stringify({ orgUUID: B, workspaceUUID: B }))
   assert.deepEqual(readTenant(), { orgUUID: O, workspaceUUID: W })
   assert.equal(tenant.workspaceUUID, W)
   assert.equal(portalHref('/providers/code/repositories'), `/ui/${O}/${W}/providers/code/repositories`)

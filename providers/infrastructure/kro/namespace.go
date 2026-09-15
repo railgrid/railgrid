@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,13 +31,13 @@ const (
 	// tenantLimitRangeName is the LimitRange every tenant namespace gets on
 	// creation. Create-only: an operator may hand-tune a tenant's copy and we
 	// never fight them over it.
-	tenantLimitRangeName = "faros-defaults"
+	tenantLimitRangeName = "railgrid-defaults"
 
 	// tenantLimitRangeDisableEnv opts the platform out of stamping the
-	// LimitRange (FAROS_TENANT_LIMITRANGE=disabled) — for runtime clusters
+	// LimitRange (RAILGRID_TENANT_LIMITRANGE=disabled) — for runtime clusters
 	// that manage resource policy themselves (their own LimitRange/Kyverno/
 	// quota tooling).
-	tenantLimitRangeDisableEnv = "FAROS_TENANT_LIMITRANGE"
+	tenantLimitRangeDisableEnv = "RAILGRID_TENANT_LIMITRANGE"
 )
 
 // tenantNamespaceName derives a deterministic namespace name from a
@@ -48,17 +48,17 @@ const (
 func tenantNamespaceName(tenantPath string) string {
 	prefix := os.Getenv("KRO_NAMESPACE_PREFIX")
 	if prefix == "" {
-		prefix = "faros-tenants-"
+		prefix = "railgrid-tenants-"
 	}
 	return prefix + tenantHash(tenantPath)
 }
 
 // tenantHash returns a 12-char SHA prefix of a workspace path. Used
-// both for the namespace name AND for label values (faros.sh/tenant)
-// — the raw `root:faros:orgs:<uuid>` form contains `:` which Kubernetes
+// both for the namespace name AND for label values (railgrid.ai/tenant)
+// — the raw `root:railgrid:orgs:<uuid>` form contains `:` which Kubernetes
 // rejects in label values (allowed: alphanumeric + `-_.` only). The full
 // path is preserved as an annotation
-// (faros.sh/tenant-workspace-path) for human debugging; programmatic
+// (railgrid.ai/tenant-workspace-path) for human debugging; programmatic
 // label-selector lookups go through this hash so writer + reader agree
 // without having to parse colons.
 func tenantHash(tenantPath string) string {
@@ -87,7 +87,7 @@ func TenantNamespace(tenantPath string) string { return tenantNamespaceName(tena
 // controller tenantNamespace helper. Cross-cluster resources the infra
 // provider writes to sit BESIDE those workloads — bridged OIDC/registry
 // Secrets and the default-SA imagePullSecrets — must target this namespace,
-// not the faros-tenants-<hash> control-plane namespace (TenantNamespace),
+// not the railgrid-tenants-<hash> control-plane namespace (TenantNamespace),
 // or they land in an empty namespace no pod can see.
 //
 // An empty sourceNamespace defaults to "default": instances created without an
@@ -109,7 +109,7 @@ func RuntimeNamespace(sourceCluster, sourceNamespace string) string {
 // kro cluster if absent. Idempotent. Returns the namespace name. Caches
 // the result so the warm path skips the kcp roundtrip. Annotations
 // record the source tenant path for human debugging — a `kubectl
-// describe ns` from an admin should make the faros link obvious.
+// describe ns` from an admin should make the railgrid link obvious.
 func (c *realClient) EnsureTenantNamespace(ctx context.Context, tenantPath string) (string, error) {
 	name := tenantNamespaceName(tenantPath)
 	if _, ok := c.nsCache.Load(tenantPath); ok {
@@ -127,7 +127,7 @@ func (c *realClient) EnsureTenantNamespace(ctx context.Context, tenantPath strin
 				// Full path here so `kubectl describe ns` surfaces the
 				// source workspace; programmatic lookups use the
 				// LabelTenant hash above.
-				"faros.sh/tenant-workspace-path": tenantPath,
+				"railgrid.ai/tenant-workspace-path": tenantPath,
 			},
 		},
 	}
@@ -161,7 +161,7 @@ func (c *realClient) EnsureTenantNamespace(ctx context.Context, tenantPath strin
 // Create-only and sitting BEFORE the nsCache store, so a provider restart
 // retrofits namespaces created before this policy existed, while an
 // operator's hand-tuned copy is never overwritten. Disable with
-// FAROS_TENANT_LIMITRANGE=disabled when the runtime cluster manages its own
+// RAILGRID_TENANT_LIMITRANGE=disabled when the runtime cluster manages its own
 // resource policy.
 func (c *realClient) ensureTenantLimitRange(ctx context.Context, tenantPath, namespace string) error {
 	if os.Getenv(tenantLimitRangeDisableEnv) == "disabled" {

@@ -1,4 +1,4 @@
-// Entry point loaded by the faros portal as a single <script> tag. The
+// Entry point loaded by the railgrid portal as a single <script> tag. The
 // build emits this as IIFE (see vite.config.ts) so the side effects below
 // run immediately — registering the custom element and the per-element
 // stylesheet — without waiting on the module loader.
@@ -12,13 +12,13 @@
 
 import { KueryElement } from './element'
 import { KueryDashboardTile } from './dashboard-tile'
-import { ensureFarosUIStyles } from './portalkit/styles'
+import { ensureRailgridUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
 
-const TAG = 'faros-provider-kuery'
-const TILE_TAG = 'faros-dashboard-tile-kuery'
+const TAG = 'railgrid-provider-kuery'
+const TILE_TAG = 'railgrid-dashboard-tile-kuery'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 // Hot-reload safety: customElements.define throws on a second registration
 // for the same tag. The portal can re-execute this script after a version

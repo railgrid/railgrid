@@ -7,7 +7,7 @@ import { authFetch } from '@/auth/session'
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
 // ProviderScope mirrors pkg/hub/providers.ScopeGlobal / ScopeOrg.
-// 'global' = a platform provider faros operates; 'org' = one this
+// 'global' = a platform provider railgrid operates; 'org' = one this
 // organization registered and runs itself ("bring your own").
 export type ProviderScope = 'global' | 'org'
 
@@ -537,7 +537,7 @@ export const useProvidersStore = defineStore('providers', () => {
       // org directly instead of asking authFetch to read potentially stale
       // document-URL tenant headers before navigation commits.
       const res = await authFetch('/api/providers', {
-        headers: targetOrgUUID ? { 'X-Faros-Org': targetOrgUUID } : undefined,
+        headers: targetOrgUUID ? { 'X-Railgrid-Org': targetOrgUUID } : undefined,
       })
       if (!res.ok) {
         throw new Error(`provider list failed: ${res.status} ${res.statusText}`)
@@ -620,7 +620,7 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsLoadState.value = 'loading'
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/enabled`
     try {
-      const res = await authFetch(url, { tenant: true, headers: { 'X-Faros-Org': t.orgUUID, 'X-Faros-Workspace': t.workspaceUUID } })
+      const res = await authFetch(url, { tenant: true, headers: { 'X-Railgrid-Org': t.orgUUID, 'X-Railgrid-Workspace': t.workspaceUUID } })
       if (requestSequence !== bindingRequestSequence) return
       if (!sameTenantSelection(t, readTenantSelection())) return
       if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)

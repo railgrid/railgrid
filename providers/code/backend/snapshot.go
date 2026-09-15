@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -8,7 +8,7 @@ package backend
 import (
 	"context"
 
-	api "github.com/faroshq/provider-code/apis/v1alpha1"
+	api "github.com/railgrid/provider-code/apis/v1alpha1"
 )
 
 // Snapshot is an immutable Git result, with one parent and no workflow policy.

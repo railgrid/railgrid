@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ const (
 	// CookieName is the one shared portal/browser session cookie.  The __Host-
 	// prefix requires Secure, Path=/, and no Domain attribute, which makes the
 	// cookie host-only even when an app is served from a sibling subdomain.
-	CookieName = "__Host-faros-session"
+	CookieName = "__Host-railgrid-session"
 	// SessionCookieName is retained as a descriptive alias for callers that
 	// already use the access-proxy naming convention.
 	SessionCookieName = CookieName
@@ -77,7 +77,7 @@ type Identity struct {
 	Email  string
 	Name   string
 	// RBACIdentity is the kcp username this account authenticates as inside
-	// tenant workspaces (User.Spec.RBACIdentity, e.g. "faros:<email>"). All
+	// tenant workspaces (User.Spec.RBACIdentity, e.g. "railgrid:<email>"). All
 	// workspace RBAC — admin ClusterRoleBindings and app-access grants — is
 	// written against this string, so authorization checks (SAR) must use it,
 	// never the User CR name. Not a credential.

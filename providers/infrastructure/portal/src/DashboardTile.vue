@@ -1,18 +1,18 @@
 <script setup lang="ts">
 // Tile content for the infrastructure provider's dashboard summary.
-// Mounted by <faros-dashboard-tile-infrastructure> (see element.ts).
+// Mounted by <railgrid-dashboard-tile-infrastructure> (see element.ts).
 //
 // Gives the user an at-a-glance read on what they've provisioned in the
 // CURRENT workspace:
 //   - total instances + per-phase breakdown (Ready / Pending / Deleting / Failed)
 //   - top-4 most-recent instances with template + phase chip and a
-//     click-through that bubbles faros-navigate up to the portal so it
+//     click-through that bubbles railgrid-navigate up to the portal so it
 //     pushes /providers/infrastructure/instances/<name>.
 //
-// Auth + workspace headers come from the farosContext the host pushed
+// Auth + workspace headers come from the railgridContext the host pushed
 // onto the element and the standard portal tenant slot in localStorage
 // (same shape api.ts reads in App.vue). The tile is read-only — even if
-// the workspace isn't bootstrapped yet (X-Faros-Tenant resolver returns
+// the workspace isn't bootstrapped yet (X-Railgrid-Tenant resolver returns
 // nothing), we just render an empty state instead of bubbling errors.
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -214,7 +214,7 @@ function dotFor(phase: string) {
       </div>
 
       <!-- Recent instances. Click anywhere on the row → instance detail
-           page. Bubbles via faros-navigate so the portal owns the URL.
+           page. Bubbles via railgrid-navigate so the portal owns the URL.
            Row style matches the kubernetes-edges "Recent" list: a single
            compact line per item (phase icon · name · template · animated
            chevron) so the dashboard reads consistently across providers. -->
@@ -243,7 +243,7 @@ function dotFor(phase: string) {
       <!-- Explicit empty state. The "scope hint" line covers a real
            migration footgun: instances provisioned before the user
            picked a workspace in the sidebar landed in the personal-org
-           scope (no X-Faros-Workspace header), and the workspace-aware
+           scope (no X-Railgrid-Workspace header), and the workspace-aware
            list now reads from a different namespace. The pointer to
            the Instances page lets them at least see their stranded
            CRs via the "no workspace" view there. -->

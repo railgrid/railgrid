@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ import (
 // pod inside the edge cluster, which this suite does not do yet.
 
 var edgeServiceGVR = schema.GroupVersionResource{
-	Group: "edges.faros.sh", Version: "v1alpha1", Resource: "services",
+	Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "services",
 }
 
 const quickstartPort = "18099"
@@ -70,11 +70,11 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 
 	edgeName := "byo-server"
 	workDir := suiteTempDir(t, "byo-provider")
-	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
+	kubeconfig := filepath.Join(workDir, "railgrid.kubeconfig")
 
 	// Same bring-up as the kubectl-through-tunnel case: a tenant with edges
 	// enabled, an edge registered, and an agent connected to it.
-	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	runCLI(t, kubeconfig, railgridBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	t.Logf("tenant workspace = %s", tenantWS)
 
@@ -82,7 +82,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	enableEdges(t, tenantAdmin)
 	grantEdgeProxy(t, tenantAdmin)
 
-	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "server")
+	runCLI(t, kubeconfig, railgridBin, "edge", "create", edgeName, "--type", "server")
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(linuxServerGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
@@ -105,7 +105,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	// the far end's entire authorization model.
 	const svcName = "provider-quickstart"
 	svc := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "edges.faros.sh/v1alpha1",
+		"apiVersion": "edges.railgrid.ai/v1alpha1",
 		"kind":       "Service",
 		"metadata":   map[string]any{"name": svcName},
 		"spec": map[string]any{
@@ -124,7 +124,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		_ = tenantAdmin.Resource(edgeServiceGVR).Delete(context.Background(), svcName, metav1.DeleteOptions{})
 	})
 
-	base := fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.faros.sh/v1alpha1/services/%s/proxy",
+	base := fmt.Sprintf("%s/services/providers/edges/edgeproxy/clusters/%s/apis/edges.railgrid.ai/v1alpha1/services/%s/proxy",
 		hubURL, tenantWS, svcName)
 
 	t.Run("identity and passthrough auth survive the tunnel", func(t *testing.T) {
@@ -146,10 +146,10 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 		}
 		// E-6: the far end authorizes the CALLER, so it has to learn who that is.
 		if hello.UserHeader == "" {
-			t.Error("X-Faros-User did not survive the tunnel; the provider cannot attribute the call")
+			t.Error("X-Railgrid-User did not survive the tunnel; the provider cannot attribute the call")
 		}
 		if hello.TenantHeader == "" {
-			t.Error("X-Faros-Tenant did not survive the tunnel; the provider cannot scope the call")
+			t.Error("X-Railgrid-Tenant did not survive the tunnel; the provider cannot scope the call")
 		}
 		// E-5: the caller's own bearer must arrive, not the Service's. A length
 		// check would accept a substituted token of the same size, so compare

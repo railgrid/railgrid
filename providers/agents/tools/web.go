@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	"github.com/faroshq/provider-agents/engine"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/engine"
 )
 
 const (
@@ -180,11 +180,11 @@ func searchFanOutHint(d Deps) string {
 		"spawn a worker per part and join the results instead."
 }
 
-// farosAppSignInPath is where a faros app's access gate sends a request that
+// railgridAppSignInPath is where a railgrid app's access gate sends a request that
 // carries no app token. web_fetch is anonymous, so following it only ever
 // lands on the portal's sign-in page, which a model then reads as the app's
 // own "HTTP 200" answer.
-const farosAppSignInPath = "/auth/apps/authorize"
+const railgridAppSignInPath = "/auth/apps/authorize"
 
 // maxFetchRedirects matches net/http's default redirect limit.
 const maxFetchRedirects = 10
@@ -203,12 +203,12 @@ func webFetchWith(ctx context.Context, client *http.Client, raw string, maxChars
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "faros-agents/0.1 (+https://github.com/faroshq/faros)")
+	req.Header.Set("User-Agent", "railgrid-agents/0.1 (+https://github.com/railgrid/railgrid)")
 	// A per-call copy shares the guarded transport; only the redirect policy
-	// differs: stop at a faros sign-in redirect instead of following it.
+	// differs: stop at a railgrid sign-in redirect instead of following it.
 	c := *client
 	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if next.URL.Path == farosAppSignInPath {
+		if next.URL.Path == railgridAppSignInPath {
 			return http.ErrUseLastResponse
 		}
 		if len(via) >= maxFetchRedirects {
@@ -230,9 +230,9 @@ func webFetchWith(ctx context.Context, client *http.Client, raw string, maxChars
 	if final.String() != u.String() {
 		status += " (redirected from " + u.String() + ")"
 	}
-	if location, err := resp.Location(); err == nil && location.Path == farosAppSignInPath {
-		return status + "\n\nThis is a private faros app: its access gate redirects to sign-in (" +
-			location.Scheme + "://" + location.Host + farosAppSignInPath + "), and web_fetch cannot sign in. " +
+	if location, err := resp.Location(); err == nil && location.Path == railgridAppSignInPath {
+		return status + "\n\nThis is a private railgrid app: its access gate redirects to sign-in (" +
+			location.Scheme + "://" + location.Host + railgridAppSignInPath + "), and web_fetch cannot sign in. " +
 			"No content was fetched. Ask the app's owner to publish it publicly, or to pass the data in the task.", nil
 	}
 
@@ -391,7 +391,7 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 
 // searxngResource is the flattened infrastructure instance resource — every
 // template's instances (searxng included) are served as
-// instances.infrastructure.faros.sh. Overridable per connection for a
+// instances.infrastructure.railgrid.ai. Overridable per connection for a
 // provider serving a different resource.
 const searxngResource = "instances"
 

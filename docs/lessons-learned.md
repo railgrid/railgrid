@@ -1,4 +1,4 @@
-# Lessons learned: building Faros on kcp, the hard way
+# Lessons learned: building Railgrid on kcp, the hard way
 
 Status: living document. Base material for the talk "kcp — platform design the
 hard way".
@@ -37,13 +37,13 @@ data migration.
 So: name workspaces with stable opaque IDs (we use UUIDs), map user identity
 *to* them, and accept that the entire human-facing naming layer — display
 names, resolution, search — is yours to build; kcp offers nothing there. The
-cost is permanent: `root:faros:tenants:86b7f9e7-…` in every kubeconfig, URL,
+cost is permanent: `root:railgrid:tenants:86b7f9e7-…` in every kubeconfig, URL,
 and debug session, and the path↔name resolution tooling is on you.
 (`organizations.md` O-1)
 
 ### 2. Everything has two names — the workspace path and the logical cluster ID — and nothing hands you the pairing.
 
-The hub injects tenant context as a *path* (`root:faros:orgs:acme`);
+The hub injects tenant context as a *path* (`root:railgrid:orgs:acme`);
 providers address workspaces by *cluster ID* in URLs. We have built the
 path↔ID join at least three times: a provider-side TenantRef table in
 Postgres, a hub topology index fed by an informer, and per-object
@@ -151,7 +151,7 @@ Every provider declares its claims in three places that must stay in sync by
 hand: `init_cmd.go` (stamps the export), `manifest.yaml` (dev), and the chart
 `catalogentry.yaml` (what the hub writes into tenant bindings at Enable). They
 drift silently. kuery drifted **three ways at once** — init stamped
-`faros.sh/edges`, the catalog declared `edges.faros.sh/kubernetesclusters`,
+`railgrid.ai/edges`, the catalog declared `edges.railgrid.ai/kubernetesclusters`,
 and the Makefile resolved the identity from a third export — a combination
 under which Enable's identity poll could never succeed. Nothing detected it.
 (`AGENTS.md` §5.1, this repo's kuery history)
@@ -172,7 +172,7 @@ you build on claims, build the loud check yourself; kcp will not tell you.
 "Permission claims don't help: they grant access via the APIExport virtual
 workspace, not direct SAR passes in tenant workspaces." And the VW serves
 *only* what the export declares: our catalog reconciler could not read
-`LogicalCluster` through its own multicluster client — `providers.faros.sh`
+`LogicalCluster` through its own multicluster client — `providers.railgrid.ai`
 declares nothing but `catalogentries` — so ownership resolution needed a
 second, admin client. Wrong-scope addressing fails as silent zero-reconcile,
 not as an error. (`kuery-provider-architecture.md`, `byo-providers.md`,
@@ -269,7 +269,7 @@ A foreign identity needs verb `access` on nonResourceURL `/` *in addition to*
 its resource rules — "without it an invited outsider is denied even with a
 perfect grant," and the SAR also drops the caller's groups. Every
 cross-workspace grant we write pairs the two rules. Related: the RBAC subject
-is the kcp username string (`faros:<email>`), not your User CR's name — the
+is the kcp username string (`railgrid:<email>`), not your User CR's name — the
 CR name appears in no binding. (`app-studio-publishing.md`,
 `kuery-provider-architecture.md`)
 

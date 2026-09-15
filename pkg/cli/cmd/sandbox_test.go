@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -177,7 +177,7 @@ func TestSandboxSyncSendsAuthoritativeDigest(t *testing.T) {
 	})
 	var got syncRequest
 	hub.handle("POST "+dataPlanePrefix+"/components/api/sync", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Faros-Workspace") != "ws-b1" {
+		if r.Header.Get("X-Railgrid-Workspace") != "ws-b1" {
 			http.Error(w, "missing workspace header", http.StatusBadRequest)
 			return
 		}
@@ -327,7 +327,7 @@ func TestSandboxExecStartsAndPolls(t *testing.T) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	want := execRequest{Action: "start", Argv: []string{"node", "-e", "x"}, TimeoutSeconds: 30, SourceRevision: 42, SourceDigest: "abc"}
-	if !reflect.DeepEqual(start, want) || !strings.HasPrefix(startKey, "faros-cli-") || polls != 2 {
+	if !reflect.DeepEqual(start, want) || !strings.HasPrefix(startKey, "railgrid-cli-") || polls != 2 {
 		t.Fatalf("start=%+v key=%q polls=%d", start, startKey, polls)
 	}
 }
@@ -339,7 +339,7 @@ func TestSandboxExecRequiresAuthoritativeSync(t *testing.T) {
 		writeTestJSON(w, map[string]any{"running": true})
 	})
 	_, err := runSandboxExec(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, hubTarget{}, "shop-dev", "api", []string{"ls"}, "", time.Minute)
-	if err == nil || !strings.Contains(err.Error(), "faros sandbox sync") {
+	if err == nil || !strings.Contains(err.Error(), "railgrid sandbox sync") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := runSandboxExec(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, hubTarget{}, "shop-dev", "api", []string{"ls"}, "", 5*time.Minute); err == nil {
@@ -348,7 +348,7 @@ func TestSandboxExecRequiresAuthoritativeSync(t *testing.T) {
 }
 
 // instanceAPIPath is the fake hub's kube API path of instance shop-dev.
-const instanceAPIPath = "/clusters/cl-b/apis/infrastructure.faros.sh/v1alpha1/instances/shop-dev"
+const instanceAPIPath = "/clusters/cl-b/apis/infrastructure.railgrid.ai/v1alpha1/instances/shop-dev"
 
 func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 	for _, tc := range []struct {
@@ -361,17 +361,17 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 		{
 			name: "project label",
 			instance: func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"app-studio.faros.sh/project": "shop"}}})
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"app-studio.railgrid.ai/project": "shop"}}})
 			},
-			want:    "run 'faros app sync shop' first",
-			notWant: "run 'faros sandbox sync",
+			want:    "run 'railgrid app sync shop' first",
+			notWant: "run 'railgrid sandbox sync",
 		},
 		{
 			name: "project owner reference",
 			instance: func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "ownerReferences": []map[string]any{{"apiVersion": "ai.faros.sh/v1alpha1", "kind": "Project", "name": "shop"}}}})
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "ownerReferences": []map[string]any{{"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project", "name": "shop"}}}})
 			},
-			want: "run 'faros app sync shop' first",
+			want: "run 'railgrid app sync shop' first",
 		},
 		{
 			name: "unreadable instance, App Studio project of the prefix exists",
@@ -381,20 +381,20 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 			project: func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"name": "shop"})
 			},
-			want: "run 'faros app sync shop' first",
+			want: "run 'railgrid app sync shop' first",
 		},
 		{
 			name: "plain instance",
 			instance: func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"faros.sh/template": "application"}}})
+				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"railgrid.ai/template": "application"}}})
 			},
 			// A readable instance without the marker is not App Studio's,
 			// whatever its name.
 			project: func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"name": "shop"})
 			},
-			want:    "run 'faros sandbox sync shop-dev api <dir>' first",
-			notWant: "faros app sync",
+			want:    "run 'railgrid sandbox sync shop-dev api <dir>' first",
+			notWant: "railgrid app sync",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

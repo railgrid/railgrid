@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -92,7 +92,7 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 
 	// Keep the historical name for KubernetesCluster/LinuxServer credentials so
 	// existing agents continue to reconnect. MacOSServer gets a kind-qualified
-	// prefix because all edge kinds share the tenant's faros-system namespace;
+	// prefix because all edge kinds share the tenant's railgrid-system namespace;
 	// a Mac edge named "build" must not adopt credentials for a legacy edge with
 	// the same name.
 	saName := edgeCredentialName(r.kind, edge.GetName())
@@ -248,7 +248,7 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 
 // desiredAgentRules returns the PolicyRules that the edge agent ClusterRole
 // should have. This ClusterRole is shared by every agent SA (one per edge), so
-// it covers every connectable kind in the edges provider's group edges.faros.sh:
+// it covers every connectable kind in the edges provider's group edges.railgrid.ai:
 // KubernetesCluster, LinuxServer, and MacOSServer. The agent reads its own edge and patches
 // its status (edge_reporter heartbeats status.connected/agentVersion/…), so it
 // needs get/list/watch + update/patch on the kinds AND their /status
@@ -257,7 +257,7 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 func desiredAgentRules() []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
 		{
-			APIGroups: []string{"edges.faros.sh"},
+			APIGroups: []string{"edges.railgrid.ai"},
 			Resources: []string{
 				"kubernetesclusters", "kubernetesclusters/status",
 				"linuxservers", "linuxservers/status",
@@ -272,12 +272,12 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 		// placements/status — otherwise the reporter is "forbidden ... cannot list
 		// resource placements".
 		{
-			APIGroups: []string{"edges.faros.sh"},
+			APIGroups: []string{"edges.railgrid.ai"},
 			Resources: []string{"placements", "placements/status"},
 			Verbs:     []string{"get", "list", "watch", "update", "patch"},
 		},
 		{
-			APIGroups: []string{"edges.faros.sh"},
+			APIGroups: []string{"edges.railgrid.ai"},
 			Resources: []string{"workloads", "workloads/status"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
@@ -295,7 +295,7 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 	}
 }
 
-// ensureClusterRole creates or updates the shared faros-edge-agent ClusterRole.
+// ensureClusterRole creates or updates the shared railgrid-edge-agent ClusterRole.
 // It intentionally carries no owner reference so that it is never garbage-collected
 // when an individual edge is deleted; the role is a cluster-wide shared resource.
 func ensureClusterRole(ctx context.Context, c client.Client) error {
@@ -355,7 +355,7 @@ func slicesEqual(a, b []string) bool {
 }
 
 func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
-	crbName := "faros-edge-" + saName
+	crbName := "railgrid-edge-" + saName
 	crb := &rbacv1.ClusterRoleBinding{}
 	if err := c.Get(ctx, client.ObjectKey{Name: crbName}, crb); err == nil {
 		return ensureOwnerRef(ctx, c, crb, ownerRef)
@@ -400,7 +400,7 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 // "proxy" on this name and fails the review. Both objects are owned by the edge
 // so deletion revokes the grant.
 func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Client, saName, edgeName string, ownerRef metav1.OwnerReference) error {
-	name := "faros-edge-proxy-" + saName
+	name := "railgrid-edge-proxy-" + saName
 	desiredRules := []rbacv1.PolicyRule{{
 		APIGroups:     []string{r.gvr.Group},
 		Resources:     []string{r.gvr.Resource},
@@ -527,7 +527,7 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 
 	kubeconfig := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"faros": clusterDef,
+			"railgrid": clusterDef,
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			"edge-agent": {
@@ -535,12 +535,12 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
-			"faros": {
-				Cluster:  "faros",
+			"railgrid": {
+				Cluster:  "railgrid",
 				AuthInfo: "edge-agent",
 			},
 		},
-		CurrentContext: "faros",
+		CurrentContext: "railgrid",
 	}
 
 	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
@@ -553,7 +553,7 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 			Name:      name,
 			Namespace: edgeNamespace,
 			Labels: map[string]string{
-				"faros.sh/edge": edgeName,
+				"railgrid.ai/edge": edgeName,
 			},
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},

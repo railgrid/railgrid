@@ -21,7 +21,7 @@ import {
   type Route,
 } from './router'
 import { clearToasts } from './ui/toast'
-import type { Agent, Connection, Credential, FarosContext, Toolset } from './types'
+import type { Agent, Connection, Credential, RailgridContext, Toolset } from './types'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
 import AgentCreate from './views/AgentCreate.vue'
@@ -33,7 +33,7 @@ import Toolsets from './views/Toolsets.vue'
 import Models from './views/Models.vue'
 import Automation from './views/Automation.vue'
 
-const props = defineProps<{ ctx: FarosContext | null; host: HTMLElement }>()
+const props = defineProps<{ ctx: RailgridContext | null; host: HTMLElement }>()
 
 const api = shallowRef(markRaw(new ApiClient()))
 const store = shallowRef(markRaw(new AppStore(api.value)))
@@ -59,7 +59,7 @@ const contextUsable = computed(() => {
 const workspaceActive = computed(() => contextUsable.value && route.value.kind === 'agent')
 
 function requestWorkspaceLayout(fullBleed: boolean): void {
-  props.host.dispatchEvent(new CustomEvent('faros-layout-change', {
+  props.host.dispatchEvent(new CustomEvent('railgrid-layout-change', {
     detail: { fullBleed },
     bubbles: true,
   }))
@@ -122,7 +122,7 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
   // Let the host's Vue Router own browser history when this provider is
   // embedded. ProviderFrame acknowledges the event synchronously with
   // preventDefault(); the standalone portal falls back to its hash router.
-  const navigation = new CustomEvent('faros-navigate', {
+  const navigation = new CustomEvent('railgrid-navigate', {
     detail: { path: hashFor(next), replace: historyMode === 'replace' },
     bubbles: true,
     composed: true,
@@ -199,7 +199,7 @@ function maybeLoad(): void {
 }
 
 function shouldResetRoute(previous: ContextAuthority | null, next: ContextAuthority): boolean {
-  // The host mounts the custom element before it can push farosContext. That
+  // The host mounts the custom element before it can push railgridContext. That
   // first null -> usable hydration must keep a dashboard/deep-link hash. A
   // real authority withdrawal already resets the route when it becomes
   // unusable, so restoring authority does not need to reset it a second time.
@@ -208,7 +208,7 @@ function shouldResetRoute(previous: ContextAuthority | null, next: ContextAuthor
   return !(previous.userKey && next.userKey && previous.userKey === next.userKey)
 }
 
-function rotateContext(context: FarosContext | null, resetRoute: boolean): void {
+function rotateContext(context: RailgridContext | null, resetRoute: boolean): void {
   boundStore?.removeEventListener('change', onStoreChange)
   boundStore = null
   store.value.retire()
@@ -229,7 +229,7 @@ function rotateContext(context: FarosContext | null, resetRoute: boolean): void 
   maybeLoad()
 }
 
-function applyContext(context: FarosContext | null): void {
+function applyContext(context: RailgridContext | null): void {
   const previous = authority
   const next = api.value.contextAuthority(context)
   const changed = previous !== null && (

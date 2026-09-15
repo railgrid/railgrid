@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/store"
+	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 type failingAssistantThreadProjectionStore struct {

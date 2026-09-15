@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // CatalogReconciler keeps the in-process Registry in sync with the cluster's
@@ -186,8 +186,8 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 //
 // The read goes through the hub's kcp-admin config (r.prov), NOT the
 // multicluster client for this request. That client is scoped to the
-// providers.faros.sh APIExport virtual workspace, and a VW serves only the
-// resources its APIExport declares — providers.faros.sh declares none beyond
+// providers.railgrid.ai APIExport virtual workspace, and a VW serves only the
+// resources its APIExport declares — providers.railgrid.ai declares none beyond
 // catalogentries, so core.kcp.io/LogicalCluster is not reachable there at all.
 //
 // An error return means "unknown", and callers MUST NOT fall back to a default
@@ -231,13 +231,13 @@ func (r *CatalogReconciler) workspacePath(ctx context.Context, clusterName strin
 // org-provider path maps to platform scope, which is the widest one. That is
 // safe only because of who can reach this reconciler at all — the catalog
 // manager's cluster set is exactly the logical clusters holding a Ready
-// providers.faros.sh APIBinding, and the only three sources are
-// root:faros:system:providers plus the two provider-workspace trees, all
+// providers.railgrid.ai APIBinding, and the only three sources are
+// root:railgrid:system:providers plus the two provider-workspace trees, all
 // hub-created. A tenant cannot put their own workspace into that set: the
-// `workspace` WorkspaceType binds only core.faros.sh, and nothing grants
-// tenants `bind` on providers.faros.sh.
+// `workspace` WorkspaceType binds only core.railgrid.ai, and nothing grants
+// tenants `bind` on providers.railgrid.ai.
 //
-// If that ever changes — if providers.faros.sh becomes bindable from a team
+// If that ever changes — if providers.railgrid.ai becomes bindable from a team
 // workspace — a tenant could register a CatalogEntry that lands here with a
 // non-provider path and be published platform-wide. Re-derive this default
 // before widening that bind.
@@ -591,7 +591,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	// The hub no longer provisions the per-provider workspace, schemas,
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
-	// (pkg/hub/admin) plus the provider's own Helm `init` (faros-provider-sdk).
+	// (pkg/hub/admin) plus the provider's own Helm `init` (railgrid-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
 	// so the Enable endpoint can build the edges-proxy RBAC subject.
 	switch {
@@ -602,7 +602,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		// its own workspace, so the cluster the entry was observed in IS the
 		// provider workspace — no lookup needed. (Platform providers can't take
 		// this shortcut: the builtin entries are seeded into
-		// root:faros:system:providers, a different workspace from the one they
+		// root:railgrid:system:providers, a different workspace from the one they
 		// describe.)
 		entry.Status.Workspace = kcppaths.OrgProviderPath(orgUUID, entry.Name)
 		r.reg.SetWorkspaceCluster(orgUUID, entry.Name, string(req.ClusterName))

@@ -51,7 +51,7 @@ describe('Code first-run journey', () => {
     expect(readCodeReturnIntent(storage, tenantA, 'connections')).toBeNull()
     expect(readCodeReturnIntent(storage, tenantA, 'create/connection/token')).toBeNull()
 
-    values.set('faros:code:return-intent', JSON.stringify({
+    values.set('railgrid:code:return-intent', JSON.stringify({
       [tenantA]: { returnPath: 'https://example.invalid', expectedPath: 'create/connection/token' },
     }))
     expect(readCodeReturnIntent(storage, tenantA, 'create/connection/token')).toBeNull()

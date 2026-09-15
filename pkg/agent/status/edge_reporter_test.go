@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,11 +28,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 var testGVR = schema.GroupVersionResource{
-	Group:    "edges.faros.sh",
+	Group:    "edges.railgrid.ai",
 	Version:  "v1alpha1",
 	Resource: "linuxservers",
 }
@@ -65,7 +65,7 @@ func TestSendHeartbeatUnblocksWhenHubHangs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building dynamic client: %v", err)
 	}
-	r := NewEdgeReporter("edge", testGVR, farosclient.NewFromDynamic(dyn), nil, 0)
+	r := NewEdgeReporter("edge", testGVR, railgridclient.NewFromDynamic(dyn), nil, 0)
 
 	done := make(chan struct{})
 	go func() {
@@ -99,7 +99,7 @@ func TestSendHeartbeatHonoursParentCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building dynamic client: %v", err)
 	}
-	r := NewEdgeReporter("edge", testGVR, farosclient.NewFromDynamic(dyn), nil, 0)
+	r := NewEdgeReporter("edge", testGVR, railgridclient.NewFromDynamic(dyn), nil, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

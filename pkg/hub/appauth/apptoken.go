@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ package appauth
 //
 // The token is stateless so it verifies on any hub replica: an AES-256-GCM
 // sealed claim set, keyed by a subkey HKDF-derived (distinct info label) from
-// the hub's cross-replica secret in root:faros:system:controllers (see
+// the hub's cross-replica secret in root:railgrid:system:controllers (see
 // Config.TokenKey). Sealing rather than signing keeps the embedded RBAC
-// identity (faros:<email>) unreadable to whoever holds or relays the token.
+// identity (railgrid:<email>) unreadable to whoever holds or relays the token.
 
 import (
 	"crypto/aes"
@@ -62,9 +62,9 @@ const (
 
 	// appTokenKeyInfo is the HKDF info label. It domain-separates the app
 	// token key from every other use of the hub secret it is derived from.
-	appTokenKeyInfo = "faros.sh/app-access-token/aes-256-gcm/v1"
+	appTokenKeyInfo = "railgrid.ai/app-access-token/aes-256-gcm/v1"
 	// appTokenAAD binds the ciphertext to this construction and version.
-	appTokenAAD     = "faros.sh/app-access-token/v1"
+	appTokenAAD     = "railgrid.ai/app-access-token/v1"
 	appTokenVersion = 1
 	minTokenKeyLen  = 32
 	appTokenIDBytes = 16

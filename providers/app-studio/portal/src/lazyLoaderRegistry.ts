@@ -2,8 +2,8 @@ export type LazySurface = 'page' | 'tile'
 export type LazyLoader<T> = () => Promise<T>
 export type LazyLoaderRegistry<T> = Record<LazySurface, LazyLoader<T>>
 
-export const APP_STUDIO_LOADER_REGISTRY_KEY = '__farosProviderAppStudioLazyLoadersV1'
-export const PROVIDER_BOOTSTRAP_GENERATIONS_KEY = '__farosProviderBootstrapGenerationsV1'
+export const APP_STUDIO_LOADER_REGISTRY_KEY = '__railgridProviderAppStudioLazyLoadersV1'
+export const PROVIDER_BOOTSTRAP_GENERATIONS_KEY = '__railgridProviderBootstrapGenerationsV1'
 
 export function isCurrentAppStudioBootstrap(root: object, generation: string | undefined): boolean {
   const registryRoot = root as Record<string, unknown>

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -276,7 +276,7 @@ func TestRunHeartbeatDisabledWithoutHubURL(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("RunHeartbeat should return immediately without FAROS_HUB_URL")
+		t.Fatal("RunHeartbeat should return immediately without RAILGRID_HUB_URL")
 	}
 	if !strings.Contains(rec.joined(), "heartbeat disabled") {
 		t.Fatalf("expected a disabled log line, got:\n%s", rec.joined())
@@ -325,7 +325,7 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
-// A provider with no FAROS_HUB_URL has its heartbeat disabled, so
+// A provider with no RAILGRID_HUB_URL has its heartbeat disabled, so
 // ConfigFromEnv must not touch the provider kubeconfig at all: every call site
 // logs ConfigFromEnv's error before RunHeartbeat ever reaches its disabled
 // path, so resolving a token here means a pointless read and a misleading
@@ -364,7 +364,7 @@ func TestConfigFromEnvSkipsTokenResolutionWhenHeartbeatDisabled(t *testing.T) {
 	}
 }
 
-// A FAROS_HUB_URL ending in "/" used to concatenate into a double slash in
+// A RAILGRID_HUB_URL ending in "/" used to concatenate into a double slash in
 // seven of the eight per-provider copies. Gorilla mux cleaned the path and
 // 301'd, Go's client turned the redirected POST into a GET, and the hub
 // answered 405 — a silent heartbeat failure that made the provider go stale.

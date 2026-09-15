@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ import (
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
 
-	"github.com/faroshq/faros/pkg/util/identity"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
@@ -81,11 +81,11 @@ type EmbeddedKCPOptions struct {
 	// configured issuer and run requests as the resulting OIDC identity.
 	//
 	// Defaults are tuned to match the proxy/User CRD identity scheme
-	// (User.Spec.RBACIdentity = "faros:<email>", see pkg/server/auth/handler.go):
+	// (User.Spec.RBACIdentity = "railgrid:<email>", see pkg/server/auth/handler.go):
 	//   UsernameClaim  = "email"
-	//   UsernamePrefix = "faros:"
+	//   UsernamePrefix = "railgrid:"
 	//   GroupsClaim    = "groups"
-	//   GroupsPrefix   = "faros:"
+	//   GroupsPrefix   = "railgrid:"
 	OIDCIssuerURL      string
 	OIDCClientID       string
 	OIDCCAFile         string
@@ -212,7 +212,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		if e.opts.OIDCUsernamePrefix != "" {
 			oidcOpts.UsernamePrefix = e.opts.OIDCUsernamePrefix
 		} else {
-			oidcOpts.UsernamePrefix = "faros:"
+			oidcOpts.UsernamePrefix = "railgrid:"
 		}
 		if e.opts.OIDCGroupsClaim != "" {
 			oidcOpts.GroupsClaim = e.opts.OIDCGroupsClaim
@@ -222,7 +222,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		if e.opts.OIDCGroupsPrefix != "" {
 			oidcOpts.GroupsPrefix = e.opts.OIDCGroupsPrefix
 		} else {
-			oidcOpts.GroupsPrefix = "faros:"
+			oidcOpts.GroupsPrefix = "railgrid:"
 		}
 		if e.opts.OIDCCAFile != "" {
 			oidcOpts.CAFile = e.opts.OIDCCAFile
@@ -280,7 +280,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	}
 
 	// Add a post-start hook to signal readiness.
-	if err := e.server.AddPostStartHook("faros-kcp-ready", func(hookContext genericapiserver.PostStartHookContext) error {
+	if err := e.server.AddPostStartHook("railgrid-kcp-ready", func(hookContext genericapiserver.PostStartHookContext) error {
 		// Wait for kcp phase 1 bootstrap to complete.
 		e.server.WaitForPhase1Finished()
 

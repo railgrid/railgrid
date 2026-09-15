@@ -3,7 +3,7 @@ layout: default
 title: Cloudflare Tunnel
 parent: Ingress
 nav_order: 1
-description: "Expose Faros Hub via Cloudflare Tunnel"
+description: "Expose Railgrid Hub via Cloudflare Tunnel"
 ---
 
 # Cloudflare Tunnel
@@ -160,7 +160,7 @@ helm upgrade --install --wait \
   strrl.dev/cloudflare-tunnel-ingress-controller \
   --set=cloudflare.apiToken="YOUR_CLOUDFLARE_API_TOKEN" \
   --set=cloudflare.accountId="YOUR_CLOUDFLARE_ACCOUNT_ID" \
-  --set=cloudflare.tunnelName="faros-tunnel"
+  --set=cloudflare.tunnelName="railgrid-tunnel"
 ```
 
 Verify it's running:
@@ -173,7 +173,7 @@ kubectl -n cloudflare-tunnel-ingress-controller get pods
 
 Check the tunnel in [Cloudflare Zero Trust](https://one.dash.cloudflare.com):
 - Go to **Networks** → **Tunnels**
-- You should see `faros-tunnel` with status **Healthy**
+- You should see `railgrid-tunnel` with status **Healthy**
 
 ---
 
@@ -185,7 +185,7 @@ One can generate random token with `openssl rand -hex 16`
 
 ```yaml
 hub:
-  hubExternalURL: "https://hub.faros.sh"
+  hubExternalURL: "https://hub.railgrid.ai"
   devMode: false
 
   # Authentication - choose one:
@@ -201,13 +201,13 @@ hub:
         name: letsencrypt-prod
         kind: ClusterIssuer
       dnsNames:
-        - "hub.faros.sh"
+        - "hub.railgrid.ai"
 
 ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: hub.faros.sh
+    - host: hub.railgrid.ai
       paths:
         - path: /
           pathType: ImplementationSpecific
@@ -216,9 +216,9 @@ ingress:
 Deploy:
 
 ```bash
-helm upgrade --install faros oci://ghcr.io/faroshq/charts/faros-hub \
+helm upgrade --install railgrid oci://ghcr.io/railgrid/charts/railgrid-hub \
   -f values.yaml \
-  --namespace faros-system \
+  --namespace railgrid-system \
   --create-namespace
 ```
 
@@ -231,36 +231,36 @@ Set `--set image.hub.tag=v0.0.1` to override image
 ### Check certificate status
 
 ```bash
-kubectl -n faros-system get certificate
+kubectl -n railgrid-system get certificate
 # NAME                  READY   SECRET                AGE
-# faros-faros-hub-tls   True    faros-faros-hub-tls   2m
+# railgrid-railgrid-hub-tls   True    railgrid-railgrid-hub-tls   2m
 ```
 
 If not ready, check the certificate request:
 
 ```bash
-kubectl -n faros-system describe certificaterequest
+kubectl -n railgrid-system describe certificaterequest
 ```
 
 ### Check ingress status
 
 ```bash
-kubectl get ingress -n faros-system
+kubectl get ingress -n railgrid-system
 # NAME              CLASS               HOSTS                ADDRESS                              PORTS     AGE
-# faros-faros-hub   cloudflare-tunnel   hub.yourdomain.com   xxxx.cfargotunnel.com               80, 443   5m
+# railgrid-railgrid-hub   cloudflare-tunnel   hub.yourdomain.com   xxxx.cfargotunnel.com               80, 443   5m
 ```
 
 ### Test connectivity
 
 ```bash
-curl -s https://hub.faros.sh/healthz
+curl -s https://hub.railgrid.ai/healthz
 # ok
 ```
 
 ### Log in
 
 ```bash
-faros login --hub-url https://hub.yourdomain.com
+railgrid login --hub-url https://hub.yourdomain.com
 ```
 
 ---
@@ -330,8 +330,8 @@ kubectl -n cert-manager logs -l app=cert-manager
 Check certificate status:
 
 ```bash
-kubectl -n faros-system describe certificate
-kubectl -n faros-system get certificaterequest,order,challenge
+kubectl -n railgrid-system describe certificate
+kubectl -n railgrid-system get certificaterequest,order,challenge
 ```
 
 Common issues:

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/backend"
+	api "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/backend"
 )
 
 const MaxSnapshotBundleBytes = 25 << 20
@@ -96,8 +96,8 @@ func (g *snapshotGit) verify(ctx context.Context, input backend.Snapshot) error 
 	if err != nil {
 		return errors.New("snapshot commit unavailable")
 	}
-	// This is the public Faros Runner snapshot format, independently verified.
-	expected := "tree " + input.Tree + "\nparent " + input.BaseCommit + "\nauthor Faros Runner <runner@localhost> 946684800 +0000\ncommitter Faros Runner <runner@localhost> 946684800 +0000\n\nImplementation snapshot\n"
+	// This is the public Railgrid Runner snapshot format, independently verified.
+	expected := "tree " + input.Tree + "\nparent " + input.BaseCommit + "\nauthor Railgrid Runner <runner@localhost> 946684800 +0000\ncommitter Railgrid Runner <runner@localhost> 946684800 +0000\n\nImplementation snapshot\n"
 	if raw != expected {
 		return errors.New("snapshot must contain one parent and canonical public metadata")
 	}

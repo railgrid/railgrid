@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros/pkg/runner/harness"
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 func TestProbeUsesVersionAndAccountReadWithoutModelCall(t *testing.T) {
@@ -386,7 +386,7 @@ func fakeCodexBinary(t *testing.T, scenario string) string {
 
 func fakeCodexBinaryWithDecisionFile(t *testing.T, scenario, decisionFile string) string {
 	binary := fakeCodexBinary(t, scenario)
-	t.Setenv("FAROS_FAKE_CODEX_DECISION_FILE", decisionFile)
+	t.Setenv("RAILGRID_FAKE_CODEX_DECISION_FILE", decisionFile)
 	return binary
 }
 
@@ -396,30 +396,30 @@ func fakeCodexBinaryWithEnvFile(t *testing.T, scenario, envFile string) string {
 	methodsFile := filepath.Join(dir, "methods")
 	requestsFile := filepath.Join(dir, "requests")
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.147.0; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nFAROS_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", filepath.Join(dir, "argv"), os.Args[0])
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.147.0; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nRAILGRID_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", filepath.Join(dir, "argv"), os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("FAROS_FAKE_CODEX_SCENARIO", scenario)
-	t.Setenv("FAROS_FAKE_CODEX_METHODS", methodsFile)
-	t.Setenv("FAROS_FAKE_CODEX_REQUESTS", requestsFile)
+	t.Setenv("RAILGRID_FAKE_CODEX_SCENARIO", scenario)
+	t.Setenv("RAILGRID_FAKE_CODEX_METHODS", methodsFile)
+	t.Setenv("RAILGRID_FAKE_CODEX_REQUESTS", requestsFile)
 	if envFile != "" {
-		t.Setenv("FAROS_FAKE_CODEX_ENV_FILE", envFile)
+		t.Setenv("RAILGRID_FAKE_CODEX_ENV_FILE", envFile)
 	} else {
-		t.Setenv("FAROS_FAKE_CODEX_ENV_FILE", "")
+		t.Setenv("RAILGRID_FAKE_CODEX_ENV_FILE", "")
 	}
-	t.Setenv("FAROS_FAKE_CODEX_DECISION_FILE", "")
+	t.Setenv("RAILGRID_FAKE_CODEX_DECISION_FILE", "")
 	return script
 }
 
 func TestFakeAppServerProcess(t *testing.T) {
-	if os.Getenv("FAROS_FAKE_CODEX_CHILD") != "1" {
+	if os.Getenv("RAILGRID_FAKE_CODEX_CHILD") != "1" {
 		return
 	}
-	scenario := os.Getenv("FAROS_FAKE_CODEX_SCENARIO")
-	methodsFile := os.Getenv("FAROS_FAKE_CODEX_METHODS")
-	requestsFile := os.Getenv("FAROS_FAKE_CODEX_REQUESTS")
-	if envFile := os.Getenv("FAROS_FAKE_CODEX_ENV_FILE"); envFile != "" {
+	scenario := os.Getenv("RAILGRID_FAKE_CODEX_SCENARIO")
+	methodsFile := os.Getenv("RAILGRID_FAKE_CODEX_METHODS")
+	requestsFile := os.Getenv("RAILGRID_FAKE_CODEX_REQUESTS")
+	if envFile := os.Getenv("RAILGRID_FAKE_CODEX_ENV_FILE"); envFile != "" {
 		env := map[string]string{}
 		for _, name := range []string{"GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK"} {
 			env[name] = os.Getenv(name)
@@ -554,7 +554,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 	}
 	if scenario == "approval" && sawApprovalDecision {
 		// Any response after the approval request proves the adapter auto-approved it.
-		_ = os.WriteFile(os.Getenv("FAROS_FAKE_CODEX_DECISION_FILE"), []byte("decision"), 0600)
+		_ = os.WriteFile(os.Getenv("RAILGRID_FAKE_CODEX_DECISION_FILE"), []byte("decision"), 0600)
 	}
 	os.Exit(0)
 }

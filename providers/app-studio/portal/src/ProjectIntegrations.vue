@@ -24,14 +24,14 @@ import {
   readyProviderActions,
 } from './projectIntegrations'
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectIntegration,
   ProviderAction,
   ProviderItem,
 } from './types'
 
 const props = withDefaults(defineProps<{
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   projectName: string
   providers: ProviderItem[]
   providersLoading?: boolean

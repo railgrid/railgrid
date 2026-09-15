@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -251,7 +251,7 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 // fetchInstructions returns a provider's server-level MCP instructions from its
 // `initialize` response, or "" if it has none or the call fails.
 func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string) string {
-	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"faros-aggregate","version":"v1"}}`)
+	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"railgrid-aggregate","version":"v1"}}`)
 	body, err := c.rpc(ctx, mcpURL, "initialize", params, c.discoveryTimeout)
 	if err != nil {
 		return ""
@@ -364,7 +364,7 @@ type providerMCPClient struct {
 	http        *http.Client
 	bearerToken string
 	// clusterID is the tenant workspace's kcp logical-cluster ID, forwarded
-	// as both X-Faros-Tenant and X-Faros-Cluster. Workspace paths are never
+	// as both X-Railgrid-Tenant and X-Railgrid-Cluster. Workspace paths are never
 	// sent: the ID is the only tenant identity a provider receives.
 	clusterID        string
 	discoveryTimeout time.Duration
@@ -502,8 +502,8 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
 	if c.clusterID != "" {
-		req.Header.Set("X-Faros-Tenant", c.clusterID)
-		req.Header.Set("X-Faros-Cluster", c.clusterID)
+		req.Header.Set("X-Railgrid-Tenant", c.clusterID)
+		req.Header.Set("X-Railgrid-Cluster", c.clusterID)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

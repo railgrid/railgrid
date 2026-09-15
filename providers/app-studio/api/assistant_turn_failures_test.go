@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func assistantTurnFailureTestItem(t *testing.T, itemID, itemStatus string, action projectAssistantActionFeedItem) assistantThreadItem {
@@ -163,7 +163,7 @@ func TestAssistantThreadTurnCompletedCarriesFailureSummary(t *testing.T) {
 	retryEdit := projectAssistantActionFeedItem{ID: "call-retry", Kind: projectAssistantActionFeedItemEdit, Status: projectAssistantActionFeedStatusSucceeded, Title: "Edited files", Severity: projectAssistantActionFeedSeverityNormal, RecoveryOf: staleEdit.ID}
 	previewFailure := func(id, referenceID string) projectAssistantActionFeedItem {
 		return projectAssistantActionFeedItem{ID: id, Kind: projectAssistantActionFeedItemRun, Status: projectAssistantActionFeedStatusFailed, Title: "Run failed", Severity: projectAssistantActionFeedSeverityError,
-			Diagnostic: &projectAssistantActionDiagnostic{Category: "configuration", Message: "Private preview inspection is unavailable because FAROS_HUB_PUBLIC_URL is not configured.", ReferenceID: referenceID}}
+			Diagnostic: &projectAssistantActionDiagnostic{Category: "configuration", Message: "Private preview inspection is unavailable because RAILGRID_HUB_PUBLIC_URL is not configured.", ReferenceID: referenceID}}
 	}
 	firstInspect := previewFailure("call-inspect-1", "ref-inspect-1")
 	secondInspect := previewFailure("call-inspect-2", "ref-inspect-2")

@@ -22,7 +22,7 @@ const error = ref<string | null>(null)
 const templates = ref<Template[]>([])
 const category = ref('')
 const cloud = ref('')
-const layoutPreferenceKey = 'faros:portal:infrastructure:templates-layout'
+const layoutPreferenceKey = 'railgrid:portal:infrastructure:templates-layout'
 const layout = ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))
 let requestSerial = 0
 

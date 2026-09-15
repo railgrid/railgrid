@@ -8,7 +8,7 @@ import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-app-studio-model-id-selector',
+  cacheDir: '/tmp/railgrid-vite-app-studio-model-id-selector',
   configFile: false,
   plugins: [vue()],
   server: { middlewareMode: true },
@@ -16,7 +16,7 @@ const vite = await createServer({
 const { default: ModelIDSelector } = await vite.ssrLoadModule('/src/ModelIDSelector.vue')
 test.after(async () => vite.close())
 
-test('renders a Faros-owned combobox trigger instead of a native datalist', async () => {
+test('renders a Railgrid-owned combobox trigger instead of a native datalist', async () => {
   const html = await renderToString(createSSRApp(ModelIDSelector, {
     modelValue: 'gpt-5.4',
     models: [

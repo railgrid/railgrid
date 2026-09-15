@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/tenant/tenanttest"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 )
 
 var (
@@ -53,7 +53,7 @@ func scopeFor(t *testing.T, proxy *tenanttest.Server) *tenant.Scope {
 
 func TestForRequiresClusterAndToken(t *testing.T) {
 	c := tenant.NewClient("https://hub.example/", false)
-	if _, err := c.For("", "token"); err == nil || !strings.Contains(err.Error(), "X-Faros-Cluster") {
+	if _, err := c.For("", "token"); err == nil || !strings.Contains(err.Error(), "X-Railgrid-Cluster") {
 		t.Fatalf("For with empty cluster = %v, want missing-cluster error", err)
 	}
 	if _, err := c.For("cluster-a", ""); err == nil || !strings.Contains(err.Error(), "bearer token") {
@@ -210,11 +210,11 @@ func TestListWithOptionsAppliesSelectorServerSide(t *testing.T) {
 }
 
 func TestListInfrastructureInstancesForwardsLabelSelectorAndPreservesMetadata(t *testing.T) {
-	const selector = "faros.sh/app-studio-run-sandbox=true"
+	const selector = "railgrid.ai/app-studio-run-sandbox=true"
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(tenant.InfrastructureInstancesResource.GVR,
-		tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"sandbox-a","labels":{"faros.sh/app-studio-run-sandbox":"true"},"annotations":{"faros.sh/app-studio-run-sandbox-hard-expires-at":"2099-01-01T00:00:00Z"}},"status":{"phase":"Ready"}}`),
-		tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"other"},"status":{"phase":"Ready"}}`),
+		tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.railgrid.ai/v1alpha1","kind":"Instance","metadata":{"name":"sandbox-a","labels":{"railgrid.ai/app-studio-run-sandbox":"true"},"annotations":{"railgrid.ai/app-studio-run-sandbox-hard-expires-at":"2099-01-01T00:00:00Z"}},"status":{"phase":"Ready"}}`),
+		tenanttest.ObjectFromYAML(t, `{"apiVersion":"infrastructure.railgrid.ai/v1alpha1","kind":"Instance","metadata":{"name":"other"},"status":{"phase":"Ready"}}`),
 	)
 	scope := scopeFor(t, proxy)
 	got, err := scope.ListInfrastructureInstances(context.Background(), metav1.ListOptions{LabelSelector: selector})
@@ -224,7 +224,7 @@ func TestListInfrastructureInstancesForwardsLabelSelectorAndPreservesMetadata(t 
 	if len(got) != 1 || got[0].GetName() != "sandbox-a" {
 		t.Fatalf("instances = %#v, want sandbox-a", got)
 	}
-	if got[0].GetAnnotations()["faros.sh/app-studio-run-sandbox-hard-expires-at"] == "" {
+	if got[0].GetAnnotations()["railgrid.ai/app-studio-run-sandbox-hard-expires-at"] == "" {
 		t.Fatalf("instance annotations = %#v, want expiry annotation", got[0].GetAnnotations())
 	}
 	if phase, _, _ := unstructured.NestedString(got[0].Object, "status", "phase"); phase != "Ready" {

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -173,7 +173,7 @@ func TestPortalAssets(t *testing.T) {
 		contentType  string
 		bodyContains string
 	}{
-		{path: "/main.js", status: http.StatusOK, contentType: "javascript", bodyContains: "faros-provider-app-studio"},
+		{path: "/main.js", status: http.StatusOK, contentType: "javascript", bodyContains: "railgrid-provider-app-studio"},
 		{path: "/" + componentCSS[0], status: http.StatusOK, contentType: "text/css"},
 		{path: "/icon.svg", status: http.StatusOK, contentType: "image/svg+xml", bodyContains: "<svg"},
 		{path: "/does-not-exist", status: http.StatusOK, contentType: "text/html", bodyContains: "App Studio provider"},

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // serveOptional runs one request through OptionalOrgMiddleware and reports the
@@ -100,7 +100,7 @@ func TestOptionalOrgMiddleware_AcceptedCredentialWithoutRecordStillServes(t *tes
 			ErrUserRecordUnavailable)
 	})
 	code, tc, reached := serveOptional(t, resolver, okLookup(nil),
-		map[string]string{HeaderFarosOrg: "org-1"})
+		map[string]string{HeaderRailgridOrg: "org-1"})
 
 	if !reached {
 		t.Fatal("handler not reached — an authenticated caller was refused")
@@ -118,7 +118,7 @@ func TestOptionalOrgMiddleware_VerifiedOrgAttaches(t *testing.T) {
 		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleAdmin,
 	})
 	code, tc, _ := serveOptional(t, okResolver("alice"), okLookup(index),
-		map[string]string{HeaderFarosOrg: "org-1"})
+		map[string]string{HeaderRailgridOrg: "org-1"})
 
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -135,7 +135,7 @@ func TestOptionalOrgMiddleware_UnverifiedOrgIsDropped(t *testing.T) {
 		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleMember,
 	})
 	code, tc, reached := serveOptional(t, okResolver("alice"), okLookup(index),
-		map[string]string{HeaderFarosOrg: "org-someone-elses"})
+		map[string]string{HeaderRailgridOrg: "org-someone-elses"})
 
 	if !reached || code != http.StatusOK {
 		t.Fatalf("request rejected: reached=%v code=%d", reached, code)
@@ -152,7 +152,7 @@ func TestOptionalOrgMiddleware_UnverifiedOrgIsDropped(t *testing.T) {
 // the membership backend is unavailable.
 func TestOptionalOrgMiddleware_LookupErrorDropsOrgOnly(t *testing.T) {
 	code, tc, reached := serveOptional(t, okResolver("alice"), failingLookup(),
-		map[string]string{HeaderFarosOrg: "org-1"})
+		map[string]string{HeaderRailgridOrg: "org-1"})
 
 	if !reached || code != http.StatusOK {
 		t.Fatalf("request rejected: reached=%v code=%d", reached, code)
@@ -170,8 +170,8 @@ func TestOptionalOrgMiddleware_WorkspaceScopeAttaches(t *testing.T) {
 		OrgUUID: "org-1", WorkspaceUUID: "ws-1", Role: tenancyv1alpha1.MembershipRoleMember,
 	})
 	_, tc, _ := serveOptional(t, okResolver("alice"), okLookup(index), map[string]string{
-		HeaderFarosOrg:       "org-1",
-		HeaderFarosWorkspace: "ws-1",
+		HeaderRailgridOrg:       "org-1",
+		HeaderRailgridWorkspace: "ws-1",
 	})
 
 	if tc.OrgUUID != "org-1" || tc.WorkspaceUUID != "ws-1" {
@@ -187,8 +187,8 @@ func TestOptionalOrgMiddleware_OrgAdminImplicitWorkspace(t *testing.T) {
 		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleAdmin,
 	})
 	_, tc, _ := serveOptional(t, okResolver("alice"), okLookup(admin), map[string]string{
-		HeaderFarosOrg:       "org-1",
-		HeaderFarosWorkspace: "ws-1",
+		HeaderRailgridOrg:       "org-1",
+		HeaderRailgridWorkspace: "ws-1",
 	})
 	if tc.OrgUUID != "org-1" || tc.WorkspaceUUID != "ws-1" || tc.Role != tenancyv1alpha1.MembershipRoleAdmin {
 		t.Errorf("org admin context = %+v, want org-1/ws-1/admin", tc)
@@ -198,8 +198,8 @@ func TestOptionalOrgMiddleware_OrgAdminImplicitWorkspace(t *testing.T) {
 		OrgUUID: "org-1", Role: tenancyv1alpha1.MembershipRoleMember,
 	})
 	_, tc, _ = serveOptional(t, okResolver("bob"), okLookup(member), map[string]string{
-		HeaderFarosOrg:       "org-1",
-		HeaderFarosWorkspace: "ws-1",
+		HeaderRailgridOrg:       "org-1",
+		HeaderRailgridWorkspace: "ws-1",
 	})
 	if tc.OrgUUID != "" || tc.WorkspaceUUID != "" {
 		t.Errorf("org member context = %+v, want no org/workspace", tc)

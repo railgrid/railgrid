@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -41,10 +41,10 @@ import (
 	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestParseProjectNamingResult(t *testing.T) {
@@ -454,11 +454,11 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		t.Fatalf("prompt duplicates local tool descriptions: %q", joined)
 	}
 	for _, want := range []string{
-		"existing imported faros Table resources only",
+		"existing imported railgrid Table resources only",
 		"tableRef",
 		"provider-databricks",
 		"Do not call provider backend URLs",
-		"server-side provider-neutral Faros Actions SDK",
+		"server-side provider-neutral Railgrid Actions SDK",
 		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {

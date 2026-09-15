@@ -5,7 +5,7 @@ import { ref } from 'vue'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-production-settings',
+  cacheDir: '/tmp/railgrid-vite-production-settings',
   configFile: false,
   server: { middlewareMode: true },
 })

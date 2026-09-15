@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,25 +30,25 @@ import (
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type Provisioner interface {
 	// DeleteOrgWorkspace removes the kcp Workspace at
-	// root:faros:orgs:{orgUUID}. Idempotent on NotFound.
+	// root:railgrid:orgs:{orgUUID}. Idempotent on NotFound.
 	DeleteOrgWorkspace(ctx context.Context, orgUUID string) error
 
 	// DeleteChildWorkspace removes the kcp Workspace at
-	// root:faros:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
+	// root:railgrid:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
 	DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 
 	// ListChildWorkspaces returns the names of every child Workspace
-	// inside the Org workspace at root:faros:orgs:{orgUUID}. Empty if
+	// inside the Org workspace at root:railgrid:orgs:{orgUUID}. Empty if
 	// the parent Org workspace has been deleted.
 	ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
 
 	// ListOrgWorkspaces returns the names (UUIDs) of every
-	// Organization workspace at root:faros:orgs. Drives the
+	// Organization workspace at root:railgrid:orgs. Drives the
 	// Workspace-branch poll sweep.
 	ListOrgWorkspaces(ctx context.Context) ([]string, error)
 
 	// GetWorkspaceDeletionRequestedAt reads the
-	// tenants.faros.sh/deletion-requested-at annotation from the
+	// tenants.railgrid.ai/deletion-requested-at annotation from the
 	// child Workspace. The second return reports presence — callers
 	// can distinguish "no soft-delete requested" from "annotation
 	// present but malformed".

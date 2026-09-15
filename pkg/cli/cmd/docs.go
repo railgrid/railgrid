@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ func newDocsCommand() *cobra.Command {
 }
 
 // generateDocs writes one markdown page per visible command plus an index
-// that groups the top-level commands the way 'faros --help' does.
+// that groups the top-level commands the way 'railgrid --help' does.
 func generateDocs(root *cobra.Command, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -57,7 +57,7 @@ func generateDocs(root *cobra.Command, dir string) error {
 		return err
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "faros") && strings.HasSuffix(e.Name(), ".md") {
+		if strings.HasPrefix(e.Name(), "railgrid") && strings.HasSuffix(e.Name(), ".md") {
 			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
 				return err
 			}
@@ -74,11 +74,11 @@ func generateDocs(root *cobra.Command, dir string) error {
 
 func renderDocsIndex(root *cobra.Command) string {
 	var b strings.Builder
-	b.WriteString("# faros CLI reference\n\n")
+	b.WriteString("# railgrid CLI reference\n\n")
 	b.WriteString("Generated from the command tree with `make docs-cli`; do not edit by hand.\n")
 	b.WriteString("Every page lists the command's flags, examples and subcommands.\n\n")
 	b.WriteString("Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and\n")
-	b.WriteString("`--insecure-skip-tls-verify`. Shell completion: `faros completion --help`.\n\n")
+	b.WriteString("`--insecure-skip-tls-verify`. Shell completion: `railgrid completion --help`.\n\n")
 
 	byGroup := map[string][]*cobra.Command{}
 	for _, c := range root.Commands() {

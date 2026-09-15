@@ -1,4 +1,4 @@
-module github.com/faroshq/provider-sdk
+module github.com/railgrid/provider-sdk
 
 go 1.26.8
 
@@ -75,7 +75,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-// Pin k8s.io/* to the kcp staging forks the faros providers use, so the SDK
+// Pin k8s.io/* to the kcp staging forks the railgrid providers use, so the SDK
 // compiles against the same client-go/apimachinery as its importers.
 replace (
 	k8s.io/api => github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a

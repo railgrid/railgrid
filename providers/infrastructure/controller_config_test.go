@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -54,23 +54,23 @@ func clearControllerKubeconfigEnv(t *testing.T) {
 	t.Setenv("INFRASTRUCTURE_WORKSPACE_PATH", "")
 }
 
-// The regression: the charts set FAROS_PROVIDER_KUBECONFIG on the serve
+// The regression: the charts set RAILGRID_PROVIDER_KUBECONFIG on the serve
 // container and nothing else. When it was not consulted, serve fell through to
 // the in-cluster ServiceAccount and pointed every kcp controller at the HOST
 // cluster — which surfaced as leases in "default" being forbidden rather than
 // as a missing kubeconfig.
 func TestLoadControllerConfigHonorsStandardizedName(t *testing.T) {
 	clearControllerKubeconfigEnv(t)
-	t.Setenv("FAROS_PROVIDER_KUBECONFIG", writeKubeconfig(t, "provider", "https://kcp.example/clusters/root:faros:providers:infrastructure"))
+	t.Setenv("RAILGRID_PROVIDER_KUBECONFIG", writeKubeconfig(t, "provider", "https://kcp.example/clusters/root:railgrid:providers:infrastructure"))
 
 	cfg, source, err := loadControllerConfigRaw()
 	if err != nil {
 		t.Fatalf("loadControllerConfigRaw: %v", err)
 	}
-	if source != "FAROS_PROVIDER_KUBECONFIG" {
-		t.Errorf("source = %q, want FAROS_PROVIDER_KUBECONFIG", source)
+	if source != "RAILGRID_PROVIDER_KUBECONFIG" {
+		t.Errorf("source = %q, want RAILGRID_PROVIDER_KUBECONFIG", source)
 	}
-	if cfg.Host != "https://kcp.example/clusters/root:faros:providers:infrastructure" {
+	if cfg.Host != "https://kcp.example/clusters/root:railgrid:providers:infrastructure" {
 		t.Errorf("Host = %q — resolved the wrong kubeconfig", cfg.Host)
 	}
 }
@@ -95,11 +95,11 @@ func TestLoadControllerConfigResolutionOrder(t *testing.T) {
 	}, {
 		name: "standardized wins over the provider-specific names",
 		env: map[string]string{
-			"FAROS_PROVIDER_KUBECONFIG":            standardized,
+			"RAILGRID_PROVIDER_KUBECONFIG":         standardized,
 			"INFRASTRUCTURE_KUBECONFIG":            operator,
 			"INFRASTRUCTURE_CONTROLLER_KUBECONFIG": legacy,
 		},
-		wantSource: "FAROS_PROVIDER_KUBECONFIG",
+		wantSource: "RAILGRID_PROVIDER_KUBECONFIG",
 		wantHost:   "https://standardized.example",
 	}, {
 		name:       "legacy override is still an escape hatch",

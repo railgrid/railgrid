@@ -1,4 +1,4 @@
-apiVersion: edges.faros.sh/v1alpha1
+apiVersion: edges.railgrid.ai/v1alpha1
 kind: Workload
 metadata:
   name: nginx-demo

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	appscheme "github.com/faroshq/provider-app-studio/scheme"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	appscheme "github.com/railgrid/provider-app-studio/scheme"
 )
 
 func repoProject(adopted bool) *aiv1alpha1.Project {
@@ -54,7 +54,7 @@ func TestEnsureRepositoryCreatesForNonAdopted(t *testing.T) {
 	if got.GetLabels()[projectRepositoryLabel] != "demo" {
 		t.Fatalf("labels = %v, want %s=demo", got.GetLabels(), projectRepositoryLabel)
 	}
-	if got.GetAnnotations()["code.faros.sh/create-only"] != "true" {
+	if got.GetAnnotations()["code.railgrid.ai/create-only"] != "true" {
 		t.Fatal("new repositories must require creation, never remote adoption")
 	}
 	autoInit, _, _ := unstructured.NestedBool(got.Object, "spec", "autoInit")

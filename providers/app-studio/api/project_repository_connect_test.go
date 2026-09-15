@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func TestOptionalGitCreationEndpoints(t *testing.T) {
@@ -141,7 +141,7 @@ func TestConnectRepositoryIsIdempotentAndPermissionScoped(t *testing.T) {
 		}
 	}
 	attached, err := client.Projects().Get(context.Background(), project.Name, metav1.GetOptions{})
-	if err != nil || attached.Spec.Repository == nil || attached.Annotations["ai.faros.sh/initialize-repository"] != attached.Spec.Repository.RepositoryRef {
+	if err != nil || attached.Spec.Repository == nil || attached.Annotations["ai.railgrid.ai/initialize-repository"] != attached.Spec.Repository.RepositoryRef {
 		t.Fatalf("attachment=%#v err=%v", attached, err)
 	}
 	if attached.Spec.Repository.Name == project.Name || !strings.HasPrefix(attached.Spec.Repository.Name, project.Name+"-") {

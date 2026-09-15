@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -10,7 +10,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/faroshq/provider-code/install"
+	"github.com/railgrid/provider-code/install"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -18,8 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-var repositories = schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "repositories"}
-var connections = schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "connections"}
+var repositories = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "repositories"}
+var connections = schema.GroupVersionResource{Group: "code.railgrid.ai", Version: "v1alpha1", Resource: "connections"}
 
 // ExportClient resolves a provider client through its accepted APIExport. It
 // cannot use the caller's credentials or enter an unbound tenant workspace.

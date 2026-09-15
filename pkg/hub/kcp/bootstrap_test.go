@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
 
-	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
@@ -46,7 +46,7 @@ func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIBinding",
 		"metadata": map[string]interface{}{
-			"name": "providers.faros.sh",
+			"name": "providers.railgrid.ai",
 		},
 		"status": map[string]interface{}{
 			"phase": "Bound",
@@ -56,7 +56,7 @@ func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
 	}
 
 	original := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "providers.faros.sh/v1alpha1",
+		"apiVersion": "providers.railgrid.ai/v1alpha1",
 		"kind":       "CatalogEntry",
 		"metadata": map[string]interface{}{
 			"name": providerName,
@@ -111,7 +111,7 @@ func binding(deleting bool, conditions []any) *unstructured.Unstructured {
 }
 
 func TestDeletionBlockedMessage(t *testing.T) {
-	const finalizerMsg = "Some content in the workspace has finalizers remaining: instances.infrastructure.faros.sh in 3 resource instances"
+	const finalizerMsg = "Some content in the workspace has finalizers remaining: instances.infrastructure.railgrid.ai in 3 resource instances"
 
 	tests := []struct {
 		name string

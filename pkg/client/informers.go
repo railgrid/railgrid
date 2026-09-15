@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,12 +31,12 @@ const (
 )
 
 // InformerFactory wraps a dynamic shared informer factory and provides
-// convenience methods for getting informers for faros resources.
+// convenience methods for getting informers for railgrid resources.
 type InformerFactory struct {
 	factory dynamicinformer.DynamicSharedInformerFactory
 }
 
-// NewInformerFactory creates a new InformerFactory for faros resources.
+// NewInformerFactory creates a new InformerFactory for railgrid resources.
 func NewInformerFactory(client dynamic.Interface, resyncPeriod time.Duration) *InformerFactory {
 	return &InformerFactory{
 		factory: dynamicinformer.NewDynamicSharedInformerFactory(client, resyncPeriod),

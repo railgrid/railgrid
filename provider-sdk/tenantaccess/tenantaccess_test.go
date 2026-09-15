@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,9 +44,9 @@ func readyToken(name, token string) *corev1.Secret {
 // ClusterRole — a pre-existing role with different rules is left alone and
 // the call still succeeds.
 func TestEnsureIdentityDoesNotUpdateExistingClusterRole(t *testing.T) {
-	const name = "faros-test-identity"
+	const name = "railgrid-test-identity"
 	owner := metav1.OwnerReference{APIVersion: "apis.kcp.io/v1alpha2", Kind: "APIBinding", Name: "test", UID: "b-1"}
-	oldRules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.faros.sh"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"get"}}}
+	oldRules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.railgrid.ai"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"get"}}}
 	stale := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: name, OwnerReferences: []metav1.OwnerReference{owner}},
 		Rules:      oldRules,
@@ -58,7 +58,7 @@ func TestEnsureIdentityDoesNotUpdateExistingClusterRole(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newRules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.faros.sh"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"get", "list", "watch"}}}
+	newRules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.railgrid.ai"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"get", "list", "watch"}}}
 	token, err := EnsureIdentity(context.Background(), cl, name, []metav1.OwnerReference{owner}, newRules)
 	if err != nil {
 		t.Fatalf("EnsureIdentity: %v", err)
@@ -85,10 +85,10 @@ func TestEnsureIdentityDoesNotUpdateExistingClusterRole(t *testing.T) {
 // EnsureGrant is the create-only way to widen an existing identity: a fresh
 // ClusterRole + binding to the identity SA, idempotent across passes.
 func TestEnsureGrantBindsIdentityAndIsIdempotent(t *testing.T) {
-	const identity = "faros-test-identity"
-	const grant = "faros-test-identity-edgeproxy"
+	const identity = "railgrid-test-identity"
+	const grant = "railgrid-test-identity-edgeproxy"
 	owner := metav1.OwnerReference{APIVersion: "apis.kcp.io/v1alpha2", Kind: "APIBinding", Name: "test", UID: "b-1"}
-	rules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.faros.sh"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"proxy"}}}
+	rules := []rbacv1.PolicyRule{{APIGroups: []string{"edges.railgrid.ai"}, Resources: []string{"kubernetesclusters"}, Verbs: []string{"proxy"}}}
 	cl := ctrlfake.NewClientBuilder().WithScheme(identityScheme()).Build()
 
 	for pass := 1; pass <= 2; pass++ {

@@ -21,7 +21,7 @@ Key facts about app-studio that shape the plan:
   (per-shard fan-out — one endpoint per shard, binding one URL hides tenants).
 - Single-writer invariant: chart hard-fails `replicaCount != 1`. The manager
   rides in the same pod; no leader election. Do not scale.
-- `run-provider-app-studio` already exports `FAROS_PROVIDER_KUBECONFIG` at
+- `run-provider-app-studio` already exports `RAILGRID_PROVIDER_KUBECONFIG` at
   serve time; the chart mounts the kubeconfig only into the init container.
 
 ## Phase 1 — permission-claims parity (small, do first)
@@ -35,7 +35,7 @@ Claims live in THREE places that must stay in sync: `init_cmd.go` (APIExport),
 `deploy/chart/templates/catalogentry.yaml` (prod Enable).
 
 - [x] 1.1 `init_cmd.go`: instance claims (`applications`, `simplewebapps`,
-      `workers` @ `infrastructure.faros.sh`, full verbs) with
+      `workers` @ `infrastructure.railgrid.ai`, full verbs) with
       `APP_STUDIO_INFRA_IDENTITY_HASH`; keep the `secrets` claim.
       Warn loudly when the hash env is empty (claims become inert, not broken).
 - [x] 1.2 `manifest.yaml`: same claims, `tenantScoped: true`.
@@ -64,14 +64,14 @@ claimed identity, mirroring status back.
       `sigs.k8s.io/multicluster-runtime@v0.24.1`,
       `github.com/kcp-dev/multicluster-provider@v0.8.0` in
       `providers/app-studio/go.mod`; new `scheme/` package registering
-      `ai.faros.sh/v1alpha1`.
+      `ai.railgrid.ai/v1alpha1`.
 - [x] 2.2 `controller_manager.go`: APIExport provider on
-      endpointSlice `ai.faros.sh`, metrics disabled, started from
+      endpointSlice `ai.railgrid.ai`, metrics disabled, started from
       `runServe` in a 15s retry loop (init ordering is not guaranteed),
       `errControllerDisabled` sentinel when no kubeconfig in scope. Reuses
       the existing `loadProviderConfig`.
 - [x] 2.3 Chart: ALREADY DONE pre-retrofit — the serve container mounts the
-      kubeconfig Secret and sets `FAROS_PROVIDER_KUBECONFIG`
+      kubeconfig Secret and sets `RAILGRID_PROVIDER_KUBECONFIG`
       (deployment.yaml); `automountServiceAccountToken: false` kept.
 - [x] 2.4 `controller/project/`: Project reconciler. IMPORTANT DEVIATION
       from the original plan: it lifecycles provider-resource bindings in
@@ -79,7 +79,7 @@ claimed identity, mirroring status back.
       appends the artifact-mode production binding and the old code path
       provisioned it explicitly in the promote handler; the reconciler now
       owns that too (promotion is a spec write). Finalizer
-      `ai.faros.sh/instances`, converge-on-drift updates (spec /
+      `ai.railgrid.ai/instances`, converge-on-drift updates (spec /
       labels / ownerRef; status-only changes are not drift), 15s requeue
       while not Ready, 60s drift poll when Ready, IsInvalid/invalid-binding
       errors parked in status.outputs.error instead of hot-looping.
@@ -119,7 +119,7 @@ Full retrofit of vibe's git model (user decision: no phasing): repo creation
 is reconciler-owned, commits converge on the reconcile loop under a
 per-project ServiceAccount.
 
-- [x] 3.1 Claims: `repositories` @ code.faros.sh (identityHash via
+- [x] 3.1 Claims: `repositories` @ code.railgrid.ai (identityHash via
       `APP_STUDIO_CODE_IDENTITY_HASH` / Helm `apiExport.codeIdentityHash` /
       Makefile auto-discovery) + `serviceaccounts`/`secrets`/`clusterroles`/
       `clusterrolebindings` — in all THREE claim places.
@@ -145,7 +145,7 @@ per-project ServiceAccount.
       settlement ledger (`RecordCommitSettlement`/`ReconcileCommitSettlement`)
       with the assistant's interactive commit tool so neither double-commits.
       Missing files → deletePaths; binary/oversized files stay dirty for an
-      interactive commit. Scope bridge: `ai.faros.sh/org-uuid` +
+      interactive commit. Scope bridge: `ai.railgrid.ai/org-uuid` +
       `/workspace-uuid` annotations stamped on the Project at create
       (legacy Projects without them are skipped silently).
 - [x] 3.7 Wiring: shared workspace FileStore instance (HTTP layer +
@@ -174,7 +174,7 @@ assistant's interactive commits keep working unchanged.
 User request: "session in CR too, mapped to postgres — easier to track/debug"
 and "studio search — do that too". Both are straight vibe ports.
 
-- [x] 4.1 `Session` CRD (`sessions.ai.faros.sh`): control-plane
+- [x] 4.1 `Session` CRD (`sessions.ai.railgrid.ai`): control-plane
       projection of one assistant thread. Postgres stays authoritative; the
       CR mirrors it (`kubectl get sessions.ai` shows title/phase/active
       turn). Name = thread ID; ownerRef → Project (project deletion GCs the

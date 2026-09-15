@@ -5,7 +5,7 @@ import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import { describe, expect, it, vi } from 'vitest'
 
 import { contextGenerationKey } from './context'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
 const captured = vi.hoisted(() => ({ generation: undefined as Readonly<{ value: number }> | undefined }))
 
@@ -99,7 +99,7 @@ function node(type: string): TreeNode {
     parent: null,
     props: {},
     dispatchEvent(event) {
-      if (event instanceof CustomEvent && event.type === 'faros-navigate') navigationEvents.push(event)
+      if (event instanceof CustomEvent && event.type === 'railgrid-navigate') navigationEvents.push(event)
       return true
     },
   }
@@ -156,7 +156,7 @@ function click(root: TreeNode, id: string): void {
 describe('Code App context authority generation', () => {
   it('increments synchronously for every shell authority field before child unmount', async () => {
     captured.generation = undefined
-    const context = reactive<FarosContext>({
+    const context = reactive<RailgridContext>({
       basePath: '/ui/providers/code',
       token: 'old-token',
       tenant: 'old-tenant',
@@ -193,7 +193,7 @@ describe('Code App context authority generation', () => {
     const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
     Reflect.deleteProperty(globalThis, 'window')
     try {
-      const context = reactive<FarosContext>({
+      const context = reactive<RailgridContext>({
         basePath: '/ui/providers/code',
         token: 'token',
         tenant: 'root:tenant-a',
@@ -223,7 +223,7 @@ describe('Code App context authority generation', () => {
     const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
     Reflect.deleteProperty(globalThis, 'window')
     try {
-      const context = reactive<FarosContext>({
+      const context = reactive<RailgridContext>({
         basePath: '/ui/providers/code',
         token: 'token-a',
         tenant: 'root:tenant-a',
@@ -265,7 +265,7 @@ describe('Code App context authority generation', () => {
       },
     })
     try {
-      const context = reactive<FarosContext>({
+      const context = reactive<RailgridContext>({
         basePath: '/ui/providers/code',
         token: 'token-a',
         tenant: 'root:tenant-a',

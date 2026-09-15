@@ -120,7 +120,7 @@ export class AssistantWorkedDurationClock {
   }
 
   private storageKey(scope: string): string {
-    return `faros:app-studio:assistant-worked-duration:v1:${encodeDurationScope(this.namespace)}:${encodeDurationScope(scope || 'default')}`
+    return `railgrid:app-studio:assistant-worked-duration:v1:${encodeDurationScope(this.namespace)}:${encodeDurationScope(scope || 'default')}`
   }
 
   private restoreState(

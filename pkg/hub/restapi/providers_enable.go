@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,12 +34,12 @@ import (
 
 	"github.com/gorilla/mux"
 
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/hubaccess"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/util/identity"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -443,7 +443,7 @@ type HubAccessState struct {
 // without knowing what an identityHash is.
 type StaleClaim struct {
 	// Group and Resource name the claimed resource, e.g.
-	// "infrastructure.faros.sh" / "instances".
+	// "infrastructure.railgrid.ai" / "instances".
 	Group    string `json:"group"`
 	Resource string `json:"resource"`
 	// BoundExportPath is the copy this workspace actually uses, and so the one
@@ -498,7 +498,7 @@ func shortIdentity(hash string) string {
 
 // listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
 // Returns the set of provider APIBindings present in the target
-// workspace (those referencing root:faros:providers:*), keyed by
+// workspace (those referencing root:railgrid:providers:*), keyed by
 // provider name. Counterpart to enableProvider — same proxy-avoidance
 // rationale: going through the REST endpoint lets the bootstrapper
 // list as kcp-admin in the target workspace path, sidestepping the

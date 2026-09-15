@@ -1,4 +1,4 @@
-module github.com/faroshq/faros/providers/infrastructure/examples/application/apps/backend
+module github.com/railgrid/railgrid/providers/infrastructure/examples/application/apps/backend
 
 go 1.26.3
 

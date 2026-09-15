@@ -4,7 +4,7 @@ import DashboardTile from './views/DashboardTile.vue'
 import type { ApiClient } from './api'
 import type { Route } from './router'
 import type { AppStore } from './store'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
 type AgentsExposed = ComponentPublicInstance & {
   api?: ApiClient
@@ -12,7 +12,7 @@ type AgentsExposed = ComponentPublicInstance & {
   route?: Route
   authorityEpoch?: number
   createSession?: number
-  applyContext?: (context: FarosContext | null) => void
+  applyContext?: (context: RailgridContext | null) => void
 }
 
 /**
@@ -21,19 +21,19 @@ type AgentsExposed = ComponentPublicInstance & {
  * tokens continue to cascade into the provider.
  */
 export class AgentsElement extends HTMLElement {
-  private readonly state = reactive<{ context: FarosContext | null }>({ context: null })
+  private readonly state = reactive<{ context: RailgridContext | null }>({ context: null })
   private app: VueApp | null = null
   private instance: AgentsExposed | null = null
   private mountPoint: HTMLDivElement | null = null
 
-  set farosContext(value: FarosContext | null) {
+  set railgridContext(value: RailgridContext | null) {
     // Authority rotation must happen in the setter's call stack. A later Vue
     // prop flush is too late for confirmation and create-session race fences.
     this.instance?.applyContext?.(value)
     this.state.context = value
   }
 
-  get farosContext(): FarosContext | null {
+  get railgridContext(): RailgridContext | null {
     return this.state.context
   }
 
@@ -77,22 +77,22 @@ export class AgentsElement extends HTMLElement {
 type TileExposed = ComponentPublicInstance & {
   api?: ApiClient
   load?: () => Promise<void>
-  applyContext?: (context: FarosContext | null) => void
+  applyContext?: (context: RailgridContext | null) => void
 }
 
 export class AgentsDashboardTileElement extends HTMLElement {
-  private readonly state = reactive<{ context: FarosContext | null }>({ context: null })
+  private readonly state = reactive<{ context: RailgridContext | null }>({ context: null })
   private app: VueApp | null = null
   private instance: TileExposed | null = null
   private mountPoint: HTMLDivElement | null = null
 
-  set farosContext(value: FarosContext | null) {
+  set railgridContext(value: RailgridContext | null) {
     // Fence an in-flight tile refresh in the same call stack as a host
     // authority change; the prop watcher runs later in Vue's scheduler.
     this.instance?.applyContext?.(value)
     this.state.context = value
   }
-  get farosContext(): FarosContext | null { return this.state.context }
+  get railgridContext(): RailgridContext | null { return this.state.context }
   get api(): ApiClient | undefined { return this.instance?.api }
   load(): Promise<void> { return this.instance?.load?.() ?? Promise.resolve() }
 
@@ -105,7 +105,7 @@ export class AgentsDashboardTileElement extends HTMLElement {
       render: () => h(DashboardTile, {
         ref: (instance: unknown) => { this.instance = instance as TileExposed | null },
         context: this.state.context,
-        onNavigate: (path: string) => this.dispatchEvent(new CustomEvent('faros-navigate', {
+        onNavigate: (path: string) => this.dispatchEvent(new CustomEvent('railgrid-navigate', {
           detail: { provider: 'agents', path },
           bubbles: true,
           composed: true,

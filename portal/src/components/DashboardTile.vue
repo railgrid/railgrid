@@ -34,8 +34,8 @@ const { scopePath } = useScopedNavigation()
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
 // tile element instead of the full-page element: each provider's
 // /main.js may register a second custom element
-// <faros-dashboard-tile-{name}>; if it does we mount that here, push
-// the same farosContext shape, and proxy faros-navigate events to the
+// <railgrid-dashboard-tile-{name}>; if it does we mount that here, push
+// the same railgridContext shape, and proxy railgrid-navigate events to the
 // portal router.
 //
 // A provider that ships NO tile element is still a first-class tile: the
@@ -67,7 +67,7 @@ const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle'
 const loadGeneration = createProviderLoadGeneration()
 const canRetryInDocument = computed(() => canReloadProviderScriptInDocument(props.provider.name))
 
-const tagFor = (name: string) => `faros-dashboard-tile-${name}`
+const tagFor = (name: string) => `railgrid-dashboard-tile-${name}`
 
 // Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
 // side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
@@ -171,7 +171,7 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // still fires, the fallback card is indistinguishable from the intended
     // empty state and there is nothing else to go on.
     // eslint-disable-next-line no-console
-    console.debug(`[faros] provider "${name}" registered no <${tag}> after loading its bundle`)
+    console.debug(`[railgrid] provider "${name}" registered no <${tag}> after loading its bundle`)
     loadState.value = 'no-tile'
     return
   }
@@ -206,17 +206,17 @@ function onProviderBootstrapRetry(event: Event) {
 
 function pushContext() {
   const contextGeneration = routeContext.generation
-  const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
+  const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el) return
   const providerName = props.provider.name
   // Same shape and same host-owned fetch as ProviderFrame.pushContext; the
   // tile is just a second element from the same bundle.
-  el.farosContext = createProviderContext(
+  el.railgridContext = createProviderContext(
     {
       user: auth.user,
       tenant: auth.clusterName,
       // The sidebar's org/workspace, same as ProviderFrame pushes. Without it a
-      // provider client that scopes on X-Faros-Org / X-Faros-Workspace queries
+      // provider client that scopes on X-Railgrid-Org / X-Railgrid-Workspace queries
       // the wrong workspace (or none) and the tile renders a convincing empty
       // state instead of the user's actual resources.
       orgUUID: tenant.orgUUID,
@@ -245,13 +245,13 @@ function onNavigate(e: Event) {
 }
 
 onMounted(() => {
-  mountRef.value?.addEventListener('faros-navigate', onNavigate)
-  mountRef.value?.addEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+  mountRef.value?.addEventListener('railgrid-navigate', onNavigate)
+  mountRef.value?.addEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
 })
 onBeforeUnmount(() => {
   loadGeneration.invalidate()
-  mountRef.value?.removeEventListener('faros-navigate', onNavigate)
-  mountRef.value?.removeEventListener('faros-provider-bootstrap-retry', onProviderBootstrapRetry)
+  mountRef.value?.removeEventListener('railgrid-navigate', onNavigate)
+  mountRef.value?.removeEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
   if (elementRef.value && mountRef.value?.contains(elementRef.value)) {
     mountRef.value.removeChild(elementRef.value)
   }

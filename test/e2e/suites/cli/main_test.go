@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cli is the end-to-end suite for the `faros` CLI: every user-facing
+// Package cli is the end-to-end suite for the `railgrid` CLI: every user-facing
 // command is driven as a real subprocess against a live hub.
 //
 // The hub runs as a host subprocess with embedded kcp over HTTPS (the same
@@ -59,7 +59,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // Suite-shared state populated by TestMain.
@@ -68,7 +68,7 @@ var (
 	hubURL       string // https://127.0.0.1:<port>
 	kcpServer    string // https://127.0.0.1:<port> (admin kubeconfig)
 	adminToken   string
-	farosBin     string
+	railgridBin  string
 	suiteDataDir string
 
 	// Two static tokens = two distinct hub users (each gets its own personal
@@ -85,14 +85,14 @@ const (
 	kcpPort      = "16483"
 	providerPort = "18108"
 
-	edgesWorkspacePath = "root:faros:providers:edges"
-	edgesAPIExportName = "edges.providers.faros.sh"
+	edgesWorkspacePath = "root:railgrid:providers:edges"
+	edgesAPIExportName = "edges.providers.railgrid.ai"
 )
 
 var (
 	secretGVR             = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
-	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}
 	apiBindingGVR         = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
@@ -108,7 +108,7 @@ func TestMain(m *testing.M) {
 
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
 		if portInUse(p) {
-			fmt.Fprintf(os.Stderr, "port :%s already in use; stop stray faros-hub/edges-provider and retry\n", p)
+			fmt.Fprintf(os.Stderr, "port :%s already in use; stop stray railgrid-hub/edges-provider and retry\n", p)
 			os.Exit(2)
 		}
 	}
@@ -117,19 +117,19 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "build failed:", err)
 		os.Exit(1)
 	}
-	farosBin = filepath.Join(repoRoot, "bin", "faros")
+	railgridBin = filepath.Join(repoRoot, "bin", "railgrid")
 
-	dataDir, err := os.MkdirTemp("", "faros-e2e-cli-")
+	dataDir, err := os.MkdirTemp("", "railgrid-e2e-cli-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
 	suiteDataDir = dataDir
-	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
-	artifactDir := os.Getenv("FAROS_E2E_ARTIFACT_DIR")
+	keepData := os.Getenv("RAILGRID_E2E_KEEP_DATA") == "true"
+	artifactDir := os.Getenv("RAILGRID_E2E_ARTIFACT_DIR")
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
-	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
+	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
 		"--serving-cert-file", filepath.Join(repoRoot, "certs", "apiserver.crt"),
 		"--serving-key-file", filepath.Join(repoRoot, "certs", "apiserver.key"),
 		"--hub-external-url", hubURL,
@@ -198,7 +198,7 @@ func TestMain(m *testing.M) {
 	// check, for both users, so a transient "failed to create user" 500 is
 	// not attributed to the CLI.
 	for _, token := range []string{tokenA, tokenB} {
-		tenantClient := framework.NewFarosClient(repoRoot, filepath.Join(dataDir, "tenant-api-"+token+".kubeconfig"), hubURL)
+		tenantClient := framework.NewRailgridClient(repoRoot, filepath.Join(dataDir, "tenant-api-"+token+".kubeconfig"), hubURL)
 		apiCtx, apiCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		err := framework.WaitForTenantAPI(apiCtx, tenantClient, hubURL, token)
 		apiCancel()
@@ -218,9 +218,9 @@ func TestMain(m *testing.M) {
 	initLog, _ = os.Create(filepath.Join(dataDir, "init.log"))
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "init")
 	initCmd.Env = append(os.Environ(),
-		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
-		"FAROS_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
+		"RAILGRID_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -232,13 +232,13 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
-		"FAROS_HUB_URL="+hubURL,
-		"FAROS_HUB_EXTERNAL_URL="+hubURL,
-		"FAROS_HUB_TOKEN="+tokenA,
-		"FAROS_HUB_INSECURE=true",
-		"FAROS_PROVIDER_NAME=edges",
-		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
-		"FAROS_DEV_MODE=true",
+		"RAILGRID_HUB_URL="+hubURL,
+		"RAILGRID_HUB_EXTERNAL_URL="+hubURL,
+		"RAILGRID_HUB_TOKEN="+tokenA,
+		"RAILGRID_HUB_INSECURE=true",
+		"RAILGRID_PROVIDER_NAME=edges",
+		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"RAILGRID_DEV_MODE=true",
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -257,13 +257,13 @@ func TestMain(m *testing.M) {
 }
 
 func applyEdgesManifests() error {
-	cl, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
+	cl, err := kcpDynamicRaw("root:railgrid:system:providers", adminToken)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	gvrByKind := map[string]schema.GroupVersionResource{
-		"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
-		"CatalogEntry": {Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
+		"Provider":     {Group: "admin.railgrid.ai", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"},
 	}
 	overrideURL := "http://localhost:" + providerPort
 	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
@@ -339,18 +339,18 @@ func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
     server: %s/clusters/%s
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: %s
 `, kcpServer, edgesWorkspacePath, token)
@@ -360,7 +360,7 @@ users:
 // --- shared helpers ---
 
 func build(root string) error {
-	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-faros", "certs")
+	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-railgrid", "certs")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

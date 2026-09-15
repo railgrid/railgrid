@@ -28,7 +28,7 @@ minter.
 
 **Key facts discovered by the audit (don't re-derive):**
 
-- faros's "VW subresources" are **not** kcp virtual workspaces. The
+- railgrid's "VW subresources" are **not** kcp virtual workspaces. The
   infrastructure data plane is a plain HTTP handler behind the hub backend
   proxy, addressed `/services/providers/infrastructure/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}`,
   authorized by re-reading the resource **as the caller** so kcp RBAC decides
@@ -106,7 +106,7 @@ absorbs. M5 is kept but demoted to a projection.
    it as a registry `dockerconfigjson`. Contract 3 says the owning provider is
    the single holder of its backend credential; code publishes no such API and
    is never consulted. Works only because of M3.
-2. **kuery's edge sync is dead three ways.** It claims `faros.sh/edges`
+2. **kuery's edge sync is dead three ways.** It claims `railgrid.ai/edges`
    (the core export no longer exports Edge), dials `/services/edges-proxy/…`
    (unmounted since edges was extracted to a standalone provider —
    [server.go:325](../pkg/hub/server.go)), and composes the path by hand
@@ -119,7 +119,7 @@ absorbs. M5 is kept but demoted to a projection.
    [bridge.go:56](../providers/infrastructure/controller/instance/bridge.go)).
    No schema, no validation, no versioning.
 4. **Providers authoring RBAC over each other's API groups.** Agents'
-   per-agent SAs get read on the whole `infrastructure.faros.sh`
+   per-agent SAs get read on the whole `infrastructure.railgrid.ai`
    group with non-expiring tokens
    ([agentidentity.go:61](../providers/agents/api/agentidentity.go)).
 5. **The Enable-time edges-proxy grant** gives a provider SA direct, non-VW
@@ -138,8 +138,8 @@ absorbs. M5 is kept but demoted to a projection.
 |---|---|---|
 | `POST /api/providers/{name}/heartbeat` | **unauthenticated and state-changing** — anyone can keep a dead provider Ready, or set `HeartbeatRequired` on a non-beating provider and force it not-Ready within 90s | [heartbeat.go:41](../pkg/hub/providers/heartbeat.go) |
 | `GET /api/providers` | **unauthenticated**; now returns full action schemas, consent prompts, and up to 512 KiB of inline skill content per provider; both new docs wrongly say "authenticated" | [api.go:164](../pkg/hub/providers/api.go), [server.go:355](../pkg/hub/server.go) |
-| MCP aggregate | bearer required but **never verified**; cluster ID is caller-asserted from the URL and injected as `X-Faros-Tenant`/`X-Faros-Cluster` | [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go), [federation.go:242](../pkg/hub/mcpaggregate/federation.go) |
-| UI proxy | does **not** strip inbound `X-Faros-*` identity headers (the backend proxy does) | [proxy.go:53](../pkg/hub/providers/proxy.go) |
+| MCP aggregate | bearer required but **never verified**; cluster ID is caller-asserted from the URL and injected as `X-Railgrid-Tenant`/`X-Railgrid-Cluster` | [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go), [federation.go:242](../pkg/hub/mcpaggregate/federation.go) |
+| UI proxy | does **not** strip inbound `X-Railgrid-*` identity headers (the backend proxy does) | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | Backend proxy identity | fail-open: resolver failure forwards the request without identity headers | [proxy.go:120](../pkg/hub/providers/proxy.go) |
 | ~~GraphQL gateway~~ | ~~accepted the token from the `?token=` query parameter (log/referrer leak path)~~ — **resolved by removal**: the embedded GraphQL gateway no longer exists | — |
 | `/metrics` (new in PR #499) | unauthenticated on the public listener, serving the entire `legacyregistry` | [server.go:206](../pkg/hub/server.go) |
@@ -249,7 +249,7 @@ authorizer; **grants are kcp RBAC rules**:
 
 ```yaml
 # "this workload may run query_table on Table trips"
-- apiGroups: ["databricks.faros.sh"]
+- apiGroups: ["databricks.railgrid.ai"]
   resources: ["tables/query_table"]
   verbs: ["create"]
   resourceNames: ["trips"]
@@ -277,7 +277,7 @@ app-studio and agents are replaced by that package.
 
 **What P2 keeps from PR #499 unchanged:** the CatalogEntry action schema and
 its fail-closed validation/compilation; the App Studio grant UX and digest
-pinning; the `@faros/actions-node` SDK (its target URL changes shape only);
+pinning; the `@railgrid/actions-node` SDK (its target URL changes shape only);
 the Databricks executor and its SQL bounding.
 
 **What P2 deletes from PR #499:** the hub invoke router and its Go authorizer
@@ -293,7 +293,7 @@ routing, and the human/workload authorization asymmetry.
   cluster **before** fan-out (today it forwards unverified —
   [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go)).
 - Capability discovery is **hub-authored**: the aggregate serves a
-  `faros://providers/actions` MCP resource generated from the same validated
+  `railgrid://providers/actions` MCP resource generated from the same validated
   registry the data plane enforces, so advertised capabilities cannot drift
   from enforceable ones, and no provider URL ever appears. Federated tools
   that back a declared action carry the action id + digest in `_meta`.
@@ -346,9 +346,9 @@ Each phase is independently shippable and none blocks the others except as
 noted.
 
 **Phase 0 — close the fail-open surfaces (small, urgent).**
-Authenticate heartbeat (providers already hold `FAROS_HUB_TOKEN`); move
+Authenticate heartbeat (providers already hold `RAILGRID_HUB_TOKEN`); move
 `GET /api/providers` under the authenticated subrouter; verify bearer↔cluster
-in the MCP aggregate; strip `X-Faros-*` in the UI proxy; move `/metrics` off
+in the MCP aggregate; strip `X-Railgrid-*` in the UI proxy; move `/metrics` off
 the public listener. (The GraphQL `?token=` item is closed: the gateway was
 removed.)
 Anchors: [server.go:206,355,358](../pkg/hub/server.go),
@@ -376,14 +376,14 @@ Factor the enforcement kit out of the databricks actions handler + infra
 dataplane handler; migrate edges `edgeproxy/` and agents `s2s/` onto it.
 Introduce the consumer-side grammar package and `status`-stamped endpoints;
 replace the hardcoded paths in app-studio and agents (X-8). Fix
-kuery: claim `edges.faros.sh/{kubernetesclusters,linuxservers}`, follow
+kuery: claim `edges.railgrid.ai/{kubernetesclusters,linuxservers}`, follow
 `status.URL`, delete the dead `/services/edges-proxy` dial.
 
 **Phase 3 — the identity service.**
 Generalize the workload-identity minter (owner kinds, attestation plug,
 TokenRequest-only, GC controller). Migrate agents and edges
 identity minting onto it; remove their RBAC-authoring claims (X-5). Add GC
-for existing `faros-wi-*` identities.
+for existing `railgrid-wi-*` identities.
 
 **Phase 4 — credential APIs replace the Secrets side-door.**
 code provider publishes `RegistryCredential` (CR or declared action);
@@ -446,7 +446,7 @@ credential, **X** = external credential owned by the tenant connection.
 
 | Ch | Surface | Posture | Anchor |
 |---|---|---|---|
-| B1 | Backend proxy `/services/providers/{name}/*` | fail-open identity, strips+reinjects `X-Faros-*`, forwards bearer | [proxy.go:100](../pkg/hub/providers/proxy.go) |
+| B1 | Backend proxy `/services/providers/{name}/*` | fail-open identity, strips+reinjects `X-Railgrid-*`, forwards bearer | [proxy.go:100](../pkg/hub/providers/proxy.go) |
 | B2 | `/actions` denial on backend proxy (PR #499) | fail-closed; case-sensitive; backend proxy only | [proxy.go:326](../pkg/hub/providers/proxy.go) |
 | B3 | `POST /api/provider-actions/invoke` → `virtualWorkspace.url` | fail-closed; grants enforced for workload SAs only | [handler.go:217](../pkg/hub/provideractions/handler.go) |
 | B4 | `POST /api/provider-actions/workload/exchange` → infra attestation | fail-closed; unauthenticated route by design (attestation is authn) | [workloadidentity.go:132](../pkg/hub/workloadidentity/workloadidentity.go) |
@@ -454,7 +454,7 @@ credential, **X** = external credential owned by the tenant connection.
 | B6 | MCPServer controller tool discovery (background) | hub-minted per-MCPServer SA token | [controller.go:163](../pkg/hub/controllers/mcpserver/controller.go) |
 | B7 | ~~GraphQL gateway `/graphql/{cluster}`~~ | removed (with its `?token=` acceptance); tenant traffic goes through B8 | — |
 | B8 | kcp front door `/clusters/…` (static/SA/OIDC dispatch) | fail-closed; Org-path and root-path refusals; membership check | [proxy.go:260](../pkg/server/proxy/proxy.go) |
-| B9 | UI proxy `/ui/providers/{name}/*` | **does not strip `X-Faros-*`** | [proxy.go:53](../pkg/hub/providers/proxy.go) |
+| B9 | UI proxy `/ui/providers/{name}/*` | **does not strip `X-Railgrid-*`** | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | B10 | `GET /api/providers` | **unauthenticated** | [api.go:164](../pkg/hub/providers/api.go) |
 | B11 | `POST /api/providers/{name}/heartbeat` | **unauthenticated, state-changing** | [heartbeat.go:41](../pkg/hub/providers/heartbeat.go) |
 | B12 | Provider provisioning (workspace, SA, kubeconfig, non-expiring token) | admin-gated | [provision.go:98](../pkg/hub/providers/provision.go) |
@@ -466,18 +466,18 @@ credential, **X** = external credential owned by the tenant connection.
 
 | Ch | Channel | Note | Anchor |
 |---|---|---|---|
-| C1 | kuery claims `faros.sh/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
+| C1 | kuery claims `railgrid.ai/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
 | C2 | Six providers hold `secrets` claims (4 with write) | the M3 side-door | providers/*/manifest.yaml |
 | C3 | Edge agent tunnel join/reconnect (join token → per-edge SA, revdial) | healthy M4+identity pattern | [agent_proxy_builder_v2.go:361](../providers/edges/internal/tunnel/agent_proxy_builder_v2.go) |
 | C4 | Edges consumer egress `edgeproxy/…/{k8s\|ssh\|mcp}` (TokenReview+SAR `proxy`) | healthy; stamps `status.URL` for consumers | [auth.go:116](../providers/edges/internal/tunnel/auth.go) |
 | C5 | Edges `svc/` proxy (Service CR + authSecret read as caller; agent host allowlist) | confused-deputy-safe by design | [service_proxy.go:282](../providers/edges/internal/tunnel/service_proxy.go) |
 | C6 | kuery edge sync via `/services/edges-proxy/…` as provider SA | **dead mount + wrong group + hardcoded path** | [engagement/controller.go:363](../providers/kuery/engagement/controller.go) |
-| C7 | kuery query API scoped only by `X-Faros-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
+| C7 | kuery query API scoped only by `X-Railgrid-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
 | C8 | code → GitHub (Connection token; exclusive holder) | conforming external egress | [tenant/credentials.go:28](../providers/code/tenant/credentials.go) |
 | C9 | infra imagePullSecret bridge (`<instance>-registry` name convention → runtime SA) | **M8** string contract across 2 providers | [bridge.go:53](../providers/infrastructure/controller/instance/bridge.go) |
 | C10 | infra OIDC client-secret bridge into runtime namespace | M8, finalizer-guarded | [bridge.go:59](../providers/infrastructure/controller/instance/bridge.go) |
 | C11 | infra Gateway/HTTPRoute emission against the shared platform Gateway | M8, RGD-validated | [kro/rgd.go:209](../providers/infrastructure/backend/kro/rgd.go) |
-| C12 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](https://github.com/faroshq/providers/blob/main/providers/databricks/manifest.yaml) |
+| C12 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](https://github.com/railgrid/providers/blob/main/providers/databricks/manifest.yaml) |
 
 ---
 
@@ -488,4 +488,4 @@ Implementation anchors for the healthy patterns this design generalizes:
 [CatalogEntry action validation](../apis/providers/v1alpha1/actions.go),
 [workload identity minter](../pkg/hub/serviceaccounts/workload_identity.go),
 [edges consumer authorization](../providers/edges/internal/tunnel/auth.go),
-[shared databricks executor](https://github.com/faroshq/providers/blob/main/providers/databricks/tenant/action.go).
+[shared databricks executor](https://github.com/railgrid/providers/blob/main/providers/databricks/tenant/action.go).

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
 func newEdgeUpgradeCommand() *cobra.Command {
@@ -43,7 +43,7 @@ up to date.`,
 
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
+				return fmt.Errorf("not logged in — run: railgrid login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			edge, gvr, err := getEdgeByName(ctx, dynClient, name)
@@ -51,7 +51,7 @@ up to date.`,
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
 
-			edgeType := farosclient.EdgeTypeForGVR(gvr)
+			edgeType := railgridclient.EdgeTypeForGVR(gvr)
 			agentVersion := getNestedString(*edge, "status", "agentVersion")
 			hubVersion := pkgversion.Get()
 
@@ -85,47 +85,47 @@ up to date.`,
 }
 
 func printKubernetesUpgradeInstructions(name string) {
-	fmt.Printf("If the agent was installed via 'faros agent join':\n\n")
-	fmt.Printf("  faros agent upgrade %s\n", name)
+	fmt.Printf("If the agent was installed via 'railgrid agent join':\n\n")
+	fmt.Printf("  railgrid agent upgrade %s\n", name)
 	fmt.Println()
 	fmt.Printf("If the agent was installed via Helm:\n\n")
-	fmt.Printf("  helm upgrade faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\\n")
-	fmt.Printf("    --namespace faros-system \\\n")
+	fmt.Printf("  helm upgrade railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\\n")
+	fmt.Printf("    --namespace railgrid-system \\\n")
 	fmt.Printf("    --reuse-values \\\n")
 	fmt.Printf("    --set agent.image.tag=latest\n")
 	fmt.Println()
 	fmt.Printf("  Or to pin a specific version:\n")
-	fmt.Printf("  helm upgrade faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\\n")
-	fmt.Printf("    --namespace faros-system \\\n")
+	fmt.Printf("  helm upgrade railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\\n")
+	fmt.Printf("    --namespace railgrid-system \\\n")
 	fmt.Printf("    --reuse-values \\\n")
 	fmt.Printf("    --version <chart-version>\n")
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  faros edge list\n")
+	fmt.Printf("  railgrid edge list\n")
 	fmt.Printf("  # or watch the agent version column:\n")
-	fmt.Printf("  watch faros edge list\n")
+	fmt.Printf("  watch railgrid edge list\n")
 }
 
 func printServerUpgradeInstructions(name, _ string) {
 	fmt.Printf("To upgrade the binary on the remote server:\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n")
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
 	fmt.Println()
 	fmt.Printf("Then restart the agent:\n\n")
-	fmt.Printf("  sudo systemctl restart faros-agent-%s\n", name)
+	fmt.Printf("  sudo systemctl restart railgrid-agent-%s\n", name)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  faros edge list\n")
+	fmt.Printf("  railgrid edge list\n")
 }
 
 func printMacOSUpgradeInstructions(name string) {
 	fmt.Printf("To upgrade the macOS agent binary on the worker host:\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n")
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
 	fmt.Println()
 	fmt.Printf("Then restart the launchd service:\n\n")
-	fmt.Printf("  sudo launchctl kickstart -k system/com.faros.agent.%s\n", name)
+	fmt.Printf("  sudo launchctl kickstart -k system/com.railgrid.agent.%s\n", name)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  faros edge list\n")
+	fmt.Printf("  railgrid edge list\n")
 }

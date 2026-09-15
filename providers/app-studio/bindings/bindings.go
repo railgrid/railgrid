@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,21 +28,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // ProjectLabel attributes an instance back to its Project.
-const ProjectLabel = "app-studio.faros.sh/project"
+const ProjectLabel = "app-studio.railgrid.ai/project"
 
 // TemplateLabel attributes an instance to its catalog Template, matching the
 // infrastructure provider's own convention so its portal/MCP listings group
 // instances correctly.
-const TemplateLabel = "faros.sh/template"
+const TemplateLabel = "railgrid.ai/template"
 
 // Provider Actions fields are platform-owned instance inputs. The prefix is
 // intentionally broader than the currently-known field list: a binding must
 // never be able to smuggle a future reserved Actions field into an instance.
-const ActionsFieldPrefix = "farosActions"
+const ActionsFieldPrefix = "railgridActions"
 
 const (
 	// PreviewAccessField is the conventional Template input consumed by the
@@ -55,19 +55,19 @@ const (
 )
 
 const (
-	ActionsExchangeURLField = "farosActionsExchangeURL"
-	ActionsBaseURLField     = "farosActionsBaseURL"
-	ActionsCABundleField    = "farosActionsCABundle"
-	ActionsTenantPathField  = "farosActionsTenantPath"
-	ActionsOrgField         = "farosActionsOrg"
-	ActionsWorkspaceField   = "farosActionsWorkspace"
-	ActionsProjectField     = "farosActionsProject"
-	ActionsProjectUIDField  = "farosActionsProjectUID"
-	ActionsEnvironmentField = "farosActionsEnvironment"
-	ActionsInstanceField    = "farosActionsInstance"
+	ActionsExchangeURLField = "railgridActionsExchangeURL"
+	ActionsBaseURLField     = "railgridActionsBaseURL"
+	ActionsCABundleField    = "railgridActionsCABundle"
+	ActionsTenantPathField  = "railgridActionsTenantPath"
+	ActionsOrgField         = "railgridActionsOrg"
+	ActionsWorkspaceField   = "railgridActionsWorkspace"
+	ActionsProjectField     = "railgridActionsProject"
+	ActionsProjectUIDField  = "railgridActionsProjectUID"
+	ActionsEnvironmentField = "railgridActionsEnvironment"
+	ActionsInstanceField    = "railgridActionsInstance"
 )
 
-const tenantPathPrefix = "root:faros:tenants:"
+const tenantPathPrefix = "root:railgrid:tenants:"
 
 // ActionsIdentity is the server-derived identity bound to one development
 // instance. It is separate from ActionsTransport so action grants can be
@@ -108,14 +108,14 @@ type ActionsOverlay struct {
 func ValidateActionsExternalURL(raw string) (string, error) {
 	origin := strings.TrimRight(strings.TrimSpace(raw), "/")
 	if origin == "" {
-		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+		return "", fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
 	u, err := url.Parse(origin)
 	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL must be an absolute HTTPS URL")
+		return "", fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL must be an absolute HTTPS URL")
 	}
 	if !strings.EqualFold(u.Scheme, "https") {
-		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL must use HTTPS")
+		return "", fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL must use HTTPS")
 	}
 	return origin, nil
 }
@@ -239,7 +239,7 @@ func NewActionsOverlay(identity ActionsIdentity, config ActionsRuntimeConfig, ac
 }
 
 // ApplyActionsOverlay returns a new map. It first removes every reserved
-// farosActions* value, including fields unknown to this version, then adds the
+// railgridActions* value, including fields unknown to this version, then adds the
 // current server-derived identity and (when active) transport fields. Neither
 // the persisted binding map nor the caller's map is mutated.
 func ApplyActionsOverlay(values map[string]any, overlay ActionsOverlay) map[string]any {
@@ -371,8 +371,8 @@ func actionsOverlayFieldsFor(overlay ActionsOverlay) map[string]string {
 // org/workspace UUIDs the hub derives from the tenant path). Stamped by the
 // API layer at resource creation.
 const (
-	OrgUUIDAnnotation       = "ai.faros.sh/org-uuid"
-	WorkspaceUUIDAnnotation = "ai.faros.sh/workspace-uuid"
+	OrgUUIDAnnotation       = "ai.railgrid.ai/org-uuid"
+	WorkspaceUUIDAnnotation = "ai.railgrid.ai/workspace-uuid"
 )
 
 // GVR derives the instance GroupVersionResource from a binding's resourceRef

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,11 +40,11 @@ import (
 
 const (
 	// APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
-	APIExportName = "code.providers.faros.sh"
+	APIExportName = "code.providers.railgrid.ai"
 	// APIExportEndpointSliceName is the slice the multicluster manager watches.
 	// Matches controller_manager.go's endpointSliceName and, by convention, the
 	// APIExport name.
-	APIExportEndpointSliceName = "code.providers.faros.sh"
+	APIExportEndpointSliceName = "code.providers.railgrid.ai"
 )
 
 var apiExportEndpointSliceGVR = schema.GroupVersionResource{
@@ -55,7 +55,7 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 
 // EnsureAPIExportEndpointSlice ensures an APIExportEndpointSlice referencing the
 // provider's APIExport exists in the provider workspace. workspacePath is the
-// logical-cluster path the APIExport lives in (root:faros:providers:code) —
+// logical-cluster path the APIExport lives in (root:railgrid:providers:code) —
 // REQUIRED so kcp can resolve the export and publish endpoint URLs in status.
 //
 // spec.export is immutable, so a pre-existing slice with a stale path is

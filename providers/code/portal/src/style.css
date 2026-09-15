@@ -2,18 +2,18 @@
  * code provider element styles. Imported as a string by main.ts and injected as
  * one <style> tag in the host document. The element renders in LIGHT DOM so the
  * portal's CSS custom properties (--color-*) cascade in; every selector is
- * namespaced under faros-provider-code so these styles cannot leak into the
+ * namespaced under railgrid-provider-code so these styles cannot leak into the
  * portal. Structure + tokens mirror the infrastructure provider so the two look
  * like one product.
  */
 
-faros-provider-code {
+railgrid-provider-code {
   display: block;
   font-family: inherit;
   color: var(--color-text-primary, #e9e9f2);
 }
 
-faros-provider-code .sr-only {
+railgrid-provider-code .sr-only {
   block-size: 1px;
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
@@ -25,30 +25,30 @@ faros-provider-code .sr-only {
   white-space: nowrap;
 }
 
-faros-provider-code .app {
+railgrid-provider-code .app {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
 /* Page scaffold */
-faros-provider-code .page {
+railgrid-provider-code .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-faros-provider-code .page-head {
+railgrid-provider-code .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-faros-provider-code .page-title {
+railgrid-provider-code .page-title {
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 600;
 }
-faros-provider-code .page-meta {
+railgrid-provider-code .page-meta {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
@@ -57,13 +57,13 @@ faros-provider-code .page-meta {
 }
 
 /* Panels (cards) */
-faros-provider-code .panel {
+railgrid-provider-code .panel {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-faros-provider-code .panel-title {
+railgrid-provider-code .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -71,7 +71,7 @@ faros-provider-code .panel-title {
   text-transform: uppercase;
   color: var(--color-text-secondary, #8a8ca6);
 }
-faros-provider-code .panel-head {
+railgrid-provider-code .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -81,13 +81,13 @@ faros-provider-code .panel-head {
 /* Page-specific composition around the canonical k-* controls. These names
  * only describe Code's layout; button and table-action visuals stay owned by
  * the shared PortalKit recipes. */
-faros-provider-code .code-form-actions {
+railgrid-provider-code .code-form-actions {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-faros-provider-code .code-create__back {
+railgrid-provider-code .code-create__back {
   align-items: center;
   align-self: flex-start;
   background: transparent;
@@ -102,7 +102,7 @@ faros-provider-code .code-create__back {
   min-height: auto;
   padding: 0;
 }
-faros-provider-code .code-create__back:hover {
+railgrid-provider-code .code-create__back:hover {
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -110,27 +110,27 @@ faros-provider-code .code-create__back:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-faros-provider-code .code-create__back:active { transform: none; }
-faros-provider-code .code-create__back svg { flex: none; }
-faros-provider-code .code-create-panel { max-width: 42rem; }
-faros-provider-code .code-row-actions {
+railgrid-provider-code .code-create__back:active { transform: none; }
+railgrid-provider-code .code-create__back svg { flex: none; }
+railgrid-provider-code .code-create-panel { max-width: 42rem; }
+railgrid-provider-code .code-row-actions {
   align-items: center;
   display: flex;
   justify-content: flex-end;
 }
 /* Repository detail composition: a readable header followed by stacked cards. */
-faros-provider-code .repo-detail {
+railgrid-provider-code .repo-detail {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 16px;
 }
-faros-provider-code .repo-detail__resource {
+railgrid-provider-code .repo-detail__resource {
   position: relative;
   min-width: 0;
   max-width: 100%;
 }
-faros-provider-code .repo-detail__provider-mark {
+railgrid-provider-code .repo-detail__provider-mark {
   position: absolute;
   z-index: 1;
   top: 0;
@@ -144,22 +144,22 @@ faros-provider-code .repo-detail__provider-mark {
   background: var(--color-surface-raised, #111320);
   color: var(--color-text-secondary, #8a8ca6);
 }
-faros-provider-code .repo-detail__resource > section > header {
+railgrid-provider-code .repo-detail__resource > section > header {
   padding-inline-start: 52px;
 }
-faros-provider-code .repo-detail__actions a[class~="k-btn--primary"],
-faros-provider-code .repo-detail__actions a[class~="k-btn--primary"]:hover {
+railgrid-provider-code .repo-detail__actions a[class~="k-btn--primary"],
+railgrid-provider-code .repo-detail__actions a[class~="k-btn--primary"]:hover {
   color: var(--color-on-accent, #ffffff);
   text-decoration: none;
 }
-faros-provider-code .repo-detail__resource > section > header > div:first-child > div {
+railgrid-provider-code .repo-detail__resource > section > header > div:first-child > div {
   align-items: center;
   gap: 7px;
 }
-faros-provider-code .repo-header__separator {
+railgrid-provider-code .repo-header__separator {
   color: var(--color-text-muted, #5d5f78);
 }
-faros-provider-code .repo-detail__actions {
+railgrid-provider-code .repo-detail__actions {
   display: inline-flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -167,13 +167,13 @@ faros-provider-code .repo-detail__actions {
   justify-content: flex-end;
   gap: 8px;
 }
-faros-provider-code .repo-detail__sections {
+railgrid-provider-code .repo-detail__sections {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 14px;
 }
-faros-provider-code .repo-section-card__facts {
+railgrid-provider-code .repo-section-card__facts {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -183,20 +183,20 @@ faros-provider-code .repo-section-card__facts {
   color: var(--color-text-muted, #5d5f78);
   font-size: 11px;
 }
-faros-provider-code .repo-section-card__facts strong {
+railgrid-provider-code .repo-section-card__facts strong {
   color: var(--color-text-primary, #e9e9f2);
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
   font-size: 14px;
   font-weight: 600;
 }
-faros-provider-code .repo-integration-card__description {
+railgrid-provider-code .repo-integration-card__description {
   max-width: 66ch;
   margin: 0;
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 14px;
   line-height: 1.55;
 }
-faros-provider-code .repo-integration-card__connection {
+railgrid-provider-code .repo-integration-card__connection {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -205,7 +205,7 @@ faros-provider-code .repo-integration-card__connection {
   border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   padding-top: 19px;
 }
-faros-provider-code .repo-integration-card__connection-title {
+railgrid-provider-code .repo-integration-card__connection-title {
   margin: 0;
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
@@ -213,14 +213,14 @@ faros-provider-code .repo-integration-card__connection-title {
   letter-spacing: .04em;
   text-transform: uppercase;
 }
-faros-provider-code .repo-integration-row {
+railgrid-provider-code .repo-integration-row {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
-faros-provider-code .repo-integration-row__content {
+railgrid-provider-code .repo-integration-row__content {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -228,17 +228,17 @@ faros-provider-code .repo-integration-row__content {
   align-items: center;
   gap: 10px;
 }
-faros-provider-code .repo-integration-row__provider {
+railgrid-provider-code .repo-integration-row__provider {
   color: var(--color-text-primary, #e9e9f2);
   font-size: 13px;
   font-weight: 600;
 }
-faros-provider-code .repo-integration-row__connection {
+railgrid-provider-code .repo-integration-row__connection {
   overflow-wrap: anywhere;
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
 }
-faros-provider-code .repo-integration-editor {
+railgrid-provider-code .repo-integration-editor {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -246,29 +246,29 @@ faros-provider-code .repo-integration-editor {
   border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   padding-top: 12px;
 }
-faros-provider-code .repo-integration-editor .conn-edit {
+railgrid-provider-code .repo-integration-editor .conn-edit {
   width: 100%;
 }
-faros-provider-code .repo-domain-block {
+railgrid-provider-code .repo-domain-block {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 12px;
 }
-faros-provider-code .repo-domain-block .panel-head {
+railgrid-provider-code .repo-domain-block .panel-head {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   padding-bottom: 10px;
 }
-faros-provider-code .repo-conditions__facts {
+railgrid-provider-code .repo-conditions__facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px 18px;
   margin: 0;
 }
-faros-provider-code .repo-conditions__facts > div {
+railgrid-provider-code .repo-conditions__facts > div {
   min-width: 0;
 }
-faros-provider-code .repo-conditions__facts dt {
+railgrid-provider-code .repo-conditions__facts dt {
   margin: 0 0 3px;
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
@@ -276,7 +276,7 @@ faros-provider-code .repo-conditions__facts dt {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-faros-provider-code .repo-conditions__facts dd {
+railgrid-provider-code .repo-conditions__facts dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
@@ -284,54 +284,54 @@ faros-provider-code .repo-conditions__facts dd {
   font-size: 12px;
 }
 /* Preserve component-owned widths for menus, controls, and tooltips. */
-faros-provider-code .repo-detail *,
-faros-provider-code .repo-detail *::before,
-faros-provider-code .repo-detail *::after {
+railgrid-provider-code .repo-detail *,
+railgrid-provider-code .repo-detail *::before,
+railgrid-provider-code .repo-detail *::after {
   box-sizing: border-box;
 }
-faros-provider-code .repo-detail__resource,
-faros-provider-code .repo-section-card__facts,
-faros-provider-code .repo-integration-row,
-faros-provider-code .repo-integration-card__connection,
-faros-provider-code .repo-integration-card__description,
-faros-provider-code .repo-integration-editor,
-faros-provider-code .repo-domain-block,
-faros-provider-code .repo-detail input,
-faros-provider-code .repo-detail select,
-faros-provider-code .repo-detail textarea,
-faros-provider-code .repo-detail .form,
-faros-provider-code .repo-detail .conn-edit,
-faros-provider-code .repo-detail .props,
-faros-provider-code .repo-detail dl,
-faros-provider-code .repo-conditions__facts {
+railgrid-provider-code .repo-detail__resource,
+railgrid-provider-code .repo-section-card__facts,
+railgrid-provider-code .repo-integration-row,
+railgrid-provider-code .repo-integration-card__connection,
+railgrid-provider-code .repo-integration-card__description,
+railgrid-provider-code .repo-integration-editor,
+railgrid-provider-code .repo-domain-block,
+railgrid-provider-code .repo-detail input,
+railgrid-provider-code .repo-detail select,
+railgrid-provider-code .repo-detail textarea,
+railgrid-provider-code .repo-detail .form,
+railgrid-provider-code .repo-detail .conn-edit,
+railgrid-provider-code .repo-detail .props,
+railgrid-provider-code .repo-detail dl,
+railgrid-provider-code .repo-conditions__facts {
   box-sizing: border-box;
   max-width: 100%;
   min-width: 0;
 }
-faros-provider-code .repo-detail input,
-faros-provider-code .repo-detail select,
-faros-provider-code .repo-detail textarea {
+railgrid-provider-code .repo-detail input,
+railgrid-provider-code .repo-detail select,
+railgrid-provider-code .repo-detail textarea {
   box-sizing: border-box;
 }
-faros-provider-code .repo-detail textarea {
+railgrid-provider-code .repo-detail textarea {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 /* Connection detail composition: the shared resource shell owns the
  * read/header boundary while Code owns these domain cards and facts. */
-faros-provider-code .connection-detail {
+railgrid-provider-code .connection-detail {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 16px;
 }
-faros-provider-code .connection-detail__resource {
+railgrid-provider-code .connection-detail__resource {
   position: relative;
   min-width: 0;
   max-width: 100%;
 }
-faros-provider-code .connection-detail__provider-mark {
+railgrid-provider-code .connection-detail__provider-mark {
   position: absolute;
   z-index: 1;
   top: 0;
@@ -345,15 +345,15 @@ faros-provider-code .connection-detail__provider-mark {
   background: var(--color-surface-raised, #111320);
   color: var(--color-text-secondary, #8a8ca6);
 }
-faros-provider-code .connection-detail__resource > section > header {
+railgrid-provider-code .connection-detail__resource > section > header {
   padding-inline-start: 52px;
 }
-faros-provider-code .connection-detail__resource > section > header > div:first-child > div {
+railgrid-provider-code .connection-detail__resource > section > header > div:first-child > div {
   align-items: center;
   gap: 7px;
 }
-faros-provider-code .connection-header__separator { color: var(--color-text-muted, #5d5f78); }
-faros-provider-code .connection-detail__actions {
+railgrid-provider-code .connection-header__separator { color: var(--color-text-muted, #5d5f78); }
+railgrid-provider-code .connection-detail__actions {
   display: inline-flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -361,38 +361,38 @@ faros-provider-code .connection-detail__actions {
   justify-content: flex-end;
   gap: 8px;
 }
-faros-provider-code .connection-detail__sections {
+railgrid-provider-code .connection-detail__sections {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 14px;
 }
 /* Preserve component-owned widths for menus, controls, and tooltips. */
-faros-provider-code .connection-detail *,
-faros-provider-code .connection-detail *::before,
-faros-provider-code .connection-detail *::after {
+railgrid-provider-code .connection-detail *,
+railgrid-provider-code .connection-detail *::before,
+railgrid-provider-code .connection-detail *::after {
   box-sizing: border-box;
 }
-faros-provider-code .connection-detail__resource,
-faros-provider-code .connection-detail .props,
-faros-provider-code .connection-detail dl,
-faros-provider-code .connection-detail__facts,
-faros-provider-code .connection-detail__health-facts {
+railgrid-provider-code .connection-detail__resource,
+railgrid-provider-code .connection-detail .props,
+railgrid-provider-code .connection-detail dl,
+railgrid-provider-code .connection-detail__facts,
+railgrid-provider-code .connection-detail__health-facts {
   box-sizing: border-box;
   max-width: 100%;
   min-width: 0;
 }
-faros-provider-code .connection-detail__facts dd {
+railgrid-provider-code .connection-detail__facts dd {
   overflow-wrap: anywhere;
 }
-faros-provider-code .connection-detail__hint {
+railgrid-provider-code .connection-detail__hint {
   margin-bottom: 18px;
   border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent);
   border-radius: 6px;
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   padding: 10px 12px;
 }
-faros-provider-code .connection-detail__hint-title {
+railgrid-provider-code .connection-detail__hint-title {
   margin: 0 0 4px;
   color: var(--color-text-primary, #e9e9f2);
   font-size: 11px;
@@ -400,13 +400,13 @@ faros-provider-code .connection-detail__hint-title {
   letter-spacing: .04em;
   text-transform: uppercase;
 }
-faros-provider-code .connection-detail__hint p {
+railgrid-provider-code .connection-detail__hint p {
   margin: 0;
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   line-height: 1.5;
 }
-faros-provider-code .connection-detail__deleting {
+railgrid-provider-code .connection-detail__deleting {
   margin: 0;
   border: 1px solid var(--color-warning-subtle);
   border-radius: 6px;
@@ -416,7 +416,7 @@ faros-provider-code .connection-detail__deleting {
   line-height: 1.45;
   padding: 8px 10px;
 }
-faros-provider-code .repo-detail__deleting {
+railgrid-provider-code .repo-detail__deleting {
   margin: 0;
   border: 1px solid var(--color-warning-subtle);
   border-radius: 6px;
@@ -426,14 +426,14 @@ faros-provider-code .repo-detail__deleting {
   line-height: 1.45;
   padding: 8px 10px;
 }
-faros-provider-code .connection-detail__health-facts {
+railgrid-provider-code .connection-detail__health-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px 18px;
   margin: 18px 0 0;
 }
-faros-provider-code .connection-detail__health-facts > div { min-width: 0; }
-faros-provider-code .connection-detail__health-facts dt {
+railgrid-provider-code .connection-detail__health-facts > div { min-width: 0; }
+railgrid-provider-code .connection-detail__health-facts dt {
   margin: 0 0 3px;
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
@@ -441,7 +441,7 @@ faros-provider-code .connection-detail__health-facts dt {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-faros-provider-code .connection-detail__health-facts dd {
+railgrid-provider-code .connection-detail__health-facts dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
@@ -450,126 +450,126 @@ faros-provider-code .connection-detail__health-facts dd {
 }
 
 @media (max-width: 640px) {
-  faros-provider-code .repo-section-card__facts {
+  railgrid-provider-code .repo-section-card__facts {
     margin-left: 0;
   }
 }
 @media (max-width: 520px) {
-  faros-provider-code .repo-detail__provider-mark {
+  railgrid-provider-code .repo-detail__provider-mark {
     width: 32px;
     height: 32px;
   }
-  faros-provider-code .connection-detail__provider-mark {
+  railgrid-provider-code .connection-detail__provider-mark {
     width: 32px;
     height: 32px;
   }
-  faros-provider-code .repo-detail__resource > section > header {
+  railgrid-provider-code .repo-detail__resource > section > header {
     padding-inline-start: 44px;
   }
-  faros-provider-code .repo-detail__actions {
+  railgrid-provider-code .repo-detail__actions {
     width: 100%;
     justify-content: flex-start;
   }
-  faros-provider-code .repo-integration-row {
+  railgrid-provider-code .repo-integration-row {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
   }
-  faros-provider-code .repo-integration-row > button {
+  railgrid-provider-code .repo-integration-row > button {
     align-self: flex-start;
   }
-  faros-provider-code .connection-detail__resource > section > header {
+  railgrid-provider-code .connection-detail__resource > section > header {
     padding-inline-start: 44px;
   }
-  faros-provider-code .connection-detail__actions {
+  railgrid-provider-code .connection-detail__actions {
     width: 100%;
     justify-content: flex-start;
   }
 }
 
 /* Two-column grid for the detail page */
-faros-provider-code .grid-2 {
+railgrid-provider-code .grid-2 {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 @media (min-width: 860px) {
-  faros-provider-code .grid-2 {
+  railgrid-provider-code .grid-2 {
     grid-template-columns: 1fr 1fr;
     align-items: start;
   }
 }
 
 /* Definition list for key/value rows on the detail page */
-faros-provider-code .props {
+railgrid-provider-code .props {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px 16px;
   margin: 0;
   font-size: 12px;
 }
-faros-provider-code .props dt {
+railgrid-provider-code .props dt {
   color: var(--color-text-muted, #5d5f78);
 }
-faros-provider-code .props dd {
+railgrid-provider-code .props dd {
   margin: 0;
   color: var(--color-text-secondary, #8a8ca6);
   word-break: break-all;
 }
 
 /* Inline connection switcher on the detail page */
-faros-provider-code .conn-edit {
+railgrid-provider-code .conn-edit {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-faros-provider-code .conn-edit select {
+railgrid-provider-code .conn-edit select {
   flex: 1;
   min-width: 0;
 }
-faros-provider-code .conn-warn {
+railgrid-provider-code .conn-warn {
   margin: 6px 0 0;
   color: var(--color-warning, #f0a63a);
 }
 /* Forms */
-faros-provider-code .form {
+railgrid-provider-code .form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 36rem;
 }
-faros-provider-code .field {
+railgrid-provider-code .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-faros-provider-code .field-label {
+railgrid-provider-code .field-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary, #8a8ca6);
 }
 
-faros-provider-code .field-check {
+railgrid-provider-code .field-check {
   flex-direction: row;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
 }
-faros-provider-code .field-check input {
+railgrid-provider-code .field-check input {
   width: auto;
 }
 
 /* Misc text */
-faros-provider-code .muted {
+railgrid-provider-code .muted {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
-faros-provider-code .error {
+railgrid-provider-code .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
-faros-provider-code .read-error {
+railgrid-provider-code .read-error {
   align-items: center;
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border-radius: 6px;
@@ -579,17 +579,17 @@ faros-provider-code .read-error {
   margin: 0 0 12px;
   padding: 8px 10px;
 }
-faros-provider-code .read-error > span {
+railgrid-provider-code .read-error > span {
   flex: 1;
   line-height: 1.45;
 }
-faros-provider-code .mutation-error {
+railgrid-provider-code .mutation-error {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border-radius: 6px;
   margin: 0 0 12px;
   padding: 8px 10px;
 }
-faros-provider-code .detail-loading {
+railgrid-provider-code .detail-loading {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -598,27 +598,27 @@ faros-provider-code .detail-loading {
   min-height: 210px;
   padding: 24px;
 }
-faros-provider-code .detail-loading-line {
+railgrid-provider-code .detail-loading-line {
   border-radius: 4px;
   height: 14px;
   max-width: 34rem;
 }
-faros-provider-code .detail-loading-line:nth-child(even) {
+railgrid-provider-code .detail-loading-line:nth-child(even) {
   max-width: 22rem;
 }
-faros-provider-code .empty {
+railgrid-provider-code .empty {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   padding: 8px 0;
 }
-faros-provider-code a {
+railgrid-provider-code a {
   color: var(--color-accent, #8b6bff);
   text-decoration: none;
 }
-faros-provider-code a:hover {
+railgrid-provider-code a:hover {
   text-decoration: underline;
 }
-faros-provider-code code {
+railgrid-provider-code code {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-secondary, #8a8ca6);
   padding: 1px 5px;

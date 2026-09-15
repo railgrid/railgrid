@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	"k8s.io/klog/v2"
 
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 )
 
 // execInputMsg is the subset of the SSH WebSocket protocol a non-interactive
@@ -53,7 +53,7 @@ const execInputEOF = "eof"
 //
 // With forwardStdin the client's "cmd" messages become the command's stdin
 // until an "eof" message (or the WebSocket) closes it — this is what lets
-// `cat file | faros ssh host -- "cat > /tmp/file"` copy data. Without it
+// `cat file | railgrid ssh host -- "cat > /tmp/file"` copy data. Without it
 // stdin is empty, as for clients that predate the flag.
 func (p *Server) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient *gossh.Client, remoteCmd string, forwardStdin bool, logger klog.Logger) {
 	sshSession, err := sshClient.NewSession()

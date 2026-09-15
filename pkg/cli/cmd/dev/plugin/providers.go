@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -41,18 +41,18 @@ import (
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/registry"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/util/identity"
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/util/identity"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
 // Providers are installed INTO the hub kind cluster, next to the hub, so a
-// `faros dev init` environment is usable out of the box (edges, at minimum —
+// `railgrid dev init` environment is usable out of the box (edges, at minimum —
 // without it there is nothing to connect a cluster to). The flow mirrors the
 // production onboarding path rather than the Tilt one:
 //
 //  1. POST /api/admin/providers          — the hub's Provider controller
-//     provisions root:faros:providers:<name>, a ServiceAccount and its
+//     provisions root:railgrid:providers:<name>, a ServiceAccount and its
 //     kubeconfig Secret. Needs the static dev user on --admin-users.
 //  2. GET  /api/admin/providers/<name>/kubeconfig?server=internal — the
 //     minted kubeconfig re-pointed at the hub's in-cluster Service.
@@ -61,14 +61,14 @@ import (
 //     through that kubeconfig; the serve container heartbeats with the
 //     static dev token.
 const (
-	devHubNamespace      = "faros-system"
-	devHubReleaseName    = "faros-hub"
-	devProvidersNS       = "faros-providers"
-	devProviderTokenName = "faros-provider-hub-token"
+	devHubNamespace      = "railgrid-system"
+	devHubReleaseName    = "railgrid-hub"
+	devProvidersNS       = "railgrid-providers"
+	devProviderTokenName = "railgrid-provider-hub-token"
 
 	// devProviderChartRepo is the OCI base every provider chart is published
 	// under (see .github/workflows/provider-release.yaml).
-	devProviderChartRepo = "oci://ghcr.io/faroshq/charts"
+	devProviderChartRepo = "oci://ghcr.io/railgrid/charts"
 
 	// Provider images are large (App Studio ships a browser) and the
 	// infrastructure operator installs kro before its serve pods start, so a
@@ -80,7 +80,7 @@ const (
 	devProviderReadyTimeout = 3 * time.Minute
 )
 
-// devProviderSpec describes one provider `faros dev init` knows how to run in
+// devProviderSpec describes one provider `railgrid dev init` knows how to run in
 // the hub kind cluster from its published chart. Providers that need
 // external credentials or services to do anything (code, databricks, kuery,
 // linear) are left to the Tilt stack.
@@ -119,7 +119,7 @@ var devProviderSpecs = []devProviderSpec{
 	{
 		Name:        "edges",
 		DisplayName: "Edges",
-		Chart:       "faros-edges-provider",
+		Chart:       "railgrid-edges-provider",
 		Values: func(o *DevOptions, _ devProviderEnv) map[string]any {
 			return map[string]any{
 				"devMode": true,
@@ -138,12 +138,12 @@ var devProviderSpecs = []devProviderSpec{
 		// Operator mode, as production runs it: the chart installs only the
 		// operator, which bootstraps the provider workspace through the
 		// minted kubeconfig, helm-installs kro into this cluster, runs the
-		// serve Deployment in namespace faros-infrastructure-provider and
+		// serve Deployment in namespace railgrid-infrastructure-provider and
 		// registers the CatalogEntry itself. Apps are published through the
 		// Envoy Gateway installed beforehand (apps.go).
 		Name:        "infrastructure",
 		DisplayName: "Infrastructure",
-		Chart:       "faros-infrastructure-provider",
+		Chart:       "railgrid-infrastructure-provider",
 		Values: func(o *DevOptions, env devProviderEnv) map[string]any {
 			operator := map[string]any{
 				"enabled": true,
@@ -155,7 +155,7 @@ var devProviderSpecs = []devProviderSpec{
 				},
 				"provider": map[string]any{"replicas": 1},
 			}
-			// Apps are exposed through the faros-apps Gateway (apps.go).
+			// Apps are exposed through the railgrid-apps Gateway (apps.go).
 			mergeValues(operator, o.appsInfrastructureValues())
 			return map[string]any{
 				// The operator registers the CatalogEntry from its embedded
@@ -171,7 +171,7 @@ var devProviderSpecs = []devProviderSpec{
 		// tenants can always use token-based Connections.
 		Name:        "code",
 		DisplayName: "Code",
-		Chart:       "faros-code-provider",
+		Chart:       "railgrid-code-provider",
 		Prepare: func(ctx context.Context, _ *DevOptions, clientset kubernetes.Interface) error {
 			oauth, ok := devCodeGitHubOAuth()
 			if !ok {
@@ -201,7 +201,7 @@ var devProviderSpecs = []devProviderSpec{
 	{
 		Name:        "agents",
 		DisplayName: "Agents",
-		Chart:       "faros-agents-provider",
+		Chart:       "railgrid-agents-provider",
 		Database:    "agents",
 		Values: func(_ *DevOptions, env devProviderEnv) map[string]any {
 			return map[string]any{
@@ -212,7 +212,7 @@ var devProviderSpecs = []devProviderSpec{
 	{
 		Name:        "app-studio",
 		DisplayName: "App Studio",
-		Chart:       "faros-app-studio-provider",
+		Chart:       "railgrid-app-studio-provider",
 		// Its CatalogEntry declares infrastructure as a dependency: a
 		// workspace cannot enable App Studio without it.
 		Requires: []string{"infrastructure"},
@@ -231,7 +231,7 @@ var devProviderSpecs = []devProviderSpec{
 	{
 		Name:        "quickstart",
 		DisplayName: "Quickstart",
-		Chart:       "faros-quickstart-provider",
+		Chart:       "railgrid-quickstart-provider",
 	},
 }
 
@@ -341,7 +341,7 @@ func (o *DevOptions) hubLocalURL() string {
 }
 
 // hubInternalURL is the hub's in-cluster Service. The chart names the
-// Service after the release (faros-hub) and serves on the hub port.
+// Service after the release (railgrid-hub) and serves on the hub port.
 func (o *DevOptions) hubInternalURL() string {
 	return fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", devHubReleaseName, devHubNamespace, o.HubHTTPSPort)
 }
@@ -362,20 +362,20 @@ func (o *DevOptions) hubAdminValues(hubValues map[string]any) {
 	hubValues["tls"] = devHubTLSValues()
 	admins := []string{devStaticAdminUser()}
 	if o.WithDex {
-		admins = append(admins, "admin@test.faros.local")
+		admins = append(admins, "admin@test.railgrid.local")
 	}
 	hubValues["adminUsers"] = admins
 	o.appsHubValues(hubValues)
 }
 
 // devKCPShardURL is the embedded kcp's stable shard URL: the hub pod's
-// headless-Service DNS name (StatefulSet faros-hub, Service faros-hub-kcp).
+// headless-Service DNS name (StatefulSet railgrid-hub, Service railgrid-hub-kcp).
 const devKCPShardURL = "https://" + devHubReleaseName + "-0." + devHubReleaseName + "-kcp." + devHubNamespace + ".svc.cluster.local:6443"
 
 // pinEmbeddedShardURL makes an embedded-kcp hub advertise a shard URL that
 // survives pod restarts. Left to kcp it is the pod IP, and kcp does not
 // refresh APIExportEndpointSlices when it changes, so after any hub restart
-// (a values change on re-run, `faros dev update`, a Docker restart) the hub's
+// (a values change on re-run, `railgrid dev update`, a Docker restart) the hub's
 // controllers and the providers watch a dead address and nothing reconciles.
 // Charts that model kcp.embedded.shardURL already render the stable name;
 // older published charts get the same flags through hub.extraArgs.
@@ -426,7 +426,7 @@ func (c *devHubAPI) do(ctx context.Context, method, path string, headers map[str
 		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("User-Agent", "faros-cli/"+pkgversion.Get())
+	req.Header.Set("User-Agent", "railgrid-cli/"+pkgversion.Get())
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -541,7 +541,7 @@ func (c *devHubAPI) listOrgs(ctx context.Context) ([]devOrg, error) {
 
 func (c *devHubAPI) listWorkspaces(ctx context.Context, orgUUID string) ([]devWorkspace, error) {
 	var resp devListResponse[devWorkspace]
-	headers := map[string]string{"X-Faros-Org": orgUUID}
+	headers := map[string]string{"X-Railgrid-Org": orgUUID}
 	if _, err := c.do(ctx, http.MethodGet, "/api/orgs/"+orgUUID+"/workspaces", headers, nil, &resp); err != nil {
 		return nil, err
 	}
@@ -568,7 +568,7 @@ type devCatalogProvider struct {
 }
 
 func tenantHeaders(orgUUID, wsUUID string) map[string]string {
-	return map[string]string{"X-Faros-Org": orgUUID, "X-Faros-Workspace": wsUUID}
+	return map[string]string{"X-Railgrid-Org": orgUUID, "X-Railgrid-Workspace": wsUUID}
 }
 
 func (c *devHubAPI) listProviders(ctx context.Context, orgUUID, wsUUID string) ([]devCatalogProvider, error) {
@@ -721,7 +721,7 @@ func (o *DevOptions) installProvider(ctx context.Context, api *devHubAPI, client
 		return err
 	}
 
-	env := devProviderEnv{KubeconfigSecret: "faros-" + spec.Name + "-kubeconfig"}
+	env := devProviderEnv{KubeconfigSecret: "railgrid-" + spec.Name + "-kubeconfig"}
 	if err := ensureSecret(ctx, clientset, devProvidersNS, env.KubeconfigSecret, map[string][]byte{"kubeconfig": kubeconfig}); err != nil {
 		return err
 	}
@@ -788,7 +788,7 @@ func (o *DevOptions) installProvider(ctx context.Context, api *devHubAPI, client
 
 // loadProviderChart resolves a provider chart from --provider-chart-repo:
 // an oci:// base (published charts, latest version unless pinned) or a
-// local faros checkout (providers/<name>/deploy/chart). It also returns the
+// local railgrid checkout (providers/<name>/deploy/chart). It also returns the
 // image tag to set, empty to keep the chart's appVersion.
 //
 // An in-repo chart carries a placeholder appVersion (0.1.0) that only the
@@ -800,7 +800,7 @@ func (o *DevOptions) loadProviderChart(actionConfig *action.Configuration, spec 
 	if !strings.HasPrefix(repo, "oci://") {
 		path := filepath.Join(repo, "providers", spec.Name, "deploy", "chart")
 		if _, err := os.Stat(filepath.Join(path, "Chart.yaml")); err != nil {
-			return nil, "", fmt.Errorf("no chart at %s (is --provider-chart-repo a faros checkout?): %w", path, err)
+			return nil, "", fmt.Errorf("no chart at %s (is --provider-chart-repo a railgrid checkout?): %w", path, err)
 		}
 		chartObj, err := loader.Load(path)
 		if err != nil {
@@ -995,8 +995,8 @@ func devStaticToken() string {
 }
 
 // devStaticAdminUser is the RBAC identity the hub gives the first dev static
-// token (faros:static:<hash>). --admin-users matches on it, which is what
-// lets `faros dev init` call /api/admin/* with dev-token.
+// token (railgrid:static:<hash>). --admin-users matches on it, which is what
+// lets `railgrid dev init` call /api/admin/* with dev-token.
 func devStaticAdminUser() string {
 	return identity.NewStaticToken(devStaticToken()).RBACIdentity
 }

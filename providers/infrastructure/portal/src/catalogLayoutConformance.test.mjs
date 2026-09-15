@@ -8,7 +8,7 @@ describe('Infrastructure template catalog layouts', () => {
   it('persists a grid-default layout through the shared preference contract', () => {
     expect(source).toContain("import LayoutSelector from '../portalkit/LayoutSelector.vue'")
     expect(source).toContain("import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'")
-    expect(source).toContain("'faros:portal:infrastructure:templates-layout'")
+    expect(source).toContain("'railgrid:portal:infrastructure:templates-layout'")
     expect(source).toContain('ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))')
     expect(source).toContain('watch(layout, mode => writeLayoutPreference(layoutPreferenceKey, mode))')
     expect(source).toMatch(/<div class="filters">[\s\S]*All categories[\s\S]*<LayoutSelector v-model="layout" aria-label="Template layout"[\s\S]*<\/div>/)
@@ -17,7 +17,7 @@ describe('Infrastructure template catalog layouts', () => {
   })
 
   it('keeps catalog controls aligned and allows safe wrapping at narrow widths', () => {
-    expect(styles).toContain(`faros-provider-infrastructure .filters {
+    expect(styles).toContain(`railgrid-provider-infrastructure .filters {
   align-items: center;
   display: flex;
   flex-wrap: wrap;

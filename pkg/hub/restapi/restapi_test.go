@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,12 +36,12 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	hubproviders "github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/tenant"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // ===== fakes =====
@@ -56,7 +56,7 @@ type fakeOps struct {
 	wsDisplayNames         map[wsKey]string             // (org,ws) → display
 	wsDeletionAnnos        map[wsKey]time.Time          // (org,ws) → timestamp
 	mcpServerCalls         map[wsKey]int                // (org,ws) → count
-	farosBindingCalls      map[wsKey]int                // (org,ws) → count
+	railgridBindingCalls   map[wsKey]int                // (org,ws) → count
 	workspaceAdmins        map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
 	providerBindings       map[wsKey]map[string]string  // (org,ws) → provider → binding name
 	providerBindCalls      map[wsKey]int                // (org,ws) → count
@@ -77,7 +77,7 @@ func newFakeOps() *fakeOps {
 		wsDisplayNames:         map[wsKey]string{},
 		wsDeletionAnnos:        map[wsKey]time.Time{},
 		mcpServerCalls:         map[wsKey]int{},
-		farosBindingCalls:      map[wsKey]int{},
+		railgridBindingCalls:   map[wsKey]int{},
 		workspaceAdmins:        map[wsKey]map[string]bool{},
 		providerBindings:       map[wsKey]map[string]string{},
 		providerBindCalls:      map[wsKey]int{},
@@ -127,7 +127,7 @@ func (f *fakeOps) GetOrgMembershipRole(_ context.Context, orgUUID, userName stri
 	// Typed NotFound, matching the real Bootstrapper (whose Get surfaces the
 	// dynamic client's error). addWorkspaceMembership branches on
 	// apierrors.IsNotFound to decide whether to cascade an org membership.
-	return "", apierrors.NewNotFound(schema.GroupResource{Group: "tenants.faros.sh", Resource: "memberships"}, userName)
+	return "", apierrors.NewNotFound(schema.GroupResource{Group: "tenants.railgrid.ai", Resource: "memberships"}, userName)
 }
 
 func (f *fakeOps) PatchOrgMembershipRole(_ context.Context, orgUUID, userName, role string) error {
@@ -159,10 +159,10 @@ func (f *fakeOps) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUID string
 	return nil
 }
 
-func (f *fakeOps) EnsureChildWorkspaceFarosBinding(_ context.Context, orgUUID, wsUUID string) error {
+func (f *fakeOps) EnsureChildWorkspaceRailgridBinding(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.farosBindingCalls[wsKey{orgUUID, wsUUID}]++
+	f.railgridBindingCalls[wsKey{orgUUID, wsUUID}]++
 	return nil
 }
 
@@ -389,10 +389,10 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 	t.Helper()
 	scheme := newTestScheme(t)
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		farosclient.OrganizationGVR:        "OrganizationList",
-		farosclient.UserGVR:                "UserList",
-		farosclient.UserMembershipIndexGVR: "UserMembershipIndexList",
-		farosclient.GrantGVR:               "GrantList",
+		railgridclient.OrganizationGVR:        "OrganizationList",
+		railgridclient.UserGVR:                "UserList",
+		railgridclient.UserMembershipIndexGVR: "UserMembershipIndexList",
+		railgridclient.GrantGVR:               "GrantList",
 	}
 	// Use the customListKinds variant with no seed objects, then seed
 	// via the dynamic client so the GVR/Kind mapping is exercised
@@ -417,7 +417,7 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 		}
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, typedSeed...)
-	client := farosclient.NewFromDynamic(dyn)
+	client := railgridclient.NewFromDynamic(dyn)
 	for _, obj := range createSeed {
 		seedObject(t, client, obj)
 	}
@@ -428,7 +428,7 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 
 // seedObject writes a fixture into the fake via the typed client
 // surface so the GVR mapping is identical to what handlers use.
-func seedObject(t *testing.T, client *farosclient.Client, obj runtime.Object) {
+func seedObject(t *testing.T, client *railgridclient.Client, obj runtime.Object) {
 	t.Helper()
 	ctx := context.Background()
 	switch o := obj.(type) {
@@ -698,7 +698,7 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, alice)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
@@ -723,8 +723,8 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	if !ops.childWorkspaces["org-a"][view.UUID] {
 		t.Error("EnsureChildWorkspace not called")
 	}
-	if ops.farosBindingCalls[wsKey{"org-a", view.UUID}] != 1 {
-		t.Errorf("faros binding call count: got %d", ops.farosBindingCalls[wsKey{"org-a", view.UUID}])
+	if ops.railgridBindingCalls[wsKey{"org-a", view.UUID}] != 1 {
+		t.Errorf("railgrid binding call count: got %d", ops.railgridBindingCalls[wsKey{"org-a", view.UUID}])
 	}
 	if ops.wsDisplayNames[wsKey{"org-a", view.UUID}] != "platform" {
 		t.Errorf("display name not set: %v", ops.wsDisplayNames)
@@ -733,7 +733,7 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	// must seed the caller's cluster-admin CRB; without it the freshly-
 	// minted workspace 403s from the kcp proxy the moment the user
 	// switches into it.
-	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["faros:alice@example.com"] {
+	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["railgrid:alice@example.com"] {
 		t.Errorf("EnsureChildWorkspaceAdmin not called for caller; admins=%v",
 			ops.workspaceAdmins[wsKey{"org-a", view.UUID}])
 	}
@@ -947,7 +947,7 @@ func TestAddOrgMembership_UpdatesCRAndUMI(t *testing.T) {
 
 // TestOrgRoutesAuthorizeOnOrgRole is the regression test for the org-admin
 // escalation: a workspace admin who is only an org member (or holds no
-// org-scope row at all) sends X-Faros-Workspace with an org-scope request.
+// org-scope row at all) sends X-Railgrid-Workspace with an org-scope request.
 // Every org-admin route must refuse, and nothing may be written.
 func TestOrgRoutesAuthorizeOnOrgRole(t *testing.T) {
 	for name, orgRole := range map[string]string{"org member": tenancyv1alpha1.MembershipRoleMember, "workspace-only": ""} {
@@ -1045,7 +1045,7 @@ func TestAddOrgMembership_ResolvesEmail(t *testing.T) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "Bob@Example.com", RBACIdentity: "faros:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "Bob@Example.com", RBACIdentity: "railgrid:bob@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, bob)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
@@ -1110,7 +1110,7 @@ func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "faros:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "railgrid:bob@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, bob)
 	// The workspace must exist for the RBAC grant + display-name lookup.
@@ -1132,7 +1132,7 @@ func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// kcp RBAC granted under the resolved rbacIdentity.
-	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["faros:bob@example.com"] {
+	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["railgrid:bob@example.com"] {
 		t.Errorf("workspace RBAC not granted: %v", ops.workspaceAdmins)
 	}
 	// The workspace add cascades an org-scope membership: without it the
@@ -1175,7 +1175,7 @@ func TestWorkspaceMembership_AddKeepsExistingOrgRole(t *testing.T) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "faros:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "railgrid:bob@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, bob)
 	if err := ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1"); err != nil {
@@ -1387,10 +1387,10 @@ func TestDownloadKubeconfig_InstallVariant(t *testing.T) {
 		wantStatus  int
 		wantCommand string // empty if status != 200
 	}{
-		{"default", "", http.StatusOK, "faros"},
-		{"explicit faros", "?install=faros", http.StatusOK, "faros"},
-		{"krew alias", "?install=krew", http.StatusOK, "kubectl-faros"},
-		{"explicit kubectl-faros", "?install=kubectl-faros", http.StatusOK, "kubectl-faros"},
+		{"default", "", http.StatusOK, "railgrid"},
+		{"explicit railgrid", "?install=railgrid", http.StatusOK, "railgrid"},
+		{"krew alias", "?install=krew", http.StatusOK, "kubectl-railgrid"},
+		{"explicit kubectl-railgrid", "?install=kubectl-railgrid", http.StatusOK, "kubectl-railgrid"},
 		{"unknown", "?install=bogus", http.StatusBadRequest, ""},
 	}
 

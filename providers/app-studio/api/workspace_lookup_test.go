@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 )
 
 // staticWorkspaces is a workspaceLookup over a fixed table, standing in for
@@ -47,7 +47,7 @@ func testWorkspaceLookup(cluster, org, ws string) workspaceLookup {
 }
 
 func testWorkspace(cluster, org, ws string) tenantaccess.Workspace {
-	return tenantaccess.Workspace{ClusterID: cluster, Path: "root:faros:tenants:" + org + ":" + ws, OrgUUID: org, WorkspaceUUID: ws}
+	return tenantaccess.Workspace{ClusterID: cluster, Path: "root:railgrid:tenants:" + org + ":" + ws, OrgUUID: org, WorkspaceUUID: ws}
 }
 
 // defaultTestWorkspaces covers the cluster IDs the HTTP-level tests use, so a
@@ -66,16 +66,16 @@ func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
 	s := &Server{tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a")}
 
 	r := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
-	r.Header.Set("X-Faros-Tenant", "cluster-a")
-	r.Header.Set("X-Faros-Cluster", "cluster-a")
+	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
+	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	r.Header.Set("Authorization", "Bearer test-token")
 	id, ok := s.identityFromRequest(httptest.NewRecorder(), r)
-	if !ok || id.orgUUID != "org-a" || id.workspaceUUID != "workspace-a" || id.workspacePath != "root:faros:tenants:org-a:workspace-a" || id.workspaceErr != nil {
+	if !ok || id.orgUUID != "org-a" || id.workspaceUUID != "workspace-a" || id.workspacePath != "root:railgrid:tenants:org-a:workspace-a" || id.workspaceErr != nil {
 		t.Fatalf("identity = %+v, want scope org-a/workspace-a from the lookup", id)
 	}
 
 	r = httptest.NewRequest(http.MethodGet, "/api/projects", nil)
-	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:victim-org:victim-ws")
+	r.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:victim-org:victim-ws")
 	r.Header.Set("Authorization", "Bearer test-token")
 	id, ok = s.identityFromRequest(httptest.NewRecorder(), r)
 	if !ok {
@@ -84,8 +84,8 @@ func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
 	if id.orgUUID != "" || id.workspaceUUID != "" || id.workspacePath != "" || id.workspaceErr == nil {
 		t.Fatalf("a path-shaped header produced scope %+v; the scope must come from kcp", id)
 	}
-	if id.clusterID != "root:faros:tenants:victim-org:victim-ws" {
-		t.Fatalf("clusterID = %q, want the tenant header echoed when X-Faros-Cluster is absent", id.clusterID)
+	if id.clusterID != "root:railgrid:tenants:victim-org:victim-ws" {
+		t.Fatalf("clusterID = %q, want the tenant header echoed when X-Railgrid-Cluster is absent", id.clusterID)
 	}
 
 	w := httptest.NewRecorder()

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // Fixture builtin names, prefixed to avoid colliding with any real

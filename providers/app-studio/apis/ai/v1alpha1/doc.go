@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=ai.faros.sh
+// +groupName=ai.railgrid.ai
 
 // Package v1alpha1 contains API types for AI workspace resources.
 package v1alpha1

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@ import (
 // Labels a Grant carries so the hub can list grants per tenant and per
 // subject without decoding every object.
 const (
-	LabelGrantOrg         = "tenants.faros.sh/org"
-	LabelGrantWorkspace   = "tenants.faros.sh/workspace"
-	LabelGrantSubjectKind = "tenants.faros.sh/subject-kind"
-	LabelGrantSubjectName = "tenants.faros.sh/subject-name"
+	LabelGrantOrg         = "tenants.railgrid.ai/org"
+	LabelGrantWorkspace   = "tenants.railgrid.ai/workspace"
+	LabelGrantSubjectKind = "tenants.railgrid.ai/subject-kind"
+	LabelGrantSubjectName = "tenants.railgrid.ai/subject-name"
 )
 
 // GrantSubjectKind is the kind of principal a Grant is for. Each kind has its
@@ -66,7 +66,7 @@ const (
 // for providers, also still declared by the provider's catalog entry), and
 // the person on whose behalf the subject acts is independently authorized.
 //
-// Grants live in root:faros:system:tenants beside Organization and
+// Grants live in root:railgrid:system:tenants beside Organization and
 // UserMembershipIndex — a workspace no tenant, provider, or user identity can
 // reach — so a workspace member cannot widen a subject's access by editing
 // one. For providers, Enable writes the grant (with an empty capability list

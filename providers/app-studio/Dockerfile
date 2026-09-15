@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Built in the standalone faroshq/provider-app-studio mirror (synced from the
-# faros monorepo at providers/app-studio/ — see README). The build context is
+# Built in the standalone railgrid/provider-app-studio mirror (synced from the
+# railgrid monorepo at providers/app-studio/ — see README). The build context is
 # the mirror root, i.e. the contents of providers/app-studio/, so all paths
 # below are relative to this module's root.
 
@@ -17,7 +17,7 @@ RUN npm run build
 
 # 2. Build the Go binary. assets.go //go:embeds portal/dist, overlaid from the
 #    node stage so the bundle is fresh. The module depends on the published
-#    github.com/faroshq/provider-sdk (no local replace), so it resolves from the
+#    github.com/railgrid/provider-sdk (no local replace), so it resolves from the
 #    proxy in a standalone build context.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
@@ -33,10 +33,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 # 3. Minimal runtime image. The portal bundle is baked into the binary; the
 #    APIResourceSchemas the `init` subcommand applies are baked at
-#    /etc/faros/schemas (FAROS_SCHEMAS_DIR).
+#    /etc/railgrid/schemas (RAILGRID_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/app-studio-provider /app-studio-provider
-COPY providers/app-studio/deploy/chart/files/schemas /etc/faros/schemas
+COPY providers/app-studio/deploy/chart/files/schemas /etc/railgrid/schemas
 EXPOSE 8081
 ENV PORT=8081
 USER nonroot:nonroot

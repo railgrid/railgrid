@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { authFetch } from '@/auth/session'
 
-const STORAGE_KEY = 'faros:portal:tenant'
+const STORAGE_KEY = 'railgrid:portal:tenant'
 
 // statusMessage pulls the human-readable `.message` out of the hub's
 // kube-style Status envelope (see restapi.writeStatus) so callers can
@@ -528,8 +528,8 @@ export const useTenantStore = defineStore('tenant', () => {
   // can decide whether the endpoint requires them.
   function tenantHeaders(): Record<string, string> {
     const h: Record<string, string> = {}
-    if (orgUUID.value) h['X-Faros-Org'] = orgUUID.value
-    if (workspaceUUID.value) h['X-Faros-Workspace'] = workspaceUUID.value
+    if (orgUUID.value) h['X-Railgrid-Org'] = orgUUID.value
+    if (workspaceUUID.value) h['X-Railgrid-Workspace'] = workspaceUUID.value
     return h
   }
 
@@ -637,7 +637,7 @@ export const useTenantStore = defineStore('tenant', () => {
     if (targetOrgUUID === orgUUID.value) clearError()
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
-        headers: { 'X-Faros-Org': targetOrgUUID },
+        headers: { 'X-Railgrid-Org': targetOrgUUID },
       })
       if (epoch !== workspaceRequestEpochByOrg.get(targetOrgUUID)) return
       if (!resp.ok) {
@@ -796,7 +796,7 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Faros-Org': targetOrgUUID,
+        'X-Railgrid-Org': targetOrgUUID,
       },
       body: JSON.stringify({ displayName }),
     })
@@ -922,7 +922,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
@@ -937,7 +937,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'DELETE',
-      headers: { 'X-Faros-Org': targetOrgUUID },
+      headers: { 'X-Railgrid-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to delete org: ${resp.status}`, selectionRevisionAtStart)
@@ -951,7 +951,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/undelete`, {
       method: 'POST',
-      headers: { 'X-Faros-Org': targetOrgUUID },
+      headers: { 'X-Railgrid-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to undelete org: ${resp.status}`, selectionRevisionAtStart)
@@ -969,8 +969,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
       body: JSON.stringify({ displayName }),
     })
@@ -987,8 +987,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'DELETE',
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -1004,8 +1004,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
       method: 'POST',
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -1022,7 +1022,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const read = beginListRead('org-members', targetOrgUUID)
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
-        headers: { 'X-Faros-Org': targetOrgUUID },
+        headers: { 'X-Railgrid-Org': targetOrgUUID },
       })
       if (!resp.ok) {
         const message = `failed to list org members: ${resp.status}`
@@ -1043,7 +1043,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
       body: JSON.stringify({ user, role }),
     })
     if (!resp.ok) {
@@ -1062,7 +1062,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
       body: JSON.stringify({ role }),
     })
     if (!resp.ok) {
@@ -1077,7 +1077,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const url = `/api/orgs/${targetOrgUUID}/memberships/${user}${cascade ? '?cascade=true' : ''}`
     const resp = await authFetch(url, {
       method: 'DELETE',
-      headers: { 'X-Faros-Org': targetOrgUUID },
+      headers: { 'X-Railgrid-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to remove member: ${resp.status}`, selectionRevisionAtStart)
@@ -1090,7 +1090,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
       method: 'DELETE',
-      headers: { 'X-Faros-Org': targetOrgUUID },
+      headers: { 'X-Railgrid-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to leave org: ${resp.status}`, selectionRevisionAtStart)
@@ -1111,7 +1111,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const read = beginListRead('workspace-members', targetOrgUUID, wsUUID)
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
-        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+        headers: { 'X-Railgrid-Org': targetOrgUUID, 'X-Railgrid-Workspace': wsUUID },
       })
       if (!resp.ok) {
         const message = `failed to list workspace members: ${resp.status}`
@@ -1132,7 +1132,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const read = beginListRead('app-access', targetOrgUUID, wsUUID)
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access`, {
-        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+        headers: { 'X-Railgrid-Org': targetOrgUUID, 'X-Railgrid-Workspace': wsUUID },
       })
       if (!resp.ok) {
         const message = `failed to list app access grants: ${resp.status}`
@@ -1155,7 +1155,7 @@ export const useTenantStore = defineStore('tenant', () => {
       `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access/${encodeURIComponent(binding)}`,
       {
         method: 'DELETE',
-        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+        headers: { 'X-Railgrid-Org': targetOrgUUID, 'X-Railgrid-Workspace': wsUUID },
       },
     )
     if (!resp.ok) {
@@ -1181,8 +1181,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
       body: JSON.stringify({ user, role }),
     })
@@ -1209,8 +1209,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
       body: JSON.stringify({ role }),
     })
@@ -1225,7 +1225,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
       method: 'DELETE',
-      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+      headers: { 'X-Railgrid-Org': targetOrgUUID, 'X-Railgrid-Workspace': wsUUID },
     })
     if (!resp.ok) {
       publishTargetError(targetOrgUUID, `failed to remove member: ${resp.status}`, selectionRevisionAtStart)
@@ -1241,8 +1241,8 @@ export const useTenantStore = defineStore('tenant', () => {
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
         headers: {
-          'X-Faros-Org': targetOrgUUID,
-          'X-Faros-Workspace': wsUUID,
+          'X-Railgrid-Org': targetOrgUUID,
+          'X-Railgrid-Workspace': wsUUID,
         },
       })
       if (!resp.ok) {
@@ -1271,8 +1271,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
       body: JSON.stringify({ displayName, role }),
     })
@@ -1288,8 +1288,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
       method: 'DELETE',
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -1304,8 +1304,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'POST',
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -1322,22 +1322,22 @@ export const useTenantStore = defineStore('tenant', () => {
   // success — failures populate `error` and surface in the calling page.
   //
   // `install` selects the exec credential plugin Command in OIDC mode:
-  //   - 'faros'         → Command="faros" (curl/tar.gz install on PATH)
-  //   - 'krew'          → Command="kubectl-faros" (krew install, no
+  //   - 'railgrid'         → Command="railgrid" (curl/tar.gz install on PATH)
+  //   - 'krew'          → Command="kubectl-railgrid" (krew install, no
   //                       symlink). The same binary, just renamed by krew.
-  // Defaults to 'faros' for back-compat with the v1 endpoint. Ignored in
+  // Defaults to 'railgrid' for back-compat with the v1 endpoint. Ignored in
   // static-token mode (no exec plugin emitted).
   async function downloadKubeconfig(
     targetOrgUUID: string,
     wsUUID: string,
-    install: 'faros' | 'krew' = 'faros',
+    install: 'railgrid' | 'krew' = 'railgrid',
   ): Promise<boolean> {
     const selectionRevisionAtStart = selectionRevision
     const url = `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig?install=${encodeURIComponent(install)}`
     const resp = await authFetch(url, {
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -1350,7 +1350,7 @@ export const useTenantStore = defineStore('tenant', () => {
     // sanitised. Fallback to a UUID-based name if the header is missing.
     const cd = resp.headers.get('Content-Disposition') ?? ''
     const match = cd.match(/filename="?([^";]+)"?/i)
-    const filename = match?.[1] ?? `faros-${wsUUID}.kubeconfig`
+    const filename = match?.[1] ?? `railgrid-${wsUUID}.kubeconfig`
     const blobURL = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = blobURL
@@ -1367,8 +1367,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'DELETE',
       headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {

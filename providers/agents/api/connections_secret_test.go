@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,11 +26,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-agents/store"
-	"github.com/faroshq/provider-agents/tenant"
-	"github.com/faroshq/provider-agents/tenant/tenanttest"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tenant"
+	"github.com/railgrid/provider-agents/tenant/tenanttest"
 )
 
 const testSecretConn = "team-chat"
@@ -68,7 +68,7 @@ func storedSecret(data map[string]string) *unstructured.Unstructured {
 
 func storedConnection(connType string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "agents.faros.sh/v1alpha1",
+		"apiVersion": "agents.railgrid.ai/v1alpha1",
 		"kind":       "Connection",
 		"metadata":   map[string]any{"name": testSecretConn},
 		"spec":       map[string]any{"type": connType, "channel": "C123"},
@@ -189,13 +189,13 @@ func enableInboundOn(t *testing.T, ws *tenanttest.Server) *httptest.ResponseReco
 		cfg:        Config{WebhookKey: "unit-test-webhook-key"},
 		store:      store.NewMemoryStore(),
 		tenant:     tenant.NewClient(srv.URL, false),
-		workspaces: staticWorkspaces{"c1": {ClusterID: "c1", Path: "root:faros:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"}}.lookup,
+		workspaces: staticWorkspaces{"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"}}.lookup,
 	}
 	r := httptest.NewRequest(http.MethodPost, "/connections/"+testSecretConn+"/inbound",
 		strings.NewReader(`{"publicBaseURL":"https://agents.example.test"}`))
 	// The hub identifies the tenant by cluster ID in both headers.
-	r.Header.Set("X-Faros-Tenant", "c1")
-	r.Header.Set("X-Faros-Cluster", "c1")
+	r.Header.Set("X-Railgrid-Tenant", "c1")
+	r.Header.Set("X-Railgrid-Cluster", "c1")
 	r.Header.Set("Authorization", "Bearer test-token")
 	r.SetPathValue("name", testSecretConn)
 	w := httptest.NewRecorder()

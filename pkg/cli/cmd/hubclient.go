@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/transport"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
 // hubRESTTimeout bounds a single non-streaming REST call. Project creation and
@@ -47,7 +47,7 @@ const defaultMCPServerName = "default"
 // rejects some default HTTP-library user agents with a 403 that looks like an
 // RBAC failure, so every request sets it explicitly.
 func cliUserAgent() string {
-	return "faros-cli/" + pkgversion.Get()
+	return "railgrid-cli/" + pkgversion.Get()
 }
 
 // hubTarget carries the --org / --workspace overrides shared by the commands
@@ -81,7 +81,7 @@ type hubSession struct {
 	plain *http.Client
 }
 
-// newHubSession loads the faros kubeconfig context and resolves the org and
+// newHubSession loads the railgrid kubeconfig context and resolves the org and
 // workspace UUIDs by matching the context's cluster against the workspaces the
 // user can see (or against the --org / --workspace overrides).
 func newHubSession(ctx context.Context, target hubTarget) (*hubSession, error) {
@@ -95,7 +95,7 @@ func newHubSession(ctx context.Context, target hubTarget) (*hubSession, error) {
 	return s, nil
 }
 
-// openHubSession builds an authenticated session from the faros kubeconfig
+// openHubSession builds an authenticated session from the railgrid kubeconfig
 // context without resolving the tenant. Commands that only need the hub and
 // the caller's identity (whoami, org list) start here.
 func openHubSession() (*hubSession, error) {
@@ -107,7 +107,7 @@ func openHubSession() (*hubSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
-	ctxName, kctx, err := resolveFarosContext(raw)
+	ctxName, kctx, err := resolveRailgridContext(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (s *hubSession) resolveOrg(ctx context.Context, orgFlag string) error {
 		return nil
 	}
 	if err := s.resolveTenant(ctx, hubTarget{}); err == nil {
-		s.WS = workspaceView{} // org-scope commands must not send X-Faros-Workspace
+		s.WS = workspaceView{} // org-scope commands must not send X-Railgrid-Workspace
 		return nil
 	}
 	if len(orgs) == 1 {
@@ -192,7 +192,7 @@ func (s *hubSession) resolveOrg(ctx context.Context, orgFlag string) error {
 
 // orgScoped returns a copy of the session that sends only the org tenant
 // header. The hub's tenant middleware requires an exact (org, workspace)
-// membership row whenever X-Faros-Workspace is present, which an org admin
+// membership row whenever X-Railgrid-Workspace is present, which an org admin
 // without a row in that workspace would fail; org-scope routes must not
 // carry it.
 func (s *hubSession) orgScoped() *hubSession {
@@ -275,7 +275,7 @@ func (s *hubSession) resolveTenant(ctx context.Context, target hubTarget) error 
 	case lastErr != nil:
 		return fmt.Errorf("cluster %s is not a workspace of any org you can list (last error: %w)", s.Cluster, lastErr)
 	default:
-		return fmt.Errorf("cluster %s (kubeconfig context %q) is not a workspace of any org you belong to; run 'faros use'", s.Cluster, s.Context)
+		return fmt.Errorf("cluster %s (kubeconfig context %q) is not a workspace of any org you belong to; run 'railgrid use'", s.Cluster, s.Context)
 	}
 }
 
@@ -305,7 +305,7 @@ func (s *hubSession) bearerToken(ctx context.Context) (string, error) {
 	auth := header.Get("Authorization")
 	token, ok := strings.CutPrefix(auth, "Bearer ")
 	if !ok || strings.TrimSpace(token) == "" {
-		return "", fmt.Errorf("the kubeconfig credentials for context %q do not produce a bearer token; run 'faros login'", s.Context)
+		return "", fmt.Errorf("the kubeconfig credentials for context %q do not produce a bearer token; run 'railgrid login'", s.Context)
 	}
 	return strings.TrimSpace(token), nil
 }
@@ -335,10 +335,10 @@ func (s *hubSession) newRequest(ctx context.Context, method, url string, in any)
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if s.Org.UUID != "" {
-		req.Header.Set("X-Faros-Org", s.Org.UUID)
+		req.Header.Set("X-Railgrid-Org", s.Org.UUID)
 	}
 	if s.WS.UUID != "" {
-		req.Header.Set("X-Faros-Workspace", s.WS.UUID)
+		req.Header.Set("X-Railgrid-Workspace", s.WS.UUID)
 	}
 	return req, nil
 }
@@ -473,7 +473,7 @@ func withLoginHint(err error) error {
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		return err
 	}
-	return fmt.Errorf("%w (token missing or expired; run 'faros login')", err)
+	return fmt.Errorf("%w (token missing or expired; run 'railgrid login')", err)
 }
 
 // mcpConnectInfo mirrors the hub's GET …/mcpservers/{name}/connect reply: the

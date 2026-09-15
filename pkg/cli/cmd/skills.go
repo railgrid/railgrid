@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,23 +37,23 @@ import (
 
 	"github.com/spf13/cobra"
 
-	pkgversion "github.com/faroshq/faros/pkg/version"
+	pkgversion "github.com/railgrid/railgrid/pkg/version"
 )
 
-// faros skills: fetch the skills/ directory of the faros repository straight
+// railgrid skills: fetch the skills/ directory of the railgrid repository straight
 // from GitHub and lay it down where Claude Code and Codex look for skills.
 // Nothing is embedded in the binary, so an old CLI still installs the
 // current skill; the source archive is read once per invocation and only
 // the skills/ subtree is kept.
 
 const (
-	skillsDefaultRepo = "faroshq/faros"
+	skillsDefaultRepo = "railgrid/railgrid"
 	skillsDefaultRef  = "main"
 	skillsSourceDir   = "skills"
 
-	// skillsMarkerFile records what `faros skills install` wrote so a later
+	// skillsMarkerFile records what `railgrid skills install` wrote so a later
 	// run can tell its own directories from ones the user authored.
-	skillsMarkerFile = ".faros-skill.json"
+	skillsMarkerFile = ".railgrid-skill.json"
 
 	skillsMaxFileBytes  = 8 << 20
 	skillsMaxTotalBytes = 64 << 20
@@ -124,8 +124,8 @@ type skillsMarker struct {
 func newSkillsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
-		Short: "Install agent skills from the faros repository into Claude Code and Codex",
-		Long: `Fetch the skills/ directory of github.com/faroshq/faros (or another
+		Short: "Install agent skills from the railgrid repository into Claude Code and Codex",
+		Long: `Fetch the skills/ directory of github.com/railgrid/railgrid (or another
 repository with the same layout) and install each skill where Claude Code
 and Codex discover them:
 
@@ -136,7 +136,7 @@ and Codex discover them:
 
 The skills are read from GitHub at install time, so you always get the
 current main branch (or the --ref you name) regardless of the CLI version.
-Re-run install to update. Directories that faros installed are replaced;
+Re-run install to update. Directories that railgrid installed are replaced;
 directories you wrote yourself are left alone unless you pass --force.
 
 Skills load when an agent session starts, so restart Claude Code or Codex
@@ -207,11 +207,11 @@ func newSkillsInstallCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install [skill...]",
 		Short: "Install skills for Claude Code and Codex (all skills by default)",
-		Example: `  faros skills install                          # every skill, for Claude Code and Codex, for this user
-  faros skills install faros --target claude    # one skill, one client
-  faros skills install --scope project          # into ./.claude/skills and ./.agents/skills
-  faros skills install --dir ~/.cursor/skills   # any other directory
-  faros skills install --ref v0.1.30            # pin to a tag`,
+		Example: `  railgrid skills install                          # every skill, for Claude Code and Codex, for this user
+  railgrid skills install railgrid --target claude    # one skill, one client
+  railgrid skills install --scope project          # into ./.claude/skills and ./.agents/skills
+  railgrid skills install --dir ~/.cursor/skills   # any other directory
+  railgrid skills install --ref v0.1.30            # pin to a tag`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := skillsTargets(target, scope, dir)
 			if err != nil {
@@ -271,7 +271,7 @@ func newSkillsInstallCommand() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", skillsTargetAll, "Which client to install for: claude, codex or all")
 	cmd.Flags().StringVar(&scope, "scope", skillsScopeUser, "user (home directory) or project (current directory)")
 	cmd.Flags().StringVar(&dir, "dir", "", "Install into this directory instead of the client locations (one <dir>/<skill> per skill)")
-	cmd.Flags().BoolVar(&force, "force", false, "Replace directories that were not installed by faros skills")
+	cmd.Flags().BoolVar(&force, "force", false, "Replace directories that were not installed by railgrid skills")
 	_ = cmd.RegisterFlagCompletionFunc("target", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{skillsTargetClaude, skillsTargetCodex, skillsTargetAll}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -341,7 +341,7 @@ func fetchSkillsArchive(ctx context.Context, repo, ref string) (*skillsArchive, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "faros-cli/"+pkgversion.Version)
+	req.Header.Set("User-Agent", "railgrid-cli/"+pkgversion.Version)
 	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -497,7 +497,7 @@ func installSkill(a *skillsArchive, p *skillPackage, base string, force bool) (s
 			return "", fmt.Errorf("%s exists and is not a directory", dest)
 		}
 		if _, err := os.Stat(filepath.Join(dest, skillsMarkerFile)); err != nil && !force {
-			return "", fmt.Errorf("%s exists and was not installed by 'faros skills'; pass --force to replace it", dest)
+			return "", fmt.Errorf("%s exists and was not installed by 'railgrid skills'; pass --force to replace it", dest)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -505,7 +505,7 @@ func installSkill(a *skillsArchive, p *skillPackage, base string, force bool) (s
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
-	tmp, err := os.MkdirTemp(base, "."+p.Name+".faros-tmp-")
+	tmp, err := os.MkdirTemp(base, "."+p.Name+".railgrid-tmp-")
 	if err != nil {
 		return "", err
 	}

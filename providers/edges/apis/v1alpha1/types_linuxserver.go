@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 )
 
 // +genclient
@@ -39,11 +39,11 @@ import (
 //
 // Agents register via the provider's agent-ingress endpoint:
 //
-//	/services/providers/edges/agent/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/proxy
+//	/services/providers/edges/agent/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/proxy
 //
 // Users access it via the ssh subresource:
 //
-//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/ssh
+//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.railgrid.ai/v1alpha1/linuxservers/{name}/ssh
 type LinuxServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

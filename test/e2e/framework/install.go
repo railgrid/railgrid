@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,20 +39,20 @@ import (
 
 const (
 	// DefaultInstallClusterName is the kind cluster the install suites create.
-	// Distinct from the docs default ("faros") so a developer's manual
+	// Distinct from the docs default ("railgrid") so a developer's manual
 	// walkthrough and an e2e run never fight over the same cluster.
-	DefaultInstallClusterName = "faros-e2e-install"
+	DefaultInstallClusterName = "railgrid-e2e-install"
 
 	// InstallStateDirName is the state directory (extracted kubeconfigs,
 	// port-forward pidfiles) the install suites pass to the scripts.
-	InstallStateDirName = ".faros-install-e2e"
+	InstallStateDirName = ".railgrid-install-e2e"
 
 	// InstallGatewayAddr is the local address of the Envoy gateway
 	// port-forward started by hack/install/port-forward.sh.
 	InstallGatewayAddr = "127.0.0.1:8443"
 
 	// InstallHubURL matches the hack/install default HUB_EXTERNAL_URL. Plain
-	// localhost (not faros.localhost): *.localhost subdomains don't resolve on
+	// localhost (not railgrid.localhost): *.localhost subdomains don't resolve on
 	// stock macOS, and the install flow should run anywhere the docs do.
 	InstallHubURL = "https://localhost:9443"
 )
@@ -63,14 +63,14 @@ func InstallStateDir(repoRoot string) string {
 }
 
 // installScriptEnv assembles the environment for a hack/install script run.
-// Image overrides flow from the same FAROS_HUB_IMAGE* variables the other e2e
+// Image overrides flow from the same RAILGRID_HUB_IMAGE* variables the other e2e
 // suites use (set by the Makefile targets after docker build).
 func installScriptEnv(repoRoot string) []string {
 	stateDir := InstallStateDir(repoRoot)
 	e := append(os.Environ(),
-		"FAROS_INSTALL_CLUSTER="+DefaultInstallClusterName,
-		"FAROS_INSTALL_STATE_DIR="+stateDir,
-		"FAROS_STATIC_TOKEN="+DevToken,
+		"RAILGRID_INSTALL_CLUSTER="+DefaultInstallClusterName,
+		"RAILGRID_INSTALL_STATE_DIR="+stateDir,
+		"RAILGRID_STATIC_TOKEN="+DevToken,
 	)
 	if image := os.Getenv(hubImageEnv); image != "" {
 		e = append(e, "HUB_IMAGE="+image, "HUB_KIND_LOAD=true")
@@ -141,7 +141,7 @@ func SetupInstallFlow(repoRoot string, scripts []string) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after install: %w", err)
 		}
 
-		client := NewFarosClient(repoRoot, clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+		client := NewRailgridClient(repoRoot, clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForTenantAPI(apiCtx, client, clusterEnv.HubURL, clusterEnv.Token); err != nil {

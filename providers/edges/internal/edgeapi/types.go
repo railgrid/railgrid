@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ const ConnectionConditionSSHHostKeyChanged = "SSHHostKeyChanged"
 
 // AnnotationRegenerateJoinToken, set on a connectable resource, instructs the
 // token reconciler to mint a fresh bootstrap join token.
-const AnnotationRegenerateJoinToken = "edges.faros.sh/regenerate-join-token"
+const AnnotationRegenerateJoinToken = "edges.railgrid.ai/regenerate-join-token"
 
 // ConnectionStatus is the tunnel/connection state shared by every connectable
 // kind. Providers embed it (inline) into their kind's Status.
@@ -79,7 +79,7 @@ type ConnectionStatus struct {
 	// Labels are propagated from the agent.
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
-	// AgentVersion is the version of the faros binary on the agent.
+	// AgentVersion is the version of the railgrid binary on the agent.
 	// +optional
 	AgentVersion string `json:"agentVersion,omitempty"`
 	// LastHeartbeatTime is the most recent agent heartbeat.

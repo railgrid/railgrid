@@ -111,9 +111,9 @@ describe('Agents toast adapter lifecycle', () => {
     if (!customElements.get(tag)) customElements.define(tag, AgentsElement)
     const element = document.createElement(tag) as AgentsElement
     document.body.appendChild(element)
-    element.farosContext = { basePath: '/ui/providers/agents', orgUUID: 'org-a', workspaceUUID: 'ws-a' }
+    element.railgridContext = { basePath: '/ui/providers/agents', orgUUID: 'org-a', workspaceUUID: 'ws-a' }
     await settle(element)
-    element.farosContext = { basePath: '/ui/providers/agents', orgUUID: 'org-b', workspaceUUID: 'ws-b' }
+    element.railgridContext = { basePath: '/ui/providers/agents', orgUUID: 'org-b', workspaceUUID: 'ws-b' }
     await settle(element)
 
     expect(snapshots.at(-1)).toEqual([])

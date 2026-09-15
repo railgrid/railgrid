@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,64 +14,64 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cmd provides the faros dev command and its subcommands.
+// Package cmd provides the railgrid dev command and its subcommands.
 package cmd
 
 import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"github.com/faroshq/faros/pkg/cli/cmd/dev/plugin"
+	"github.com/railgrid/railgrid/pkg/cli/cmd/dev/plugin"
 )
 
 var (
 	devInitExampleUses = `  # One kind cluster running the hub, the edges, infrastructure, code, agents
   # and App Studio providers, and an agent that joins that same cluster as
   # the edge "local" (default)
-  faros dev init
+  railgrid dev init
 
   # Same, with GitHub sign-in for the code provider (register the callback
   # https://console.127.0.0.1.sslip.io:9443/services/providers/code/oauth/github/callback
   # on the GitHub OAuth App)
-  GITHUB_OAUTH_CLIENT_ID=... GITHUB_OAUTH_CLIENT_SECRET=... faros dev init
+  GITHUB_OAUTH_CLIENT_ID=... GITHUB_OAUTH_CLIENT_SECRET=... railgrid dev init
 
   # Only edges, plus the quickstart provider
-  faros dev init --providers edges,quickstart
+  railgrid dev init --providers edges,quickstart
 
   # App Studio (pulls in infrastructure, which it requires)
-  faros dev init --providers app-studio
+  railgrid dev init --providers app-studio
 
   # Hub only: no providers, no edge
-  faros dev init --providers "" --with-edge=false
+  railgrid dev init --providers "" --with-edge=false
 
   # Extra plain worker kind clusters to connect by hand
-  faros dev init --worker-count 1
+  railgrid dev init --worker-count 1
 
-  # Use local charts from a faros checkout for the hub and the providers
-  faros dev init --chart-path deploy/charts/faros-hub --provider-chart-repo .
+  # Use local charts from a railgrid checkout for the hub and the providers
+  railgrid dev init --chart-path deploy/charts/railgrid-hub --provider-chart-repo .
 
   # Pin chart versions
-  faros dev init --chart-version 0.1.31 --provider-chart-version 0.1.19`
+  railgrid dev init --chart-version 0.1.31 --provider-chart-version 0.1.19`
 
-	devUpdateExampleUses = `  # Upgrade the faros-hub release on the existing hub cluster
-  faros dev update
+	devUpdateExampleUses = `  # Upgrade the railgrid-hub release on the existing hub cluster
+  railgrid dev update
 
   # Upgrade to a specific image tag
-  faros dev update --tag v0.0.52
+  railgrid dev update --tag v0.0.52
 
   # Upgrade to a specific chart version
-  faros dev update --chart-version 0.1.0`
+  railgrid dev update --chart-version 0.1.0`
 )
 
 // New creates the dev command and all its subcommands.
 func New(streams genericclioptions.IOStreams) (*cobra.Command, error) {
 	cmd := &cobra.Command{
 		Use:   "dev",
-		Short: "Manage development environment for faros",
-		Long: `Manage a development environment for faros using kind clusters.
+		Short: "Manage development environment for railgrid",
+		Long: `Manage a development environment for railgrid using kind clusters.
 
 This command provides subcommands to initialize, update and delete kind
-clusters configured for faros.`,
+clusters configured for railgrid.`,
 		SilenceUsage: true,
 	}
 
@@ -101,12 +101,12 @@ func newInitCommand(streams genericclioptions.IOStreams) (*cobra.Command, error)
 	cmd := &cobra.Command{
 		Use:     "init",
 		Aliases: []string{"create"},
-		Short:   "Initialize a local faros environment (one kind cluster: hub, providers and an edge)",
-		Long: `Initialize a local faros environment in a single kind cluster.
+		Short:   "Initialize a local railgrid environment (one kind cluster: hub, providers and an edge)",
+		Long: `Initialize a local railgrid environment in a single kind cluster.
 
 This command will:
 
-- Create a hub kind cluster and install the faros-hub Helm chart (default:
+- Create a hub kind cluster and install the railgrid-hub Helm chart (default:
   OCI chart from ghcr.io) with the static token dev-token, served at
   https://console.127.0.0.1.sslip.io:9443 (public DNS answers every
   *.127.0.0.1.sslip.io name with 127.0.0.1, so no /etc/hosts entry is needed)
@@ -122,8 +122,8 @@ This command will:
 - Enable every installed provider in the dev user's default workspace
   (--enable-providers, default on)
 - Join the hub kind cluster itself as a KubernetesCluster edge (--with-edge,
-  default on): the faros-agent runs in the cluster next to the hub, so
-  "faros edge list" shows a Ready edge right after login
+  default on): the railgrid-agent runs in the cluster next to the hub, so
+  "railgrid edge list" shows a Ready edge right after login
 - Create N extra plain worker kind clusters when --worker-count > 0, for
   connecting more edges by hand
 - Configure necessary port mappings (9443, 8080, 10443)
@@ -133,13 +133,13 @@ The provider and edge automation signs in with the static dev token, so
 
 The hub chart can be sourced from:
 
-- OCI registry (default): oci://ghcr.io/faroshq/charts/faros-hub
-- Local filesystem: --chart-path ./deploy/charts/faros-hub
-- Custom OCI registry: --chart-path oci://custom.registry/charts/faros-hub
+- OCI registry (default): oci://ghcr.io/railgrid/charts/railgrid-hub
+- Local filesystem: --chart-path ./deploy/charts/railgrid-hub
+- Custom OCI registry: --chart-path oci://custom.registry/charts/railgrid-hub
 
 Provider charts come from --provider-chart-repo: an OCI base (default
-oci://ghcr.io/faroshq/charts, latest published version of each chart) or a
-faros checkout, which uses providers/<name>/deploy/chart.`,
+oci://ghcr.io/railgrid/charts, latest published version of each chart) or a
+railgrid checkout, which uses providers/<name>/deploy/chart.`,
 		Example:      devInitExampleUses,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -164,10 +164,10 @@ func newUpdateCommand(streams genericclioptions.IOStreams) (*cobra.Command, erro
 	opts := plugin.NewDevOptions(streams)
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Upgrade the faros-hub release on an existing local environment",
-		Long: `Upgrade the faros-hub Helm release on the hub kind cluster
-created by ` + "`faros dev init`" + `. The kind clusters themselves are not modified;
-only the faros-hub release is upgraded (image, tag, chart version, …).`,
+		Short: "Upgrade the railgrid-hub release on an existing local environment",
+		Long: `Upgrade the railgrid-hub Helm release on the hub kind cluster
+created by ` + "`railgrid dev init`" + `. The kind clusters themselves are not modified;
+only the railgrid-hub release is upgraded (image, tag, chart version, …).`,
 		Example:      devUpdateExampleUses,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -191,9 +191,9 @@ func newDeleteCommand(streams genericclioptions.IOStreams) (*cobra.Command, erro
 	cmd := &cobra.Command{
 		Use:   "delete",
 		Short: "Delete development environment",
-		Long: `Delete the development environment for faros.
+		Long: `Delete the development environment for railgrid.
 
-This command will delete the kind cluster created for faros development.`,
+This command will delete the kind cluster created for railgrid development.`,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

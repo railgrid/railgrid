@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Faros Authors.
+Copyright 2025 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -100,7 +100,7 @@ func TestMultipleComponentTargets(t *testing.T) {
 func TestPrivateProvidersAreNotReleasedHere(t *testing.T) {
 	for _, name := range []string{"linear", "databricks"} {
 		if _, ok := components[name]; ok {
-			t.Fatalf("private provider %s is released by Faros", name)
+			t.Fatalf("private provider %s is released by Railgrid", name)
 		}
 		for _, component := range componentOrder {
 			if component == name {

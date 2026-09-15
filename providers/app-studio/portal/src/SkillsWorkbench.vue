@@ -1,10 +1,10 @@
 <script lang="ts">
-import type { FarosContext as SkillsFarosContext } from './types'
+import type { RailgridContext as SkillsRailgridContext } from './types'
 
 export interface AssistantSkillsRequestScope {
   serial: number
   projectName: string
-  ctx: SkillsFarosContext | null
+  ctx: SkillsRailgridContext | null
 }
 
 /**
@@ -15,7 +15,7 @@ export function assistantSkillsRequestIsCurrent(
   scope: AssistantSkillsRequestScope,
   currentSerial: number,
   currentProjectName: string,
-  currentContext: SkillsFarosContext | null,
+  currentContext: SkillsRailgridContext | null,
 ): boolean {
   return scope.serial === currentSerial &&
     scope.projectName === currentProjectName &&
@@ -37,14 +37,14 @@ import {
 import { api, ProjectAPIRequestError } from './api'
 import { filterAssistantSkills } from './skillsSearch'
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectAssistantSkill,
   ProjectAssistantSkillDetail,
   ProjectAssistantSkillsResponse,
 } from './types'
 
 const props = withDefaults(defineProps<{
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   projectName: string
   skills: ProjectAssistantSkill[]
   loading?: boolean

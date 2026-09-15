@@ -3,11 +3,11 @@
 #
 #   helm upgrade -i --create-namespace --namespace dex dex dex/dex \
 #     -f hack/dex/dex-values.yaml \
-#     --set image.repository=ghcr.io/faroshq/faros-dex \
+#     --set image.repository=ghcr.io/railgrid/railgrid-dex \
 #     --set image.tag=$TAG
 
 config:
-  issuer: https://auth.faros.example.com
+  issuer: https://auth.railgrid.example.com
 
   logger:
     level: "debug"
@@ -34,15 +34,15 @@ config:
       config:
         clientID: REPLACE_ME
         clientSecret: REPLACE_ME
-        redirectURI: https://auth.faros.example.com/callback
-        org: faroshq
+        redirectURI: https://auth.railgrid.example.com/callback
+        org: railgrid
 
   staticClients:
-    - id: faros
-      name: Faros
+    - id: railgrid
+      name: Railgrid
       public: true
       redirectURIs:
-        - https://console.faros.example.com/auth/callback
+        - https://console.railgrid.example.com/auth/callback
 
 service:
   type: ClusterIP
@@ -51,11 +51,11 @@ ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: auth.faros.example.com
+    - host: auth.railgrid.example.com
       paths:
         - path: /
           pathType: ImplementationSpecific
   tls:
     - secretName: dex-tls
       hosts:
-        - auth.faros.example.com
+        - auth.railgrid.example.com

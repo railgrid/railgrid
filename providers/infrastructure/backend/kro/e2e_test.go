@@ -1,7 +1,7 @@
 //go:build e2e
 
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // kro stamps every child object it applies for an instance with these labels
@@ -500,7 +500,7 @@ func acceptHTTPRoute(dyn dynamic.Interface, route *unstructured.Unstructured) {
 			"name":      DefaultGatewayName,
 			"namespace": DefaultGatewayNamespace,
 		},
-		"controllerName": "faros.sh/e2e-gateway-stand-in",
+		"controllerName": "railgrid.ai/e2e-gateway-stand-in",
 		"conditions":     []any{cond("Accepted"), cond("ResolvedRefs")},
 	}
 	if err := unstructured.SetNestedSlice(updated.Object, []any{parent}, "status", "parents"); err != nil {

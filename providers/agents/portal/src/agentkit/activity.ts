@@ -149,8 +149,8 @@ function boundedText(value: unknown, maxBytes: number, required = false): value 
 export function safeExecutionURL(value: unknown): string | undefined {
   if (!boundedText(value, 512, true) || value.startsWith('//') || !value.startsWith('/') || value.includes('\\')) return undefined
   try {
-    const parsed = new URL(value, 'https://faros.invalid')
-    return parsed.origin === 'https://faros.invalid' ? value : undefined
+    const parsed = new URL(value, 'https://railgrid.invalid')
+    return parsed.origin === 'https://railgrid.invalid' ? value : undefined
   } catch {
     return undefined
   }

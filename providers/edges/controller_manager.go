@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,20 +27,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/apiexportprovider"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	edgectrl "github.com/faroshq/provider-edges/internal/edgectrl"
-	"github.com/faroshq/provider-edges/internal/events"
-	"github.com/faroshq/provider-edges/internal/scheduler"
-	"github.com/faroshq/provider-edges/internal/servicectrl"
-	"github.com/faroshq/provider-edges/internal/status"
-	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	edgectrl "github.com/railgrid/provider-edges/internal/edgectrl"
+	"github.com/railgrid/provider-edges/internal/events"
+	"github.com/railgrid/provider-edges/internal/scheduler"
+	"github.com/railgrid/provider-edges/internal/servicectrl"
+	"github.com/railgrid/provider-edges/internal/status"
+	sdktunnel "github.com/railgrid/provider-edges/internal/tunnel"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
-	edgescheme "github.com/faroshq/provider-edges/scheme"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
+	edgescheme "github.com/railgrid/provider-edges/scheme"
 )
 
 // errControllerDisabled is the sentinel main() checks for so it can log +

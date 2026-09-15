@@ -256,7 +256,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </div>
 
         <div v-if="hubAccess.length" class="mt-3">
-          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Acting for you in faros</p>
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Acting for you in railgrid</p>
           <p class="mb-2 text-[10px] text-text-muted">
             The provider can do these things as the person using it, and never more than that
             person may. What you leave unchecked is declined; you can change it by enabling the

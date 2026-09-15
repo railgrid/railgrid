@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // lifecycleDue is deliberately pure so short-lived test templates can prove
@@ -37,7 +37,7 @@ func lifecycleDue(now time.Time, created metav1.Time, development *infrav1alpha1
 	}
 	last := created.Time
 	if runtimeObj != nil {
-		if raw := runtimeObj.GetAnnotations()[infrav1alpha1.FarosLastActivityAnnotation]; raw != "" {
+		if raw := runtimeObj.GetAnnotations()[infrav1alpha1.RailgridLastActivityAnnotation]; raw != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil && parsed.After(last) && !parsed.After(now) {
 				last = parsed
 			}
@@ -59,7 +59,7 @@ func lifecycleRequeueAfter(now time.Time, created metav1.Time, development *infr
 	}
 	last := created.Time
 	if runtimeObj != nil {
-		if raw := runtimeObj.GetAnnotations()[infrav1alpha1.FarosLastActivityAnnotation]; raw != "" {
+		if raw := runtimeObj.GetAnnotations()[infrav1alpha1.RailgridLastActivityAnnotation]; raw != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil && parsed.After(last) && !parsed.After(now) {
 				last = parsed
 			}

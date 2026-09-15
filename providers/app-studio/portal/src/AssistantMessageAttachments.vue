@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { File as FileIcon, FileText, Image, Loader2 } from 'lucide-vue-next'
-import type { FarosContext, ProjectAssistantAttachmentReceipt } from './types'
+import type { RailgridContext, ProjectAssistantAttachmentReceipt } from './types'
 import { api } from './api'
 import { assistantAttachmentContentTypeKind, assistantAttachmentSizeLabel } from './assistantAttachments'
 
 const props = defineProps<{
   attachments: ProjectAssistantAttachmentReceipt[]
-  ctx: FarosContext | null
+  ctx: RailgridContext | null
   projectName: string
 }>()
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 )
 
 // EnsureCatalogEntry registers the provider with the hub by applying its
@@ -49,9 +49,9 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 		// Stamp the release version. The embedded manifest.yaml carries a
 		// placeholder (spec.version: 0.1.0); the chart injects the real
 		// .Chart.AppVersion (stamped by `helm package --app-version` at
-		// release) via FAROS_PROVIDER_VERSION so the portal shows the same
+		// release) via RAILGRID_PROVIDER_VERSION so the portal shows the same
 		// version as the chart-templated providers.
-		if v := os.Getenv("FAROS_PROVIDER_VERSION"); v != "" {
+		if v := os.Getenv("RAILGRID_PROVIDER_VERSION"); v != "" {
 			spec["version"] = v
 		}
 	}
@@ -61,7 +61,7 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 	}
 
 	// sdkinstall.ApplyCatalogEntry reads a file; round-trip through a temp file.
-	f, err := os.CreateTemp("", "faros-catalogentry-*.yaml")
+	f, err := os.CreateTemp("", "railgrid-catalogentry-*.yaml")
 	if err != nil {
 		return err
 	}

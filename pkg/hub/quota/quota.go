@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 	"context"
 	"fmt"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 const (
@@ -51,7 +51,7 @@ const (
 	// Set at create time by the hub's Org-create endpoint (roadmap step 10)
 	// and by the personal-Org bootstrap controller (roadmap step 1+). Used
 	// here to count Orgs against the user's quota.
-	LabelCreatedBy = "tenants.faros.sh/created-by"
+	LabelCreatedBy = "tenants.railgrid.ai/created-by"
 )
 
 // EffectiveOrgsPerUser returns the effective Org quota for the given
@@ -80,7 +80,7 @@ func EffectiveWorkspacesPerOrg(org *tenancyv1alpha1.Organization) int32 {
 // QuotaExceededError when usage >= cap.
 //
 // Pulling the count behind an interface keeps the package
-// dependency-free of the faros / kcp clientsets so the helpers can be
+// dependency-free of the railgrid / kcp clientsets so the helpers can be
 // unit-tested with a literal fakeCounter (see quota_test.go) and the
 // production wiring picks the appropriate listing strategy at the
 // call site.

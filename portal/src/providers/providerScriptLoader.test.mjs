@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-provider-script-loader'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-provider-script-loader'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,
@@ -53,7 +53,7 @@ test('coalesces same-version consumers and supersedes an unresolved older versio
   await Promise.resolve()
   assert.equal(doc.appended.length, 1)
   assert.equal(doc.appended[0].src, '/ui/providers/app-studio/main.js?v=1')
-  const staleGeneration = doc.appended[0].dataset.farosProviderBootstrapGeneration
+  const staleGeneration = doc.appended[0].dataset.railgridProviderBootstrapGeneration
   const staleOnload = doc.appended[0].onload
 
   const next = loadProviderScript('app-studio', '2', doc)
@@ -61,9 +61,9 @@ test('coalesces same-version consumers and supersedes an unresolved older versio
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(doc.appended.length, 2)
   assert.equal(doc.appended[1].src, '/ui/providers/app-studio/main.js?v=2')
-  const currentGeneration = doc.appended[1].dataset.farosProviderBootstrapGeneration
+  const currentGeneration = doc.appended[1].dataset.railgridProviderBootstrapGeneration
   assert.notEqual(currentGeneration, staleGeneration)
-  assert.equal(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
+  assert.equal(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
 
   // A late browser event from the detached v1 script cannot settle or replace
   // the current v2 record.
@@ -73,8 +73,8 @@ test('coalesces same-version consumers and supersedes an unresolved older versio
 
   assert.strictEqual(loadProviderScript('app-studio', '2', doc), next)
   invalidateProviderScript('app-studio', '1', doc)
-  assert.equal(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
-  assert.equal(doc.getElementById('faros-provider-script-app-studio'), doc.appended[1])
+  assert.equal(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
+  assert.equal(doc.getElementById('railgrid-provider-script-app-studio'), doc.appended[1])
 })
 
 test('requires a page reload when a direct-registration provider catalog version changes', async () => {
@@ -101,7 +101,7 @@ test('requires a page reload when a direct-registration provider catalog version
   await first
   assert.strictEqual(loadProviderScript('quickstart', '1', doc), first)
   assert.equal(doc.appended.length, 1)
-  assert.equal(doc.getElementById('faros-provider-script-quickstart'), doc.appended[0])
+  assert.equal(doc.getElementById('railgrid-provider-script-quickstart'), doc.appended[0])
 })
 
 test('keeps bootstrap generation tokens unique across loader module re-evaluation', async () => {
@@ -110,7 +110,7 @@ test('keeps bootstrap generation tokens unique across loader module re-evaluatio
   await Promise.resolve()
   const staleScript = doc.appended[0]
   const staleOnload = staleScript.onload
-  const staleGeneration = staleScript.dataset.farosProviderBootstrapGeneration
+  const staleGeneration = staleScript.dataset.railgridProviderBootstrapGeneration
 
   // A Vite HMR update re-evaluates this module but retains the browser window
   // and already-prepared classic scripts. A window-owned counter must prevent
@@ -121,15 +121,15 @@ test('keeps bootstrap generation tokens unique across loader module re-evaluatio
   await assert.rejects(first, /superseded provider "app-studio" version hmr-1/)
   await new Promise((resolve) => setImmediate(resolve))
   const currentScript = doc.appended[1]
-  const currentGeneration = currentScript.dataset.farosProviderBootstrapGeneration
+  const currentGeneration = currentScript.dataset.railgridProviderBootstrapGeneration
 
   assert.notEqual(currentGeneration, staleGeneration)
-  assert.equal(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
+  assert.equal(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
 
   currentScript.onload()
   await next
   staleOnload()
-  assert.equal(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
+  assert.equal(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], currentGeneration)
 })
 
 test('keeps direct-registration version safety across loader module re-evaluation', async () => {
@@ -156,13 +156,13 @@ test('bounds a provider script request that never settles', async () => {
   const doc = providerDocument()
   const load = loadProviderScript('app-studio', 'stalled', doc, 1)
   await Promise.resolve()
-  const failedGeneration = doc.appended[0].dataset.farosProviderBootstrapGeneration
+  const failedGeneration = doc.appended[0].dataset.railgridProviderBootstrapGeneration
   await assert.rejects(
     load,
     /timed out loading \/ui\/providers\/app-studio\/main\.js\?v=stalled/,
   )
-  assert.equal(doc.getElementById('faros-provider-script-app-studio'), null)
-  assert.notEqual(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], failedGeneration)
+  assert.equal(doc.getElementById('railgrid-provider-script-app-studio'), null)
+  assert.notEqual(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], failedGeneration)
 })
 
 test('keeps a timed-out direct-registration provider terminal until page reload', async () => {
@@ -196,14 +196,14 @@ test('invalidation reinjects a loaded bootstrap at the same catalog version', as
   const doc = providerDocument()
   const first = loadProviderScript('app-studio', '3', doc)
   await Promise.resolve()
-  const invalidatedGeneration = doc.appended[0].dataset.farosProviderBootstrapGeneration
+  const invalidatedGeneration = doc.appended[0].dataset.railgridProviderBootstrapGeneration
   doc.appended[0].onload()
   await first
 
   assert.strictEqual(loadProviderScript('app-studio', '3', doc), first)
   invalidateProviderScript('app-studio', '3', doc)
-  assert.equal(doc.getElementById('faros-provider-script-app-studio'), null)
-  assert.notEqual(doc.defaultView.__farosProviderBootstrapGenerationsV1['app-studio'], invalidatedGeneration)
+  assert.equal(doc.getElementById('railgrid-provider-script-app-studio'), null)
+  assert.notEqual(doc.defaultView.__railgridProviderBootstrapGenerationsV1['app-studio'], invalidatedGeneration)
 
   const retry = loadProviderScript('app-studio', '3', doc)
   await new Promise((resolve) => setImmediate(resolve))

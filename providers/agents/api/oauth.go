@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,10 +35,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
-	"github.com/faroshq/provider-agents/llm"
-	"github.com/faroshq/provider-sdk/statuspage"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-sdk/statuspage"
 )
 
 // oauthPreset holds a provider's endpoints and quirks.
@@ -125,7 +125,7 @@ type oauthState struct {
 func (s *Server) encodeOAuthState(st oauthState) (string, error) {
 	key := s.webhookKeyBytes()
 	if len(key) == 0 {
-		return "", fmt.Errorf("state signing unavailable — set FAROS_PROVIDER_KUBECONFIG or AGENTS_WEBHOOK_KEY")
+		return "", fmt.Errorf("state signing unavailable — set RAILGRID_PROVIDER_KUBECONFIG or AGENTS_WEBHOOK_KEY")
 	}
 	raw, _ := json.Marshal(st)
 	payload := base64.RawURLEncoding.EncodeToString(raw)
@@ -310,7 +310,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	_ = statuspage.Render(w, statuspage.Page{
 		Title:   "OAuth connection complete",
 		Heading: conn.Spec.OAuth.Provider + " connected",
-		Message: "You can close this tab and return to Faros.",
+		Message: "You can close this tab and return to Railgrid.",
 		State:   statuspage.Success,
 	})
 }

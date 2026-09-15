@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,12 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func applicationTemplateForPromote() projectTemplateInfo {
 	info := applicationTemplateInfo()
-	info.APIVersion = "infrastructure.faros.sh/v1alpha1"
+	info.APIVersion = "infrastructure.railgrid.ai/v1alpha1"
 	info.Kind = "Application"
 	info.Resource = "applications"
 	return info
@@ -79,7 +79,7 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 		"frontendPort":               float64(8080),
 		"backendPort":                float64(3000),
 		"name":                       "attacker-name",
-		"farosMode":                  "development",
+		"railgridMode":               "development",
 		"frontendImage":              "ghcr.io/evil/x@sha256:ccc",
 		projectRedeployRevisionField: "attacker-revision",
 	}
@@ -101,8 +101,8 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	if vals["name"] != "shop-prod" {
 		t.Fatalf("name = %v, want shop-prod (platform-owned, user override ignored)", vals["name"])
 	}
-	if vals["farosMode"] != "production" {
-		t.Fatalf("farosMode = %v, want production", vals["farosMode"])
+	if vals["railgridMode"] != "production" {
+		t.Fatalf("railgridMode = %v, want production", vals["railgridMode"])
 	}
 	if vals["frontendImage"] != "ghcr.io/acme/shop/frontend@sha256:aaa" {
 		t.Fatalf("frontendImage = %v, want the built digest (user override ignored)", vals["frontendImage"])
@@ -127,9 +127,9 @@ func TestProjectProductionInputValuesExcludePlatformAndImageOwnedFields(t *testi
 	info.ProductionSchema = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"access":       map[string]any{"type": "string"},
-			"webImage":     map[string]any{"type": "string"},
-			"farosCluster": map[string]any{"type": "string", "description": "Computed by the platform — do NOT set."},
+			"access":          map[string]any{"type": "string"},
+			"webImage":        map[string]any{"type": "string"},
+			"railgridCluster": map[string]any{"type": "string", "description": "Computed by the platform — do NOT set."},
 			"expose": map[string]any{"type": "object", "properties": map[string]any{
 				"hostnamePrefix": map[string]any{"type": "string"},
 				// Keep the schema description neutral: fqdn is reserved by the
@@ -139,11 +139,11 @@ func TestProjectProductionInputValuesExcludePlatformAndImageOwnedFields(t *testi
 		},
 	}
 	values := projectProductionInputValues(info, map[string]string{"webImage": "web@sha256:built"}, map[string]any{
-		"access":       "private",
-		"webImage":     "web@sha256:attacker",
-		"farosCluster": "attacker-cluster",
-		"name":         "attacker-name",
-		"expose":       map[string]any{"hostnamePrefix": "shop", "fqdn": "attacker.example"},
+		"access":          "private",
+		"webImage":        "web@sha256:attacker",
+		"railgridCluster": "attacker-cluster",
+		"name":            "attacker-name",
+		"expose":          map[string]any{"hostnamePrefix": "shop", "fqdn": "attacker.example"},
 	})
 	want := map[string]any{"expose": map[string]any{"hostnamePrefix": "shop"}}
 	if !reflect.DeepEqual(values, want) {
@@ -224,7 +224,7 @@ func TestProjectTemplateProdBindingLocksHostnamePrefixAfterFirstDeploy(t *testin
 		"type": "object",
 		"properties": map[string]any{
 			"name":          map[string]any{"type": "string"},
-			"farosMode":     map[string]any{"type": "string"},
+			"railgridMode":  map[string]any{"type": "string"},
 			"frontendImage": map[string]any{"type": "string"},
 			"expose": map[string]any{"type": "object", "properties": map[string]any{
 				"hostnamePrefix": map[string]any{"type": "string"},
@@ -281,10 +281,10 @@ func TestProjectTemplateProdBindingDoesNotInjectUndeclaredHostnamePrefix(t *test
 	info.ProductionSchema = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"name":                  map[string]any{"type": "string"},
-			"farosMode":             map[string]any{"type": "string"},
-			"farosRedeployRevision": map[string]any{"type": "string"},
-			"frontendImage":         map[string]any{"type": "string"},
+			"name":                     map[string]any{"type": "string"},
+			"railgridMode":             map[string]any{"type": "string"},
+			"railgridRedeployRevision": map[string]any{"type": "string"},
+			"frontendImage":            map[string]any{"type": "string"},
 		},
 		"required":             []any{"name"},
 		"additionalProperties": false,
@@ -361,7 +361,7 @@ func TestProjectTemplateProdBindingRejectsInvalidSchemaValues(t *testing.T) {
 		"type": "object",
 		"properties": map[string]any{
 			"name":          map[string]any{"type": "string"},
-			"farosMode":     map[string]any{"type": "string"},
+			"railgridMode":  map[string]any{"type": "string"},
 			"frontendImage": map[string]any{"type": "string"},
 			"replicas":      map[string]any{"type": "integer", "minimum": float64(1)},
 		},
@@ -382,7 +382,7 @@ func TestProjectTemplateProdBindingPreservesAndEnforcesImmutableInputs(t *testin
 		"type": "object",
 		"properties": map[string]any{
 			"name":          map[string]any{"type": "string"},
-			"farosMode":     map[string]any{"type": "string"},
+			"railgridMode":  map[string]any{"type": "string"},
 			"frontendImage": map[string]any{"type": "string"},
 			"database": map[string]any{"type": "object", "properties": map[string]any{
 				"size": map[string]any{"type": "string", "enum": []any{"small", "medium", "large"}, "default": "small"},
@@ -392,7 +392,7 @@ func TestProjectTemplateProdBindingPreservesAndEnforcesImmutableInputs(t *testin
 	}
 	upsertProjectProductionBinding(p, aiv1alpha1.ProjectProviderBindingSpec{
 		Name:   projectProductionBindingName,
-		Values: runtime.RawExtension{Raw: []byte(`{"database":{"size":"large"},"name":"shop-prod","farosMode":"production"}`)},
+		Values: runtime.RawExtension{Raw: []byte(`{"database":{"size":"large"},"name":"shop-prod","railgridMode":"production"}`)},
 	})
 
 	_, err := projectTemplateProdBinding(p, info, map[string]string{"frontendImage": "image@sha256:new"}, map[string]any{"database": map[string]any{"size": "medium"}})
@@ -436,7 +436,7 @@ func TestProjectTemplateInfoCarriesProductionSchema(t *testing.T) {
 
 func TestProjectRequestedRedeployRevisionReadsPersistedProductionValues(t *testing.T) {
 	binding := &aiv1alpha1.ProjectProviderBindingSpec{
-		Values: runtime.RawExtension{Raw: []byte(`{"farosRedeployRevision":" rollout-42 "}`)},
+		Values: runtime.RawExtension{Raw: []byte(`{"railgridRedeployRevision":" rollout-42 "}`)},
 	}
 	if got := projectRequestedRedeployRevision(binding); got != "rollout-42" {
 		t.Fatalf("requested revision = %q, want rollout-42", got)

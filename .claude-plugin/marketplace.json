@@ -1,17 +1,17 @@
 {
-  "name": "faros",
+  "name": "railgrid",
   "owner": {
-    "name": "faroshq",
-    "url": "https://github.com/faroshq"
+    "name": "railgrid",
+    "url": "https://github.com/railgrid"
   },
   "metadata": {
-    "description": "Skills for using faros from Claude Code"
+    "description": "Skills for using railgrid from Claude Code"
   },
   "plugins": [
     {
-      "name": "faros",
-      "source": "./skills/faros",
-      "description": "Drive a faros hub as a user: faros CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
+      "name": "railgrid",
+      "source": "./skills/railgrid",
+      "description": "Drive a railgrid hub as a user: railgrid CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
       "category": "productivity"
     }
   ]

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -80,7 +80,7 @@ func actionsReadinessConfig(t *testing.T, enabled bool, client *http.Client) (*a
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:faros:tenants:org:workspace",
+		ActionsTenantPath:         "root:railgrid:tenants:org:workspace",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",
@@ -137,7 +137,7 @@ func TestExchangeActionsTokenPublishesTokenAndExactIdentity(t *testing.T) {
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:faros:tenants:org:ws",
+		ActionsTenantPath:         "root:railgrid:tenants:org:ws",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",
@@ -155,7 +155,7 @@ func TestExchangeActionsTokenPublishesTokenAndExactIdentity(t *testing.T) {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
 	want := actionsExchangeRequest{
-		TenantPath: "root:faros:tenants:org:ws", Project: "demo", ProjectUID: "project-uid", Environment: "development", Instance: "demo-dev",
+		TenantPath: "root:railgrid:tenants:org:ws", Project: "demo", ProjectUID: "project-uid", Environment: "development", Instance: "demo-dev",
 	}
 	if gotRequest != want {
 		t.Fatalf("request = %+v, want %+v", gotRequest, want)
@@ -228,7 +228,7 @@ func TestExchangeActionsTokenDoesNotFollowRedirectOrForwardBootstrap(t *testing.
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:faros:tenants:org:ws",
+		ActionsTenantPath:         "root:railgrid:tenants:org:ws",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",

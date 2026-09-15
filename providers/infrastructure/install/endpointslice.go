@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -92,7 +92,7 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 // Idempotent.
 // PlatformAPIExportEndpointSlice ensures the slice the kcp-apiexport kro
 // provider watches. workspacePath is the logical-cluster path the APIExport
-// lives in (root:faros:providers:<name>) — REQUIRED so kcp can resolve the
+// lives in (root:railgrid:providers:<name>) — REQUIRED so kcp can resolve the
 // export's cluster and publish endpoint URLs in status. Without it the slice
 // stays endpoint-less and kro never discovers a virtual-workspace URL to
 // watch, so tenant instances are never reconciled.

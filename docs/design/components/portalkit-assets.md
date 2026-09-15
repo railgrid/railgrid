@@ -15,7 +15,7 @@ not be edited directly.
 | Source file | Contract |
 |---|---|
 | `dashboardtile.ts` | [dashboard and tile support](portalkit-support.md) |
-| `faros-ui.css` | [shared recipes](../foundations/recipes.md) |
+| `railgrid-ui.css` | [shared recipes](../foundations/recipes.md) |
 | `form-select.ts` | [form select](form-select.md) |
 | `icons.ts` | [iconography](../foundations/iconography.md) |
 | `modal.ts` | [modal and confirmation support](confirm-dialog.md) |
@@ -61,7 +61,7 @@ Vue portals because the SFC kit owns those contracts there.
 | `toast.ts` | [toast transport](toast.md) |
 | `useDelayedLoading.ts` | [PortalKit support contracts](portalkit-support.md) |
 
-The manifest also copies `dashboardtile.ts`, `faros-ui.css`, `icons.ts`,
+The manifest also copies `dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`,
 `page-state.ts`, `styles.ts`, `tabs.ts`, and `tenant.ts` to the root,
 Agents, App Studio, Code, Databricks, Edges, Infrastructure, and Kuery Vue
 portals. The Vue toast trio is copied to every one of those except Agents;

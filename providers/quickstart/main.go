@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,7 +6,7 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// quickstart is a minimal faros provider used to prove the platform's
+// quickstart is a minimal railgrid provider used to prove the platform's
 // extension surface end-to-end. It serves three groups of routes on the
 // same port:
 //
@@ -39,7 +39,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 type helloResponse struct {
@@ -85,7 +85,7 @@ func tokenFingerprint(authorization string) string {
 //
 //	quickstart-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    RAILGRID_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	quickstart-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -131,9 +131,9 @@ func runServe() {
 			Message:       "hello from the quickstart provider",
 			Provider:      "quickstart",
 			ServedAt:      time.Now().UTC(),
-			UserHeader:    r.Header.Get("X-Faros-User"),
-			TenantHeader:  r.Header.Get("X-Faros-Tenant"),
-			ClusterHeader: r.Header.Get("X-Faros-Cluster"),
+			UserHeader:    r.Header.Get("X-Railgrid-User"),
+			TenantHeader:  r.Header.Get("X-Railgrid-Tenant"),
+			ClusterHeader: r.Header.Get("X-Railgrid-Cluster"),
 		}
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			resp.TokenLength = len(auth)
@@ -227,8 +227,8 @@ func runServe() {
 
 	// Heartbeat goroutine — POSTs to the hub every 30s so the catalog
 	// controller's TTL doesn't flip us to NotReady. Configured from
-	// FAROS_HUB_URL / FAROS_PROVIDER_NAME / FAROS_HUB_INSECURE and the
-	// provider SA token (see provider-sdk/hubclient); an empty FAROS_HUB_URL
+	// RAILGRID_HUB_URL / RAILGRID_PROVIDER_NAME / RAILGRID_HUB_INSECURE and the
+	// provider SA token (see provider-sdk/hubclient); an empty RAILGRID_HUB_URL
 	// disables it (useful for tests / dry-run).
 	hb, err := hubclient.ConfigFromEnv("quickstart", heartbeatVersion)
 	if err != nil {

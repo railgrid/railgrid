@@ -19,7 +19,7 @@ async function mountTile(api: ApiClient): Promise<AgentsDashboardTileElement> {
   document.body.appendChild(tile)
   await settle(tile)
   Object.assign(tile.api!, api)
-  tile.farosContext = { tenant: 'root:faros:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws' }
+  tile.railgridContext = { tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws' }
   await tile.load()
   await settle(tile)
   return tile
@@ -45,7 +45,7 @@ describe('agents dashboard tile refresh resilience', () => {
       }),
     }))
     const navigate = vi.fn()
-    tile.addEventListener('faros-navigate', navigate)
+    tile.addEventListener('railgrid-navigate', navigate)
 
     tile.querySelector<HTMLButtonElement>('.agents-tile-rows button')!.click()
 
@@ -132,9 +132,9 @@ describe('agents dashboard tile refresh resilience', () => {
       listSchedules: vi.fn().mockResolvedValue([]),
     }))
 
-    tile.farosContext = { tenant: 'root:faros:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws', token: 'shared', user: { userId: 'alice' } }
+    tile.railgridContext = { tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws', token: 'shared', user: { userId: 'alice' } }
     await Promise.resolve()
-    tile.farosContext = { tenant: 'root:faros:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws', token: 'shared', user: { userId: 'bob' } }
+    tile.railgridContext = { tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws', token: 'shared', user: { userId: 'bob' } }
     stale.resolve([agentFixture('stale-one'), agentFixture('stale-two')])
     await settle(tile)
     await settle(tile)
@@ -160,8 +160,8 @@ describe('agents dashboard tile refresh resilience', () => {
       listSchedules: vi.fn().mockResolvedValue([]),
     }))
 
-    tile.farosContext = {
-      tenant: 'root:faros:tenants:org:ws',
+    tile.railgridContext = {
+      tenant: 'root:railgrid:tenants:org:ws',
       orgUUID: 'org',
       workspaceUUID: 'ws',
       token: 'bob-token',

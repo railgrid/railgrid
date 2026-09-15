@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package installembedded covers docs/install-embedded-kcp.md end to end: it
 // executes the hack/install scripts the guide quotes (kind cluster → Envoy
-// Gateway → faros hub with embedded kcp) and then asserts the documented
+// Gateway → railgrid hub with embedded kcp) and then asserts the documented
 // verify steps.
 package installembedded
 
@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -40,15 +40,15 @@ var testenv env.Environment
 var installScripts = []string{
 	"01-kind-cluster.sh",
 	"03-envoy-gateway.sh",
-	"08-faros-hub-embedded.sh",
+	"08-railgrid-hub-embedded.sh",
 }
 
 func TestMain(m *testing.M) {
 	// Opt-in only: this suite provisions its own kind cluster and takes tens
 	// of minutes; the dedicated Make target sets the gate. This keeps the
 	// suite out of broad `go test ./test/e2e/suites/...` sweeps (e2e-all).
-	if os.Getenv("FAROS_E2E_INSTALL") != "true" {
-		fmt.Println("skipping install e2e suite: FAROS_E2E_INSTALL != true (run via `make e2e-install-embedded`)")
+	if os.Getenv("RAILGRID_E2E_INSTALL") != "true" {
+		fmt.Println("skipping install e2e suite: RAILGRID_E2E_INSTALL != true (run via `make e2e-install-embedded`)")
 		os.Exit(0)
 	}
 

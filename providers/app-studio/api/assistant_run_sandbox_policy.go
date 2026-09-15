@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ import (
 	"strings"
 	"time"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
@@ -49,21 +49,21 @@ const (
 	projectAssistantRunSandboxMaxActive          = 2
 	projectAssistantRunSandboxWorkspaceVerb      = "workspace"
 	projectAssistantRunSandboxResource           = "instances"
-	projectAssistantRunSandboxAPIVersion         = "infrastructure.faros.sh/v1alpha1"
+	projectAssistantRunSandboxAPIVersion         = "infrastructure.railgrid.ai/v1alpha1"
 	projectAssistantRunSandboxKind               = "Instance"
 	projectAssistantRunSandboxEnvironment        = "assistant-run"
 	projectAssistantRunSandboxBinding            = "assistant-run"
 	projectAssistantRunSandboxNamePrefix         = "as-run-"
 	projectAssistantRunSandboxMaxChanges         = 128
 	projectAssistantRunSandboxMaxChangeBytes     = 8 << 20
-	projectAssistantRunSandboxLabel              = "faros.sh/app-studio-run-sandbox"
-	projectAssistantRunSandboxIdleExpiry         = "faros.sh/app-studio-run-sandbox-idle-expires-at"
-	projectAssistantRunSandboxHardExpiry         = "faros.sh/app-studio-run-sandbox-hard-expires-at"
-	projectAssistantRunSandboxClaimOwner         = "faros.sh/app-studio-run-sandbox-claim-owner"
-	projectAssistantRunSandboxClaimExpiry        = "faros.sh/app-studio-run-sandbox-claim-expires-at"
-	projectAssistantRunSandboxCacheGeneration    = "faros.sh/app-studio-run-sandbox-cache-generation"
-	projectAssistantRunSandboxCacheState         = "faros.sh/app-studio-run-sandbox-cache-state"
-	projectAssistantRunSandboxLastActivity       = "faros.sh/app-studio-run-sandbox-last-activity-at"
+	projectAssistantRunSandboxLabel              = "railgrid.ai/app-studio-run-sandbox"
+	projectAssistantRunSandboxIdleExpiry         = "railgrid.ai/app-studio-run-sandbox-idle-expires-at"
+	projectAssistantRunSandboxHardExpiry         = "railgrid.ai/app-studio-run-sandbox-hard-expires-at"
+	projectAssistantRunSandboxClaimOwner         = "railgrid.ai/app-studio-run-sandbox-claim-owner"
+	projectAssistantRunSandboxClaimExpiry        = "railgrid.ai/app-studio-run-sandbox-claim-expires-at"
+	projectAssistantRunSandboxCacheGeneration    = "railgrid.ai/app-studio-run-sandbox-cache-generation"
+	projectAssistantRunSandboxCacheState         = "railgrid.ai/app-studio-run-sandbox-cache-state"
+	projectAssistantRunSandboxLastActivity       = "railgrid.ai/app-studio-run-sandbox-last-activity-at"
 	projectAssistantRunSandboxCacheStateNew      = "provisioning"
 	projectAssistantRunSandboxCacheStateActive   = "active"
 	projectAssistantRunSandboxCacheStateCached   = "cached"
@@ -133,7 +133,7 @@ type CodingSandboxEligibility struct {
 type CodingSandboxEligibilityResolver func(context.Context, identity, workspace.Scope) (CodingSandboxEligibility, error)
 
 const (
-	projectAssistantPlatformInfrastructureExportPath = "root:faros:providers:infrastructure"
+	projectAssistantPlatformInfrastructureExportPath = "root:railgrid:providers:infrastructure"
 	projectAssistantSandboxTransportGeneration       = "hub-virtual-workspace-v1"
 )
 

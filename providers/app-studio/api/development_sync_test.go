@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,10 +26,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // devComponentPaths builds a component map from name → workspacePath for tests
@@ -238,11 +238,11 @@ func TestValidateProjectSyncToolchainsRequiresRootManifest(t *testing.T) {
 
 func TestProjectTemplateToolchain(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"${faros.devImage.node}", "node"},
-		{"  ${faros.devImage.python}  ", "python"},
-		{"${faros.devImage.dotnet-8}", "dotnet-8"},
+		{"${railgrid.devImage.node}", "node"},
+		{"  ${railgrid.devImage.python}  ", "python"},
+		{"${railgrid.devImage.dotnet-8}", "dotnet-8"},
 		{"docker.io/library/node:22-bookworm", ""}, // a literal image is not a token
-		{"${faros.devAgentImage}", ""},
+		{"${railgrid.devAgentImage}", ""},
 		{"", ""},
 	} {
 		if got := projectTemplateToolchain(tc.in); got != tc.want {
@@ -411,7 +411,7 @@ func TestWriteDevelopmentSyncErrorMapsSandboxRejectionsAndFailures(t *testing.T)
 		{name: "sandbox failed", err: &projectDevelopmentSyncHTTPError{component: "app", status: http.StatusInternalServerError, detail: "boom"}, want: http.StatusBadGateway},
 		{name: "sandbox unreachable", err: fmt.Errorf("component app: development data plane sync: dial tcp: connection refused"), want: http.StatusBadGateway},
 		{name: "wrapped precondition", err: fmt.Errorf("sync: %w", &projectDevelopmentSyncPreconditionError{msg: "x"}), want: http.StatusUnprocessableEntity},
-		{name: "instance missing", err: apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "instances"}, "demo-dev"), want: http.StatusNotFound},
+		{name: "instance missing", err: apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "instances"}, "demo-dev"), want: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

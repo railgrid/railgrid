@@ -1,8 +1,8 @@
-# faros-infrastructure-provider
+# railgrid-infrastructure-provider
 
-faros provider that brokers application templates from a central kro (Kube Resource Orchestrator) cluster into faros tenant workspaces. Ships the provider Deployment, ClusterIP Service, the central-kro-cluster kubeconfig Secret (optional, dev convenience), and the CatalogEntry that registers the provider with the faros hub.
+railgrid provider that brokers application templates from a central kro (Kube Resource Orchestrator) cluster into railgrid tenant workspaces. Ships the provider Deployment, ClusterIP Service, the central-kro-cluster kubeconfig Secret (optional, dev convenience), and the CatalogEntry that registers the provider with the railgrid hub.
 
-Helm chart for the faros **infrastructure** provider. `values.yaml` is the source of
+Helm chart for the railgrid **infrastructure** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
 ## Installing
@@ -10,21 +10,21 @@ truth and carries the full inline notes; this table summarises it.
 A provider needs a kcp credential for the workspace it registers into.
 
 - **On the platform**, an admin mints it during provider onboarding.
-- **Running it yourself**, faros creates the workspace, mints the credential,
+- **Running it yourself**, railgrid creates the workspace, mints the credential,
   and generates these exact commands for you under **Providers → Self-Hosting**
   in the portal. See [docs/byo-providers.md](../../../../docs/byo-providers.md).
 
 ```bash
-kubectl create namespace faros-provider-infrastructure
+kubectl create namespace railgrid-provider-infrastructure
 
 # The data key MUST be `kubeconfig` — the chart mounts that exact key.
-kubectl --namespace faros-provider-infrastructure create secret generic faros-provider-kubeconfig \
+kubectl --namespace railgrid-provider-infrastructure create secret generic railgrid-provider-kubeconfig \
   --from-file=kubeconfig=./infrastructure.kubeconfig
 
-helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrastructure-provider \
-  --namespace faros-provider-infrastructure \
-  --set hub.url=https://faros.example.com \
-  --set providerKubeconfig.secretName=faros-provider-kubeconfig \
+helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-infrastructure-provider \
+  --namespace railgrid-provider-infrastructure \
+  --set hub.url=https://railgrid.example.com \
+  --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
   --set catalogEntry.enabled=true
 ```
 
@@ -33,7 +33,7 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | Key | Default | Notes |
 |---|---|---|
 | `image` |  | Container image. Build with: docker build -t IMAGE providers/infrastructure/ |
-| `image.repository` | `ghcr.io/faroshq/faros-infrastructure-provider` |  |
+| `image.repository` | `ghcr.io/railgrid/railgrid-infrastructure-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
 | `replicaCount` | `2` | Number of Deployment replicas. The provider is stateless apart from the in-process per-tenant client cache (sync.Map, ~256 entries cap), so >1 replica is safe. |
@@ -41,7 +41,7 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8081` |  |
 | `hub` |  | Hub the provider POSTs heartbeats to. Must be reachable from the provider pod (in-cluster Service DNS works). |
-| `hub.url` | `https://faros-hub.faros.svc.cluster.local:9443` |  |
+| `hub.url` | `https://railgrid-hub.railgrid.svc.cluster.local:9443` |  |
 | `hub.tokenSecretRef` |  | Bearer token used in the heartbeat POST. Provided as a Secret because it MUST NOT land in values.yaml in plaintext for prod. |
 | `hub.tokenSecretRef.name` | `""` | Empty omits the Authorization header — the heartbeat endpoint does not require it. Set this ONLY when the Secret already exists in the release namespace; the reference is not optional, so a missing Secret wedges the pod in `CreateContainerConfigError`. |
 | `hub.tokenSecretRef.key` | `token` |  |
@@ -52,12 +52,12 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `centralKro.kubeconfigSecretRef.key` | `kubeconfig` |  |
 | `application` |  | The "application" template (3-tier app exposed on an OIDC-guarded URL). The Application instance controller is OFF unless baseDomain is set AND a central kro kubeconfig is configured (the controller bridges secrets onto that runtime cluster). See docs/application-template-architecture.md. |
 | `application.baseDomain` | `""` | Zone apps are served under, e.g. "apps.example.com". Each app gets <prefix\|name>-<tenantHash>.<baseDomain>. Empty → feature disabled. TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
-| `application.gateway` |  | Gateway API parent the generated Application HTTPRoutes attach to (substituted into Application RGDs as ${faros.gatewayName} / ${faros.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel Gateway in-binary; override to point apps at a different Gateway without touching the template. |
+| `application.gateway` |  | Gateway API parent the generated Application HTTPRoutes attach to (substituted into Application RGDs as ${railgrid.gatewayName} / ${railgrid.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel Gateway in-binary; override to point apps at a different Gateway without touching the template. |
 | `application.gateway.name` | `"cloudflare-tunnel"` |  |
 | `application.gateway.namespace` | `"cfgate-system"` |  |
-| `publishing` |  | Platform-owned access-gate configuration shared by simple-webapp, application, and future publishable templates. Templates render the gate (faros-access-proxy) as a component of their own graph via the ${faros.accessProxyImage}/${faros.hubUrl}/${faros.hubPublicUrl} tokens; all app traffic enters… |
+| `publishing` |  | Platform-owned access-gate configuration shared by simple-webapp, application, and future publishable templates. Templates render the gate (railgrid-access-proxy) as a component of their own graph via the ${railgrid.accessProxyImage}/${railgrid.hubUrl}/${railgrid.hubPublicUrl} tokens; all app traffic enters… |
 | `publishing.baseDomain` | `""` | App host zone (wins over `application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
-| `publishing.accessProxyImage` | `ghcr.io/faroshq/faros-access-proxy:latest` |  |
+| `publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
 | `publishing.hubURL` | `""` | Internal hub address used for the app-access protocol. Empty falls back to hub.url. In production, use a trusted cluster CA and keep insecure=false. |
 | `publishing.hubPublicURL` | `""` | Browser-reachable hub origin used for authorization redirects. Empty defaults to hubURL; set it when the provider uses an in-cluster hub URL. |
 | `publishing.insecure` | `false` |  |
@@ -65,28 +65,28 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `publishing.publicPort` | `0` | Optional externally visible port, e.g. 10443 for a local Gateway. |
 | `publishing.gateway.name` | `"cloudflare-tunnel"` |  |
 | `publishing.gateway.namespace` | `"cfgate-system"` |  |
-| `tenantLimitRange` |  | Default container resource policy stamped into every tenant namespace as a LimitRange named "faros-defaults" (defaultRequest 50m/128Mi, default limit 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may hand-tune a tenant's copy without it being overwritten. Disable when the runti… |
+| `tenantLimitRange` |  | Default container resource policy stamped into every tenant namespace as a LimitRange named "railgrid-defaults" (defaultRequest 50m/128Mi, default limit 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may hand-tune a tenant's copy without it being overwritten. Disable when the runti… |
 | `tenantLimitRange.enabled` | `true` |  |
-| `tenantNetworkPolicy` |  | Ingress NetworkPolicy "faros-tenant-isolation" in every tenant runtime namespace: only the same namespace, the same workspace's other runtime namespaces, the Gateway's namespace and the sources below may reach tenant pods. Requires a CNI that enforces NetworkPolicy. See the provider README, "Tenant network isolation". |
+| `tenantNetworkPolicy` |  | Ingress NetworkPolicy "railgrid-tenant-isolation" in every tenant runtime namespace: only the same namespace, the same workspace's other runtime namespaces, the Gateway's namespace and the sources below may reach tenant pods. Requires a CNI that enforces NetworkPolicy. See the provider README, "Tenant network isolation". |
 | `tenantNetworkPolicy.enabled` | `false` | Disabling again removes the policies the provider created. |
 | `tenantNetworkPolicy.allowedNamespaces` | `[]` | Extra source namespaces (Gateway proxies outside the Gateway's namespace, kube-system for konnectivity-agent, monitoring). |
 | `tenantNetworkPolicy.allowedCIDRs` | `[]` | Extra ipBlock sources in canonical form. Add the runtime kube-apiserver's source range when it is not on the pod's node, or dev-sandbox sync/exec/logs time out. |
 | `development` |  | Development-mode images (docs/app-studio-template-sandboxes.md). These run TENANT code, so production deployments should pin them by digest. Empty values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm, agent → see `development.agentImage`). |
-| `development.agentImage` | `""` | The injector image carrying the static faros-dev-agent binary and universal token-bootstrap mode (FAROS_DEV_AGENT_IMAGE). Required as an immutable digest when codingSandbox.enabled is true. Empty → the dev agent of **this release**: a released chart (appVersion `vX.Y.Z`) renders `<agentImageRepository>:vX.Y.Z`, published by the same provider release; the unreleased in-repo chart omits the env var and the binary uses its own release tag, or `:latest` for local builds (kind/Tilt side-load it). The injector pulls `IfNotPresent`, so never set a mutable tag such as `:latest` in production — nodes keep whichever copy they cached first. **Existing dev sandboxes** pick up a new agent automatically whenever this resolved reference *changes* (chart upgrade to a new appVersion, or a new tag/digest here): the provider restarts with the new env, re-applies every Template's kro RGD with the new image, and kro re-reconciles every instance, re-rolling each dev Deployment (Recreate strategy; the workspace PVC is kept). If the reference does not change (e.g. an explicit `:latest`), nothing re-renders, and deleting dev pods does not help on nodes that already cache the stale image — change the reference instead. |
-| `development.agentImageRepository` | `ghcr.io/faroshq/faros-dev-agent` | Repository the release-versioned `development.agentImage` default is built from (`<repository>:<appVersion>`). Override for a registry mirror. |
+| `development.agentImage` | `""` | The injector image carrying the static railgrid-dev-agent binary and universal token-bootstrap mode (RAILGRID_DEV_AGENT_IMAGE). Required as an immutable digest when codingSandbox.enabled is true. Empty → the dev agent of **this release**: a released chart (appVersion `vX.Y.Z`) renders `<agentImageRepository>:vX.Y.Z`, published by the same provider release; the unreleased in-repo chart omits the env var and the binary uses its own release tag, or `:latest` for local builds (kind/Tilt side-load it). The injector pulls `IfNotPresent`, so never set a mutable tag such as `:latest` in production — nodes keep whichever copy they cached first. **Existing dev sandboxes** pick up a new agent automatically whenever this resolved reference *changes* (chart upgrade to a new appVersion, or a new tag/digest here): the provider restarts with the new env, re-applies every Template's kro RGD with the new image, and kro re-reconciles every instance, re-rolling each dev Deployment (Recreate strategy; the workspace PVC is kept). If the reference does not change (e.g. an explicit `:latest`), nothing re-renders, and deleting dev pods does not help on nodes that already cache the stale image — change the reference instead. |
+| `development.agentImageRepository` | `ghcr.io/railgrid/railgrid-dev-agent` | Repository the release-versioned `development.agentImage` default is built from (`<repository>:<appVersion>`). Override for a registry mirror. |
 | `development.previewBridge` |  | Public ES256 JSON Web Key Set used by the injected preview bridge to verify short-lived capabilities issued by App Studio. Configure the current key and, during rotation, the previous key. Never put a private signing key here. Empty disables the optional bridge without preventing developm… |
 | `development.previewBridge.verificationJWKS` | `""` |  |
-| `development.images` |  | Toolchain image per ${faros.devImage.<toolchain>} token — each key K maps to FAROS_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain (other than node) fails setup with a pointer to the missing env var. |
+| `development.images` |  | Toolchain image per ${railgrid.devImage.<toolchain>} token — each key K maps to RAILGRID_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain (other than node) fails setup with a pointer to the missing env var. |
 | `development.images.node` | `""` |  |
-| `development.images.universal` | `""` | Universal coding sandbox image (`${faros.devImage.universal}`). Pin this tenant-code image by digest in production. |
+| `development.images.universal` | `""` | Universal coding sandbox image (`${railgrid.devImage.universal}`). Pin this tenant-code image by digest in production. |
 | `codingSandbox.enabled` | `false` | Platform-owned universal coding sandbox gate. Hosted deployments leave this disabled; BYO/self-hosted installs may set it `true`, but must also provide both `development.images.universal` and `development.agentImage` as immutable `name@sha256:<64 lowercase hex digits>` references. |
-| `sandbox.runtimeClassName` | `""` | RuntimeClass stamped as `spec.runtimeClassName` on every synthesized development pod (App Studio dev instances and the universal coding sandbox; `FAROS_SANDBOX_RUNTIME_CLASS_NAME`). Expected values are `gvisor` (gVisor/runsc) or `kata` (Kata Containers), naming a RuntimeClass installed on the runtime cluster. Empty keeps the cluster default runtime. The PSS-restricted pod profile still shares the host kernel, so enabling one of these is required before exposing App Studio to untrusted users. |
+| `sandbox.runtimeClassName` | `""` | RuntimeClass stamped as `spec.runtimeClassName` on every synthesized development pod (App Studio dev instances and the universal coding sandbox; `RAILGRID_SANDBOX_RUNTIME_CLASS_NAME`). Expected values are `gvisor` (gVisor/runsc) or `kata` (Kata Containers), naming a RuntimeClass installed on the runtime cluster. Empty keeps the cluster default runtime. The PSS-restricted pod profile still shares the host kernel, so enabling one of these is required before exposing App Studio to untrusted users. |
 | `providerKubeconfig` |  | python: "docker.io/library/python:3.12-slim" go: "docker.io/library/golang:1.26" Container images are NOT configured here. Templates declare them as schema fields with sane defaults (e.g. the database template's spec.version defaults to "16") — the same convention every template follows. See prov… |
-| `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
+| `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `bootstrap` |  | Self-bootstrap via an init container. When enabled, an init container runs `infrastructure init` BEFORE the serve container: it installs the CRDs, CachedResource, and APIExport into the provider workspace. Both containers share ONE kubeconfig (no separately-minted runtime token). |
 | `bootstrap.enabled` | `false` |  |
-| `bootstrap.kubeconfigSource` | `hubMinted` | Where the shared kubeconfig comes from: hubMinted  - (default) the hub-delivered faros-provider-kubeconfig (providerKubeconfig.secretName). A platform admin applies the CatalogEntry; the hub creates the provider workspace, mints a cluster-admin-in-workspace kubeconfig, and writes it as that Secre… |
-| `bootstrap.workspacePath` | `"root:faros:providers:infrastructure"` | Only used when kubeconfigSource=supplied. kcp workspace the provider is installed into (init retargets the supplied kubeconfig at this path; the workspace must already exist). |
+| `bootstrap.kubeconfigSource` | `hubMinted` | Where the shared kubeconfig comes from: hubMinted  - (default) the hub-delivered railgrid-provider-kubeconfig (providerKubeconfig.secretName). A platform admin applies the CatalogEntry; the hub creates the provider workspace, mints a cluster-admin-in-workspace kubeconfig, and writes it as that Secre… |
+| `bootstrap.workspacePath` | `"root:railgrid:providers:infrastructure"` | Only used when kubeconfigSource=supplied. kcp workspace the provider is installed into (init retargets the supplied kubeconfig at this path; the workspace must already exist). |
 | `bootstrap.kcpKubeconfig` | `""` | Provide exactly ONE of: kcpKubeconfig          - inline content, rendered into a Secret by the chart (convenient for dev; avoid for prod). kcpKubeconfigSecretRef - reference to an existing Secret you manage. |
 | `bootstrap.kcpKubeconfigSecretRef.name` | `""` |  |
 | `bootstrap.kcpKubeconfigSecretRef.key` | `kubeconfig` |  |
@@ -107,7 +107,7 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `affinity` | `{}` |  |
 | `operator` |  | CRD-driven operator mode. When enabled, the chart installs the operator (a controller-manager running `infrastructure-provider controller`), the InfrastructureProvider CRD, RBAC, the two kubeconfig Secrets, and one CR rendered from the values below. The operator then reconciles that CR: bootstrap… |
 | `operator.enabled` | `false` |  |
-| `operator.clusterAdmin` | `false` | Opt-in: also bind the operator ServiceAccount to cluster-admin and let it bind the serve ServiceAccount to cluster-admin (in-cluster runtime). Off, the chart's enumerated `<release>-operator` and `<release>-serve` ClusterRoles cover the kro 0.9.x chart, the serve rollout, and serve's runtime-cluster work. Needed only for kinds outside that set (a kro chart/extraValues that renders new kinds or renames kro's objects, a Template whose instance kind is outside `kro.run`/`infrastructure.faros.sh`). A forbidden error in the InfrastructureProvider conditions names the missing rule. Upgrading from a release that defaulted to `true`: the enumerated roles ship in the same release that drops the admin binding, so a plain `helm upgrade` is safe; to stage it, upgrade with `--set operator.clusterAdmin=true` first, then flip. |
+| `operator.clusterAdmin` | `false` | Opt-in: also bind the operator ServiceAccount to cluster-admin and let it bind the serve ServiceAccount to cluster-admin (in-cluster runtime). Off, the chart's enumerated `<release>-operator` and `<release>-serve` ClusterRoles cover the kro 0.9.x chart, the serve rollout, and serve's runtime-cluster work. Needed only for kinds outside that set (a kro chart/extraValues that renders new kinds or renames kro's objects, a Template whose instance kind is outside `kro.run`/`infrastructure.railgrid.ai`). A forbidden error in the InfrastructureProvider conditions names the missing rule. Upgrading from a release that defaulted to `true`: the enumerated roles ship in the same release that drops the admin binding, so a plain `helm upgrade` is safe; to stage it, upgrade with `--set operator.clusterAdmin=true` first, then flip. |
 | `operator.image` |  | Operator (controller) image. Defaults to the provider image above. |
 | `operator.image.repository` | `""` |  |
 | `operator.image.tag` | `""` |  |
@@ -118,7 +118,7 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `operator.runtimeKubeconfig` | `""` | Runtime-cluster kubeconfig (where kro + the provider serve Deployment run). |
 | `operator.runtimeKubeconfigSecret.name` | `""` |  |
 | `operator.runtimeKubeconfigSecret.key` | `kubeconfig` |  |
-| `operator.kro` |  | kro Helm release the operator lifecycles on the runtime cluster. Upstream kro, single-cluster: the provider's instance controller bridges kcp → runtime, so kro never talks to kcp and the retired faroshq/kro-multicluster fork is no longer used. |
+| `operator.kro` |  | kro Helm release the operator lifecycles on the runtime cluster. Upstream kro, single-cluster: the provider's instance controller bridges kcp → runtime, so kro never talks to kcp and the retired railgrid/kro-multicluster fork is no longer used. |
 | `operator.kro.chart` | `oci://registry.k8s.io/kro/charts/kro` |  |
 | `operator.kro.version` | `0.9.3` |  |
 | `operator.kro.namespace` | `kro-system` |  |
@@ -127,11 +127,11 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `operator.provider` |  | Provider serve Deployment the operator owns on the runtime cluster. |
 | `operator.provider.replicas` | `2` |  |
 | `operator.provider.port` | `8081` |  |
-| `operator.application` |  | Application-template exposure layer (the `application` template's public URL + Gateway API parent). This is the operator-mode equivalent of the top-level `application.*` values: the operator owns the serve Deployment, so these land on the InfrastructureProvider CR (FAROS_APP_BASE_DOMAIN / FAROS_G… |
+| `operator.application` |  | Application-template exposure layer (the `application` template's public URL + Gateway API parent). This is the operator-mode equivalent of the top-level `application.*` values: the operator owns the serve Deployment, so these land on the InfrastructureProvider CR (RAILGRID_APP_BASE_DOMAIN / RAILGRID_G… |
 | `operator.application.baseDomain` | `""` | DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable app exposure — the Application instance controller stays disabled until this is set. Empty → feature off. TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `operator.application.gateway` |  | Gateway API parent the generated HTTPRoutes attach to. Empty fields → "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults). |
 | `operator.publishing.baseDomain` | `""` | App host zone (wins over `operator.application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
-| `operator.publishing.accessProxyImage` | `ghcr.io/faroshq/faros-access-proxy:latest` |  |
+| `operator.publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
 | `operator.publishing.hubURL` | `""` |  |
 | `operator.publishing.hubPublicURL` | `""` |  |
 | `operator.publishing.insecure` | `false` |  |

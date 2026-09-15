@@ -1,8 +1,8 @@
-# faros-agents-provider
+# railgrid-agents-provider
 
 Agents provider chart. Ships the provider Deployment, Service, and CatalogEntry for long-running personal AI agents. Configure durable storage with store.databaseURLSecretRef (Postgres is the only hard dependency beyond the hub).
 
-Helm chart for the faros **agents** provider. `values.yaml` is the source of
+Helm chart for the railgrid **agents** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
 ## Installing
@@ -10,21 +10,21 @@ truth and carries the full inline notes; this table summarises it.
 A provider needs a kcp credential for the workspace it registers into.
 
 - **On the platform**, an admin mints it during provider onboarding.
-- **Running it yourself**, faros creates the workspace, mints the credential,
+- **Running it yourself**, railgrid creates the workspace, mints the credential,
   and generates these exact commands for you under **Providers → Self-Hosting**
   in the portal. See [docs/byo-providers.md](../../../../docs/byo-providers.md).
 
 ```bash
-kubectl create namespace faros-provider-agents
+kubectl create namespace railgrid-provider-agents
 
 # The data key MUST be `kubeconfig` — the chart mounts that exact key.
-kubectl --namespace faros-provider-agents create secret generic faros-provider-kubeconfig \
+kubectl --namespace railgrid-provider-agents create secret generic railgrid-provider-kubeconfig \
   --from-file=kubeconfig=./agents.kubeconfig
 
-helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider \
-  --namespace faros-provider-agents \
-  --set hub.url=https://faros.example.com \
-  --set providerKubeconfig.secretName=faros-provider-kubeconfig \
+helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-provider \
+  --namespace railgrid-provider-agents \
+  --set hub.url=https://railgrid.example.com \
+  --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
   --set catalogEntry.enabled=true
 ```
 
@@ -36,7 +36,7 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `fullnameOverride` | `""` |  |
 | `replicaCount` | `1` |  |
 | `image` |  |  |
-| `image.repository` | `ghcr.io/faroshq/faros-agents-provider` |  |
+| `image.repository` | `ghcr.io/railgrid/railgrid-agents-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
 | `serviceAccount` |  |  |
@@ -51,14 +51,14 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `catalogEntry.uiURL` | `""` |  |
 | `catalogEntry.backendURL` | `""` |  |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Consumed by both the init container and the serve container. Key must be "kubeconfig". |
-| `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
+| `providerKubeconfig.secretName` | `railgrid-provider-kubeconfig` |  |
 | `store` |  | Durable store. Postgres is the agents provider's only hard dependency beyond the hub; inMemoryStore is an explicit non-durable fallback for dev only. Message and memory content is stored in plaintext; encryption at rest is the database's responsibility. |
 | `store.databaseURL` | `""` |  |
 | `store.databaseURLSecretRef.name` | `""` |  |
 | `store.databaseURLSecretRef.key` | `database-url` |  |
 | `store.inMemoryStore` | `false` |  |
 | `hub` |  |  |
-| `hub.url` | `"http://faros-hub.faros.svc.cluster.local:8080"` |  |
+| `hub.url` | `"http://railgrid-hub.railgrid.svc.cluster.local:8080"` |  |
 | `hub.insecure` | `false` |  |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |

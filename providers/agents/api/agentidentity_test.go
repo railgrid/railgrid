@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ func TestEnsureAgentIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ServiceAccount: %v", err)
 		}
-		if sa.GetName() != "faros-agent-scout" {
+		if sa.GetName() != "railgrid-agent-scout" {
 			t.Fatalf("SA name = %q", sa.GetName())
 		}
 

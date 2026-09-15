@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/faroshq/faros/pkg/agent"
-	"github.com/faroshq/faros/pkg/agent/tunnel"
+	"github.com/railgrid/railgrid/pkg/agent"
+	"github.com/railgrid/railgrid/pkg/agent/tunnel"
 )
 
 // launchdInstallOptions describes a system LaunchDaemon. The daemon runs the
@@ -114,7 +114,7 @@ const launchdPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 func defaultLaunchdLabel(edgeName string) string {
-	return "com.faros.agent." + edgeName
+	return "com.railgrid.agent." + edgeName
 }
 
 func defaultLaunchdPlistPath(edgeName string) string {
@@ -247,7 +247,7 @@ func launchdProgramArgs(opts launchdInstallOptions) []string {
 func launchdPaths(worker launchdWorker, edgeName string) (configPath, kubeconfigPath, logDir string) {
 	configPath = agent.AgentConfigPathForHome(worker.home, edgeName)
 	kubeconfigPath = agent.AgentKubeconfigPathForHome(worker.home, edgeName)
-	logDir = filepath.Join(worker.home, "Library", "Logs", "Faros")
+	logDir = filepath.Join(worker.home, "Library", "Logs", "Railgrid")
 	return
 }
 
@@ -386,7 +386,7 @@ func installLaunchdAgent(opts launchdInstallOptions) error {
 	fmt.Printf("Agent installed and running as launchd service %s.\n", label)
 	fmt.Printf("  Plist:  %s\n", plistPath)
 	fmt.Printf("  Logs:   %s\n", filepath.Join(logDir, "agent-"+opts.EdgeName+".log"))
-	fmt.Printf("  Uninstall: faros agent uninstall --type macos --edge-name %s\n", opts.EdgeName)
+	fmt.Printf("  Uninstall: railgrid agent uninstall --type macos --edge-name %s\n", opts.EdgeName)
 	return nil
 }
 
@@ -445,7 +445,7 @@ func rejectSymlink(path string) error {
 
 // rejectSymlinkPath checks every existing component of a path before an
 // installer creates or changes anything below it. This prevents a worker-owned
-// symlink such as ~/.faros -> another directory from redirecting root's write.
+// symlink such as ~/.railgrid -> another directory from redirecting root's write.
 func rejectSymlinkPath(path string) error {
 	path = filepath.Clean(path)
 	for current := path; ; current = filepath.Dir(current) {
@@ -477,7 +477,7 @@ func writeLaunchdFile(path string, data []byte, mode os.FileMode, uid, gid int) 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".faros-launchd-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".railgrid-launchd-*")
 	if err != nil {
 		return err
 	}

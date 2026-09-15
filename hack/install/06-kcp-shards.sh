@@ -11,19 +11,19 @@
 # cluster too (kcp's own controllers call back into those URLs).
 #
 # Static-token auth: the operator mounts the kcp-static-tokens Secret into the
-# shards AND the front-proxy (spec.auth.tokenAuthFile) so the faros hub can
+# shards AND the front-proxy (spec.auth.tokenAuthFile) so the railgrid hub can
 # forward the shared static token. The CSV maps the token to the same identity
 # the hub derives (see lib.sh).
 #
 # Admin kubeconfigs are minted by the operator from Kubeconfig CRs and
-# extracted to ${FAROS_INSTALL_STATE_DIR}/kcp-<name>.kubeconfig.
+# extracted to ${RAILGRID_INSTALL_STATE_DIR}/kcp-<name>.kubeconfig.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require kubectl openssl
 
 # --- static token CSV for kcp's --token-auth-file ---
 kc create secret generic kcp-static-tokens -n default \
-  --from-literal=token.csv="$(static_token_csv "${FAROS_STATIC_TOKEN}")" \
+  --from-literal=token.csv="$(static_token_csv "${RAILGRID_STATIC_TOKEN}")" \
   --dry-run=client -o yaml | kc apply -f -
 
 # --- shards + front-proxy + SNI routes ---
@@ -269,8 +269,8 @@ for name in frontproxy root "${KCP_SHARD_2}"; do
   kc -n default wait "kubeconfig/${name}" --for=condition=Available --timeout=10m
   kc -n default wait "secret/kcp-${name}-kubeconfig" --for=create --timeout=5m
   kc -n default get "secret/kcp-${name}-kubeconfig" -o jsonpath='{.data.kubeconfig}' \
-    | base64 -d > "${FAROS_INSTALL_STATE_DIR}/kcp-${name}.kubeconfig"
-  echo "wrote ${FAROS_INSTALL_STATE_DIR}/kcp-${name}.kubeconfig"
+    | base64 -d > "${RAILGRID_INSTALL_STATE_DIR}/kcp-${name}.kubeconfig"
+  echo "wrote ${RAILGRID_INSTALL_STATE_DIR}/kcp-${name}.kubeconfig"
 done
 
 kc -n default rollout status deployment/frontproxy-front-proxy --timeout=10m
@@ -279,4 +279,4 @@ kc -n default rollout status "deployment/${KCP_SHARD_2}-shard-kcp" --timeout=10m
 
 echo
 echo "kcp is up. After 'hack/install/port-forward.sh start' reach it with:"
-echo "  kubectl --kubeconfig ${FAROS_INSTALL_STATE_DIR}/kcp-frontproxy.kubeconfig get workspaces"
+echo "  kubectl --kubeconfig ${RAILGRID_INSTALL_STATE_DIR}/kcp-frontproxy.kubeconfig get workspaces"

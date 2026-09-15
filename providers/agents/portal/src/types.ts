@@ -9,12 +9,12 @@ import type { AITurnProgressStatus } from './agentkit/conversation'
 // (rather than Record<string, unknown>) so a typo in a patch key is a compile
 // error instead of a silently-ignored field.
 //
-// FarosContext is the host↔element contract: the portal's ProviderFrame sets it
-// as a JS property on <faros-provider-agents>.
+// RailgridContext is the host↔element contract: the portal's ProviderFrame sets it
+// as a JS property on <railgrid-provider-agents>.
 
 // ---- host contract ---------------------------------------------------------
 
-export interface FarosContext {
+export interface RailgridContext {
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).

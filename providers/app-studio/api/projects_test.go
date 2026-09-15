@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,11 +33,11 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/bindings"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectInitialBootstrapPromptDigestDoesNotExposePrompt(t *testing.T) {
@@ -131,8 +131,8 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("binding is not self-contained: %v", err)
 	}
-	if gvr.Resource != "instances" || gvr.Group != "infrastructure.faros.sh" {
-		t.Fatalf("binding GVR = %v, want instances.infrastructure.faros.sh", gvr)
+	if gvr.Resource != "instances" || gvr.Group != "infrastructure.railgrid.ai" {
+		t.Fatalf("binding GVR = %v, want instances.infrastructure.railgrid.ai", gvr)
 	}
 	if want.GetName() != created.Name+"-dev" {
 		t.Fatalf("desired instance name = %q, want %s-dev", want.GetName(), created.Name)
@@ -508,7 +508,7 @@ func TestCreateProjectRejectsPlatformOwnedExplicitAndInferred(t *testing.T) {
 			platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
 			client := newProjectCreationTestClient(platformOwned)
 			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup}
-			id := identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:faros:tenants:org-a:ws-1"}
+			id := identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:railgrid:tenants:org-a:ws-1"}
 			var (
 				created *aiv1alpha1.Project
 				err     error
@@ -615,7 +615,7 @@ func newProjectCreationTestDynamicClient(objects ...runtime.Object) *fake.FakeDy
 			codeConnectionsGVR:  "ConnectionList",
 			codeRepositoriesGVR: "RepositoryList",
 			{
-				Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances",
+				Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances",
 			}: "InstanceList",
 		},
 		objects...,

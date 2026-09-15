@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -9,7 +9,7 @@
 // Package server wires the provider's HTTP routes: /healthz, the MCP
 // handler, and the embedded portal. Template + instance traffic is NOT
 // served here — the portal and tenants drive those as CRDs directly
-// against kcp (templates.infrastructure.faros.sh and the
+// against kcp (templates.infrastructure.railgrid.ai and the
 // per-template instance kinds), projected to tenant workspaces via the
 // CachedResource + APIExport. See providers/infrastructure/portal/src/api.ts.
 package server

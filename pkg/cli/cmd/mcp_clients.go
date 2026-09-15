@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,15 +34,15 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// `faros mcp claude` / `faros mcp codex` register the workspace's aggregate
+// `railgrid mcp claude` / `railgrid mcp codex` register the workspace's aggregate
 // MCPServer with a local AI client, then say how to start the client so it
 // accepts the hub's TLS certificate. A hub with a publicly trusted certificate
-// needs nothing; a local hub (faros dev init) presents a certificate from its
+// needs nothing; a local hub (railgrid dev init) presents a certificate from its
 // own dev CA, which the client has to trust (--ca-file) or — Claude Code only —
 // stop verifying.
 
 // codexTokenEnvVar is the variable Codex reads the MCP bearer token from.
-const codexTokenEnvVar = "FAROS_MCP_TOKEN"
+const codexTokenEnvVar = "RAILGRID_MCP_TOKEN"
 
 type mcpClientOptions struct {
 	mcpserverName string
@@ -54,8 +54,8 @@ type mcpClientOptions struct {
 
 func (o *mcpClientOptions) addFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.mcpserverName, "mcpserver-name", "default", "Aggregate MCPServer to connect")
-	cmd.Flags().StringVar(&o.name, "name", "", "Server name in the client's configuration (default: faros-<mcpserver-name>)")
-	cmd.Flags().StringVar(&o.caFile, "ca-file", "", "PEM CA that signs the hub's certificate, for a hub whose certificate is not publicly trusted (faros dev init writes <cluster>-ca.crt)")
+	cmd.Flags().StringVar(&o.name, "name", "", "Server name in the client's configuration (default: railgrid-<mcpserver-name>)")
+	cmd.Flags().StringVar(&o.caFile, "ca-file", "", "PEM CA that signs the hub's certificate, for a hub whose certificate is not publicly trusted (railgrid dev init writes <cluster>-ca.crt)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "Print the commands instead of running them")
 }
 
@@ -80,10 +80,10 @@ to start Claude Code so it accepts it: with --ca-file, by trusting that CA
 (NODE_EXTRA_CA_CERTS); without it, by turning certificate verification off
 (NODE_TLS_REJECT_UNAUTHORIZED=0) for that session.`,
 		Example: `  # Publicly trusted hub
-  faros mcp claude
+  railgrid mcp claude
 
-  # Local hub from faros dev init
-  faros mcp claude --ca-file faros-hub-ca.crt`,
+  # Local hub from railgrid dev init
+  railgrid mcp claude --ca-file railgrid-hub-ca.crt`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMCPClaude(cmd.OutOrStdout(), o)
@@ -108,10 +108,10 @@ not publicly trusted, pass --ca-file: the command writes a bundle of your
 system roots plus that CA and prints how to start Codex with it
 (CODEX_CA_CERTIFICATE, Codex 0.129.0 or later).`,
 		Example: `  # Publicly trusted hub
-  faros mcp codex
+  railgrid mcp codex
 
-  # Local hub from faros dev init
-  faros mcp codex --ca-file faros-hub-ca.crt`,
+  # Local hub from railgrid dev init
+  railgrid mcp codex --ca-file railgrid-hub-ca.crt`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMCPCodex(cmd.OutOrStdout(), o)
@@ -136,7 +136,7 @@ func resolveMCPEndpoint(mcpserverName string) (*mcpEndpoint, error) {
 	}
 	info, err := connectMCPForURL(serverURL, mcpserverName)
 	if err != nil {
-		return nil, fmt.Errorf("fetching MCP server %q from the hub (run 'faros login' and 'faros use' first): %w", mcpserverName, err)
+		return nil, fmt.Errorf("fetching MCP server %q from the hub (run 'railgrid login' and 'railgrid use' first): %w", mcpserverName, err)
 	}
 	if info.Token == "" {
 		return nil, fmt.Errorf("the hub has not minted a token for MCP server %q yet; re-run shortly", mcpserverName)
@@ -162,7 +162,7 @@ func currentServerURL() (string, error) {
 	}
 	kctx, ok := raw.Contexts[raw.CurrentContext]
 	if !ok {
-		return "", fmt.Errorf("no current context in kubeconfig; run 'faros login'")
+		return "", fmt.Errorf("no current context in kubeconfig; run 'railgrid login'")
 	}
 	cluster, ok := raw.Clusters[kctx.Cluster]
 	if !ok || cluster.Server == "" {
@@ -297,7 +297,7 @@ func runMCPClaude(out io.Writer, o *mcpClientOptions) error {
 		p(out, "\nThe hub's certificate is not publicly trusted, so this turns TLS certificate\n")
 		p(out, "verification off for everything that Claude Code session connects to, the\n")
 		p(out, "Anthropic API included. Prefer trusting the hub's CA instead:\n")
-		p(out, "  faros mcp claude --ca-file <hub CA>   (faros dev init writes <cluster>-ca.crt)\n")
+		p(out, "  railgrid mcp claude --ca-file <hub CA>   (railgrid dev init writes <cluster>-ca.crt)\n")
 	}
 	p(out, "\nThen check the connection with: claude mcp list\n")
 	return notInstalledErr("claude", ran, o.dryRun)
@@ -340,7 +340,7 @@ func runMCPCodex(out io.Writer, o *mcpClientOptions) error {
 		p(out, "\nWarning: the hub's certificate is not publicly trusted and Codex cannot skip\n")
 		p(out, "certificate verification, so this server will fail to connect. Re-run with the\n")
 		p(out, "CA that signs it:\n")
-		p(out, "  faros mcp codex --ca-file <hub CA>   (faros dev init writes <cluster>-ca.crt)\n")
+		p(out, "  railgrid mcp codex --ca-file <hub CA>   (railgrid dev init writes <cluster>-ca.crt)\n")
 	}
 	p(out, "\nThen check the connection with: codex mcp list\n")
 	return notInstalledErr("codex", ran, o.dryRun)
@@ -385,7 +385,7 @@ var systemCABundleFiles = []string{
 }
 
 // writeCABundle writes the system root bundle plus caFile to
-// ~/.faros/ca/<endpoint host>.pem and returns the path. Codex uses a custom CA
+// ~/.railgrid/ca/<endpoint host>.pem and returns the path. Codex uses a custom CA
 // file in place of its default roots, so the bundle has to carry both.
 func writeCABundle(endpoint, caFile string) (string, error) {
 	ca, err := os.ReadFile(caFile)
@@ -411,7 +411,7 @@ func writeCABundle(endpoint, caFile string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".faros", "ca")
+	dir := filepath.Join(home, ".railgrid", "ca")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

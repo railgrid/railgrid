@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
 
-	asclient "github.com/faroshq/provider-app-studio/client"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func TestProjectCreateReadinessRequiresValidatedGitConnection(t *testing.T) {

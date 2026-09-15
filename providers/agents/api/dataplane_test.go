@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@ package api
 import (
 	"testing"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 )
 
 // Instance-backed tools (self-hosted search, a browser instance) need BOTH the

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/faroshq/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 // OAuth2CallbackPath is the path oauth2-proxy serves its OIDC callback on.
@@ -52,7 +52,7 @@ const maxPrefixLen = 63 - tenantHashLen - 1 // 50
 // is a stable platform-owned tenant key — the logical-cluster ID the
 // application controller passes from req.ClusterName. The resulting suffix
 // is deterministic and tenant-distinct.
-// baseDomain is the zone apps are served under (FAROS_APP_BASE_DOMAIN, e.g.
+// baseDomain is the zone apps are served under (RAILGRID_APP_BASE_DOMAIN, e.g.
 // "apps.example.com"); it is NOT re-prefixed with "apps." here — callers pass
 // the full suffix.
 func Host(prefix, instanceName, tenantIdentity, baseDomain string) (string, error) {
@@ -66,7 +66,7 @@ func Host(prefix, instanceName, tenantIdentity, baseDomain string) (string, erro
 		return "", fmt.Errorf("hostname prefix %q is too long (%d > %d)", prefix, len(prefix), maxPrefixLen)
 	}
 	if baseDomain == "" {
-		return "", fmt.Errorf("base domain is empty (set FAROS_APP_BASE_DOMAIN)")
+		return "", fmt.Errorf("base domain is empty (set RAILGRID_APP_BASE_DOMAIN)")
 	}
 	return fmt.Sprintf("%s-%s.%s", prefix, kro.LabelTenantValue(tenantIdentity), baseDomain), nil
 }

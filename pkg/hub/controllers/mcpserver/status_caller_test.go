@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	kcpfake "github.com/kcp-dev/sdk/client/clientset/versioned/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 )
 
 // Status discovery enumerates as the server's own ServiceAccount in the
@@ -36,11 +36,11 @@ func TestStatusCaller(t *testing.T) {
 		path string
 		want mcpaggregate.Caller
 	}{
-		{path: "root:faros:tenants:org1:ws1", want: mcpaggregate.Caller{OrgUUID: "org1", WorkspaceUUID: "ws1", ServiceAccount: sa}},
-		{path: "root:faros:tenants:org1", want: mcpaggregate.Caller{OrgUUID: "org1", ServiceAccount: sa}},
+		{path: "root:railgrid:tenants:org1:ws1", want: mcpaggregate.Caller{OrgUUID: "org1", WorkspaceUUID: "ws1", ServiceAccount: sa}},
+		{path: "root:railgrid:tenants:org1", want: mcpaggregate.Caller{OrgUUID: "org1", ServiceAccount: sa}},
 		// Unknown path: platform catalog only, never "every org".
 		{path: "", want: mcpaggregate.Caller{ServiceAccount: sa}},
-		{path: "root:faros:providers:infra", want: mcpaggregate.Caller{ServiceAccount: sa}},
+		{path: "root:railgrid:providers:infra", want: mcpaggregate.Caller{ServiceAccount: sa}},
 	}
 	for _, tc := range cases {
 		got := statusCaller(tc.path, "default")
@@ -56,9 +56,9 @@ func TestStatusCaller(t *testing.T) {
 func TestDirectClusterPath(t *testing.T) {
 	kcp := kcpfake.NewSimpleClientset(&corev1alpha1.LogicalCluster{ObjectMeta: metav1.ObjectMeta{
 		Name:        "cluster",
-		Annotations: map[string]string{"kcp.io/path": "root:faros:tenants:org1:ws1"},
+		Annotations: map[string]string{"kcp.io/path": "root:railgrid:tenants:org1:ws1"},
 	}})
-	if got := directClusterPath(context.Background(), kcp); got != "root:faros:tenants:org1:ws1" {
+	if got := directClusterPath(context.Background(), kcp); got != "root:railgrid:tenants:org1:ws1" {
 		t.Fatalf("directClusterPath = %q", got)
 	}
 	if got := directClusterPath(context.Background(), kcpfake.NewSimpleClientset()); got != "" {

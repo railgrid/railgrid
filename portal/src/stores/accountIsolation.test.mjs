@@ -30,7 +30,7 @@ class FakeSocket {
 globalThis.__accountIsolationTerminal = FakeTerminal
 const vite = await createServer({
   appType: 'custom', configFile: false, root: new URL('../../', import.meta.url).pathname,
-  cacheDir: join(tmpdir(), 'faros-account-isolation-test'),
+  cacheDir: join(tmpdir(), 'railgrid-account-isolation-test'),
   resolve: { alias: { '@': new URL('../', import.meta.url).pathname } },
   ssr: { noExternal: [/^@xterm\//] },
   optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false, ws: false },
@@ -78,7 +78,7 @@ function setup(t) {
   const data = new Map()
   globalThis.localStorage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: key => data.delete(key) }
   globalThis.sessionStorage = globalThis.localStorage
-  globalThis.location = { protocol: 'https:', host: 'faros.test', pathname: '/ui/bonkers/users' }
+  globalThis.location = { protocol: 'https:', host: 'railgrid.test', pathname: '/ui/bonkers/users' }
   globalThis.window = { location: globalThis.location, dispatchEvent() {} }
   globalThis.WebSocket = FakeSocket
   globalThis.fetch = async () => response({})

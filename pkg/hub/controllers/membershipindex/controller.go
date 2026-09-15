@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package membershipindex implements the UMI invariant reconciler: a
-// controller that watches UserMembershipIndex CRs in root:faros:users and
+// controller that watches UserMembershipIndex CRs in root:railgrid:users and
 // repairs rows that strand a user.
 //
 // The invariant: every workspace-scope row implies an org-scope row for the
@@ -60,7 +60,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 const controllerName = "membership-index-invariants"
@@ -97,7 +97,7 @@ func SetupWithManager(mgr manager.Manager, ensurer MembershipEnsurer) error {
 }
 
 // NewManager constructs a controller-runtime manager bound to the
-// root:faros:users workspace config (Bootstrapper.UsersConfig), matching
+// root:railgrid:users workspace config (Bootstrapper.UsersConfig), matching
 // the organization and softdelete managers. Separate manager so an
 // invariant-repair crash can't take their workqueues down.
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {

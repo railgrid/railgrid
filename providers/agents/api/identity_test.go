@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	"github.com/faroshq/provider-agents/store"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // staticWorkspaces is a workspaceLookup over a fixed table, standing in for
@@ -43,13 +43,13 @@ func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
 	s := &Server{
 		store: store.NewMemoryStore(),
 		workspaces: staticWorkspaces{
-			"c1": {ClusterID: "c1", Path: "root:faros:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"},
+			"c1": {ClusterID: "c1", Path: "root:railgrid:tenants:org1:ws1", OrgUUID: "org1", WorkspaceUUID: "ws1"},
 		}.lookup,
 	}
 	r := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
-	r.Header.Set("X-Faros-Tenant", "c1")
-	r.Header.Set("X-Faros-Cluster", "c1")
-	r.Header.Set("X-Faros-User", "alice")
+	r.Header.Set("X-Railgrid-Tenant", "c1")
+	r.Header.Set("X-Railgrid-Cluster", "c1")
+	r.Header.Set("X-Railgrid-User", "alice")
 	r.Header.Set("Authorization", "Bearer t")
 	w := httptest.NewRecorder()
 	s.whoami(w, r)
@@ -62,7 +62,7 @@ func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
 	}
 	for k, want := range map[string]any{
 		"tenantPath": "c1", "tenant": "c1", "clusterID": "c1",
-		"workspacePath": "root:faros:tenants:org1:ws1", "orgUUID": "org1", "workspaceUUID": "ws1",
+		"workspacePath": "root:railgrid:tenants:org1:ws1", "orgUUID": "org1", "workspaceUUID": "ws1",
 		"user": "alice", "hasToken": true,
 	} {
 		if got[k] != want {
@@ -72,8 +72,8 @@ func TestIdentityScopeComesFromWorkspaceLookupNotHeaders(t *testing.T) {
 
 	// A path-shaped header is opaque: it must not be parsed into a scope.
 	r = httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
-	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:victim-org:victim-ws")
-	r.Header.Set("X-Faros-Cluster", "root:faros:tenants:victim-org:victim-ws")
+	r.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:victim-org:victim-ws")
+	r.Header.Set("X-Railgrid-Cluster", "root:railgrid:tenants:victim-org:victim-ws")
 	r.Header.Set("Authorization", "Bearer t")
 	w = httptest.NewRecorder()
 	s.whoami(w, r)
@@ -93,8 +93,8 @@ func TestRequireClientReportsUnresolvedWorkspace(t *testing.T) {
 	}
 	// No tenant client at all: 501, as before.
 	r := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
-	r.Header.Set("X-Faros-Tenant", "c1")
-	r.Header.Set("X-Faros-Cluster", "c1")
+	r.Header.Set("X-Railgrid-Tenant", "c1")
+	r.Header.Set("X-Railgrid-Cluster", "c1")
 	r.Header.Set("Authorization", "Bearer t")
 	w := httptest.NewRecorder()
 	if _, _, ok := s.requireClient(w, r); ok || w.Code != http.StatusNotImplemented {

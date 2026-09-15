@@ -1,4 +1,4 @@
-# Contributing to faros
+# Contributing to railgrid
 
 Thanks for your interest in contributing! This document covers building from source, running tests, understanding the architecture, and the PR workflow.
 
@@ -28,14 +28,14 @@ Thanks for your interest in contributing! This document covers building from sou
 ## Building from Source
 
 ```bash
-git clone https://github.com/faroshq/faros.git
-cd faros
+git clone https://github.com/railgrid/railgrid.git
+cd railgrid
 
 # Build all binaries into bin/
 make build
 
 # Build just the CLI
-make build-faros
+make build-railgrid
 
 # Build just the hub
 make build-hub
@@ -45,14 +45,14 @@ Binaries produced:
 
 | Binary | Description |
 |--------|-------------|
-| `bin/faros` | User CLI (also runs as the agent via `faros agent run`) |
-| `bin/faros-hub` | Hub server |
+| `bin/railgrid` | User CLI (also runs as the agent via `railgrid agent run`) |
+| `bin/railgrid-hub` | Hub server |
 
 ---
 
 ## Local Development Stack
 
-`faros dev init` spins up a local environment with a hub kind cluster (and
+`railgrid dev init` spins up a local environment with a hub kind cluster (and
 optional worker kind clusters via `--worker-count N`), deploys the hub via
 Helm, and wires everything together. The default is hub-only; pass
 `--worker-count 1` (or more) when you also need agent clusters.
@@ -62,30 +62,30 @@ Helm, and wires everything together. The default is hub-only; pass
 make build
 
 # Create hub + 1 worker kind cluster and deploy the hub
-./bin/faros dev init --worker-count 1 --chart-path deploy/charts/faros-hub
+./bin/railgrid dev init --worker-count 1 --chart-path deploy/charts/railgrid-hub
 
 # Log in with the static dev token
-./bin/faros login --hub-url https://console.127.0.0.1.sslip.io:9443 \
+./bin/railgrid login --hub-url https://console.127.0.0.1.sslip.io:9443 \
   --insecure-skip-tls-verify --token dev-token
 
 # Register a dev edge
-./bin/faros edge create dev-edge-1
+./bin/railgrid edge create dev-edge-1
 
 # Print the agent command
-./bin/faros edge join-command dev-edge-1
+./bin/railgrid edge join-command dev-edge-1
 
-# Run the agent against a kind cluster (writes .kubeconfig-faros-agent)
-hack/scripts/ensure-kind-cluster.sh faros-agent
-./bin/faros agent run \
+# Run the agent against a kind cluster (writes .kubeconfig-railgrid-agent)
+hack/scripts/ensure-kind-cluster.sh railgrid-agent
+./bin/railgrid agent run \
   --hub-url https://console.127.0.0.1.sslip.io:9443 \
   --hub-insecure-skip-tls-verify \
   --token <join-token> \
   --edge-name dev-edge-1 \
   --type kubernetes \
-  --kubeconfig .kubeconfig-faros-agent
+  --kubeconfig .kubeconfig-railgrid-agent
 
 # Tear down
-./bin/faros dev delete
+./bin/railgrid dev delete
 ```
 
 ### Make shortcuts
@@ -111,7 +111,7 @@ everything up:
 # Terminal 1 — the hub (gives you a kcp admin kubeconfig at .kcp/admin.kubeconfig)
 make run-hub-embedded-static
 
-# Terminal 2 — admin: register the CatalogEntry in root:faros:providers
+# Terminal 2 — admin: register the CatalogEntry in root:railgrid:providers
 make install-provider-quickstart
 
 # Terminal 3 — tenant: run the provider binary; it heartbeats to the hub
@@ -120,7 +120,7 @@ make run-provider-quickstart
 
 Now open the portal at `https://console.127.0.0.1.sslip.io:9443/ui/providers`, click
 **Enable** on Quickstart, confirm the permission claim dialog, and
-`kubectl get greetings.quickstart.providers.faros.sh` will work in
+`kubectl get greetings.quickstart.providers.railgrid.ai` will work in
 your tenant workspace.
 
 To iterate on the manifest, `make uninstall-provider-quickstart` removes
@@ -198,7 +198,7 @@ make e2e-all
 **Reuse existing clusters** (faster iteration):
 
 ```bash
-FAROS_USE_EXISTING_CLUSTERS=true make e2e-standalone
+RAILGRID_USE_EXISTING_CLUSTERS=true make e2e-standalone
 ```
 
 **Keep clusters after failure** (for debugging):
@@ -217,7 +217,7 @@ make e2e-keep
 
 ```
                 ┌──────────────────────────────────┐
-                │           faros hub               │
+                │           railgrid hub               │
                 │                                   │
                 │  ┌─────────┐  ┌────────────────┐ │
                 │  │  kcp    │  │  agent-proxy   │ │
@@ -233,7 +233,7 @@ make e2e-keep
                     ┌──────────┴──────────┐
                     │                     │
              ┌──────▼──────┐     ┌────────▼──────┐
-             │ faros-agent │     │  faros-agent  │
+             │ railgrid-agent │     │  railgrid-agent  │
              │ (kubernetes)│     │   (server)    │
              └─────────────┘     └───────────────┘
 ```
@@ -247,17 +247,17 @@ make e2e-keep
 | `pkg/virtual/builder/` | Agent-proxy + MCP virtual workspaces — handles tunnel, status, MCP handler |
 | `pkg/agent/` | Agent core: registration, tunnel, edge_reporter |
 | `pkg/agent/tunnel/` | revdial tunnel client (`StartProxyTunnel`) |
-| `pkg/cli/cmd/` | CLI command implementations (including `faros mcp url`) |
-| `apis/faros/v1alpha1/` | Edge and KubernetesMCP CRD types (`faros.sh`) |
+| `pkg/cli/cmd/` | CLI command implementations (including `railgrid mcp url`) |
+| `apis/railgrid/v1alpha1/` | Edge and KubernetesMCP CRD types (`railgrid.ai`) |
 
 ### Join token bootstrap flow
 
-1. `faros edge create <name>` creates an `Edge` resource.
+1. `railgrid edge create <name>` creates an `Edge` resource.
 2. `TokenReconciler` generates a 44-char base64url token → `edge.status.joinToken`.
-3. Agent starts with `--token <join-token>` (via `faros agent run`).
+3. Agent starts with `--token <join-token>` (via `railgrid agent run`).
 4. Hub validates the token in `authorizeByJoinToken`, calls `markEdgeConnected`.
-5. Hub sends the agent's kubeconfig back via `X-Faros-Agent-Kubeconfig` response header.
-6. Agent saves the kubeconfig to `~/.faros/agent-<name>.kubeconfig`; clears `--token`.
+5. Hub sends the agent's kubeconfig back via `X-Railgrid-Agent-Kubeconfig` response header.
+6. Agent saves the kubeconfig to `~/.railgrid/agent-<name>.kubeconfig`; clears `--token`.
 7. On restart, agent loads the saved kubeconfig automatically — no token needed.
 8. Hub sets `Registered=True` on the Edge and clears `status.joinToken`.
 
@@ -270,10 +270,10 @@ Agents establish a long-lived WebSocket connection to the hub's `/proxy` endpoin
 Once an Edge is `Ready`, the hub exposes a virtual workspace endpoint:
 
 ```
-https://<hub>/clusters/<workspace-id>/apis/faros.sh/v1alpha1/edges/<name>/proxy/k8s
+https://<hub>/clusters/<workspace-id>/apis/railgrid.ai/v1alpha1/edges/<name>/proxy/k8s
 ```
 
-`faros kubeconfig edge <name>` generates a kubeconfig that points to this URL.
+`railgrid kubeconfig edge <name>` generates a kubeconfig that points to this URL.
 
 ---
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -109,7 +109,7 @@ func TestIsRetriableKCPBootstrapError(t *testing.T) {
 	}{
 		{
 			name: "connection reset",
-			err:  fmt.Errorf("getting CRD edges.faros.sh: read tcp: connection reset by peer"),
+			err:  fmt.Errorf("getting CRD edges.railgrid.ai: read tcp: connection reset by peer"),
 			want: true,
 		},
 		{
@@ -128,7 +128,7 @@ func TestIsRetriableKCPBootstrapError(t *testing.T) {
 		},
 		{
 			name: "permanent validation",
-			err:  errors.New("creating CRD edges.faros.sh: spec.validation.openAPIV3Schema is invalid"),
+			err:  errors.New("creating CRD edges.railgrid.ai: spec.validation.openAPIV3Schema is invalid"),
 			want: false,
 		},
 		{

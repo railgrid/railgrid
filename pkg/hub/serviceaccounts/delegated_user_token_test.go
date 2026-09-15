@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)
 	name := DelegatedUserServiceAccountName(tenantPath, delegatedTestUser, delegatedTestProvider)
 	if !strings.HasPrefix(name, delegatedUserNamePrefix) || len(name) > 63 {
-		t.Fatalf("service account name %q is not a short faros-du-* label", name)
+		t.Fatalf("service account name %q is not a short railgrid-du-* label", name)
 	}
 	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	if sa.Labels[LabelDelegatedUser] != "true" || sa.Labels[LabelWorkloadIdentity] != "true" {
 		t.Errorf("labels = %v, want delegated-user and workload-identity", sa.Labels)
 	}
-	if _, isUserManaged := sa.Labels[LabelFarosSA]; isUserManaged {
+	if _, isUserManaged := sa.Labels[LabelRailgridSA]; isUserManaged {
 		t.Error("delegated ServiceAccount carries the user-managed SA label and would be listable/rotatable by tenants")
 	}
 	for key, want := range map[string]string{
@@ -295,7 +295,7 @@ func TestVerifyDelegatedUserAnnotationsAcceptsHubMintedAndRejectsTampered(t *tes
 	if err := verifyWorkloadServiceAccountAnnotations(ctx, noUser, tenantPath, testProofKeySource); err == nil {
 		t.Error("accepted a delegated account with no user annotation")
 	}
-	if err := verifyWorkloadServiceAccountAnnotations(ctx, good, "root:faros:tenants:org:other", testProofKeySource); err == nil {
+	if err := verifyWorkloadServiceAccountAnnotations(ctx, good, "root:railgrid:tenants:org:other", testProofKeySource); err == nil {
 		t.Error("accepted a delegated account for a tenant it was not minted in")
 	}
 	// A workload identity is still held to the full Project tuple.
@@ -317,7 +317,7 @@ func TestVerifyDelegatedUserAnnotationsAcceptsHubMintedAndRejectsTampered(t *tes
 // identity annotations naming whoever they choose — mint a token for it with
 // TokenRequest, and hand it to the provider proxy. Before the proof, every
 // check the hub made compared inputs that member had written, so the far end
-// received X-Faros-User naming the victim.
+// received X-Railgrid-User naming the victim.
 func TestDelegatedIdentityRejectsTenantForgedServiceAccount(t *testing.T) {
 	ctx := context.Background()
 	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)

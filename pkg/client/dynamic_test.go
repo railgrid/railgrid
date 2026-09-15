@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 func TestTypedResourceCreateInjectsTypeMeta(t *testing.T) {
@@ -50,8 +50,8 @@ func TestTypedResourceCreateInjectsTypeMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if got.GetAPIVersion() != "tenants.faros.sh/v1alpha1" {
-		t.Errorf("expected apiVersion 'tenants.faros.sh/v1alpha1', got %q", got.GetAPIVersion())
+	if got.GetAPIVersion() != "tenants.railgrid.ai/v1alpha1" {
+		t.Errorf("expected apiVersion 'tenants.railgrid.ai/v1alpha1', got %q", got.GetAPIVersion())
 	}
 	if got.GetKind() != "Organization" {
 		t.Errorf("expected kind 'Organization', got %q", got.GetKind())

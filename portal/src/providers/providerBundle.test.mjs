@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-provider-bundle'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-provider-bundle'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,

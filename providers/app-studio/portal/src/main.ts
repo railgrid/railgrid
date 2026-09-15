@@ -7,6 +7,6 @@ import { registerAppStudioElements } from './element'
 
 const bootstrapGeneration = typeof document === 'undefined'
   ? undefined
-  : (document.currentScript as HTMLScriptElement | null)?.dataset.farosProviderBootstrapGeneration
+  : (document.currentScript as HTMLScriptElement | null)?.dataset.railgridProviderBootstrapGeneration
 
 registerAppStudioElements(bootstrapGeneration)

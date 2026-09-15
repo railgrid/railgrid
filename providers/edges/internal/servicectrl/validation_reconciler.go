@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,10 +43,10 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
-	"github.com/faroshq/provider-edges/internal/events"
-	"github.com/faroshq/provider-edges/internal/haclient"
-	"github.com/faroshq/provider-edges/internal/svccatalog"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
+	"github.com/railgrid/provider-edges/internal/events"
+	"github.com/railgrid/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
 
 const (
@@ -325,7 +325,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	// The agent refused to dial spec.host (403 + X-Faros-Svc-Policy: enforce):
+	// The agent refused to dial spec.host (403 + X-Railgrid-Svc-Policy: enforce):
 	// not a credential problem, and nothing was probed. Surface the agent's
 	// reason so the operator knows to add the host to --svc-allow-cidr.
 	if haclient.IsHostNotAllowed(resp) {

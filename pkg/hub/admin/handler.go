@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,19 +28,19 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	farosclient "github.com/faroshq/faros/pkg/client"
-	"github.com/faroshq/faros/pkg/hub/providers"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // Handler serves the /api/admin/* endpoints.
 type Handler struct {
 	svc        *Service
-	userClient *farosclient.Client
+	userClient *railgridclient.Client
 	registry   *providers.Registry
 }
 
 // NewHandler builds an admin Handler.
-func NewHandler(svc *Service, userClient *farosclient.Client, registry *providers.Registry) *Handler {
+func NewHandler(svc *Service, userClient *railgridclient.Client, registry *providers.Registry) *Handler {
 	return &Handler{svc: svc, userClient: userClient, registry: registry}
 }
 
@@ -55,7 +55,7 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	r.HandleFunc("/identities", h.listIdentities).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
-	// root:faros:system:providers drives the Provider reconciler
+	// root:railgrid:system:providers drives the Provider reconciler
 	// (pkg/hub/providers/provider_controller.go) to create the sub-workspace +
 	// ServiceAccount + kubeconfig Secret. These endpoints just create/delete
 	// that object — they do no provisioning themselves.
@@ -195,7 +195,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	byName := map[string]*adminProviderDTO{}
 	for _, p := range h.registry.List() {
 		// Platform providers only. This surface is about platform onboarding —
-		// it pairs registry records with workspaces under root:faros:providers,
+		// it pairs registry records with workspaces under root:railgrid:providers,
 		// which org-owned providers have none of. Including them would also let
 		// two Orgs that both named a provider "vault" collapse onto one row
 		// whose contents depend on map iteration order. Org-owned providers are
@@ -254,7 +254,7 @@ type createProviderRequest struct {
 	DisplayName string `json:"displayName"`
 }
 
-// createProvider creates a Provider object in root:faros:system:providers. The
+// createProvider creates a Provider object in root:railgrid:system:providers. The
 // Provider reconciler then provisions the sub-workspace + ServiceAccount +
 // kubeconfig Secret. Idempotent.
 func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +291,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 // providerKubeconfig streams the minted kubeconfig for a provider, read from
-// the Secret the Provider controller wrote into root:faros:system:providers.
+// the Secret the Provider controller wrote into root:railgrid:system:providers.
 // 404 if the Provider isn't provisioned yet (no Secret).
 //
 // The optional `server` query parameter re-points the server URL for this

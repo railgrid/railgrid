@@ -14,7 +14,7 @@ require kubectl
 
 KCP_OPERATOR_TAG="${KCP_OPERATOR_TAG:-${KCP_OPERATOR_REF}}"
 
-overlay="${FAROS_INSTALL_STATE_DIR}/kcp-operator-kustomize"
+overlay="${RAILGRID_INSTALL_STATE_DIR}/kcp-operator-kustomize"
 mkdir -p "${overlay}"
 cat > "${overlay}/kustomization.yaml" <<EOF
 resources:

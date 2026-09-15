@@ -6,5 +6,5 @@ export const API_PATHS = {
 } as const
 
 export const STORAGE_KEYS = {
-  auth: 'faros-auth',
+  auth: 'railgrid-auth',
 } as const

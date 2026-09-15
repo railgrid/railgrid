@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,8 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
-	kcpproxy "github.com/faroshq/faros/pkg/server/proxy"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
+	kcpproxy "github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
 type resolverConfigBuilder struct {
@@ -150,8 +150,8 @@ func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 
 func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerification(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "faros-wi-test"
-	const tenantPath = "root:faros:tenants:org:workspace"
+	const serviceAccount = "railgrid-wi-test"
+	const tenantPath = "root:railgrid:tenants:org:workspace"
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host:      "https://workload.test",
 		Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: tenantPath},
@@ -174,8 +174,8 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 			}
 			req := httptest.NewRequest(http.MethodGet, "/services/providers/databricks/x", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set(headerFarosOrg, "org")
-			req.Header.Set(headerFarosWorkspace, "workspace")
+			req.Header.Set(headerRailgridOrg, "org")
+			req.Header.Set(headerRailgridWorkspace, "workspace")
 
 			user, gotPath, err := r.resolve(req)
 			if err != nil {
@@ -193,13 +193,13 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 
 // A delegated user token — what the backend proxy hands an org-owned provider
 // in place of the caller's bearer — resolves to the HUMAN it stands in for,
-// so a provider calling back into the hub with it gets X-Faros-User=alice, not
-// the faros-du-* account name, and the same tenant binding every workload
+// so a provider calling back into the hub with it gets X-Railgrid-User=alice, not
+// the railgrid-du-* account name, and the same tenant binding every workload
 // token is held to.
 func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T) {
 	const token = "delegated-token"
-	const serviceAccount = "faros-du-test"
-	const tenantPath = "root:faros:tenants:org:workspace"
+	const serviceAccount = "railgrid-du-test"
+	const tenantPath = "root:railgrid:tenants:org:workspace"
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host: "https://workload.test",
 		Transport: workloadResolverRoundTripper{
@@ -216,8 +216,8 @@ func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T)
 
 	req := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerFarosOrg, "org")
-	req.Header.Set(headerFarosWorkspace, "workspace")
+	req.Header.Set(headerRailgridOrg, "org")
+	req.Header.Set(headerRailgridWorkspace, "workspace")
 	user, gotPath, err := r.resolve(req)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -233,8 +233,8 @@ func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T)
 	// selection is refused exactly as it is for a workload token.
 	other := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
 	other.Header.Set("Authorization", "Bearer "+token)
-	other.Header.Set(headerFarosOrg, "org")
-	other.Header.Set(headerFarosWorkspace, "other-workspace")
+	other.Header.Set(headerRailgridOrg, "org")
+	other.Header.Set(headerRailgridWorkspace, "other-workspace")
 	if _, _, err := r.resolve(other); err == nil {
 		t.Fatal("delegated token accepted for a workspace it was not minted in")
 	}
@@ -246,12 +246,12 @@ func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T)
 // label it delegated, annotate it with a colleague's username, and mint a
 // token for it with TokenRequest. The resolver must refuse it: without the
 // hub's keyed proof, nothing on that object distinguishes it from one the hub
-// minted, and accepting it would send the provider X-Faros-User naming the
+// minted, and accepting it would send the provider X-Railgrid-User naming the
 // victim.
 func TestKCPTenantResolverRejectsTenantForgedDelegatedServiceAccount(t *testing.T) {
 	const token = "attacker-minted-token"
-	const serviceAccount = "faros-du-forged"
-	const tenantPath = "root:faros:tenants:org:workspace"
+	const serviceAccount = "railgrid-du-forged"
+	const tenantPath = "root:railgrid:tenants:org:workspace"
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host: "https://workload.test",
 		Transport: workloadResolverRoundTripper{
@@ -269,8 +269,8 @@ func TestKCPTenantResolverRejectsTenantForgedDelegatedServiceAccount(t *testing.
 
 	req := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/x", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerFarosOrg, "org")
-	req.Header.Set(headerFarosWorkspace, "workspace")
+	req.Header.Set(headerRailgridOrg, "org")
+	req.Header.Set(headerRailgridWorkspace, "workspace")
 	user, gotPath, err := r.resolve(req)
 	if err == nil {
 		t.Fatalf("a tenant-forged delegated ServiceAccount resolved as %q in %q", user, gotPath)
@@ -297,11 +297,11 @@ func TestKCPTenantResolverRejectsTenantForgedDelegatedServiceAccount(t *testing.
 
 func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "faros-wi-test"
+	const serviceAccount = "railgrid-wi-test"
 	r := &kcpTenantResolver{
 		workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
 			Host:      "https://workload.test",
-			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:faros:tenants:org:workspace"},
+			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:railgrid:tenants:org:workspace"},
 		}},
 		identifyUser: func(*http.Request) (string, error) {
 			return "system:serviceaccount:default:" + serviceAccount, nil
@@ -309,8 +309,8 @@ func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerFarosOrg, "other-org")
-	req.Header.Set(headerFarosWorkspace, "workspace")
+	req.Header.Set(headerRailgridOrg, "other-org")
+	req.Header.Set(headerRailgridWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil {
 		t.Fatal("resolve accepted workload token with a different tenant selection")
 	}
@@ -318,11 +318,11 @@ func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing
 
 func TestKCPTenantResolverRejectsWrongTenantWhenIdentifyUserReturnsNoBearer(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "faros-wi-test"
+	const serviceAccount = "railgrid-wi-test"
 	r := &kcpTenantResolver{
 		workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
 			Host:      "https://workload.test",
-			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:faros:tenants:org:workspace"},
+			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:railgrid:tenants:org:workspace"},
 		}},
 		identifyUser: func(*http.Request) (string, error) {
 			return "", kcpproxy.ErrIdentifyNoBearer
@@ -330,8 +330,8 @@ func TestKCPTenantResolverRejectsWrongTenantWhenIdentifyUserReturnsNoBearer(t *t
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerFarosOrg, "other-org")
-	req.Header.Set(headerFarosWorkspace, "workspace")
+	req.Header.Set(headerRailgridOrg, "other-org")
+	req.Header.Set(headerRailgridWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want fail-closed workload verification error", err)
 	}
@@ -351,12 +351,12 @@ func TestKCPTenantResolverMapsOnlyMissingAuthorizationToAnonymous(t *testing.T) 
 
 func TestKCPTenantResolverRejectsUnavailableWorkloadIdentity(t *testing.T) {
 	r := &kcpTenantResolver{identifyUser: func(*http.Request) (string, error) {
-		return "system:serviceaccount:default:faros-wi-test", nil
+		return "system:serviceaccount:default:railgrid-wi-test", nil
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer runtime-token")
-	req.Header.Set(headerFarosOrg, "org")
-	req.Header.Set(headerFarosWorkspace, "workspace")
+	req.Header.Set(headerRailgridOrg, "org")
+	req.Header.Set(headerRailgridWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want fail-closed workload error", err)
 	}

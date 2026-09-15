@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,9 +37,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/provider-edges/internal/events"
-	"github.com/faroshq/provider-edges/internal/haclient"
-	"github.com/faroshq/provider-edges/internal/svccatalog"
+	"github.com/railgrid/provider-edges/internal/events"
+	"github.com/railgrid/provider-edges/internal/haclient"
+	"github.com/railgrid/provider-edges/internal/svccatalog"
 )
 
 // snippet trims a byte slice for inclusion in an error message.

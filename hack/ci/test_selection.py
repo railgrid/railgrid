@@ -18,13 +18,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class SelectionTests(unittest.TestCase):
     def test_pr_695_and_multiple_portals(self):
-        result = selection("pull_request", [STUDIO + "src/App.vue", STUDIO + "src/NewProjectWizard.vue"], "faroshq")
+        result = selection("pull_request", [STUDIO + "src/App.vue", STUDIO + "src/NewProjectWizard.vue"], "railgrid")
         self.assertEqual(result["mode"], "provider-ui")
         self.assertEqual(result["providers"], ["app-studio"])
         self.assertEqual(result["portal-matrix"]["include"], [
             {"provider": "app-studio", "test": True, "typecheck": True}])
         self.assertEqual(result["image-matrix"]["include"], [
-            {"name": "app-studio", "image": "faroshq/faros/app-studio-provider"}])
+            {"name": "app-studio", "image": "railgrid/railgrid/app-studio-provider"}])
         paths = [STUDIO + "package-lock.json", "providers/agents/portal/src/App.vue"]
         result = selection("pull_request", paths, "fork-owner")
         self.assertEqual(result["providers"], ["agents", "app-studio"])
@@ -64,23 +64,23 @@ class SelectionTests(unittest.TestCase):
             "kuery": (True, True), "quickstart": (False, True),
         }
         expected_images = [
-            {"name": name, "image": f"faroshq/faros-{name}-provider"}
+            {"name": name, "image": f"railgrid/railgrid-{name}-provider"}
             for name in ["quickstart", "infrastructure", "code", "kuery"]
-        ] + [{"name": "app-studio", "image": "faroshq/faros/app-studio-provider"}] + [
-            {"name": name, "image": f"faroshq/faros-{name}-provider"}
+        ] + [{"name": "app-studio", "image": "railgrid/railgrid/app-studio-provider"}] + [
+            {"name": name, "image": f"railgrid/railgrid-{name}-provider"}
             for name in ["agents", "edges"]
         ] + [
-            {"name": "infrastructure/dev-agent", "image": "faroshq/faros-dev-agent",
+            {"name": "infrastructure/dev-agent", "image": "railgrid/railgrid-dev-agent",
              "context": "./providers/infrastructure/dev-agent"},
-            {"name": "infrastructure/universal-dev", "image": "faroshq/faros-universal-dev",
+            {"name": "infrastructure/universal-dev", "image": "railgrid/railgrid-universal-dev",
              "context": "./providers/infrastructure/dev-agent",
              "dockerfile": "./providers/infrastructure/dev-agent/Dockerfile.universal"},
-            {"name": "access-proxy", "image": "faroshq/faros-access-proxy", "context": ".",
+            {"name": "access-proxy", "image": "railgrid/railgrid-access-proxy", "context": ".",
              "dockerfile": "./providers/infrastructure/Dockerfile.access-proxy"},
         ]
         for event in ("pull_request", "push", "release", "workflow_dispatch"):
             with self.subTest(event=event):
-                result = selection(event, ["Makefile"] if event == "pull_request" else [STUDIO + "App.vue"], "faroshq")
+                result = selection(event, ["Makefile"] if event == "pull_request" else [STUDIO + "App.vue"], "railgrid")
                 self.assertEqual(result["mode"], "full")
                 self.assertEqual(result["image-matrix"]["include"], expected_images)
                 self.assertEqual(result["portal-matrix"]["include"], [
@@ -88,7 +88,7 @@ class SelectionTests(unittest.TestCase):
                     for name, flags in expected_portals.items()])
 
     def test_infrastructure_ui_excludes_companion_images(self):
-        result = selection("pull_request", ["providers/infrastructure/portal/src/App.vue"], "faroshq")
+        result = selection("pull_request", ["providers/infrastructure/portal/src/App.vue"], "railgrid")
         self.assertEqual([entry["name"] for entry in result["image-matrix"]["include"]], ["infrastructure"])
 
     def test_unavailable_history_falls_back_but_execution_errors_propagate(self):
@@ -175,7 +175,7 @@ class GitDiffTests(unittest.TestCase):
         event, output, summary = [self.repo / name for name in ("event.json", "output", "summary")]
         event.write_text(json.dumps({"pull_request": {"base": {"sha": self.base}, "head": {"sha": head}}}))
         env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event),
-                   GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary), GITHUB_REPOSITORY_OWNER="faroshq")
+                   GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary), GITHUB_REPOSITORY_OWNER="railgrid")
         command = [sys.executable, str(ROOT / "hack/ci/selection.py")]
         subprocess.run(command, cwd=self.repo, env=env, check=True, capture_output=True)
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())

@@ -1,14 +1,14 @@
 {{- define "agents.catalogEntry" -}}
-apiVersion: providers.faros.sh/v1alpha1
+apiVersion: providers.railgrid.ai/v1alpha1
 kind: CatalogEntry
 metadata:
   name: agents
   annotations:
-    providers.faros.sh/builtin: "false"
+    providers.railgrid.ai/builtin: "false"
 spec:
   displayName: "Agents"
   description: "Long-running personal AI agents: chat, scheduled runs, tools, and durable memory."
-  vendor: "faros"
+  vendor: "railgrid"
   version: {{ .Chart.AppVersion | quote }}
   category: "AI"
   iconURL: "/ui/providers/agents/icon.svg"
@@ -20,14 +20,14 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/agents/* here,
-    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
+    # injecting the verified X-Railgrid-Tenant/X-Railgrid-User headers and the
     # caller's bearer token. The provider serves /api/* + /healthz.
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "agents.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
     healthPath: "/healthz"
   # Reference-only: the APIExport, schemas, slice, and bind grant are created by
-  # this chart's init container (provider `init`, via the faros-provider-sdk).
+  # this chart's init container (provider `init`, via the railgrid-provider-sdk).
   apiExport:
-    name: "agents.faros.sh"
+    name: "agents.railgrid.ai"
     permissionClaims:
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
@@ -53,12 +53,12 @@ spec:
 
 {{- if .Values.catalogEntry.enabled -}}
 {{- if .Values.catalogEntry.renderAsConfigMap }}
-# CatalogEntry registers this provider with the faros hub for routing + the
-# portal Enable flow. It is a kcp resource (providers.faros.sh/v1alpha1),
+# CatalogEntry registers this provider with the railgrid hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.railgrid.ai/v1alpha1),
 # so it MUST NOT be applied to the hosting cluster where this chart installs.
 # Instead the chart renders it into a ConfigMap that the init container mounts
 # and applies into the provider workspace via the provider kubeconfig
-# (FAROS_CATALOGENTRY_FILE -> sdkinstall.Bootstrap).
+# (RAILGRID_CATALOGENTRY_FILE -> sdkinstall.Bootstrap).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -76,12 +76,12 @@ data:
       selfHosting:
         supported: true
         chart:
-          repository: "oci://ghcr.io/faroshq/charts"
-          name: "faros-agents-provider"
+          repository: "oci://ghcr.io/railgrid/charts"
+          name: "railgrid-agents-provider"
           version: {{ .Chart.Version | quote }}
-        namespace: "faros-provider-agents"
+        namespace: "railgrid-provider-agents"
         releaseName: "agents"
-        docsURL: "https://github.com/faroshq/faros/blob/main/providers/agents/deploy/chart/README.md"
+        docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}

@@ -6,9 +6,9 @@
 <script setup lang="ts">
 import { Info } from 'lucide-vue-next'
 import { useId } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 export interface CreateGuidanceValue {
   label: string
@@ -27,7 +27,7 @@ withDefaults(defineProps<{
   prerequisites: () => [],
   values: () => [],
   nextSteps: () => [],
-  valuesHeading: 'What Faros will create',
+  valuesHeading: 'What Railgrid will create',
 })
 
 const id = useId().replace(/[^a-zA-Z0-9_-]/g, '-')

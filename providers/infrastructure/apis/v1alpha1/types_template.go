@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,11 +24,11 @@ import (
 // Template is the platform-owned catalog entry for one provisionable
 // thing — a Redis cache, a Postgres database, a packaged application.
 // Operators apply Templates to the provider workspace
-// (root:faros:providers:infrastructure). The Template controller
+// (root:railgrid:providers:infrastructure). The Template controller
 // reacts by:
 //
 //  1. Materializing the per-template CRD declared in spec.instanceCRD
-//     (e.g. redis.infrastructure.faros.sh) into the cluster's
+//     (e.g. redis.infrastructure.railgrid.ai) into the cluster's
 //     CRD set, with OpenAPI validation derived from spec.schema.
 //  2. Adding that CRD to APIExport.spec.schemas so tenants who
 //     APIBind to the infrastructure provider can see and create
@@ -49,7 +49,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=tmpl
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=tmpl
 // +kubebuilder:printcolumn:name="Display",type=string,JSONPath=`.spec.displayName`
 // +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=`.spec.backend`
 // +kubebuilder:printcolumn:name="Kind",type=string,JSONPath=`.spec.instanceCRD.kind`
@@ -137,7 +137,7 @@ type TemplateSpec struct {
 
 	// InstanceCRD declares the per-template CRD the platform
 	// publishes for tenants to author instances against. Must be in
-	// group infrastructure.faros.sh; the resource (lowercase
+	// group infrastructure.railgrid.ai; the resource (lowercase
 	// plural) and kind (CamelCase singular) are operator-chosen but
 	// must be unique across all Templates.
 	// +required
@@ -232,7 +232,7 @@ type TemplateSpec struct {
 	// platform-managed dev images with a hot-reload agent, where each
 	// component's source lives in the project workspace, and how each reloads.
 	// A template with a Development block can have instances provisioned with
-	// farosMode: development (the platform-reserved instance spec field the
+	// railgridMode: development (the platform-reserved instance spec field the
 	// Template controller injects); templates without one are
 	// production-only.
 	//
@@ -251,50 +251,50 @@ const (
 	// gate without trusting tenant-provided labels.
 	UniversalCodingSandboxTemplateName = "universal-coding-sandbox"
 
-	// FarosModeField is the reserved instance spec property name. Templates
+	// RailgridModeField is the reserved instance spec property name. Templates
 	// MUST NOT declare it in spec.schema themselves.
-	FarosModeField = "farosMode"
-	// FarosModeProduction runs the graph exactly as declared.
-	FarosModeProduction = "production"
-	// FarosModeDevelopment hot-swaps the declared development components to
+	RailgridModeField = "railgridMode"
+	// RailgridModeProduction runs the graph exactly as declared.
+	RailgridModeProduction = "production"
+	// RailgridModeDevelopment hot-swaps the declared development components to
 	// platform-managed dev images with the dev agent.
-	FarosModeDevelopment = "development"
+	RailgridModeDevelopment = "development"
 
 	// Provider Actions fields are reserved instance spec properties used by the
 	// App Studio development runtime. The Template controller injects them into
 	// tenant-facing per-template CRDs/APIResourceSchemas, while App Studio owns
 	// their values and the dev overlay supplies empty defaults when no action
 	// grant is present. Templates MUST NOT declare these fields in spec.schema.
-	FarosActionsExchangeURLField = "farosActionsExchangeURL"
-	FarosActionsBaseURLField     = "farosActionsBaseURL"
-	FarosActionsTenantPathField  = "farosActionsTenantPath"
-	FarosActionsOrgField         = "farosActionsOrg"
-	FarosActionsWorkspaceField   = "farosActionsWorkspace"
-	FarosActionsProjectField     = "farosActionsProject"
-	FarosActionsProjectUIDField  = "farosActionsProjectUID"
-	FarosActionsEnvironmentField = "farosActionsEnvironment"
-	FarosActionsInstanceField    = "farosActionsInstance"
-	// FarosActionsCABundleField carries an optional public PEM CA bundle from
+	RailgridActionsExchangeURLField = "railgridActionsExchangeURL"
+	RailgridActionsBaseURLField     = "railgridActionsBaseURL"
+	RailgridActionsTenantPathField  = "railgridActionsTenantPath"
+	RailgridActionsOrgField         = "railgridActionsOrg"
+	RailgridActionsWorkspaceField   = "railgridActionsWorkspace"
+	RailgridActionsProjectField     = "railgridActionsProject"
+	RailgridActionsProjectUIDField  = "railgridActionsProjectUID"
+	RailgridActionsEnvironmentField = "railgridActionsEnvironment"
+	RailgridActionsInstanceField    = "railgridActionsInstance"
+	// RailgridActionsCABundleField carries an optional public PEM CA bundle from
 	// App Studio into development-mode runtime pods. It is intentionally a
 	// reserved instance field: templates must not author trust material, and
 	// production-mode instances never receive it in their tenant schema.
-	FarosActionsCABundleField = "farosActionsCABundle"
+	RailgridActionsCABundleField = "railgridActionsCABundle"
 
-	// FarosNetworkPhaseField is a platform-reserved development value. The
+	// RailgridNetworkPhaseField is a platform-reserved development value. The
 	// Instance controller holds a new sandbox in setup until its runtime graph
 	// is Ready, then switches it to runtime. Templates use it only to select
 	// an explicit setup egress policy; tenants cannot choose the phase.
-	FarosNetworkPhaseField   = "farosNetworkPhase"
-	// FarosNetworkPhaseStatusField is the controller-owned status mirror of
-	// FarosNetworkPhaseField. Tenant spec values are never authoritative for
+	RailgridNetworkPhaseField = "railgridNetworkPhase"
+	// RailgridNetworkPhaseStatusField is the controller-owned status mirror of
+	// RailgridNetworkPhaseField. Tenant spec values are never authoritative for
 	// execution readiness.
-	FarosNetworkPhaseStatusField = "farosNetworkPhase"
-	FarosNetworkPhaseSetup   = "setup"
-	FarosNetworkPhaseRuntime = "runtime"
-	// FarosLastActivityAnnotation is written to a runtime Instance by the
+	RailgridNetworkPhaseStatusField = "railgridNetworkPhase"
+	RailgridNetworkPhaseSetup       = "setup"
+	RailgridNetworkPhaseRuntime     = "runtime"
+	// RailgridLastActivityAnnotation is written to a runtime Instance by the
 	// provider data plane after caller authorization. It is deliberately not
 	// stored in tenant-visible Instance status.
-	FarosLastActivityAnnotation = "faros.sh/last-activity"
+	RailgridLastActivityAnnotation = "railgrid.ai/last-activity"
 )
 
 // TemplateDevelopment is the development-mode contract for a template's
@@ -390,11 +390,11 @@ type TemplateDevelopmentComponent struct {
 
 	// DevImage is the platform-managed toolchain image the component's
 	// workload runs in development mode, in place of the user-supplied
-	// production image. MUST be a ${faros.devImage.<toolchain>} token — the
+	// production image. MUST be a ${railgrid.devImage.<toolchain>} token — the
 	// backend resolves it from provider configuration; tenants never choose
 	// dev images.
 	// +required
-	// +kubebuilder:validation:Pattern=`^\$\{faros\.devImage\.[a-z][a-z0-9-]*\}$`
+	// +kubebuilder:validation:Pattern=`^\$\{railgrid\.devImage\.[a-z][a-z0-9-]*\}$`
 	// +kubebuilder:validation:MaxLength=128
 	DevImage string `json:"devImage"`
 
@@ -425,7 +425,7 @@ type TemplateDevelopmentComponent struct {
 	// link between a development component and the production image field that
 	// runs it: App Studio builds one OCI image per component (build context =
 	// WorkspacePath) and, on launch, sets each named input to that component's
-	// built digest before provisioning the instance with farosMode:
+	// built digest before provisioning the instance with railgridMode:
 	// production. Empty means the component produces no launchable image (e.g.
 	// a worker developed in-cluster but not yet promotable). Must match a
 	// top-level property of the template's production schema.
@@ -686,11 +686,11 @@ type TemplateAgent struct {
 // register the CRD (group + version + resource + kind) and reference
 // it from APIExport.spec.schemas (resource.group).
 type TemplateInstanceCRD struct {
-	// Group MUST be infrastructure.faros.sh. Pinned here so
+	// Group MUST be infrastructure.railgrid.ai. Pinned here so
 	// every per-template CRD lives under the same namespace and the
 	// portal can render them uniformly.
 	// +required
-	// +kubebuilder:validation:Pattern=`^infrastructure\.faros\.sh$`
+	// +kubebuilder:validation:Pattern=`^infrastructure\.railgrid\.sh$`
 	Group string `json:"group"`
 
 	// Version of the per-template CRD's served + storage schema.
@@ -781,4 +781,4 @@ const (
 
 // Standard finalizer the Template controller adds. Cleanup on delete:
 // (1) backend.TeardownTemplate, (2) drop finalizer.
-const FinalizerTemplateReconcile = "templates.infrastructure.faros.sh/reconcile"
+const FinalizerTemplateReconcile = "templates.infrastructure.railgrid.ai/reconcile"

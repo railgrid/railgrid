@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,13 +37,13 @@ func TestRenderEscapesDisplayTextAndProvidesAccessibleErrorState(t *testing.T) {
 		`role="alert" aria-live="assertive"`,
 		`aria-labelledby="status-heading"`,
 		`aria-describedby="status-message"`,
-		`--faros-surface: #0a0b12`,
-		`--faros-text-secondary: #8a8ca6`,
-		`--faros-text-primary: #e9e9f2`,
+		`--railgrid-surface: #0a0b12`,
+		`--railgrid-text-secondary: #8a8ca6`,
+		`--railgrid-text-primary: #e9e9f2`,
 		`overflow-wrap: anywhere`,
 		`viewBox="0 0 24 24"`,
 		`d="M21 16V8a2 2 0 0 0-1-1.73`,
-		`<span>Faros</span>`,
+		`<span>Railgrid</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rendered page missing %q: %s", want, body)
@@ -52,7 +52,7 @@ func TestRenderEscapesDisplayTextAndProvidesAccessibleErrorState(t *testing.T) {
 	if strings.Contains(body, `role="status"`) {
 		t.Fatalf("error page has success status role: %s", body)
 	}
-	if strings.Contains(body, `faros-status__surface::before`) || strings.Contains(body, `faros-accent-glow`) {
+	if strings.Contains(body, `railgrid-status__surface::before`) || strings.Contains(body, `railgrid-accent-glow`) {
 		t.Fatalf("status page uses a decorative glow: %s", body)
 	}
 }

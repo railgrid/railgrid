@@ -3,7 +3,7 @@ import test from 'node:test'
 
 const { createKubeClient, kubeResourcePath, isKubeError, isKubeNotFound, isKubeConflict, isKubeResourceUnavailable, KubeError } = await import('./kube.ts')
 
-const instances = { group: 'infrastructure.faros.sh', version: 'v1alpha1', resource: 'instances' }
+const instances = { group: 'infrastructure.railgrid.ai', version: 'v1alpha1', resource: 'instances' }
 const secrets = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
 
 function status(code, reason, message, details) {
@@ -24,15 +24,15 @@ function fakeFetch(handler) {
 }
 
 test('paths follow the kube URL grammar and encode every segment', () => {
-  assert.equal(kubeResourcePath('abc123', instances), '/clusters/abc123/apis/infrastructure.faros.sh/v1alpha1/instances')
-  assert.equal(kubeResourcePath('abc123', instances, { name: 'web' }), '/clusters/abc123/apis/infrastructure.faros.sh/v1alpha1/instances/web')
-  assert.equal(kubeResourcePath('abc123', instances, { name: 'web', subresource: 'status' }), '/clusters/abc123/apis/infrastructure.faros.sh/v1alpha1/instances/web/status')
+  assert.equal(kubeResourcePath('abc123', instances), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances')
+  assert.equal(kubeResourcePath('abc123', instances, { name: 'web' }), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web')
+  assert.equal(kubeResourcePath('abc123', instances, { name: 'web', subresource: 'status' }), '/clusters/abc123/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/status')
   assert.equal(kubeResourcePath('abc123', secrets, { namespace: 'default', name: 'tok' }), '/clusters/abc123/api/v1/namespaces/default/secrets/tok')
-  assert.equal(kubeResourcePath('a/b', instances, { name: '../x' }), '/clusters/a%2Fb/apis/infrastructure.faros.sh/v1alpha1/instances/..%2Fx')
+  assert.equal(kubeResourcePath('a/b', instances, { name: '../x' }), '/clusters/a%2Fb/apis/infrastructure.railgrid.ai/v1alpha1/instances/..%2Fx')
 })
 
 test('get returns the object and maps a Status 404 to a KubeError', async () => {
-  const { fetch, calls } = fakeFetch(({ url }) => (url.endsWith('/web') ? [200, { metadata: { name: 'web' } }] : [404, status(404, 'NotFound', 'instances.infrastructure.faros.sh "gone" not found', { name: 'gone' })]))
+  const { fetch, calls } = fakeFetch(({ url }) => (url.endsWith('/web') ? [200, { metadata: { name: 'web' } }] : [404, status(404, 'NotFound', 'instances.infrastructure.railgrid.ai "gone" not found', { name: 'gone' })]))
   const client = createKubeClient({ fetch, cluster: 'c1' })
   const obj = await client.get(instances, 'web')
   assert.equal(obj.metadata.name, 'web')
@@ -57,7 +57,7 @@ test('list forwards selectors and pagination and normalizes the envelope', async
   const client = createKubeClient({ fetch, cluster: 'c1' })
   const page = await client.list(instances, { labelSelector: 'app=web', limit: 1, continue: 'prev' })
   const url = new URL(calls[0].url, 'http://x')
-  assert.equal(url.pathname, '/clusters/c1/apis/infrastructure.faros.sh/v1alpha1/instances')
+  assert.equal(url.pathname, '/clusters/c1/apis/infrastructure.railgrid.ai/v1alpha1/instances')
   assert.equal(url.searchParams.get('labelSelector'), 'app=web')
   assert.equal(url.searchParams.get('limit'), '1')
   assert.equal(url.searchParams.get('continue'), 'prev')
@@ -110,10 +110,10 @@ test('create posts to the collection, update puts to the object', async () => {
 test('apply is a forced server-side apply patch under the client field manager', async () => {
   const { fetch, calls } = fakeFetch(({ body }) => [200, JSON.parse(body)])
   const client = createKubeClient({ fetch, cluster: 'c1', fieldManager: 'provider-infrastructure' })
-  await client.apply(instances, { apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'Instance', metadata: { name: 'web' }, spec: { template: 't' } })
+  await client.apply(instances, { apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', metadata: { name: 'web' }, spec: { template: 't' } })
   const url = new URL(calls[0].url, 'http://x')
   assert.equal(calls[0].method, 'PATCH')
-  assert.equal(url.pathname, '/clusters/c1/apis/infrastructure.faros.sh/v1alpha1/instances/web')
+  assert.equal(url.pathname, '/clusters/c1/apis/infrastructure.railgrid.ai/v1alpha1/instances/web')
   assert.equal(url.searchParams.get('fieldManager'), 'provider-infrastructure')
   assert.equal(url.searchParams.get('force'), 'true')
   assert.equal(calls[0].headers['Content-Type'], 'application/apply-patch+yaml')
@@ -125,7 +125,7 @@ test('patch defaults to merge-patch and supports the status subresource', async 
   const client = createKubeClient({ fetch, cluster: 'c1' })
   await client.patch(instances, 'web', { status: { phase: 'Ready' } }, { subresource: 'status' })
   assert.equal(calls[0].headers['Content-Type'], 'application/merge-patch+json')
-  assert.equal(new URL(calls[0].url, 'http://x').pathname, '/clusters/c1/apis/infrastructure.faros.sh/v1alpha1/instances/web/status')
+  assert.equal(new URL(calls[0].url, 'http://x').pathname, '/clusters/c1/apis/infrastructure.railgrid.ai/v1alpha1/instances/web/status')
 })
 
 test('delete sends DeleteOptions with preconditions and surfaces a 409', async () => {

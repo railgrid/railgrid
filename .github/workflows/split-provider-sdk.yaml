@@ -1,7 +1,7 @@
 name: Split provider-sdk
 
 # Publishes provider-sdk/ from this monorepo to the standalone, read-only
-# mirror at faroshq/provider-sdk, preserving git history. The provider modules
+# mirror at railgrid/provider-sdk, preserving git history. The provider modules
 # depend on this SDK via `replace => ../../provider-sdk` in the monorepo; the
 # mirror is what a future published/`go get`-able SDK is cut from.
 #
@@ -18,7 +18,7 @@ name: Split provider-sdk
 #
 # Required secret: PROVIDER_SDK_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
-#   faroshq/provider-sdk.
+#   railgrid/provider-sdk.
 
 on:
   push:
@@ -43,7 +43,7 @@ concurrency:
 
 env:
   PREFIX: provider-sdk
-  TARGET_REPO: git@github.com:faroshq/provider-sdk.git
+  TARGET_REPO: git@github.com:railgrid/provider-sdk.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 

@@ -15,7 +15,7 @@ container and one control endpoint. That fixture and its signed preview gateway
 were removed in Phase 4. The current implementation is Template-backed:
 Projects select an infrastructure Template, the Template declares development
 components and data-plane verbs, and App Studio provisions the selected
-development instance with `farosMode: development`.
+development instance with `railgridMode: development`.
 
 Development mode is therefore a capability any Template can declare. Selected
 components run platform-managed dev images with a hot-reload agent, each with
@@ -65,7 +65,7 @@ development:
   components:
     frontend:
       workspacePath: web            # repo/workspace subdir synced here
-      devImage: ${faros.devImage.node}
+      devImage: ${railgrid.devImage.node}
       workingDir: /workspace
       startCommand: "npm run dev"
       port: frontend                # named port kept from the prod graph
@@ -76,7 +76,7 @@ development:
             command: "npm install"  # run before process restart
     backend:
       workspacePath: api
-      devImage: ${faros.devImage.python}
+      devImage: ${railgrid.devImage.python}
       startCommand: "uvicorn main:app --reload"
       port: backend
       reload:
@@ -85,7 +85,7 @@ development:
           - paths: ["requirements.txt", "pyproject.toml"]
             command: "pip install -r requirements.txt"
   scaffold:                          # starter code for a fresh project,
-    repository: https://github.com/faroshq/scaffold-web-api
+    repository: https://github.com/railgrid/scaffold-web-api
     ref: v1                          # incl. .github/workflows building each
                                      # component's image (see §4.1a)
   build:
@@ -98,7 +98,7 @@ Rules:
   frontend Deployment, the backend Deployment). Components *not* listed
   (database StatefulSet, oauth proxy) run exactly as in production mode — this
   is the point: a dev sandbox with a real Postgres next to it.
-- `devImage` values are **platform-managed** `${faros.devImage.<toolchain>}`
+- `devImage` values are **platform-managed** `${railgrid.devImage.<toolchain>}`
   tokens resolved by the infrastructure provider from env/config. Tenants
   never pick dev images.
 - `workspacePath` maps a workspace/repo subdirectory to the component. This is
@@ -116,16 +116,16 @@ Rules:
   migration concern, not Template ownership.
 
 **Instance dev mode.** Instances gain a platform-reserved spec field
-`farosMode: production | development` (injected into every template's CRD
+`railgridMode: production | development` (injected into every template's CRD
 schema by the Template controller, the same way `credentialsSecretName` is
 controller-owned today). `development` is only valid when the Template declares
 a `development` block.
 
-**Rendering.** When `farosMode: development`, each declared component's
+**Rendering.** When `railgridMode: development`, each declared component's
 workload is rendered with a **platform coordinator**, an **app runtime
 supervisor**, and a **stateless executor**. It also receives a
 **per-component workspace PVC** mounted at `workingDir`, a separate
-**per-component platform-state PVC** mounted at `/faros/state` for the
+**per-component platform-state PVC** mounted at `/railgrid/state` for the
 coordinator, a per-component control Service, and the instance-wide control
 token Secret. Everything else in the graph is untouched. How the overlay is
 produced is an infra-internal decision (§6.1) — the Template author writes
@@ -141,7 +141,7 @@ the `development` block, not two graphs. Rules the overlay must obey:
   production graph.
 - **Container authorities are split.** The coordinator owns the public,
   token-authenticated control contract and durable session/idempotency state on
-  `/faros/state`, but has no app environment or secrets. The runtime supervisor
+  `/railgrid/state`, but has no app environment or secrets. The runtime supervisor
   keeps the production app environment/secrets and starts, restarts, and
   reloads the app, but has no platform token or platform-state mount. The
   stateless executor verifies the synchronized workspace revision/SHA-256 digest
@@ -169,12 +169,12 @@ the `development` block, not two graphs. Rules the overlay must obey:
 ## 2. The dev agent (infra-owned)
 
 `providers/infrastructure/dev-agent/main.go` is the standalone
-**`faros-dev-agent`** static binary. In dev mode every declared component runs
+**`railgrid-dev-agent`** static binary. In dev mode every declared component runs
 the binary in three roles:
 
 - Injected via an **init container** that copies the agent binary from a
   platform image into a shared `emptyDir` — so `devImage` can be *any*
-  toolchain image (node, python, go, jdk) with no faros-specific baking.
+  toolchain image (node, python, go, jdk) with no railgrid-specific baking.
 - The coordinator serves `/sync`, `/restart`, `/logs`, `/env`, and
   revision-bound `/exec` on the public Service's `7070`/`7071` ports. It holds
   the `X-Sandbox-Control-Token` and durable platform state.
@@ -190,7 +190,7 @@ the binary in three roles:
 - Auth stays the per-instance control token (`X-Sandbox-Control-Token`),
   presented at the public control boundary.
 
-The platform dev images (`${faros.devImage.*}`) are plain toolchain images the
+The platform dev images (`${railgrid.devImage.*}`) are plain toolchain images the
 infrastructure provider curates and pins. They keep the dev agent separate from
 the application toolchain instead of coupling every project to one runner
 image.
@@ -245,7 +245,7 @@ instance-level ones.
 
 - `Project.spec` records the choice: a `template` reference (`{resource, kind,
   version}`) replacing the old fixed-runner assumption. The development
-  environment's binding is generated from it with `farosMode: development`.
+  environment's binding is generated from it with `railgridMode: development`.
 - **Projects are created template-less; the first assistant conversation
   binds one.** Creation makes only the Project + repo + empty workspace — no
   sandbox yet. The assistant's first conversation runs the requirements
@@ -270,9 +270,9 @@ its `workspacePath` (so scaffold layout, `development.components`, and CI
 stay coupled on the Template — §6.3). The Template declares the repository-
 owned workflow through `development.build.workflowPath`; App Studio observes
 and dispatches that workflow but does not synthesize, inject, or automatically
-repair it. Flipping an instance to `farosMode: production` supplies exact-
+repair it. Flipping an instance to `railgridMode: production` supplies exact-
 commit, registry-backed image refs to the template's image fields, which are
-**optional while `farosMode: development`** (ignored by the dev overlay).
+**optional while `railgridMode: development`** (ignored by the dev overlay).
 Promotion is repeatable and updates the same production binding while keeping
 the development environment running.
 
@@ -298,7 +298,7 @@ Changing `Project.spec.template`:
 1. Commit any dirty workspace state to the repo (or refuse until committed).
 2. Delete the old instance (kro GC tears the graph down; PVC included — it is
    a cache).
-3. Create the new Template's instance with `farosMode: development`.
+3. Create the new Template's instance with `railgridMode: development`.
 4. Re-hydrate the workspace from the repo (§5) and full-sync every component.
 
 Code survives because the repo is the source of truth; what does *not*
@@ -328,8 +328,8 @@ The missing half of the code lifecycle is **repo → workspace**:
 
 | Option | Pros | Cons |
 |---|---|---|
-| **kro conditionals in one graph** (`includeWhen` + CEL ternaries on image/command keyed on `schema.spec.farosMode`) | One RGD, one instance kind | CEL string-templating of images/commands is exactly where kro is brittle (quoting/multiline gotchas already bitten in this repo); every template author pays the complexity |
-| **Backend-synthesized overlay** — the kro backend builds the dev variant of the graph mechanically from `development` at RGD build time (same place `${faros.*}` substitution runs), producing mode-conditional resources itself | Template authors write only the `development` block; transformation is tested Go, not CEL; matches the existing "backend interprets backendConfig" boundary | The backend must understand enough of the graph to find a component's workload (needs a component→resource naming convention) |
+| **kro conditionals in one graph** (`includeWhen` + CEL ternaries on image/command keyed on `schema.spec.railgridMode`) | One RGD, one instance kind | CEL string-templating of images/commands is exactly where kro is brittle (quoting/multiline gotchas already bitten in this repo); every template author pays the complexity |
+| **Backend-synthesized overlay** — the kro backend builds the dev variant of the graph mechanically from `development` at RGD build time (same place `${railgrid.*}` substitution runs), producing mode-conditional resources itself | Template authors write only the `development` block; transformation is tested Go, not CEL; matches the existing "backend interprets backendConfig" boundary | The backend must understand enough of the graph to find a component's workload (needs a component→resource naming convention) |
 
 **Decision: backend-synthesized.** The convention is small — a
 component names a resource in the graph (`frontend` → the resource whose `id`
@@ -338,7 +338,7 @@ hands, consistent with the token-substitution precedent.
 
 ### 6.2 Dev session as mode vs. separate resource
 
-**Decision: the `farosMode` field on the instance** (§1) — dev and prod are
+**Decision: the `railgridMode` field on the instance** (§1) — dev and prod are
 the same CR; toggling mode re-renders workloads in place. The alternative (a
 paired `DevSession` CR referencing the instance) isolates dev churn but
 doubles the API surface and breaks "the template is the sandbox" directness.
@@ -357,11 +357,11 @@ assistant hints) after hydration.
 
 | Phase | Deliverable | Risk |
 |---|---|---|
-| **0** | **DONE.** API: `Template.spec.development`, `dataPlane.components`, reserved `farosMode` schema injection; resolver + validation + unit tests. Development-capable templates carry the component and data-plane contract. | Low — additive |
-| **1** | **DONE, e2e-validated on kind** (`TestE2EDevelopmentMode`, runs in the Infrastructure Template E2E workflow). `faros-dev-agent` extracted (`providers/infrastructure/dev-agent/`, `--install` injection, reload rules, `FAROS_DEV_*` configuration); `${faros.devImage.*}` / `${faros.devAgentImage}` tokens (env `FAROS_DEV_IMAGE_<TOOLCHAIN>` / `FAROS_DEV_AGENT_IMAGE`, chart + operator wired); backend-synthesized dev overlay (`backend/kro/devoverlay.go`); per-component data-plane URLs; `application` Template development block (node/node v1) + component dataPlane + CEL images-optional-in-dev rule. Both flagged kro assumptions validated live: `includeWhen` on two same-named Deployment variants is accepted and mode-splits correctly, and status expressions referencing mode-excluded resources stay unset in production and resolve in development. (Two apply-time gotchas the e2e caught, now handled in the overlay: env values need `${string(...)}` around int-typed CEL, and overlay ports/mounts must dedupe against what the workload already declares.) | ~~High~~ validated |
-| **2** | **Core DONE** (portal catalog UI + creation-flow polish outstanding). `Project.spec.template` names the backing Template; selection (PUT `/api/projects/{p}/template`, assistant tool `select_project_template`) reads the Template live from the tenant catalog, tears the old dev instance down, and generates the dev binding (`farosMode: development`). Sync/logs/restart/env route per component (workspacePath prefix → `…/components/<c>/<verb>`); template previews use the instance's own `status.url`. The assistant prompt carries the bound Template (or interview guidance when none). The old fixed-runner creation default was removed (2026-07-04): new projects have no development environment until a Template is bound — by the assistant interview, the portal picker, or `PUT /template`. `select_project_template` sits in the workflow tool bundle so interview-profile turns can actually call it. | Medium |
+| **0** | **DONE.** API: `Template.spec.development`, `dataPlane.components`, reserved `railgridMode` schema injection; resolver + validation + unit tests. Development-capable templates carry the component and data-plane contract. | Low — additive |
+| **1** | **DONE, e2e-validated on kind** (`TestE2EDevelopmentMode`, runs in the Infrastructure Template E2E workflow). `railgrid-dev-agent` extracted (`providers/infrastructure/dev-agent/`, `--install` injection, reload rules, `RAILGRID_DEV_*` configuration); `${railgrid.devImage.*}` / `${railgrid.devAgentImage}` tokens (env `RAILGRID_DEV_IMAGE_<TOOLCHAIN>` / `RAILGRID_DEV_AGENT_IMAGE`, chart + operator wired); backend-synthesized dev overlay (`backend/kro/devoverlay.go`); per-component data-plane URLs; `application` Template development block (node/node v1) + component dataPlane + CEL images-optional-in-dev rule. Both flagged kro assumptions validated live: `includeWhen` on two same-named Deployment variants is accepted and mode-splits correctly, and status expressions referencing mode-excluded resources stay unset in production and resolve in development. (Two apply-time gotchas the e2e caught, now handled in the overlay: env values need `${string(...)}` around int-typed CEL, and overlay ports/mounts must dedupe against what the workload already declares.) | ~~High~~ validated |
+| **2** | **Core DONE** (portal catalog UI + creation-flow polish outstanding). `Project.spec.template` names the backing Template; selection (PUT `/api/projects/{p}/template`, assistant tool `select_project_template`) reads the Template live from the tenant catalog, tears the old dev instance down, and generates the dev binding (`railgridMode: development`). Sync/logs/restart/env route per component (workspacePath prefix → `…/components/<c>/<verb>`); template previews use the instance's own `status.url`. The assistant prompt carries the bound Template (or interview guidance when none). The old fixed-runner creation default was removed (2026-07-04): new projects have no development environment until a Template is bound — by the assistant interview, the portal picker, or `PUT /template`. `select_project_template` sits in the workflow tool bundle so interview-profile turns can actually call it. | Medium |
 | **3** | **Core DONE** (repo-import-at-creation UX outstanding). Code provider: `RepositoryCheckout` CR + controller (the CommitBundle flow in reverse; GitHub `RepositoryReader` reads the text tree via commit→tree→blobs, binary/oversized files skipped and reported) + `checkout_repository` MCP tool returning files inline and reclaiming the bundle. App Studio: `POST /api/projects/{p}/hydrate-workspace` reads the project repository through `code__checkout_repository`, writes the tree into the workspace (overwrite semantics), and triggers a development sync — making git the recoverable source of truth for template switches and lost workspaces. Repository import: `CreateProjectRequest.existingRepositoryRef` adopts an existing Code Repository (claim + release semantics — an adopted repository is never deleted with the project) and hydrates the workspace from it at creation; the `hydrate_workspace` assistant tool covers recovery and post-switch re-hydration. Remaining: portal import/catalog UI. | Medium |
-| **4** | **DONE (2026-07-04).** All legacy sandbox-runner paths deleted outright (no migration, per the no-compat decision): the sandbox-runner template/image/Makefile targets/CI workflow, App Studio's sandbox target resolution and binding special-cases, the signed preview-URL flow and the whole preview-gateway stack (`previewgateway`/`previewtoken` packages, `preview-gateway` subcommand, chart workloads, Tilt wiring), and the `${faros.sandboxPreviewBaseDomain}` token. Templates are the only development path; previews are the instance's own URL. `DefaultNodeDevImage` is now plain `node:22-bookworm` (agent injected). Existing sandbox projects are recreated — code lives in git. Remaining: BYO-compute validation with a dev-mode template on a second infra provider. | Low |
+| **4** | **DONE (2026-07-04).** All legacy sandbox-runner paths deleted outright (no migration, per the no-compat decision): the sandbox-runner template/image/Makefile targets/CI workflow, App Studio's sandbox target resolution and binding special-cases, the signed preview-URL flow and the whole preview-gateway stack (`previewgateway`/`previewtoken` packages, `preview-gateway` subcommand, chart workloads, Tilt wiring), and the `${railgrid.sandboxPreviewBaseDomain}` token. Templates are the only development path; previews are the instance's own URL. `DefaultNodeDevImage` is now plain `node:22-bookworm` (agent injected). Existing sandbox projects are recreated — code lives in git. Remaining: BYO-compute validation with a dev-mode template on a second infra provider. | Low |
 
 Phases 0–1 were the de-risking core and live entirely in the infrastructure
 provider. Phases 2–4 now provide the current Template-backed App Studio path;
@@ -386,7 +386,7 @@ BYO-compute validation.
   provider-side.
 - Platform dev images are a new supply-chain surface (they run tenant code
   with a platform-chosen toolchain); they must be pinned by digest via the
-  `${faros.devImage.*}` config, mirroring the runner-image handling.
+  `${railgrid.devImage.*}` config, mirroring the runner-image handling.
 - The untrusted-code isolation caveats of
   [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) now apply
   to *every* dev-mode component, including ones sharing a graph with real data

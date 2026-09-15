@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -202,12 +202,12 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			// (controller/template/retired.go). Finalizer add/remove
 			// (update) comes from the wildcard rule below.
 			{
-				APIGroups: []string{"infrastructure.faros.sh"},
+				APIGroups: []string{"infrastructure.railgrid.ai"},
 				Resources: []string{"templates"},
 				Verbs:     []string{"get", "list", "watch", "delete"},
 			},
 			{
-				APIGroups: []string{"infrastructure.faros.sh"},
+				APIGroups: []string{"infrastructure.railgrid.ai"},
 				Resources: []string{"templates/status"},
 				Verbs:     []string{"get", "patch", "update"},
 			},
@@ -216,7 +216,7 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			// the APIExport VW so the future kro backend can see
 			// every tenant's Instance CRs.
 			{
-				APIGroups: []string{"infrastructure.faros.sh"},
+				APIGroups: []string{"infrastructure.railgrid.ai"},
 				Resources: []string{"*"},
 				Verbs:     []string{"get", "list", "watch", "patch", "update"},
 			},
@@ -262,7 +262,7 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			},
 			// The provider-owned workload attestor performs an online
 			// TokenReview against the runtime cluster for projected
-			// faros-provider-actions-bootstrap tokens. It never parses JWTs
+			// railgrid-provider-actions-bootstrap tokens. It never parses JWTs
 			// locally, so this is the only authentication API permission it
 			// needs.
 			{

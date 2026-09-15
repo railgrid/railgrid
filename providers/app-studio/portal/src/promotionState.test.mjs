@@ -4,7 +4,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-promotion-state',
+  cacheDir: '/tmp/railgrid-vite-promotion-state',
   configFile: false,
   server: { middlewareMode: true },
 })

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const source = readFileSync(new URL('./dashboardtile.ts', import.meta.url), 'utf8')
-const styles = readFileSync(new URL('./faros-ui.css', import.meta.url), 'utf8')
+const styles = readFileSync(new URL('./railgrid-ui.css', import.meta.url), 'utf8')
 const styleHandoff = readFileSync(new URL('./styles.ts', import.meta.url), 'utf8')
 
 test('dashboard tiles expose matching Tailwind and plain-DOM semantic slots', () => {
@@ -22,8 +22,8 @@ test('dashboard tiles expose matching Tailwind and plain-DOM semantic slots', ()
 })
 
 test('stylesheet marker and runtime handoff require the same version', () => {
-  const cssVersion = styles.match(/--faros-ui-core-version:\s*(\d+);/)?.[1]
-  const runtimeVersion = styleHandoff.match(/FAROS_UI_CORE_VERSION = (\d+)/)?.[1]
+  const cssVersion = styles.match(/--railgrid-ui-core-version:\s*(\d+);/)?.[1]
+  const runtimeVersion = styleHandoff.match(/RAILGRID_UI_CORE_VERSION = (\d+)/)?.[1]
   assert.ok(cssVersion)
   assert.equal(runtimeVersion, cssVersion)
 

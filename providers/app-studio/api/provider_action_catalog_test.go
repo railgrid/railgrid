@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	appskills "github.com/faroshq/provider-app-studio/skills"
+	appskills "github.com/railgrid/provider-app-studio/skills"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestFetchProviderActionCatalogRejectsSelfSignedByDefault(t *testing.T) {
@@ -174,12 +174,12 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 			t.Errorf("catalog request = %s %s, want GET %s", r.Method, r.URL.Path, providerCatalogPath)
 		}
 		wantHeaders := map[string]string{
-			"Authorization":     "Bearer caller-token",
-			"X-Faros-Tenant":    "cluster-1",
-			"X-Faros-Cluster":   "cluster-1",
-			"X-Faros-Org":       "org-1",
-			"X-Faros-Workspace": "workspace-1",
-			"X-Faros-User":      "alice@example.com",
+			"Authorization":        "Bearer caller-token",
+			"X-Railgrid-Tenant":    "cluster-1",
+			"X-Railgrid-Cluster":   "cluster-1",
+			"X-Railgrid-Org":       "org-1",
+			"X-Railgrid-Workspace": "workspace-1",
+			"X-Railgrid-User":      "alice@example.com",
 		}
 		for name, want := range wantHeaders {
 			if got := r.Header.Get(name); got != want {

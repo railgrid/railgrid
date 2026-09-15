@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package standalone
 import (
 	"testing"
 
-	"github.com/faroshq/faros/test/e2e/cases"
+	"github.com/railgrid/railgrid/test/e2e/cases"
 )
 
 // The tests below delegate to shared case builders so the same logic runs
@@ -29,14 +29,14 @@ func TestHubHealth(t *testing.T)        { testenv.Test(t, cases.HubHealth()) }
 func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin()) }
 
 // edgeSkip marks an edge-connectivity test as parked while edge connectivity is
-// brought up as the standalone edges provider (group edges.faros.sh,
+// brought up as the standalone edges provider (group edges.railgrid.ai,
 // kinds KubernetesCluster/LinuxServer). These agent/join-token/proxy/workload/
 // MCP/SSH cases will be relocated to the dedicated edges suite that bootstraps
 // that provider. See docs/edges-providers-testing.md.
 func edgeSkip(t *testing.T) {
 	t.Helper()
 	t.Skip("edge connectivity moved to the standalone edges provider " +
-		"(edges.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"(edges.railgrid.ai); e2e coverage pending the dedicated edges suite — " +
 		"see docs/edges-providers-testing.md")
 }
 

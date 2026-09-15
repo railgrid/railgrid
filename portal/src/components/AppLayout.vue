@@ -277,7 +277,7 @@ const {
   resetDockPos,
 } = useNavigationDock(sidebarExpanded)
 
-const dockHintId = 'faros-dock-hint'
+const dockHintId = 'railgrid-dock-hint'
 const dockHintText = 'Drag to an edge · Shift+Arrow to dock · Enter to float'
 const dockActionLabel = computed(() =>
   dockState.value.mode === 'float' ? 'Reset floating position' : 'Float navigation',
@@ -288,7 +288,7 @@ const dockActionLabel = computed(() =>
 // browser. A group holding the active route is always forced open so
 // navigation state is never hidden from the user; the stored preference
 // takes effect again once they navigate elsewhere.
-const NAV_GROUPS_KEY = 'faros-nav-collapsed-groups'
+const NAV_GROUPS_KEY = 'railgrid-nav-collapsed-groups'
 
 function browserStorage(): Storage | null {
   try {
@@ -318,7 +318,7 @@ function isNavGroupOpen(key: string, items: ProviderRouteItem[]): boolean {
   return !collapsedGroups.value[key]
 }
 function navGroupPanelId(key: string): string {
-  return `faros-nav-group-${key.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+  return `railgrid-nav-group-${key.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
 }
 
 const providerBindingState = computed(() => providersStore.bindingsLoadState)
@@ -440,7 +440,7 @@ const contextStatus = computed<ContextStatus>(() => {
             <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
               <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" aria-hidden="true" />
             </div>
-            <span class="shell-brand-name type-display min-w-0 truncate text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+            <span class="shell-brand-name type-display min-w-0 truncate text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">RAILGRID</span>
           </router-link>
           <button
             type="button"
@@ -811,7 +811,7 @@ const contextStatus = computed<ContextStatus>(() => {
       v-if="isHorizontalDock"
       ref="dockedRef"
       aria-label="Primary navigation"
-      class="faros-shell-horizontal relative z-50 flex min-w-0 w-full flex-shrink-0 items-center gap-1.5 overflow-hidden border-border-default bg-surface-raised px-4 py-1.5"
+      class="railgrid-shell-horizontal relative z-50 flex min-w-0 w-full flex-shrink-0 items-center gap-1.5 overflow-hidden border-border-default bg-surface-raised px-4 py-1.5"
       :class="dockState.mode === 'top' ? 'order-first border-b' : 'order-last border-t'"
     >
       <!-- Drag handle -->
@@ -841,7 +841,7 @@ const contextStatus = computed<ContextStatus>(() => {
           <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
             <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" aria-hidden="true" />
           </div>
-          <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+          <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">RAILGRID</span>
         </router-link>
         <div
           v-if="contextStatus.visible"
@@ -866,7 +866,7 @@ const contextStatus = computed<ContextStatus>(() => {
       <!-- Keep platform destinations stable while the provider component
            exposes only the active family inline and puts inactive families in
            its categorized More/Browse menu. -->
-      <div class="shell-route-track flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto faros-nav-scroll">
+      <div class="shell-route-track flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto railgrid-nav-scroll">
         <router-link
           v-for="item in staticNavItems"
           :key="item.to"
@@ -943,7 +943,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
     <!-- Main content -->
     <main
-      class="faros-shell-main"
+      class="railgrid-shell-main"
       :class="mainClass"
       :style="mainStyle"
     >
@@ -1040,7 +1040,7 @@ const contextStatus = computed<ContextStatus>(() => {
             <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
               <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" aria-hidden="true" />
             </div>
-            <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">FAROS</span>
+            <span class="shell-brand-name type-display text-[11px] font-bold tracking-[0.08em] text-text-primary transition-colors group-hover:text-accent">RAILGRID</span>
           </router-link>
           <div
             v-if="contextStatus.visible"
@@ -1061,7 +1061,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <div class="shell-route-track flex min-w-0 items-center gap-1 overflow-x-auto faros-nav-scroll">
+        <div class="shell-route-track flex min-w-0 items-center gap-1 overflow-x-auto railgrid-nav-scroll">
           <router-link
             v-for="item in staticNavItems"
             :key="item.to"
@@ -1183,7 +1183,7 @@ const contextStatus = computed<ContextStatus>(() => {
    route track must not create a nested scrollbar that can starve the fixed
    brand, context, recovery, help, and account controls. */
 @media (max-width: 640px) {
-  .faros-shell-horizontal {
+  .railgrid-shell-horizontal {
     gap: 0.25rem;
     padding-inline: 0.5rem;
     overflow-x: auto;
@@ -1191,25 +1191,25 @@ const contextStatus = computed<ContextStatus>(() => {
     overscroll-behavior-x: contain;
   }
 
-  .faros-shell-horizontal .shell-route-track,
+  .railgrid-shell-horizontal .shell-route-track,
   .shell-floating-chrome .shell-route-track {
     flex: 0 0 auto;
     min-width: max-content;
     overflow: visible;
   }
 
-  .faros-shell-horizontal .shell-brand-name,
+  .railgrid-shell-horizontal .shell-brand-name,
   .island .shell-brand-name {
     display: none;
   }
 
-  .faros-shell-horizontal .shell-context-status,
+  .railgrid-shell-horizontal .shell-context-status,
   .island .shell-context-status {
     max-width: 7rem;
     overflow: hidden;
   }
 
-  .faros-shell-horizontal .shell-context-status > span:last-child,
+  .railgrid-shell-horizontal .shell-context-status > span:last-child,
   .island .shell-context-status > span:last-child {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1227,17 +1227,17 @@ const contextStatus = computed<ContextStatus>(() => {
 /* Slim, unobtrusive scrollbar for the horizontal provider-nav tracks in
    the top/bottom and floating docks. Without this the default chunky
    scrollbar eats vertical space in the thin bar. */
-.faros-nav-scroll {
+.railgrid-nav-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-text-muted) transparent;
 }
-.faros-nav-scroll::-webkit-scrollbar {
+.railgrid-nav-scroll::-webkit-scrollbar {
   height: 4px;
 }
-.faros-nav-scroll::-webkit-scrollbar-track {
+.railgrid-nav-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.faros-nav-scroll::-webkit-scrollbar-thumb {
+.railgrid-nav-scroll::-webkit-scrollbar-thumb {
   background-color: var(--color-text-muted);
   border-radius: 2px;
 }

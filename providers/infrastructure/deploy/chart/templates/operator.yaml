@@ -38,10 +38,10 @@ metadata:
     {{- include "infrastructure.labels" . | nindent 4 }}
 rules:
   # Watch + status the CRs.
-  - apiGroups: ["infrastructure.faros.sh"]
+  - apiGroups: ["infrastructure.railgrid.ai"]
     resources: ["infrastructureproviders"]
     verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["infrastructure.faros.sh"]
+  - apiGroups: ["infrastructure.railgrid.ai"]
     resources: ["infrastructureproviders/status"]
     verbs: ["get", "update", "patch"]
   # Leader election (controller-runtime Lease in the operator's namespace) plus
@@ -102,7 +102,7 @@ rules:
     resourceNames:
       - {{ $kroName }}-cluster-role-binding
       - {{ $kroName }}:controller
-      - faros-infrastructure-serve-{{ include "infrastructure.fullname" . }}
+      - railgrid-infrastructure-serve-{{ include "infrastructure.fullname" . }}
     verbs: ["get", "update", "patch", "delete"]
   # Writing a ClusterRole with rules the writer does not hold itself needs
   # `escalate` on that role; binding one needs `bind`. Both are pinned to the
@@ -158,7 +158,7 @@ rules:
   # The instance kinds kro synthesizes from the seeded Templates
   # (Template.spec.instanceCRD.group). The kinds are template-defined, so the
   # grant is for the group, not a kind list.
-  - apiGroups: ["infrastructure.faros.sh"]
+  - apiGroups: ["infrastructure.railgrid.ai"]
     resources: ["*"]
     verbs: ["*"]
   # Per-tenant runtime namespaces and their default LimitRange (create-only).
@@ -247,7 +247,7 @@ spec:
             # the portal shows the release version (the embedded manifest.yaml
             # only carries a 0.1.0 placeholder). Mirrors the chart-templated
             # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
-            - name: FAROS_PROVIDER_VERSION
+            - name: RAILGRID_PROVIDER_VERSION
               value: {{ .Chart.AppVersion | quote }}
             {{- if not .Values.operator.clusterAdmin }}
             # ClusterRole the operator binds the serve ServiceAccount to for the
@@ -260,7 +260,7 @@ spec:
             # Public verification keys are platform-global configuration. The
             # operator propagates them into each managed provider Deployment;
             # no tenant or InfrastructureProvider CR can override them.
-            - name: FAROS_PREVIEW_BRIDGE_VERIFICATION_JWKS
+            - name: RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS
               value: {{ . | quote }}
             {{- end }}
             {{- include "infrastructure.tenantNetworkPolicyEnv" . | nindent 12 }}

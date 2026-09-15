@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,11 +23,11 @@ import (
 	"testing"
 )
 
-func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
+func TestEmbeddedRailgridWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	assets := FS()
 	for _, path := range []string{
 		"static/main.css",
-		"static/faros-mark.svg",
+		"static/railgrid-mark.svg",
 		"static/fonts/instrument-sans-latin-wght-normal.woff2",
 		"static/fonts/ibm-plex-mono-latin-400-normal.woff2",
 		"static/fonts/ibm-plex-mono-latin-600-normal.woff2",
@@ -53,31 +53,31 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	}
 
 	header := readEmbedded(t, assets, "templates/header.html")
-	if !strings.Contains(header, "<title>Faros — Sign in</title>") ||
-		!strings.Contains(header, "Sign in to Faros securely") ||
-		!strings.Contains(header, `static/faros-mark.svg`) ||
+	if !strings.Contains(header, "<title>Railgrid — Sign in</title>") ||
+		!strings.Contains(header, "Sign in to Railgrid securely") ||
+		!strings.Contains(header, `static/railgrid-mark.svg`) ||
 		!strings.Contains(header, `<html lang="en">`) ||
 		!strings.Contains(header, `class="brand-mark"`) {
-		t.Fatalf("header lost Faros title, description, or mark: %s", header)
+		t.Fatalf("header lost Railgrid title, description, or mark: %s", header)
 	}
-	mark := readEmbedded(t, assets, "static/faros-mark.svg")
+	mark := readEmbedded(t, assets, "static/railgrid-mark.svg")
 	if !strings.Contains(mark, `viewBox="0 0 24 24"`) ||
 		!strings.Contains(mark, `d="M21 16V8a2 2 0 0 0-1-1.73`) ||
 		strings.Contains(mark, `M8 7v18`) {
-		t.Fatalf("Faros mark is not the canonical Lucide Hexagon: %s", mark)
+		t.Fatalf("Railgrid mark is not the canonical Lucide Hexagon: %s", mark)
 	}
 
 	login := readEmbedded(t, assets, "templates/login.html")
 	if !strings.Contains(login, "Sign in with {{ $c.Name }}") || strings.Contains(login, "Continue with") {
-		t.Fatalf("connector action copy is not Faros sign-in copy: %s", login)
+		t.Fatalf("connector action copy is not Railgrid sign-in copy: %s", login)
 	}
 	password := readEmbedded(t, assets, "templates/password.html")
-	if !strings.Contains(password, "Sign in with Faros") ||
+	if !strings.Contains(password, "Sign in with Railgrid") ||
 		strings.Contains(password, "tabindex=") ||
 		!strings.Contains(password, `aria-describedby="login-error"`) ||
 		!strings.Contains(password, `aria-errormessage="login-error"`) ||
 		!strings.Contains(password, `role="alert"`) {
-		t.Fatalf("password action does not identify Faros: %s", password)
+		t.Fatalf("password action does not identify Railgrid: %s", password)
 	}
 	device := readEmbedded(t, assets, "templates/device.html")
 	if strings.Contains(device, "tabindex=") ||
@@ -111,8 +111,8 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	content := pages.String()
 	css := readEmbedded(t, assets, "static/main.css")
 	for _, want := range []string{
-		"--faros-text-muted: #8587a1",
-		"--faros-on-accent: #0a0b12",
+		"--railgrid-text-muted: #8587a1",
+		"--railgrid-on-accent: #0a0b12",
 	} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("Dex stylesheet is missing canonical dark token %q", want)
@@ -147,8 +147,8 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	if strings.Contains(strings.ToLower(visible), "dex") {
 		t.Fatalf("embedded page copy exposes upstream Dex branding: %q", visible)
 	}
-	if strings.Contains(visible, "faros terms") {
-		t.Fatalf("embedded page copy uses lowercase Faros branding: %q", visible)
+	if strings.Contains(visible, "railgrid terms") {
+		t.Fatalf("embedded page copy uses lowercase Railgrid branding: %q", visible)
 	}
 }
 

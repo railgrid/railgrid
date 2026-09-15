@@ -1,6 +1,6 @@
 import { createProviderFetch, type ProviderFetch, type ProviderFetchScope } from './providerFetch'
 
-// The farosContext shape the host pushes onto a provider's custom element.
+// The railgridContext shape the host pushes onto a provider's custom element.
 // Both mount points (ProviderFrame.vue for the page, DashboardTile.vue for the
 // tile) build it through createProviderContext so the auth surface a bundle
 // sees is defined in exactly one place.
@@ -68,8 +68,8 @@ export function createProviderContext(fields: ProviderContextFields, options: Pr
       if (!warnedTokenReads.has(providerName)) {
         warnedTokenReads.add(providerName)
         warn(
-          `[faros] provider "${providerName}" read farosContext.token, which is deprecated and will be removed; ` +
-            'call farosContext.fetch (portalkit providerFetch(ctx)) so the host injects credentials instead.',
+          `[railgrid] provider "${providerName}" read railgridContext.token, which is deprecated and will be removed; ` +
+            'call railgridContext.fetch (portalkit providerFetch(ctx)) so the host injects credentials instead.',
         )
       }
       return scope().token

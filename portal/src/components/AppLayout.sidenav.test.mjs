@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -140,7 +140,7 @@ test('vertical navigation exposes landmarks and complete route/group state', () 
   assert.match(appLayout, /:aria-controls="navGroupPanelId\('item:' \+ item\.to\)"/)
 })
 
-test('Faros brand links route home in every dock layout', () => {
+test('Railgrid brand links route home in every dock layout', () => {
   const brandLinks = [...appLayout.matchAll(/<router-link\b[\s\S]*?<\/router-link>/g)]
     .map(([body]) => body)
     .filter((body) => body.includes('aria-label="Go to dashboard"'))
@@ -293,9 +293,9 @@ test('shell recovery and context status are present without claiming uncondition
 })
 
 test('help modal prioritizes docs and keeps community support accessible', () => {
-  assert.match(helpSupportModal, /const docsURL = 'https:\/\/faros\.sh\/docs\/'/)
+  assert.match(helpSupportModal, /const docsURL = 'https:\/\/railgrid\.sh\/docs\/'/)
   assert.match(helpSupportModal, /const discordURL = 'https:\/\/discord\.gg\/VjUA7zyhC'/)
-  assert.match(helpSupportModal, /const issuesURL = 'https:\/\/github\.com\/faroshq\/faros\/issues'/)
+  assert.match(helpSupportModal, /const issuesURL = 'https:\/\/github\.com\/railgrid\/railgrid\/issues'/)
   assert.match(helpSupportModal, /role="dialog"/)
   assert.match(helpSupportModal, /id="help-support-dialog"/)
   assert.match(helpSupportModal, /aria-modal="true"/)
@@ -332,8 +332,8 @@ test('dock movement is learnable and account actions name the resulting placemen
 
 test('narrow flat chrome scrolls as one reachable surface', () => {
   assert.match(appLayout, /class="shell-route-track flex/)
-  assert.match(appLayout, /\.faros-shell-horizontal \{[\s\S]*overflow-x: auto;/)
-  assert.match(appLayout, /\.faros-shell-horizontal \.shell-route-track,[\s\S]*\.shell-floating-chrome \.shell-route-track \{[\s\S]*flex: 0 0 auto;[\s\S]*min-width: max-content;[\s\S]*overflow: visible;/)
+  assert.match(appLayout, /\.railgrid-shell-horizontal \{[\s\S]*overflow-x: auto;/)
+  assert.match(appLayout, /\.railgrid-shell-horizontal \.shell-route-track,[\s\S]*\.shell-floating-chrome \.shell-route-track \{[\s\S]*flex: 0 0 auto;[\s\S]*min-width: max-content;[\s\S]*overflow: visible;/)
   assert.match(appLayout, /\.shell-floating-chrome \{[\s\S]*overflow-x: auto;/)
 })
 

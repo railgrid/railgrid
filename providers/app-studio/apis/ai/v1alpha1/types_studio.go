@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import (
 const StudioName = "studio"
 
 // StudioFinalizer guards teardown of the services a Studio owns.
-const StudioFinalizer = "ai.faros.sh/services"
+const StudioFinalizer = "ai.railgrid.ai/services"
 
 // Studio service phases.
 const (
@@ -30,7 +30,7 @@ const (
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,categories=faros
+// +kubebuilder:resource:scope=Cluster,categories=railgrid
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"

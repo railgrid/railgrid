@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,21 +78,21 @@ func githubTarball(t *testing.T, commit string, entries []tarEntry) []byte {
 	return buf.Bytes()
 }
 
-const farosSkillDoc = "---\nname: faros\ndescription: Use when driving a faros hub as a user.\n---\n\n# faros\n"
+const railgridSkillDoc = "---\nname: railgrid\ndescription: Use when driving a railgrid hub as a user.\n---\n\n# railgrid\n"
 
 func sampleEntries() []tarEntry {
 	return []tarEntry{
-		{name: "faros-main/", mode: tar.TypeDir},
-		{name: "faros-main/README.md", data: "top-level readme, not a skill"},
-		{name: "faros-main/skills/README.md", data: "about the skills dir, not a skill"},
-		{name: "faros-main/skills/faros/", mode: tar.TypeDir},
-		{name: "faros-main/skills/faros/SKILL.md", data: farosSkillDoc},
-		{name: "faros-main/skills/faros/references/", mode: tar.TypeDir},
-		{name: "faros-main/skills/faros/references/cli.md", data: "# cli\n"},
-		{name: "faros-main/skills/faros/.claude-plugin/plugin.json", data: `{"name":"faros"}`},
-		{name: "faros-main/skills/not-a-skill/notes.md", data: "no SKILL.md here"},
-		{name: "faros-main/skills/kedge/SKILL.md", data: "---\nname: kedge\ndescription: \"Quoted description\"\n---\n"},
-		{name: "faros-main/pkg/cli/cmd/skills.go", data: "package cmd"},
+		{name: "railgrid-main/", mode: tar.TypeDir},
+		{name: "railgrid-main/README.md", data: "top-level readme, not a skill"},
+		{name: "railgrid-main/skills/README.md", data: "about the skills dir, not a skill"},
+		{name: "railgrid-main/skills/railgrid/", mode: tar.TypeDir},
+		{name: "railgrid-main/skills/railgrid/SKILL.md", data: railgridSkillDoc},
+		{name: "railgrid-main/skills/railgrid/references/", mode: tar.TypeDir},
+		{name: "railgrid-main/skills/railgrid/references/cli.md", data: "# cli\n"},
+		{name: "railgrid-main/skills/railgrid/.claude-plugin/plugin.json", data: `{"name":"railgrid"}`},
+		{name: "railgrid-main/skills/not-a-skill/notes.md", data: "no SKILL.md here"},
+		{name: "railgrid-main/skills/kedge/SKILL.md", data: "---\nname: kedge\ndescription: \"Quoted description\"\n---\n"},
+		{name: "railgrid-main/pkg/cli/cmd/skills.go", data: "package cmd"},
 	}
 }
 
@@ -103,8 +103,8 @@ func serveTarball(t *testing.T, status int, body []byte) *string {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "faros-cli/") {
-			t.Errorf("User-Agent = %q, want faros-cli/…", ua)
+		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "railgrid-cli/") {
+			t.Errorf("User-Agent = %q, want railgrid-cli/…", ua)
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
@@ -135,11 +135,11 @@ func TestReadSkillsArchive(t *testing.T) {
 	if a.Commit != "0123456789abcdef0123456789abcdef01234567" {
 		t.Errorf("commit = %q", a.Commit)
 	}
-	if got := a.names(); strings.Join(got, ",") != "faros,kedge" {
-		t.Errorf("skills = %v, want faros and kedge only (README.md and dirs without SKILL.md are not skills)", got)
+	if got := a.names(); strings.Join(got, ",") != "railgrid,kedge" {
+		t.Errorf("skills = %v, want railgrid and kedge only (README.md and dirs without SKILL.md are not skills)", got)
 	}
-	f := a.Skills["faros"]
-	if f.Description != "Use when driving a faros hub as a user." {
+	f := a.Skills["railgrid"]
+	if f.Description != "Use when driving a railgrid hub as a user." {
 		t.Errorf("description = %q", f.Description)
 	}
 	var paths []string
@@ -156,11 +156,11 @@ func TestReadSkillsArchive(t *testing.T) {
 
 func TestReadSkillsArchiveRejectsUnsafePaths(t *testing.T) {
 	for _, name := range []string{
-		"faros-main/skills/faros/../../etc/passwd",
-		"faros-main/skills/faros/refs/../../x",
-		"faros-main/skills/../x/SKILL.md",
-		"faros-main/skills/Bad Name/SKILL.md",
-		"faros-main/skills/faros//double",
+		"railgrid-main/skills/railgrid/../../etc/passwd",
+		"railgrid-main/skills/railgrid/refs/../../x",
+		"railgrid-main/skills/../x/SKILL.md",
+		"railgrid-main/skills/Bad Name/SKILL.md",
+		"railgrid-main/skills/railgrid//double",
 	} {
 		_, err := readSkillsArchive(bytes.NewReader(githubTarball(t, "", []tarEntry{{name: name, data: "x"}})))
 		if err == nil || !strings.Contains(err.Error(), "unsafe path") {
@@ -169,20 +169,20 @@ func TestReadSkillsArchiveRejectsUnsafePaths(t *testing.T) {
 	}
 	// Symlinks and other non-regular entries are skipped, never followed.
 	a, err := readSkillsArchive(bytes.NewReader(githubTarball(t, "", []tarEntry{
-		{name: "faros-main/skills/faros/SKILL.md", data: farosSkillDoc},
-		{name: "faros-main/skills/faros/evil", data: "/etc/passwd", mode: tar.TypeSymlink},
+		{name: "railgrid-main/skills/railgrid/SKILL.md", data: railgridSkillDoc},
+		{name: "railgrid-main/skills/railgrid/evil", data: "/etc/passwd", mode: tar.TypeSymlink},
 	})))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(a.Skills["faros"].Files); n != 1 {
+	if n := len(a.Skills["railgrid"].Files); n != 1 {
 		t.Errorf("symlink was kept: %d files", n)
 	}
 }
 
 func TestReadSkillsArchiveLimits(t *testing.T) {
 	big := strings.Repeat("x", skillsMaxFileBytes+1)
-	_, err := readSkillsArchive(bytes.NewReader(githubTarball(t, "", []tarEntry{{name: "faros-main/skills/faros/SKILL.md", data: big}})))
+	_, err := readSkillsArchive(bytes.NewReader(githubTarball(t, "", []tarEntry{{name: "railgrid-main/skills/railgrid/SKILL.md", data: big}})))
 	if err == nil || !strings.Contains(err.Error(), "per-file limit") {
 		t.Errorf("err = %v, want per-file limit", err)
 	}
@@ -198,26 +198,26 @@ func TestSkillsListAndInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v\n%s", err, out)
 	}
-	if out != "faros\nkedge\n" {
+	if out != "railgrid\nkedge\n" {
 		t.Errorf("list -o name = %q", out)
 	}
-	if *gotPath != "/faroshq/faros/tar.gz/v9" {
+	if *gotPath != "/railgrid/railgrid/tar.gz/v9" {
 		t.Errorf("fetched %q, want the v9 archive of the default repo", *gotPath)
 	}
 
-	out, err = runSkills(t, "install", "faros")
+	out, err = runSkills(t, "install", "railgrid")
 	if err != nil {
 		t.Fatalf("install: %v\n%s", err, out)
 	}
 	for _, dir := range []string{
-		filepath.Join(home, ".claude", "skills", "faros"),
-		filepath.Join(home, ".agents", "skills", "faros"),
+		filepath.Join(home, ".claude", "skills", "railgrid"),
+		filepath.Join(home, ".agents", "skills", "railgrid"),
 	} {
 		doc, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 		if err != nil {
 			t.Fatalf("%s: %v\n%s", dir, err, out)
 		}
-		if string(doc) != farosSkillDoc {
+		if string(doc) != railgridSkillDoc {
 			t.Errorf("%s: SKILL.md content differs", dir)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "references", "cli.md")); err != nil {
@@ -231,7 +231,7 @@ func TestSkillsListAndInstall(t *testing.T) {
 		if err := json.Unmarshal(mb, &m); err != nil {
 			t.Fatal(err)
 		}
-		if m.Repo != "faroshq/faros" || m.Ref != "main" || m.Commit != "abcdef0123456789" || m.Skill != "faros" || len(m.Files) != 3 {
+		if m.Repo != "railgrid/railgrid" || m.Ref != "main" || m.Commit != "abcdef0123456789" || m.Skill != "railgrid" || len(m.Files) != 3 {
 			t.Errorf("%s: marker = %+v", dir, m)
 		}
 		if !strings.Contains(out, dir) {
@@ -239,14 +239,14 @@ func TestSkillsListAndInstall(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "kedge")); !os.IsNotExist(err) {
-		t.Errorf("kedge was installed although only faros was named")
+		t.Errorf("kedge was installed although only railgrid was named")
 	}
-	if !strings.Contains(out, "faroshq/faros@main (abcdef012345)") {
+	if !strings.Contains(out, "railgrid/railgrid@main (abcdef012345)") {
 		t.Errorf("output lacks the source line:\n%s", out)
 	}
 
-	// Re-running replaces what faros installed, dropping files that are gone.
-	stale := filepath.Join(home, ".claude", "skills", "faros", "references", "old.md")
+	// Re-running replaces what railgrid installed, dropping files that are gone.
+	stale := filepath.Join(home, ".claude", "skills", "railgrid", "references", "old.md")
 	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestSkillsListAndInstall(t *testing.T) {
 func TestSkillsInstallRefusesForeignDirectory(t *testing.T) {
 	serveTarball(t, http.StatusOK, githubTarball(t, "", sampleEntries()))
 	dir := t.TempDir()
-	mine := filepath.Join(dir, "faros")
+	mine := filepath.Join(dir, "railgrid")
 	if err := os.MkdirAll(mine, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -275,15 +275,15 @@ func TestSkillsInstallRefusesForeignDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := runSkills(t, "install", "faros", "--dir", dir)
-	if err == nil || !strings.Contains(err.Error(), "was not installed by 'faros skills'; pass --force") {
+	out, err := runSkills(t, "install", "railgrid", "--dir", dir)
+	if err == nil || !strings.Contains(err.Error(), "was not installed by 'railgrid skills'; pass --force") {
 		t.Fatalf("err = %v, want refusal\n%s", err, out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(mine, "SKILL.md")); string(b) != "hand-written" {
 		t.Errorf("hand-written skill was modified")
 	}
 
-	if out, err := runSkills(t, "install", "faros", "--dir", dir, "--force", "-o", "json"); err != nil {
+	if out, err := runSkills(t, "install", "railgrid", "--dir", dir, "--force", "-o", "json"); err != nil {
 		t.Fatalf("--force: %v\n%s", err, out)
 	} else {
 		var res []map[string]any
@@ -294,16 +294,16 @@ func TestSkillsInstallRefusesForeignDirectory(t *testing.T) {
 			t.Errorf("json = %v", res)
 		}
 	}
-	if b, _ := os.ReadFile(filepath.Join(mine, "SKILL.md")); string(b) != farosSkillDoc {
+	if b, _ := os.ReadFile(filepath.Join(mine, "SKILL.md")); string(b) != railgridSkillDoc {
 		t.Errorf("--force did not replace the skill")
 	}
 
-	// A symlink (like the repo's own .agents/skills/faros) is never replaced.
-	link := filepath.Join(t.TempDir(), "faros")
+	// A symlink (like the repo's own .agents/skills/railgrid) is never replaced.
+	link := filepath.Join(t.TempDir(), "railgrid")
 	if err := os.Symlink(mine, link); err != nil {
 		t.Skip("symlinks unavailable:", err)
 	}
-	if _, err := runSkills(t, "install", "faros", "--dir", filepath.Dir(link), "--force"); err == nil || !strings.Contains(err.Error(), "is a symlink") {
+	if _, err := runSkills(t, "install", "railgrid", "--dir", filepath.Dir(link), "--force"); err == nil || !strings.Contains(err.Error(), "is a symlink") {
 		t.Errorf("err = %v, want symlink refusal", err)
 	}
 }
@@ -315,7 +315,7 @@ func TestSkillsInstallErrors(t *testing.T) {
 	}
 
 	serveTarball(t, http.StatusOK, githubTarball(t, "", sampleEntries()))
-	if _, err := runSkills(t, "install", "missing", "--dir", t.TempDir()); err == nil || !strings.Contains(err.Error(), `no skill "missing"`) || !strings.Contains(err.Error(), "have: faros, kedge") {
+	if _, err := runSkills(t, "install", "missing", "--dir", t.TempDir()); err == nil || !strings.Contains(err.Error(), `no skill "missing"`) || !strings.Contains(err.Error(), "have: railgrid, kedge") {
 		t.Errorf("unknown skill: err = %v", err)
 	}
 	if _, err := runSkills(t, "install", "--target", "vim", "--dir", ""); err == nil || !strings.Contains(err.Error(), `unsupported --target "vim"`) {
@@ -325,7 +325,7 @@ func TestSkillsInstallErrors(t *testing.T) {
 		t.Errorf("bad scope: err = %v", err)
 	}
 
-	serveTarball(t, http.StatusOK, githubTarball(t, "", []tarEntry{{name: "faros-main/README.md", data: "x"}}))
+	serveTarball(t, http.StatusOK, githubTarball(t, "", []tarEntry{{name: "railgrid-main/README.md", data: "x"}}))
 	if _, err := runSkills(t, "list"); err == nil || !strings.Contains(err.Error(), "has no skills") {
 		t.Errorf("empty archive: err = %v", err)
 	}

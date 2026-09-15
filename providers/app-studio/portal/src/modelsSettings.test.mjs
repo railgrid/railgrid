@@ -9,7 +9,7 @@ import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-app-studio-models',
+  cacheDir: '/tmp/railgrid-vite-app-studio-models',
   configFile: false,
   plugins: [vue()],
   server: { middlewareMode: true, hmr: false },

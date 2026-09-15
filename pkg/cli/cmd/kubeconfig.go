@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ import (
 )
 
 // edgeContextPrefix prefixes the kubeconfig context, cluster and user entries
-// that 'faros connect' and 'faros edge kubeconfig --merge' write for an edge.
-const edgeContextPrefix = "faros-"
+// that 'railgrid connect' and 'railgrid edge kubeconfig --merge' write for an edge.
+const edgeContextPrefix = "railgrid-"
 
 // edgeContextName is the kubeconfig context name for an edge.
 func edgeContextName(edge string) string {
@@ -64,7 +64,7 @@ func resolveKubernetesEdge(ctx context.Context, name string, raw *clientcmdapi.C
 	switch edgeTypeOf(edge) {
 	case edgeTypeKubernetes:
 	case edgeTypeServer:
-		return nil, fmt.Errorf("edge %q is a Linux server, not a Kubernetes cluster; use: faros ssh %s", name, name)
+		return nil, fmt.Errorf("edge %q is a Linux server, not a Kubernetes cluster; use: railgrid ssh %s", name, name)
 	default:
 		return nil, fmt.Errorf("edge %q is a %s edge, not a Kubernetes cluster; it is service-only (no kubectl or SSH)", name, edgeTypeOf(edge))
 	}
@@ -72,7 +72,7 @@ func resolveKubernetesEdge(ctx context.Context, name string, raw *clientcmdapi.C
 	if edgeURL == "" {
 		connected, _, _ := unstructuredNestedBool(edge.Object, "status", "connected")
 		if !connected {
-			return nil, fmt.Errorf("edge %q is not connected (phase %s); start the agent on it and retry — 'faros edge join-command %s' prints how",
+			return nil, fmt.Errorf("edge %q is not connected (phase %s); start the agent on it and retry — 'railgrid edge join-command %s' prints how",
 				name, formatStringOrDash(getNestedString(*edge, "status", "phase")), name)
 		}
 		return nil, fmt.Errorf("edge %q has no proxy URL in status yet; retry shortly", name)
@@ -84,10 +84,10 @@ func resolveKubernetesEdge(ctx context.Context, name string, raw *clientcmdapi.C
 	return &edgeAccess{edge: edge, url: external}, nil
 }
 
-// farosClusterAndAuth returns the cluster and user entries of the faros
+// railgridClusterAndAuth returns the cluster and user entries of the railgrid
 // context (or the current context when there is none).
-func farosClusterAndAuth(raw *clientcmdapi.Config) (ctxName string, cluster *clientcmdapi.Cluster, authName string, auth *clientcmdapi.AuthInfo, err error) {
-	ctxName, kctx, err := resolveFarosContext(raw)
+func railgridClusterAndAuth(raw *clientcmdapi.Config) (ctxName string, cluster *clientcmdapi.Cluster, authName string, auth *clientcmdapi.AuthInfo, err error) {
+	ctxName, kctx, err := resolveRailgridContext(raw)
 	if err != nil {
 		return "", nil, "", nil, err
 	}
@@ -97,7 +97,7 @@ func farosClusterAndAuth(raw *clientcmdapi.Config) (ctxName string, cluster *cli
 	}
 	auth = raw.AuthInfos[kctx.AuthInfo]
 	if auth == nil {
-		return "", nil, "", nil, fmt.Errorf("kubeconfig context %q references missing user %q; run 'faros login'", ctxName, kctx.AuthInfo)
+		return "", nil, "", nil, fmt.Errorf("kubeconfig context %q references missing user %q; run 'railgrid login'", ctxName, kctx.AuthInfo)
 	}
 	return ctxName, cluster, kctx.AuthInfo, auth, nil
 }
@@ -118,9 +118,9 @@ func edgeClusterEntry(hub *clientcmdapi.Cluster, edgeURL string) *clientcmdapi.C
 }
 
 // standaloneEdgeKubeconfig returns a one-context kubeconfig for the edge that
-// copies the faros credentials, so it works on its own (KUBECONFIG=…).
+// copies the railgrid credentials, so it works on its own (KUBECONFIG=…).
 func standaloneEdgeKubeconfig(raw *clientcmdapi.Config, edgeName, edgeURL string) (*clientcmdapi.Config, error) {
-	_, hubCluster, _, auth, err := farosClusterAndAuth(raw)
+	_, hubCluster, _, auth, err := railgridClusterAndAuth(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -134,10 +134,10 @@ func standaloneEdgeKubeconfig(raw *clientcmdapi.Config, edgeName, edgeURL string
 }
 
 // mergeEdgeContext adds or refreshes the edge's context in raw. The context
-// references the faros user entry by name rather than copying it, so a
+// references the railgrid user entry by name rather than copying it, so a
 // re-login refreshes credentials for every connected edge at once.
 func mergeEdgeContext(raw *clientcmdapi.Config, edgeName, edgeURL string) (string, error) {
-	_, hubCluster, authName, _, err := farosClusterAndAuth(raw)
+	_, hubCluster, authName, _, err := railgridClusterAndAuth(raw)
 	if err != nil {
 		return "", err
 	}
@@ -159,14 +159,14 @@ through the hub's edge proxy with your own hub credentials (the hub checks
 that you may 'proxy' to the edge and forwards requests as you).
 
 By default the kubeconfig is printed; -o writes it to a file. --merge adds a
-context named faros-<name> to your kubeconfig without switching to it — use
-'faros connect <name>' to merge and switch in one step.
+context named railgrid-<name> to your kubeconfig without switching to it — use
+'railgrid connect <name>' to merge and switch in one step.
 
 Examples:
-  faros edge kubeconfig my-edge > my-edge.kubeconfig
-  faros edge kubeconfig my-edge -o ~/.kube/my-edge.kubeconfig
+  railgrid edge kubeconfig my-edge > my-edge.kubeconfig
+  railgrid edge kubeconfig my-edge -o ~/.kube/my-edge.kubeconfig
   KUBECONFIG=my-edge.kubeconfig kubectl get nodes
-  faros edge kubeconfig my-edge --merge && kubectl --context faros-my-edge get nodes`,
+  railgrid edge kubeconfig my-edge --merge && kubectl --context railgrid-my-edge get nodes`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeKubernetesEdgeNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -215,22 +215,22 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Write the kubeconfig to this file instead of stdout")
-	cmd.Flags().BoolVar(&merge, "merge", false, "Merge a faros-<name> context into your kubeconfig instead of printing")
+	cmd.Flags().BoolVar(&merge, "merge", false, "Merge a railgrid-<name> context into your kubeconfig instead of printing")
 	cmd.MarkFlagsMutuallyExclusive("output", "merge")
 	return cmd
 }
 
-// newKubeconfigCommand keeps the pre-1.0 'faros kubeconfig edge <name>'
-// spelling working; the command now lives at 'faros edge kubeconfig'.
+// newKubeconfigCommand keeps the pre-1.0 'railgrid kubeconfig edge <name>'
+// spelling working; the command now lives at 'railgrid edge kubeconfig'.
 func newKubeconfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "kubeconfig",
-		Short:  "Generate kubeconfig files for faros resources",
+		Short:  "Generate kubeconfig files for railgrid resources",
 		Hidden: true,
 	}
 	edge := newEdgeKubeconfigCommand()
 	edge.Use = "edge <name>"
-	edge.Deprecated = "use 'faros edge kubeconfig <name>' (or 'faros connect <name>')"
+	edge.Deprecated = "use 'railgrid edge kubeconfig <name>' (or 'railgrid connect <name>')"
 	cmd.AddCommand(edge)
 	return cmd
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/faros/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/browsersession"
 )
 
 var errTestIdentityUnavailable = errors.New("user record unavailable")
@@ -55,7 +55,7 @@ func newTokenFixture(t *testing.T) *tokenFixture {
 	t.Helper()
 	tf := &tokenFixture{fixture: newFixture(t), now: time.Unix(1_800_000_000, 0)}
 	tf.tokens = map[string]browsersession.Identity{
-		hubToken: {UserID: "user-abc", Email: "abc@example.com", RBACIdentity: "faros:abc@example.com", AuthType: "oidc"},
+		hubToken: {UserID: "user-abc", Email: "abc@example.com", RBACIdentity: "railgrid:abc@example.com", AuthType: "oidc"},
 	}
 	tf.unavailableTok = "record-unavailable-token"
 	tf.key = bytes.Repeat([]byte{7}, 32)
@@ -80,7 +80,7 @@ func newTokenFixture(t *testing.T) *tokenFixture {
 
 func instanceBody(t *testing.T, mutate func(*MintRequest)) []byte {
 	t.Helper()
-	req := MintRequest{Cluster: "abc123cluster", Group: "infrastructure.faros.sh", Resource: "applications", Name: "my-shop"}
+	req := MintRequest{Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai", Resource: "applications", Name: "my-shop"}
 	if mutate != nil {
 		mutate(&req)
 	}
@@ -159,7 +159,7 @@ func TestMintReturnsAnInstanceBoundToken(t *testing.T) {
 		t.Fatalf("host = %q, want the instance's published host %q", resp.Host, tf.instanceHost)
 	}
 	// The same SAR as a browser sign-in, as the account's RBAC identity.
-	if len(tf.sars) != 1 || tf.sars[0].Spec.User != "faros:abc@example.com" ||
+	if len(tf.sars) != 1 || tf.sars[0].Spec.User != "railgrid:abc@example.com" ||
 		tf.sars[0].Spec.ResourceAttributes.Subresource != AccessSubresource {
 		t.Fatalf("unexpected SARs: %+v", tf.sars)
 	}
@@ -290,7 +290,7 @@ func TestVerifyAcceptsAMintedTokenAndReRunsTheSAR(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "abc@example.com") {
 		t.Fatalf("verify discloses the email to the gate: %s", rec.Body.String())
 	}
-	if len(tf.sars) != 2 || tf.sars[1].Spec.User != "faros:abc@example.com" {
+	if len(tf.sars) != 2 || tf.sars[1].Spec.User != "railgrid:abc@example.com" {
 		t.Fatalf("verify did not re-run the SAR as the token's identity: %+v", tf.sars)
 	}
 	// A revoked grant stops working at the next verify.
@@ -338,8 +338,8 @@ func TestVerifyRejectsExpiredAndForgedTokens(t *testing.T) {
 
 	otherKey := bytes.Repeat([]byte{9}, 32)
 	foreign, err := sealAppToken(otherKey, rand.Reader, appTokenClaims{
-		Cluster: "abc123cluster", Group: "infrastructure.faros.sh", Resource: "applications", Name: "my-shop",
-		UserID: "user-abc", RBACIdentity: "faros:abc@example.com", ExpiresAt: tf.now.Add(time.Hour).Unix(),
+		Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai", Resource: "applications", Name: "my-shop",
+		UserID: "user-abc", RBACIdentity: "railgrid:abc@example.com", ExpiresAt: tf.now.Add(time.Hour).Unix(),
 	})
 	if err != nil {
 		t.Fatalf("seal: %v", err)

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package operator implements the CRD-driven faros infrastructure operator:
+// Package operator implements the CRD-driven railgrid infrastructure operator:
 // a controller-runtime manager that reconciles InfrastructureProvider CRs by
 // bootstrapping the provider kcp workspace, lifecycling the kro Helm release,
 // and owning the provider serve Deployment.
@@ -22,14 +22,14 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	sdkinstall "github.com/faroshq/provider-sdk/install"
+	sdkinstall "github.com/railgrid/provider-sdk/install"
 
-	"github.com/faroshq/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/install"
 )
 
 // BootstrapOptions parameterizes one bootstrap pass.
 type BootstrapOptions struct {
-	// WorkspacePath is the provider workspace (root:faros:providers:infrastructure).
+	// WorkspacePath is the provider workspace (root:railgrid:providers:infrastructure).
 	WorkspacePath string
 	// APIExportName is the provider's APIExport name.
 	APIExportName string

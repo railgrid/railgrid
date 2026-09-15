@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@ You may obtain a copy of the License at
 //
 // The per-template CRDs used to make the apiserver do this work — schema
 // pruning, defaulting, CEL rules, and the platform-reserved field injection
-// (farosMode, farosActions*) all rode on the synthesized CRD. With the
+// (railgridMode, railgridActions*) all rode on the synthesized CRD. With the
 // single flattened Instance kind the apiserver only guarantees "values is
 // an object", so the instance controller runs the same machinery the
 // apiserver would have: structural-schema defaulting, openapi validation,
@@ -37,13 +37,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // EffectiveSchema is the JSON schema Instance.spec.values must satisfy for
 // a given Template: the author-declared Template.spec.schema plus the
 // platform-reserved fields the retired per-template CRDs used to inject —
-// farosMode always, the farosActions* context only for development-capable
+// railgridMode always, the railgridActions* context only for development-capable
 // templates. A Template that claims a reserved property itself is rejected.
 func EffectiveSchema(tmpl *infrav1alpha1.Template) (*apiextensionsv1.JSONSchemaProps, error) {
 	if tmpl.Spec.Schema == nil || len(tmpl.Spec.Schema.Raw) == 0 {
@@ -55,24 +55,24 @@ func EffectiveSchema(tmpl *infrav1alpha1.Template) (*apiextensionsv1.JSONSchemaP
 		return nil, fmt.Errorf("decode spec.schema as JSONSchemaProps: %w", err)
 	}
 
-	if err := injectFarosMode(&spec, tmpl); err != nil {
+	if err := injectRailgridMode(&spec, tmpl); err != nil {
 		return nil, err
 	}
-	if err := injectFarosActions(&spec, tmpl.Spec.Development != nil); err != nil {
+	if err := injectRailgridActions(&spec, tmpl.Spec.Development != nil); err != nil {
 		return nil, err
 	}
-	if err := injectFarosNetworkPhase(&spec, tmpl.Spec.Development != nil); err != nil {
+	if err := injectRailgridNetworkPhase(&spec, tmpl.Spec.Development != nil); err != nil {
 		return nil, err
 	}
 	return &spec, nil
 }
 
-// injectFarosNetworkPhase adds the platform-owned setup/runtime phase to
+// injectRailgridNetworkPhase adds the platform-owned setup/runtime phase to
 // development contracts. The Instance controller overwrites the value before
 // materializing the runtime CR, so a tenant cannot keep setup egress enabled.
-func injectFarosNetworkPhase(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
-	if _, exists := spec.Properties[infrav1alpha1.FarosNetworkPhaseField]; exists {
-		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects network phase", infrav1alpha1.FarosNetworkPhaseField)
+func injectRailgridNetworkPhase(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
+	if _, exists := spec.Properties[infrav1alpha1.RailgridNetworkPhaseField]; exists {
+		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects network phase", infrav1alpha1.RailgridNetworkPhaseField)
 	}
 	if !enabled {
 		return nil
@@ -80,62 +80,62 @@ func injectFarosNetworkPhase(spec *apiextensionsv1.JSONSchemaProps, enabled bool
 	if spec.Properties == nil {
 		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 	}
-	spec.Properties[infrav1alpha1.FarosNetworkPhaseField] = apiextensionsv1.JSONSchemaProps{
+	spec.Properties[infrav1alpha1.RailgridNetworkPhaseField] = apiextensionsv1.JSONSchemaProps{
 		Type:        "string",
 		Description: "Platform-reserved network phase. Setup egress is removed when the runtime graph becomes Ready.",
 		Enum: []apiextensionsv1.JSON{
-			{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseSetup + `"`)},
-			{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseRuntime + `"`)},
+			{Raw: []byte(`"` + infrav1alpha1.RailgridNetworkPhaseSetup + `"`)},
+			{Raw: []byte(`"` + infrav1alpha1.RailgridNetworkPhaseRuntime + `"`)},
 		},
-		Default: &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseSetup + `"`)},
+		Default: &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.RailgridNetworkPhaseSetup + `"`)},
 	}
 	return nil
 }
 
-// injectFarosMode adds the platform-reserved farosMode property. The enum
+// injectRailgridMode adds the platform-reserved railgridMode property. The enum
 // only admits "development" when the Template declares a development block,
 // so an invalid mode fails values validation rather than controller logic.
-func injectFarosMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.Template) error {
-	if _, exists := spec.Properties[infrav1alpha1.FarosModeField]; exists {
-		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects it", infrav1alpha1.FarosModeField)
+func injectRailgridMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.Template) error {
+	if _, exists := spec.Properties[infrav1alpha1.RailgridModeField]; exists {
+		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects it", infrav1alpha1.RailgridModeField)
 	}
-	modes := []apiextensionsv1.JSON{{Raw: []byte(`"` + infrav1alpha1.FarosModeProduction + `"`)}}
+	modes := []apiextensionsv1.JSON{{Raw: []byte(`"` + infrav1alpha1.RailgridModeProduction + `"`)}}
 	description := "Platform-reserved provisioning mode. This template is production-only."
 	if tmpl.Spec.Development != nil {
-		modes = append(modes, apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosModeDevelopment + `"`)})
+		modes = append(modes, apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.RailgridModeDevelopment + `"`)})
 		description = "Platform-reserved provisioning mode. In development mode the declared development components run platform-managed dev images with the hot-reload agent; everything else runs as declared."
 	}
 	if spec.Properties == nil {
 		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 	}
-	spec.Properties[infrav1alpha1.FarosModeField] = apiextensionsv1.JSONSchemaProps{
+	spec.Properties[infrav1alpha1.RailgridModeField] = apiextensionsv1.JSONSchemaProps{
 		Type:        "string",
 		Description: description,
 		Enum:        modes,
-		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosModeProduction + `"`)},
+		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.RailgridModeProduction + `"`)},
 	}
 	return nil
 }
 
-// injectFarosActions adds the platform-owned Provider Actions context to
+// injectRailgridActions adds the platform-owned Provider Actions context to
 // development-template values schemas. The fields are present in the
 // contract even when a Project has no action grant: App Studio's dev
 // binding can omit them and rely on the empty defaults, while KRO's
 // synthesized env/annotation expressions still resolve. For production-only
 // templates the fields stay out of the contract, but a template author may
 // not claim any reserved field in either mode.
-func injectFarosActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
+func injectRailgridActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
 	fields := []string{
-		infrav1alpha1.FarosActionsExchangeURLField,
-		infrav1alpha1.FarosActionsBaseURLField,
-		infrav1alpha1.FarosActionsTenantPathField,
-		infrav1alpha1.FarosActionsOrgField,
-		infrav1alpha1.FarosActionsWorkspaceField,
-		infrav1alpha1.FarosActionsProjectField,
-		infrav1alpha1.FarosActionsProjectUIDField,
-		infrav1alpha1.FarosActionsEnvironmentField,
-		infrav1alpha1.FarosActionsInstanceField,
-		infrav1alpha1.FarosActionsCABundleField,
+		infrav1alpha1.RailgridActionsExchangeURLField,
+		infrav1alpha1.RailgridActionsBaseURLField,
+		infrav1alpha1.RailgridActionsTenantPathField,
+		infrav1alpha1.RailgridActionsOrgField,
+		infrav1alpha1.RailgridActionsWorkspaceField,
+		infrav1alpha1.RailgridActionsProjectField,
+		infrav1alpha1.RailgridActionsProjectUIDField,
+		infrav1alpha1.RailgridActionsEnvironmentField,
+		infrav1alpha1.RailgridActionsInstanceField,
+		infrav1alpha1.RailgridActionsCABundleField,
 	}
 	for _, f := range fields {
 		if _, exists := spec.Properties[f]; exists {

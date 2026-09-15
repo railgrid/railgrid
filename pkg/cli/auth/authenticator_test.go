@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 func TestLocalhostCallbackRendersBrandedSuccessPage(t *testing.T) {
@@ -40,7 +40,7 @@ func TestLocalhostCallbackRendersBrandedSuccessPage(t *testing.T) {
 		`<html lang="en">`,
 		`<meta name="viewport" content="width=device-width, initial-scale=1">`,
 		`role="status" aria-live="polite"`,
-		`<span>Faros</span>`,
+		`<span>Railgrid</span>`,
 		`You can close this tab and return to the terminal.`,
 	} {
 		if !strings.Contains(body, want) {

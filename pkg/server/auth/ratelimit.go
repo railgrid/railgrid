@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors
+// Copyright 2026 The Railgrid Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"golang.org/x/time/rate"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/server/proxy"
+	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
 // rateLimiter implements a per-IP rate limiter for authentication endpoints.

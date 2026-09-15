@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,18 +30,18 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 // The dev edge: the hub kind cluster joins ITSELF as a KubernetesCluster edge
 // (the same cluster hosts the hub, the providers and the agent). It is the
-// getting-started flow — enable edges, `faros edge create`, install the
-// faros-agent chart with the join token — run non-interactively against the
+// getting-started flow — enable edges, `railgrid edge create`, install the
+// railgrid-agent chart with the join token — run non-interactively against the
 // static dev user's default workspace.
 const (
-	devEdgeAgentNamespace = "faros-agent"
-	devEdgeAgentRelease   = "faros-agent"
+	devEdgeAgentNamespace = "railgrid-agent"
+	devEdgeAgentRelease   = "railgrid-agent"
 	devEdgeTimeout        = 3 * time.Minute
 )
 
@@ -53,7 +53,7 @@ func (o *DevOptions) devEdgeEnabled() bool {
 
 // registerDevEdge enables the edges provider in the dev user's default
 // workspace, creates the KubernetesCluster edge, and installs the
-// faros-agent chart into the hub kind cluster with the edge's join token.
+// railgrid-agent chart into the hub kind cluster with the edge's join token.
 // Idempotent: an existing edge is kept and an existing agent release is left
 // alone (its join token was redeemed on first connect).
 func (o *DevOptions) registerDevEdge(ctx context.Context, restConfig *rest.Config) error {
@@ -75,7 +75,7 @@ func (o *DevOptions) registerDevEdge(ctx context.Context, restConfig *rest.Confi
 	}
 
 	// The user's workspace, reached through the hub's kcp proxy as the dev
-	// user — the same thing `faros edge create` does with the login kubeconfig.
+	// user — the same thing `railgrid edge create` does with the login kubeconfig.
 	wsConfig := &rest.Config{
 		Host:            apiurl.HubServerURL(o.hubLocalURL(), ws.ClusterName),
 		BearerToken:     devStaticToken(),
@@ -154,7 +154,7 @@ func (o *DevOptions) registerDevEdge(ctx context.Context, restConfig *rest.Confi
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Installing the faros-agent for edge %q into %s/%s...\n", o.EdgeName, devEdgeAgentNamespace, devEdgeAgentRelease)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Installing the railgrid-agent for edge %q into %s/%s...\n", o.EdgeName, devEdgeAgentNamespace, devEdgeAgentRelease)
 	if err := helmInstallOrUpgrade(actionConfig, devEdgeAgentNamespace, devEdgeAgentRelease, chartObj, values, devEdgeTimeout); err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func waitForDefaultWorkspace(ctx context.Context, api *devHubAPI, timeout time.D
 			lastErr = err
 			return false, nil
 		}
-		// Personal org first: that is where `faros login` lands the user.
+		// Personal org first: that is where `railgrid login` lands the user.
 		sort.SliceStable(orgs, func(i, j int) bool { return orgs[i].Personal && !orgs[j].Personal })
 		for _, o := range orgs {
 			wss, err := api.listWorkspaces(ctx, o.UUID)
@@ -268,10 +268,10 @@ func findCatalogProvider(ctx context.Context, api *devHubAPI, orgUUID, wsUUID, n
 // createDevEdge creates the KubernetesCluster, retrying while the freshly
 // bound edges API is not discoverable yet. Reports whether it created it.
 func createDevEdge(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (bool, error) {
-	gvr := farosclient.EdgeGVRForType("kubernetes")
+	gvr := railgridclient.EdgeGVRForType("kubernetes")
 	edge := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": gvr.Group + "/" + gvr.Version,
-		"kind":       farosclient.EdgeKindForType("kubernetes"),
+		"kind":       railgridclient.EdgeKindForType("kubernetes"),
 		"metadata": map[string]interface{}{
 			"name":   name,
 			"labels": map[string]interface{}{"env": "dev"},
@@ -302,7 +302,7 @@ func createDevEdge(ctx context.Context, dyn dynamic.Interface, name string, time
 // waitForJoinToken polls status.joinToken, which the edges provider's token
 // reconciler stamps once it engages the workspace.
 func waitForJoinToken(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (string, error) {
-	gvr := farosclient.EdgeGVRForType("kubernetes")
+	gvr := railgridclient.EdgeGVRForType("kubernetes")
 	var token string
 	var lastErr error
 	err := pollUntil(ctx, 2*time.Second, timeout, func(ctx context.Context) (bool, error) {
@@ -325,9 +325,9 @@ func waitForJoinToken(ctx context.Context, dyn dynamic.Interface, name string, t
 
 // waitForDevEdgeReady waits for the agent to connect (status.phase Ready).
 // A timeout is reported as a warning, not an error: the environment is
-// usable and `faros edge list` shows the live state.
+// usable and `railgrid edge list` shows the live state.
 func (o *DevOptions) waitForDevEdgeReady(ctx context.Context, dyn dynamic.Interface) error {
-	gvr := farosclient.EdgeGVRForType("kubernetes")
+	gvr := railgridclient.EdgeGVRForType("kubernetes")
 	var phase string
 	err := pollUntil(ctx, 3*time.Second, devEdgeTimeout, func(ctx context.Context) (bool, error) {
 		edge, err := dyn.Resource(gvr).Get(ctx, o.EdgeName, metav1.GetOptions{})

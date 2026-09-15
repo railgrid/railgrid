@@ -42,7 +42,7 @@ function decodeSegment(value: string): string {
 
 function normalizeSubPath(subPath: string | null | undefined): string {
   let normalized = (subPath ?? '').replace(/^\/+|\/+$/g, '')
-  // FarosContext is provider-relative, but accepting the shell prefix here is
+  // RailgridContext is provider-relative, but accepting the shell prefix here is
   // harmless and makes standalone/debug harness context easier to diagnose.
   if (normalized === 'providers/edges') return ''
   if (normalized.startsWith('providers/edges/')) normalized = normalized.slice('providers/edges/'.length)

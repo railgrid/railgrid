@@ -17,7 +17,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require kubectl
 
-PIDDIR="${FAROS_INSTALL_STATE_DIR}"
+PIDDIR="${RAILGRID_INSTALL_STATE_DIR}"
 GATEWAY_PID="${PIDDIR}/port-forward-gateway.pid"
 HUB_PID="${PIDDIR}/port-forward-hub.pid"
 
@@ -61,7 +61,7 @@ start() {
   echo $! > "${GATEWAY_PID}"
   echo "gateway  → https://${KCP_DOMAIN}:8443 (supervisor pid $(cat "${GATEWAY_PID}"))"
 
-  (forward_loop "${HUB_NAMESPACE}" "svc/faros-hub" "9443:9443") \
+  (forward_loop "${HUB_NAMESPACE}" "svc/railgrid-hub" "9443:9443") \
     >"${PIDDIR}/port-forward-hub.log" 2>&1 &
   echo $! > "${HUB_PID}"
   echo "hub      → ${HUB_EXTERNAL_URL} (supervisor pid $(cat "${HUB_PID}"))"
@@ -72,7 +72,7 @@ start() {
 
 stop() {
   stop_one "${GATEWAY_PID}" "port-forward svc/.* 8443:8443"
-  stop_one "${HUB_PID}" "port-forward svc/faros-hub 9443:9443"
+  stop_one "${HUB_PID}" "port-forward svc/railgrid-hub 9443:9443"
 }
 
 case "${1:-}" in

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 func rbacFixture(t *testing.T) (*Manager, *fakeOps) {
@@ -36,15 +36,15 @@ func rbacFixture(t *testing.T) (*Manager, *fakeOps) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "faros:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "railgrid:bob@example.com"},
 	}
 	carol := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "carol"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "carol@example.com", RBACIdentity: "faros:carol@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "carol@example.com", RBACIdentity: "railgrid:carol@example.com"},
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, alice, bob, carol)
 	for _, ws := range []string{"ws-1", "ws-2"} {
@@ -93,7 +93,7 @@ func TestAddOrgMembership_AdminBindsEveryWorkspace(t *testing.T) {
 		t.Fatalf("status: got %d, want 201", got)
 	}
 	for _, ws := range []string{"ws-1", "ws-2"} {
-		if !bound(ops, ws, "faros:bob@example.com") {
+		if !bound(ops, ws, "railgrid:bob@example.com") {
 			t.Errorf("bob not bound in %s: %v", ws, ops.workspaceAdmins)
 		}
 	}
@@ -101,7 +101,7 @@ func TestAddOrgMembership_AdminBindsEveryWorkspace(t *testing.T) {
 	if got := doJSON(t, http.MethodPost, srv.URL+"/api/orgs/org-a/memberships", MembershipAddRequest{User: "carol", Role: "member"}); got != http.StatusCreated {
 		t.Fatalf("status: got %d, want 201", got)
 	}
-	if bound(ops, "ws-1", "faros:carol@example.com") {
+	if bound(ops, "ws-1", "railgrid:carol@example.com") {
 		t.Error("member carol bound without a workspace grant")
 	}
 }
@@ -121,16 +121,16 @@ func TestPatchOrgMembership_RoleChangesFollowIntoWorkspaces(t *testing.T) {
 	if got := doJSON(t, http.MethodPatch, srv.URL+"/api/orgs/org-a/memberships/bob", MembershipPatchRequest{Role: "admin"}); got != http.StatusOK {
 		t.Fatalf("promote: got %d", got)
 	}
-	if !bound(ops, "ws-2", "faros:bob@example.com") {
+	if !bound(ops, "ws-2", "railgrid:bob@example.com") {
 		t.Errorf("promotion did not bind bob in ws-2: %v", ops.workspaceAdmins)
 	}
 	if got := doJSON(t, http.MethodPatch, srv.URL+"/api/orgs/org-a/memberships/bob", MembershipPatchRequest{Role: "member"}); got != http.StatusOK {
 		t.Fatalf("demote: got %d", got)
 	}
-	if bound(ops, "ws-2", "faros:bob@example.com") {
+	if bound(ops, "ws-2", "railgrid:bob@example.com") {
 		t.Error("demotion left bob bound in ws-2")
 	}
-	if !bound(ops, "ws-1", "faros:bob@example.com") {
+	if !bound(ops, "ws-1", "railgrid:bob@example.com") {
 		t.Error("demotion revoked bob's explicit ws-1 membership")
 	}
 }
@@ -146,7 +146,7 @@ func TestDeleteOrgMembership_RevokesWorkspaces(t *testing.T) {
 		t.Fatalf("delete: got %d", got)
 	}
 	for _, ws := range []string{"ws-1", "ws-2"} {
-		if bound(ops, ws, "faros:bob@example.com") {
+		if bound(ops, ws, "railgrid:bob@example.com") {
 			t.Errorf("bob still bound in %s after removal", ws)
 		}
 	}
@@ -169,10 +169,10 @@ func TestDeleteWorkspaceMembership_RevokesUnlessOrgAdmin(t *testing.T) {
 			t.Fatalf("delete %s: got %d", u, got)
 		}
 	}
-	if bound(ops, "ws-1", "faros:bob@example.com") {
+	if bound(ops, "ws-1", "railgrid:bob@example.com") {
 		t.Error("bob still bound after workspace removal")
 	}
-	if !bound(ops, "ws-1", "faros:carol@example.com") {
+	if !bound(ops, "ws-1", "railgrid:carol@example.com") {
 		t.Error("org admin carol lost her implicit workspace access")
 	}
 }
@@ -195,10 +195,10 @@ func TestCreateWorkspace_BindsExistingOrgAdmins(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("status: got %d", resp.StatusCode)
 	}
-	if !bound(ops, view.UUID, "faros:bob@example.com") {
+	if !bound(ops, view.UUID, "railgrid:bob@example.com") {
 		t.Errorf("org admin bob not bound in new workspace: %v", ops.workspaceAdmins)
 	}
-	if bound(ops, view.UUID, "faros:carol@example.com") {
+	if bound(ops, view.UUID, "railgrid:carol@example.com") {
 		t.Error("org member carol bound in new workspace")
 	}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,13 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
 )
 
 func intOrString(port int32) intstr.IntOrString { return intstr.FromInt32(port) }
 
 const (
-	edgesGroup    = "edges.faros.sh"
+	edgesGroup    = "edges.railgrid.ai"
 	labelWorkload = edgesGroup + "/workload"
 )
 

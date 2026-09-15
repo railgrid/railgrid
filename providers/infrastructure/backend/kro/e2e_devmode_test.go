@@ -1,7 +1,7 @@
 //go:build e2e
 
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ limitations under the License.
 //     expressions referencing mode-excluded resources (GraphAccepted=True —
 //     already implied by TestE2ESeedTemplates now that seed templates carry
 //     the overlay, asserted here explicitly per mode).
-//  2. A PRODUCTION-mode instance (farosMode defaulted) materializes the
+//  2. A PRODUCTION-mode instance (railgridMode defaulted) materializes the
 //     production workloads and NONE of the synthesized dev resources, and
 //     reconciles cleanly even though the status mapping references dev-only
 //     resources (they resolve to unset, not an error).
@@ -56,7 +56,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // e2eDevImageStripped are sample-spec fields a development-mode instance must
@@ -172,7 +172,7 @@ func TestE2EDevelopmentMode(t *testing.T) {
 }
 
 // e2eDevInstance builds a development-mode instance: the standard sample spec
-// with farosMode=development and — for templates listed in
+// with railgridMode=development and — for templates listed in
 // e2eDevImageStripped — the production image fields removed.
 func e2eDevInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unstructured.Unstructured {
 	t.Helper()
@@ -181,7 +181,7 @@ func e2eDevInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *u
 	for _, field := range e2eDevImageStripped[tmpl.Name] {
 		delete(spec, field)
 	}
-	spec[infrav1alpha1.FarosModeField] = infrav1alpha1.FarosModeDevelopment
+	spec[infrav1alpha1.RailgridModeField] = infrav1alpha1.RailgridModeDevelopment
 	_ = unstructured.SetNestedMap(inst.Object, spec, "spec")
 	return inst
 }

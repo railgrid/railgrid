@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ func TestNewStaticTokenIsStable(t *testing.T) {
 	want := StaticToken{
 		Sub:          "47b9dce0e91570a1e1fff9c4c57d664279c2a0a755bf3db1f374bf64d75cf66",
 		UID:          "47b9dce0e91570a1",
-		RBACIdentity: "faros:static:47b9dce0e91570a1",
+		RBACIdentity: "railgrid:static:47b9dce0e91570a1",
 		UserName:     "static-user-47b9dce0e91570a1",
 	}
 	if got != want {

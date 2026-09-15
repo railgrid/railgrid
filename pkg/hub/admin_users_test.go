@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,10 +24,10 @@ import (
 )
 
 func TestBuildAdminSet(t *testing.T) {
-	got := buildAdminSet(klog.Background(), []string{" Faros:Static:47B9dce0e91570a1 ", "", "  ", "admin@example.com"})
+	got := buildAdminSet(klog.Background(), []string{" Railgrid:Static:47B9dce0e91570a1 ", "", "  ", "admin@example.com"})
 	want := map[string]struct{}{
-		"faros:static:47b9dce0e91570a1": {},
-		"admin@example.com":             {},
+		"railgrid:static:47b9dce0e91570a1": {},
+		"admin@example.com":                {},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildAdminSet = %v, want %v", got, want)

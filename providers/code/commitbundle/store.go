@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -163,7 +163,7 @@ type FileStore struct {
 func NewFileStoreFromEnv() (*FileStore, error) {
 	dir := strings.TrimSpace(os.Getenv(EnvDir))
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "faros-code-commit-bundles")
+		dir = filepath.Join(os.TempDir(), "railgrid-code-commit-bundles")
 	}
 	return NewFileStore(dir)
 }

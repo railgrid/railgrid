@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/faroshq/faros/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 // providerCatalogMiddleware admits online-verified workload/delegated tokens

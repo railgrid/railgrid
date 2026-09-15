@@ -33,7 +33,7 @@ async function refresh() {
     <h2 class="mb-1 text-base font-semibold text-text-primary">Root identities</h2>
     <p class="mb-4 text-sm text-text-muted">
       The <code>identityHash</code> for each first-party API. Copy the hash a provider needs (e.g.
-      <code>edges.faros.sh</code> for kuery) into that provider's Helm values
+      <code>edges.railgrid.ai</code> for kuery) into that provider's Helm values
       (<code>apiExport.edgesIdentityHash</code>).
     </p>
 

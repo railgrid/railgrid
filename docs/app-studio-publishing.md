@@ -1,6 +1,6 @@
 # Published apps: template-native access
 
-This document describes how a faros app gets its public URL and how access to
+This document describes how a railgrid app gets its public URL and how access to
 it is controlled. It is an API and template contract; it does not claim
 acceptance in a live cluster.
 
@@ -8,7 +8,7 @@ acceptance in a live cluster.
 
 There is no separate publication plane. A promoted production instance is
 always served on one stable URL through the **access gate** — an
-infrastructure-owned `faros-access-proxy` container that every publishable
+infrastructure-owned `railgrid-access-proxy` container that every publishable
 template renders as a component of its own graph. Two native mechanisms
 control who can open that URL:
 
@@ -33,7 +33,7 @@ control who can open that URL:
   beyond the app-access tuple remains denied by ordinary RBAC.
 
   The RBAC **subject** is always the account's kcp username —
-  `User.Spec.RBACIdentity` (`faros:<email>`, or `faros:static:<hash>` for
+  `User.Spec.RBACIdentity` (`railgrid:<email>`, or `railgrid:static:<hash>` for
   static-token users) — because that is the string every tenant-workspace
   binding (including the workspace-admin ClusterRoleBinding) is written
   against and the string the hub's SubjectAccessReview presents. The User CR
@@ -71,10 +71,10 @@ signing keys — and its availability contract is strict:
   in-memory session locally. A hub outage leaves existing sessions working;
   only new sign-ins fail.
 
-Platform inputs reach the gate as `${faros.*}` tokens substituted at RGD
-build time (`${faros.accessProxyImage}`, `${faros.hubUrl}`,
-`${faros.hubPublicUrl}`, `${faros.hubInsecure}`), and the application
-controller stamps `spec.expose.fqdn` plus `spec.farosCluster` (the tenant
+Platform inputs reach the gate as `${railgrid.*}` tokens substituted at RGD
+build time (`${railgrid.accessProxyImage}`, `${railgrid.hubUrl}`,
+`${railgrid.hubPublicUrl}`, `${railgrid.hubInsecure}`), and the application
+controller stamps `spec.expose.fqdn` plus `spec.railgridCluster` (the tenant
 workspace cluster ID) onto the instance. Tenants only ever choose
 `spec.access`.
 
@@ -85,7 +85,7 @@ session (`pkg/hub/appauth`):
 
 1. The gate redirects to `GET /auth/apps/authorize` with the instance
    coordinates (`cluster`, `group`, `resource`, `name`), its callback
-   (`https://<app-host>/__faros/auth/callback`), and an opaque one-use state
+   (`https://<app-host>/__railgrid/auth/callback`), and an opaque one-use state
    bound to the initiating browser.
 2. The hub resolves the shared portal browser session (or bounces through the
    normal `/login` flow and back via the portal's `next` continuation), runs
@@ -96,7 +96,7 @@ session (`pkg/hub/appauth`):
 3. The gate exchanges the code server-to-server
    (`POST /auth/apps/exchange`), receives identity metadata plus a session
    TTL (never a credential), and mints its local session cookie
-   (`__Host-faros-app-session`).
+   (`__Host-railgrid-app-session`).
 
 Revocation lag is bounded by the granted session TTL (15 minutes): after a
 RoleBinding is deleted, the next silent re-authorize re-runs the SAR and
@@ -118,7 +118,7 @@ curl -s -H "Authorization: Bearer x" https://<app-host>/ | jq .instance
 # 2. Mint an app access token with your hub token.
 TOKEN=$(curl -s -X POST "$HUB/auth/apps/token" \
   -H "Authorization: Bearer $HUB_TOKEN" -H "Content-Type: application/json" \
-  -d '{"cluster":"<cluster>","group":"infrastructure.faros.sh","resource":"instances","name":"<app>"}' \
+  -d '{"cluster":"<cluster>","group":"infrastructure.railgrid.ai","resource":"instances","name":"<app>"}' \
   | jq -r .token)
 # 3. Call the app.
 curl -H "Authorization: Bearer $TOKEN" https://<app-host>/api/health
@@ -126,7 +126,7 @@ curl -H "Authorization: Bearer $TOKEN" https://<app-host>/api/health
 
 `$HUB_TOKEN` is any bearer the hub API accepts from you. On a token-only hub,
 that is your static token. On an OIDC hub, it is your OIDC id_token, which is
-the `status.token` that the `faros get-token` exec plugin in your faros
+the `status.token` that the `railgrid get-token` exec plugin in your railgrid
 kubeconfig prints. kcp ServiceAccount tokens are refused.
 
 **`POST /auth/apps/token`** (hub; called with your hub bearer):
@@ -186,8 +186,8 @@ hub limits failed mint and verify attempts per source address.
 
 Tokens are stateless, so any hub replica verifies them. The sealing key is
 HKDF-derived, with its own label, from the hub's cross-replica secret
-(`faros-delegated-user-proof-key` in namespace `faros-hub` of
-`root:faros:system:controllers`). No tenant, provider or user identity can
+(`railgrid-delegated-user-proof-key` in namespace `railgrid-hub` of
+`root:railgrid:system:controllers`). No tenant, provider or user identity can
 read that secret. Deleting it and restarting the hub replicas invalidates
 every outstanding app token, along with the other credentials derived from
 that secret.
@@ -202,8 +202,8 @@ thin veneer over the two mechanisms:
   instance); DELETE means "private + delete all grants" — production remains
   deployed and reachable by workspace members.
 - `…/publishing/grants` lists/creates/revokes the RBAC pair
-  (`faros-app-access.<instance>` ClusterRole, one ClusterRoleBinding per
-  invited member, labeled `faros.sh/app-access=<instance>`). Grant
+  (`railgrid-app-access.<instance>` ClusterRole, one ClusterRoleBinding per
+  invited member, labeled `railgrid.ai/app-access=<instance>`). Grant
   creation validates current org/workspace membership through the hub API and
   requires private access; revocation is allowed in any mode.
 
@@ -220,15 +220,15 @@ by email. Without `invite`, an unknown identifier remains a clean 404 so
 typos cannot mint ghost users.
 
 Because grants are ordinary RBAC objects, they are visible outside App
-Studio too: the faros portal's Tenant Settings → Members tab lists every
+Studio too: the railgrid portal's Tenant Settings → Members tab lists every
 app-access grant in the workspace (hub REST
 `GET/DELETE /api/orgs/{org}/workspaces/{ws}/app-access[/{binding}]`, served
 with the hub's kcp-admin client like the providers/enabled endpoints), and
 workspace admins can revoke from there. `kubectl get clusterrolebindings -l
-faros.sh/app-access` shows the same truth.
+railgrid.ai/app-access` shows the same truth.
 
 Promotion is unchanged and independent: digest-pinned image resolution and
-`farosRedeployRevision` rollouts keep the production instance's identity
+`railgridRedeployRevision` rollouts keep the production instance's identity
 stable, which also keeps its URL and its RBAC grants stable across
 re-promotes.
 

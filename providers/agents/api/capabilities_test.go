@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,19 +13,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/provider-agents/engine"
+	"github.com/railgrid/provider-agents/engine"
 )
 
 func TestProvidersFromTools(t *testing.T) {
 	// Shape as it actually arrives: our MCP client prefixes what it dialed
-	// ("faros"), and the aggregate endpoint namespaces each federated tool.
+	// ("railgrid"), and the aggregate endpoint namespaces each federated tool.
 	tools := []engine.Tool{
-		{Name: "faros__infrastructure__provision"},
-		{Name: "faros__infrastructure__list_templates"},
-		{Name: "faros__code__create_repository"},
-		{Name: "faros__kuery__kuery_query"},
+		{Name: "railgrid__infrastructure__provision"},
+		{Name: "railgrid__infrastructure__list_templates"},
+		{Name: "railgrid__code__create_repository"},
+		{Name: "railgrid__kuery__kuery_query"},
 		// A tool the endpoint serves directly, with no provider segment.
-		{Name: "faros__ping"},
+		{Name: "railgrid__ping"},
 		{Name: "malformed"},
 	}
 	got := providersFromTools(tools)

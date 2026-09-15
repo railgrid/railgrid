@@ -10,7 +10,7 @@ The portal/provider roles are:
 | Surface | Role | Face | Usage |
 |---|---|---|---|
 | Portal/provider | `font-sans` | Instrument Sans Variable | Body and UI copy |
-| Portal/provider | `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | Page titles, KPI numerals, FAROS wordmark |
+| Portal/provider | `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | Page titles, KPI numerals, RAILGRID wordmark |
 | Portal/provider | `font-mono` | IBM Plex Mono | Identifiers, statuses, badges, table headers, timestamps, code |
 
 Dex auth is a standalone fixed-dark document. Its local stylesheet embeds only

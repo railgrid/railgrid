@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,8 +25,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// envValues is what `faros env` resolves. JSON keys are for --json; the shell
-// variable names match skills/faros/scripts/faros-env.sh.
+// envValues is what `railgrid env` resolves. JSON keys are for --json; the shell
+// variable names match skills/railgrid/scripts/railgrid-env.sh.
 type envValues struct {
 	Hub          string `json:"hub"`
 	Cluster      string `json:"cluster"`
@@ -50,7 +50,7 @@ REST and MCP APIs as you, and print them as shell exports:
 
   HUB        hub base URL
   CLUSTER    kcp cluster of the active workspace
-  ORG, WS    org and workspace UUIDs (the X-Faros-Org / X-Faros-Workspace headers)
+  ORG, WS    org and workspace UUIDs (the X-Railgrid-Org / X-Railgrid-Workspace headers)
   TOKEN      your bearer token (OIDC tokens expire; re-run to refresh)
   AS         App Studio REST base ($HUB/services/providers/app-studio)
   MCP_URL    the workspace's aggregate MCP endpoint
@@ -58,9 +58,9 @@ REST and MCP APIs as you, and print them as shell exports:
 
 Load them with:
 
-  eval "$(faros env)"
-  curl -s -H "Authorization: Bearer $TOKEN" -H "X-Faros-Org: $ORG" \
-    -H "X-Faros-Workspace: $WS" "$AS/api/projects"`,
+  eval "$(railgrid env)"
+  curl -s -H "Authorization: Bearer $TOKEN" -H "X-Railgrid-Org: $ORG" \
+    -H "X-Railgrid-Workspace: $WS" "$AS/api/projects"`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnv(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), target, asJSON, noMCP)
@@ -98,7 +98,7 @@ func runEnv(ctx context.Context, out, errOut io.Writer, target hubTarget, asJSON
 		switch {
 		case err != nil:
 			mcpState = "unavailable"
-			_, _ = fmt.Fprintf(errOut, "faros env: warning: %v\n", err)
+			_, _ = fmt.Fprintf(errOut, "railgrid env: warning: %v\n", err)
 		case info.Token == "":
 			mcpState = "token not ready"
 			v.MCPURL = info.EndpointURL
@@ -113,13 +113,13 @@ func runEnv(ctx context.Context, out, errOut io.Writer, target hubTarget, asJSON
 	if _, err := io.WriteString(out, renderEnvExports(v, !noMCP)); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(errOut, "faros env: hub=%s org=%s (%s) ws=%s (%s) mcp=%s\n",
+	_, _ = fmt.Fprintf(errOut, "railgrid env: hub=%s org=%s (%s) ws=%s (%s) mcp=%s\n",
 		v.Hub, s.Org.DisplayName, v.Org, displayLabel(s.WS.DisplayName, v.Workspace), v.Workspace, mcpState)
 	return nil
 }
 
 // renderEnvExports renders one shell-quoted export per variable, in the
-// order faros-env.sh defines them. MCP variables are emitted only when
+// order railgrid-env.sh defines them. MCP variables are emitted only when
 // requested and resolved.
 func renderEnvExports(v envValues, includeMCP bool) string {
 	vars := [][2]string{

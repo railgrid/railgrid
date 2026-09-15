@@ -10,9 +10,9 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { computed } from 'vue'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 export type ResourceStatTone = 'default' | 'success' | 'warning' | 'danger'
 export type ResourceStatDensity = 'default' | 'compact'

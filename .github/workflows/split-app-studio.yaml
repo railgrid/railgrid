@@ -1,7 +1,7 @@
 name: Split app-studio provider
 
 # Publishes providers/app-studio from this monorepo to the standalone,
-# read-only mirror at faroshq/provider-app-studio, preserving git history.
+# read-only mirror at railgrid/provider-app-studio, preserving git history.
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
@@ -18,7 +18,7 @@ name: Split app-studio provider
 #
 # Required secret: APP_STUDIO_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
-#   faroshq/provider-app-studio. (A deploy key is scoped to one repo, so this is
+#   railgrid/provider-app-studio. (A deploy key is scoped to one repo, so this is
 #   a distinct key from the other provider mirrors.)
 
 on:
@@ -43,7 +43,7 @@ concurrency:
 
 env:
   PREFIX: providers/app-studio
-  TARGET_REPO: git@github.com:faroshq/provider-app-studio.git
+  TARGET_REPO: git@github.com:railgrid/provider-app-studio.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 

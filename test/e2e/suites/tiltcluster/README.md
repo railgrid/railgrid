@@ -31,12 +31,12 @@ already excludes `test/e2e`.)
 
 | what | default | env |
 | --- | --- | --- |
-| kcp admin kubeconfig | `tilt-frontproxy.kubeconfig` | `FAROS_E2E_TILT_KUBECONFIG` |
-| hub REST + MCP | `https://localhost:9443` | `FAROS_E2E_HUB_URL` |
-| infrastructure `/mcp` | `http://localhost:8082` | `FAROS_E2E_INFRA_URL` |
-| hub static token | `dev-token` | `FAROS_E2E_STATIC_TOKEN` |
-| operator/KRO runtime kubeconfig | `.faros-cluster.kubeconfig` | `FAROS_E2E_TILT_RUNTIME_KUBECONFIG` |
-| operator namespace | `faros-infrastructure-operator` | `FAROS_E2E_TILT_OPERATOR_NAMESPACE` |
+| kcp admin kubeconfig | `tilt-frontproxy.kubeconfig` | `RAILGRID_E2E_TILT_KUBECONFIG` |
+| hub REST + MCP | `https://localhost:9443` | `RAILGRID_E2E_HUB_URL` |
+| infrastructure `/mcp` | `http://localhost:8082` | `RAILGRID_E2E_INFRA_URL` |
+| hub static token | `dev-token` | `RAILGRID_E2E_STATIC_TOKEN` |
+| operator/KRO runtime kubeconfig | `.railgrid-cluster.kubeconfig` | `RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG` |
+| operator namespace | `railgrid-infrastructure-operator` | `RAILGRID_E2E_TILT_OPERATOR_NAMESPACE` |
 
 ## What it asserts
 
@@ -50,7 +50,7 @@ already excludes `test/e2e`.)
   exposes `list_templates` / `describe_template` / `provision`, the tools the
   hub aggregate federates as `infrastructure__<tool>`.
 - **Tenant isolation** (`TestTenantIsolationRequiresIdentity`) — a tool call
-  with no caller identity (no `X-Faros-Tenant`, no bearer token) is refused
+  with no caller identity (no `X-Railgrid-Tenant`, no bearer token) is refused
   rather than silently acting cross-tenant.
 
 ## Using Config Connector with the infrastructure operator (opt-in)
@@ -107,13 +107,13 @@ The equivalent Make targets are `config-connector-install`,
 `config-connector-enable`, and `config-connector-smoke`. Set the disposable
 GCP inputs in the gitignored repository-root `.env` (the tracked example uses
 dev-neutral placeholders). The public names are
-`FAROS_CONFIG_CONNECTOR_GCP_PROJECT` and
-`FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE`; the older
-`FAROS_E2E_GCP_*` names remain accepted for compatibility:
+`RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT` and
+`RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE`; the older
+`RAILGRID_E2E_GCP_*` names remain accepted for compatibility:
 
 ```sh
-export FAROS_CONFIG_CONNECTOR_GCP_PROJECT='disposable-test-project'
-export FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE='/absolute/path/to/service-account.json'
+export RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT='disposable-test-project'
+export RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE='/absolute/path/to/service-account.json'
 make config-connector-install
 make config-connector-enable
 make config-connector-smoke
@@ -136,9 +136,9 @@ test-owned Template, so it cannot mutate the stable enabled fixture.
 
 `TestConfigConnectorGCPPubSubLifecycle` requires the child to report
 `Ready=True` at its current generation. A direct authenticated Pub/Sub REST GET
-must then return HTTP 200. After deleting the Faros parent, both Kubernetes
+must then return HTTP 200. After deleting the Railgrid parent, both Kubernetes
 objects must be NotFound and the same REST GET must return HTTP 404. Failure
-cleanup can directly delete only the exact `faros-kcc-e2e-<hex>` topic and must
+cleanup can directly delete only the exact `railgrid-kcc-e2e-<hex>` topic and must
 also prove HTTP 404; it never removes finalizers.
 
 To rerun the isolated lifecycle without reinstalling the operator, use
@@ -182,7 +182,7 @@ commit and installs them into the operator-managed runtime.
 readiness, APIExport publication, tenant-facing cache replication, and the
 runtime KRO graph. `terraform-smoke` then creates an isolated tenant and
 APIBinding, runs a cloud-free `terraform_data` resource, validates the
-allowlisted outputs and Kubernetes backend state, deletes the Faros parent,
+allowlisted outputs and Kubernetes backend state, deletes the Railgrid parent,
 and observes Infrakube destroy before the child disappears.
 
 The Kubernetes backend retains an empty state Secret and Lease after destroy.

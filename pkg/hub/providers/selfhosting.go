@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ func selfHostingDocsURL(p Provider) string {
 // credential from. The charts hardcode the data key `kubeconfig` and default
 // the secret name to this, so the generated instructions must match exactly —
 // a mismatch produces a pod that starts and then fails to reach kcp.
-const KubeconfigSecretName = "faros-provider-kubeconfig"
+const KubeconfigSecretName = "railgrid-provider-kubeconfig"
 
 // KubeconfigSecretKey is the required data key inside that Secret.
 const KubeconfigSecretKey = "kubeconfig"
@@ -147,7 +147,7 @@ type InstallOptions struct {
 // next — strictly worse than imperfect instructions that say what is missing.
 func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInstructions {
 	name := opts.ProviderName
-	namespace := firstNonEmpty(sh.namespaceOrEmpty(), "faros-provider-"+name)
+	namespace := firstNonEmpty(sh.namespaceOrEmpty(), "railgrid-provider-"+name)
 	release := firstNonEmpty(sh.releaseOrEmpty(), name)
 	kubeconfigFile := fmt.Sprintf("%s.kubeconfig", name)
 
@@ -200,7 +200,7 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 	addDefault(ResolvedValue{
 		Name:        "catalogEntry.enabled",
 		Value:       "true",
-		Description: "Registers the provider with faros so your workspaces can enable it.",
+		Description: "Registers the provider with railgrid so your workspaces can enable it.",
 	})
 	// hub.url must be the external address: the provider runs in the org's own
 	// cluster, where an in-cluster service DNS name does not resolve.
@@ -211,13 +211,13 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 		addDefault(ResolvedValue{
 			Name:        "hub.url",
 			Value:       opts.HubURL,
-			Description: "The faros hub address your cluster reaches. Must be reachable from inside that cluster.",
+			Description: "The railgrid hub address your cluster reaches. Must be reachable from inside that cluster.",
 		})
 	default:
 		addDefault(ResolvedValue{
 			Name:        "hub.url",
 			Value:       "<hub-url>",
-			Description: "The faros hub address your cluster reaches.",
+			Description: "The railgrid hub address your cluster reaches.",
 			Unresolved:  true,
 		})
 		out.Warnings = append(out.Warnings,
@@ -298,11 +298,11 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 			// the wrong one — it addresses kcp, and only ever belongs inside the
 			// Secret step 2 creates. Naming the alternatives is the whole point:
 			// either a cluster-admin credential for the target cluster, or a
-			// `faros kubeconfig edge` context, which reaches that cluster
+			// `railgrid kubeconfig edge` context, which reaches that cluster
 			// through the agent.
 			Description: "Where the provider runs in your cluster. Run every command below against that " +
-				"cluster — with your own cluster-admin credentials, or a `faros kubeconfig edge` context " +
-				"for it. Not the kubeconfig shown above: that one addresses faros, not your cluster.",
+				"cluster — with your own cluster-admin credentials, or a `railgrid kubeconfig edge` context " +
+				"for it. Not the kubeconfig shown above: that one addresses railgrid, not your cluster.",
 			Command: fmt.Sprintf("kubectl create namespace %s", namespace),
 		},
 		{

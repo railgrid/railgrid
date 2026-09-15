@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // TestSeedTemplatesBuildRGD loads every embedded seed Template and runs it
@@ -58,9 +58,9 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 			if _, found, _ := unstructured.NestedSlice(rgd.Object, "spec", "resources"); !found {
 				t.Errorf("%s: RGD has no spec.resources", e.Name())
 			}
-			// No faros tokens may survive into the authored RGD.
-			if strings.Contains(mustJSON(t, rgd.Object), "${faros.") {
-				t.Errorf("%s: RGD still contains an unsubstituted ${faros.*} token", e.Name())
+			// No railgrid tokens may survive into the authored RGD.
+			if strings.Contains(mustJSON(t, rgd.Object), "${railgrid.") {
+				t.Errorf("%s: RGD still contains an unsubstituted ${railgrid.*} token", e.Name())
 			}
 		})
 	}
@@ -84,29 +84,29 @@ func TestUniversalCodingSandboxPreservesLegacyExposureHostnameInRGDSchema(t *tes
 	if !ok {
 		t.Fatal("source schema has no properties")
 	}
-	legacyProperty, ok := sourceProperties["farosExposureHostname"].(map[string]any)
+	legacyProperty, ok := sourceProperties["railgridExposureHostname"].(map[string]any)
 	if !ok || legacyProperty["type"] != "string" {
-		t.Fatalf("source farosExposureHostname = %#v, want optional string property", sourceProperties["farosExposureHostname"])
+		t.Fatalf("source railgridExposureHostname = %#v, want optional string property", sourceProperties["railgridExposureHostname"])
 	}
 
 	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
-	got, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", "farosExposureHostname")
+	got, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", "railgridExposureHostname")
 	if err != nil {
-		t.Fatalf("read built farosExposureHostname schema: %v", err)
+		t.Fatalf("read built railgridExposureHostname schema: %v", err)
 	}
 	if !found {
-		t.Fatal("built CodingSandbox RGD schema dropped farosExposureHostname")
+		t.Fatal("built CodingSandbox RGD schema dropped railgridExposureHostname")
 	}
 	want := `string | description="Deprecated compatibility field retained for existing CodingSandbox instances. Ignored for internal sandboxes; no hostname or route is created."`
 	if got != want {
-		t.Fatalf("built farosExposureHostname schema = %q, want %q", got, want)
+		t.Fatalf("built railgridExposureHostname schema = %q, want %q", got, want)
 	}
 }
 
-const seedHTTPRouteReadyWhen = `${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}`
+const seedHTTPRouteReadyWhen = `${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${railgrid.gatewayName}" && p.parentRef.namespace == "${railgrid.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}`
 
 // TestSeedTemplatesHTTPRoutesRequireCurrentGatewayStatus ensures every route
 // that can publish an instance is blocked until the configured Gateway has
@@ -215,7 +215,7 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 	if got, want := tmpl.Spec.Category, "Databases"; got != want {
 		t.Fatalf("category = %q, want %q", got, want)
 	}
-	if got, want := tmpl.Spec.InstanceCRD.Group, "infrastructure.faros.sh"; got != want {
+	if got, want := tmpl.Spec.InstanceCRD.Group, "infrastructure.railgrid.ai"; got != want {
 		t.Fatalf("instance group = %q, want %q", got, want)
 	}
 	if got, want := tmpl.Spec.InstanceCRD.Kind, "PostgresDatabase"; got != want {
@@ -311,13 +311,13 @@ func TestSeedTemplatesSimpleWebappIsDevelopmentCapable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRGD(simple-webapp): %v", err)
 	}
-	for _, id := range []string{"appDeployment", "appService", "httpRoute", "appDevDeployment", "appDevWorkspace", "appDevControlService", "farosDevControlSecret"} {
+	for _, id := range []string{"appDeployment", "appService", "httpRoute", "appDevDeployment", "appDevWorkspace", "appDevControlService", "railgridDevControlSecret"} {
 		if findResource(t, rgd, id) == nil {
 			t.Fatalf("simple-webapp RGD missing %s resource", id)
 		}
 	}
-	if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "spec", "farosMode"); !found {
-		t.Fatal("simple-webapp RGD schema missing farosMode (dev overlay not applied)")
+	if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "spec", "railgridMode"); !found {
+		t.Fatal("simple-webapp RGD schema missing railgridMode (dev overlay not applied)")
 	}
 	for _, field := range []string{"url", "host", "ready", "runtimeNamespace", "controlSecretRef", "components"} {
 		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
@@ -510,7 +510,7 @@ func TestBuildRGDRejectsSchemaRefsInStatus(t *testing.T) {
 		out := &infrav1alpha1.Template{}
 		out.Name = "t"
 		out.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-			Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "ts", Kind: "T",
+			Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "ts", Kind: "T",
 		}
 		out.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)}
 		out.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(

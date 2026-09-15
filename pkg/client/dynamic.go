@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,17 +30,17 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // NOTE: the typed Edge / Workload / Placement accessors were removed when
-// the Edge API moved out of the hub core group (faros.sh) into the single
+// the Edge API moved out of the hub core group (railgrid.ai) into the single
 // standalone `edges` provider. Both connectable kinds live in ONE group
-// edges.faros.sh:
+// edges.railgrid.ai:
 //
-//	KubernetesCluster → edges.faros.sh/kubernetesclusters
-//	LinuxServer       → edges.faros.sh/linuxservers
-//	MacOSServer       → edges.faros.sh/macosservers
+//	KubernetesCluster → edges.railgrid.ai/kubernetesclusters
+//	LinuxServer       → edges.railgrid.ai/linuxservers
+//	MacOSServer       → edges.railgrid.ai/macosservers
 //
 // The core module cannot import the provider module (it would cycle — the
 // provider imports core primitives), so the agent + CLI address these
@@ -50,47 +50,47 @@ var (
 	// KubernetesClusterGVR addresses the edges provider's KubernetesCluster kind
 	// (cluster-scoped).
 	KubernetesClusterGVR = schema.GroupVersionResource{
-		Group:    "edges.faros.sh",
+		Group:    "edges.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "kubernetesclusters",
 	}
 	// LinuxServerGVR addresses the edges provider's LinuxServer kind
 	// (cluster-scoped).
 	LinuxServerGVR = schema.GroupVersionResource{
-		Group:    "edges.faros.sh",
+		Group:    "edges.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "linuxservers",
 	}
 	// MacOSServerGVR addresses the edges provider's MacOSServer kind
 	// (cluster-scoped).
 	MacOSServerGVR = schema.GroupVersionResource{
-		Group:    "edges.faros.sh",
+		Group:    "edges.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "macosservers",
 	}
 	// WorkloadGVR addresses the edges provider's Workload kind
 	// (namespaced): a workload scheduled across matching KubernetesCluster edges.
 	WorkloadGVR = schema.GroupVersionResource{
-		Group:    "edges.faros.sh",
+		Group:    "edges.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "workloads",
 	}
 	// PlacementGVR addresses the edges provider's Placement kind (namespaced):
 	// one Workload placed on one edge.
 	PlacementGVR = schema.GroupVersionResource{
-		Group:    "edges.faros.sh",
+		Group:    "edges.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "placements",
 	}
 
-	// UserGVR points at the new tenants.faros.sh User CRD. PRs
-	// #204-#207 introduced the tenants.faros.sh group; this GVR
-	// previously pointed at the legacy faros.sh group, which left
+	// UserGVR points at the new tenants.railgrid.ai User CRD. PRs
+	// #204-#207 introduced the tenants.railgrid.ai group; this GVR
+	// previously pointed at the legacy railgrid.ai group, which left
 	// User writes from the auth handler invisible to the org bootstrap
 	// controller (which watches the new group). Migration in roadmap
-	// step 7+ aligns both sides on tenants.faros.sh.
+	// step 7+ aligns both sides on tenants.railgrid.ai.
 	UserGVR = schema.GroupVersionResource{
-		Group:    "tenants.faros.sh",
+		Group:    "tenants.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "users",
 	}
@@ -100,7 +100,7 @@ var (
 	// One UMI per User; the tenant middleware reads this on every
 	// request to authorise (Org, Workspace) header pairs.
 	UserMembershipIndexGVR = schema.GroupVersionResource{
-		Group:    "tenants.faros.sh",
+		Group:    "tenants.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "usermembershipindices",
 	}
@@ -108,18 +108,18 @@ var (
 	// GrantGVR points at the cluster-scoped Grant CRD (see
 	// apis/tenancy/v1alpha1/types_grant.go): the capabilities a tenant
 	// accepted for a subject (today: a provider) in a workspace. Lives in
-	// root:faros:system:tenants beside the UMI.
+	// root:railgrid:system:tenants beside the UMI.
 	GrantGVR = schema.GroupVersionResource{
-		Group:    "tenants.faros.sh",
+		Group:    "tenants.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "grants",
 	}
 
 	// OrganizationGVR points at the cluster-scoped Organization CRD
 	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
-	// step 10 REST surface for Org CRUD against root:faros:users.
+	// step 10 REST surface for Org CRUD against root:railgrid:users.
 	OrganizationGVR = schema.GroupVersionResource{
-		Group:    "tenants.faros.sh",
+		Group:    "tenants.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "organizations",
 	}
@@ -129,7 +129,7 @@ var (
 	// User; the portal's dashboard-layout REST handlers read/write it to
 	// remember each workspace's tile arrangement across browsers.
 	UserPreferencesGVR = schema.GroupVersionResource{
-		Group:    "tenants.faros.sh",
+		Group:    "tenants.railgrid.ai",
 		Version:  "v1alpha1",
 		Resource: "userpreferences",
 	}
@@ -177,7 +177,7 @@ func EdgeTypeForGVR(gvr schema.GroupVersionResource) string {
 	}
 }
 
-// Client provides typed access to faros custom resources via the dynamic client.
+// Client provides typed access to railgrid custom resources via the dynamic client.
 type Client struct {
 	dynamic dynamic.Interface
 }
@@ -211,7 +211,7 @@ func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.Us
 
 // UserMembershipIndices returns a typed interface for the UMI CRD
 // (cluster-scoped). One UMI per User; the tenant middleware uses
-// this to authorise X-Faros-Org / X-Faros-Workspace headers on every
+// this to authorise X-Railgrid-Org / X-Railgrid-Workspace headers on every
 // /api/* request.
 func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList] {
 	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{

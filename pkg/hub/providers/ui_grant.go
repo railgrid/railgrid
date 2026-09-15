@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,8 +34,8 @@ package providers
 //
 // The grant closes that gap in two steps:
 //
-//  1. The portal, authenticated as the user with its X-Faros-Org /
-//     X-Faros-Workspace selection, POSTs /api/providers/{name}/ui-grant. The
+//  1. The portal, authenticated as the user with its X-Railgrid-Org /
+//     X-Railgrid-Workspace selection, POSTs /api/providers/{name}/ui-grant. The
 //     hub resolves the caller the way the backend proxy does (membership is
 //     verified by the TenantResolver), checks that the caller's org owns a
 //     copy of {name} with a UI, and answers with a bundle URL that carries a
@@ -80,8 +80,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 const (
@@ -110,8 +110,8 @@ const (
 	// uiGrantKeyInfo domain-separates the grant key from every other subkey
 	// derived from the hub secret (app access tokens, delegated-identity
 	// proofs). uiGrantAAD binds the ciphertext to this construction.
-	uiGrantKeyInfo = "faros.sh/provider-ui-grant/aes-256-gcm/v1"
-	uiGrantAAD     = "faros.sh/provider-ui-grant/v1"
+	uiGrantKeyInfo = "railgrid.ai/provider-ui-grant/aes-256-gcm/v1"
+	uiGrantAAD     = "railgrid.ai/provider-ui-grant/v1"
 	uiGrantVersion = 1
 	uiGrantIDBytes = 16
 	uiGrantMinKey  = 32
@@ -329,10 +329,10 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			req.Host = dst.Host
 			// Identity under the ORG provider's name, as the backend proxy
 			// does (E-6): the headers describe who is fetching the bundle.
-			req.Header.Del("X-Faros-User")
-			req.Header.Del("X-Faros-Tenant")
-			req.Header.Del("X-Faros-Cluster")
-			req.Header.Set("X-Faros-User", claims.User)
+			req.Header.Del("X-Railgrid-User")
+			req.Header.Del("X-Railgrid-Tenant")
+			req.Header.Del("X-Railgrid-Cluster")
+			req.Header.Set("X-Railgrid-User", claims.User)
 			p.setHeaders(req, prov.Name, basePath)
 			setDelegatedAuthorization(req.Header, token)
 		},
@@ -391,7 +391,7 @@ func NewUIGrantHandler(reg *Registry, uiProxy *ProviderProxy, log logr.Logger) *
 
 // SetTenantResolver installs the resolver that names the caller. It is the
 // same resolver the backend proxy uses, so the membership checks behind
-// X-Faros-Org / X-Faros-Workspace are the same ones. Until one is installed
+// X-Railgrid-Org / X-Railgrid-Workspace are the same ones. Until one is installed
 // every request is refused.
 func (h *UIGrantHandler) SetTenantResolver(r TenantResolver) {
 	h.mu.Lock()
@@ -445,7 +445,7 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// workspace; an org-scope selection has nowhere to mint it. Say so
 		// here rather than at redemption, where the browser only sees a
 		// failed script.
-		http.Error(w, "a workspace selection (X-Faros-Workspace) is required to load provider: "+name, http.StatusForbidden)
+		http.Error(w, "a workspace selection (X-Railgrid-Workspace) is required to load provider: "+name, http.StatusForbidden)
 		return
 	}
 	prov, found := h.reg.GetForOrg(orgUUID, name)

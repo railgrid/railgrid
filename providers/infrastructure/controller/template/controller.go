@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package template reconciles infrastructure.faros.sh/v1alpha1 Template CRs.
+// Package template reconciles infrastructure.railgrid.ai/v1alpha1 Template CRs.
 // Each Template represents one catalog entry; the controller's job is to
 // (a) validate the Template's contract — the values schema (including the
 // platform-reserved field injection) and the development block — and
@@ -17,7 +17,7 @@ You may obtain a copy of the License at
 //
 // Templates no longer project per-template CRDs or APIResourceSchemas into
 // kcp: tenants author the single flattened Instance kind
-// (instances.infrastructure.faros.sh, installed at init like templates),
+// (instances.infrastructure.railgrid.ai, installed at init like templates),
 // and the instance controller validates spec.values against the Template's
 // schema at reconcile time. Adding or changing a Template therefore never
 // touches the APIExport's resource list.
@@ -35,9 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/backend"
-	"github.com/faroshq/provider-infrastructure/instancespec"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/backend"
+	"github.com/railgrid/provider-infrastructure/instancespec"
 )
 
 // Reconciler reconciles Template objects.

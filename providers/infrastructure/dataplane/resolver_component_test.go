@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 // applicationContract mirrors the dataPlane a multi-tier template declares:
@@ -65,7 +65,7 @@ func applicationInstance(runtimeNamespace string) *unstructured.Unstructured {
 		return map[string]any{"name": name, "namespace": runtimeNamespace}
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "shop"},
 		"status": map[string]any{
@@ -81,7 +81,7 @@ func applicationInstance(runtimeNamespace string) *unstructured.Unstructured {
 }
 
 func TestResolveComponentVerbs(t *testing.T) {
-	ns := "faros-tenant-shop"
+	ns := "railgrid-tenant-shop"
 	contract := applicationContract()
 	instance := applicationInstance(ns)
 
@@ -140,7 +140,7 @@ func TestResolveComponentUnknown(t *testing.T) {
 }
 
 func TestResolveComponentRejectsNamespaceEscape(t *testing.T) {
-	instance := applicationInstance("faros-tenant-shop")
+	instance := applicationInstance("railgrid-tenant-shop")
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "components", "backend", "controlServiceRef", "namespace") //nolint:errcheck
 
 	if _, err := ResolveComponent(applicationContract(), instance, "backend", "sync"); err == nil {

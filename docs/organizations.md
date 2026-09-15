@@ -10,10 +10,10 @@
 
 ## Why this doc exists
 
-Today faros has one tenancy primitive — `User`
+Today railgrid has one tenancy primitive — `User`
 ([apis/tenancy/v1alpha1/types_user.go](../apis/tenancy/v1alpha1/types_user.go))
 — and each user gets one personal kcp workspace
-(`root:faros:users:{userId}`, materialized in
+(`root:railgrid:users:{userId}`, materialized in
 [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)). That's enough
 for a single-tenant demo and nothing more:
 
@@ -46,19 +46,19 @@ Don't re-litigate; the doc body assumes these.
 | # | Decision | Rationale |
 |---|---|---|
 | O-1 | **Identity = UUID** for both Organization and Workspace. `metadata.name = <uuid>`; `spec.displayName` is metadata only. Two Orgs may share a displayName. | Removes a class of collision bugs; portal-side rename is a `displayName` patch and never moves a workspace path. |
-| O-2 | **Migration = clean slate.** No existing prod data; existing `root:faros:users:{userId}` workspaces are dev noise that can be deleted. No migration code, no fallback flag. | No legacy users to preserve; lets us require `X-Faros-Org` / `X-Faros-Workspace` from day one. |
+| O-2 | **Migration = clean slate.** No existing prod data; existing `root:railgrid:users:{userId}` workspaces are dev noise that can be deleted. No migration code, no fallback flag. | No legacy users to preserve; lets us require `X-Railgrid-Org` / `X-Railgrid-Workspace` from day one. |
 | O-3 | **Membership index = separate `UserMembershipIndex` CRD** (one per User, owned by Membership controller). Not `User.status.memberships`. | Trivial RBAC (controller owns its own resource), easier to debug, schema can evolve without touching User. |
 | O-4 | **Switcher disambiguation = always show secondary line** (`created {date} by {first admin}`) under every Org row in the portal switcher. Not just when ambiguous. | Unambiguous always, no client-side "is this name a duplicate?" logic. The `UserMembershipIndex` carries the extra fields. |
 | O-5 | **Org quota = soft cap, admin-overridable per User.** Default 10 Orgs per User. `User.spec.orgQuota` overrides. 4xx on 11th create with a clear message. | Avoids accidental tree bloat; admins handle real edge cases by hand. |
 | O-6 | **Workspace quota = soft cap, admin-overridable per Org.** Default 50 Workspaces per Org. `Organization.spec.workspaceQuota` overrides. | Symmetric with O-5. Tunable when a real team hits it. |
 | O-7 | **CatalogEntry creation gating = configurable per Org**, `Organization.spec.catalogEntryCreation: members\|admin`, default `admin` (stricter than `workspaceCreation`; it was `members` until the September 2026 security review, and Organizations from before then were backfilled with an explicit `members`). Enforced at the **hub REST endpoint** (`POST /api/orgs/{uuid}/providers`), not via kcp RBAC — see O-10. | Registering a provider mints a cluster-admin credential and can shadow a platform provider for the whole Org; that is an admin decision. Orgs that trust members opt in. |
-| O-10 | **Org workspaces are hub-mediated only.** Tenants never receive a kubeconfig that targets `root:faros:orgs:{uuid}` directly. All Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) flow through hub REST endpoints. The faros kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths that resolve to a workspace of type `organization`. Child Workspaces (`root:faros:orgs:{org-uuid}:{ws-uuid}`) are user-facing as today. The companion `DefaultCluster` access gate this same proxy enforces — which today funnels user-token traffic to a single workspace and 403s the rest — is revisited in [hub-proxy-workspace-access.md](./hub-proxy-workspace-access.md). | Network-level enforcement of \"no APIBindings in Org workspace\" (see [provider-scoping.md](./provider-scoping.md) P-2). Removes the need for any kcp admission webhook or MaximalPermissionPolicy scoping. |
+| O-10 | **Org workspaces are hub-mediated only.** Tenants never receive a kubeconfig that targets `root:railgrid:orgs:{uuid}` directly. All Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) flow through hub REST endpoints. The railgrid kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths that resolve to a workspace of type `organization`. Child Workspaces (`root:railgrid:orgs:{org-uuid}:{ws-uuid}`) are user-facing as today. The companion `DefaultCluster` access gate this same proxy enforces — which today funnels user-token traffic to a single workspace and 403s the rest — is revisited in [hub-proxy-workspace-access.md](./hub-proxy-workspace-access.md). | Network-level enforcement of \"no APIBindings in Org workspace\" (see [provider-scoping.md](./provider-scoping.md) P-2). Removes the need for any kcp admission webhook or MaximalPermissionPolicy scoping. |
 | O-8 | **User delete = soft-delete with 30-day grace.** `User.status.deletionRequestedAt`; controller cascades personal Org + Memberships after the grace expires. Recoverable inside the window. | Protects against accidental delete; defers the "sole admin elsewhere" question until cascade time. |
 | O-9 | **Membership removal = block Org removal if user has child Workspace Memberships.** Admin must revoke (or transfer) each Workspace Membership first. UI offers a "remove from all" shortcut that does it as one call. | Explicit; avoids the "why does Bob still see acme/data?" surprise. |
 | O-11 | **Workspace initializers must be idempotent + self-healing.** Every initializer checks for existing CRs/RBAC before creating; a post-init reconciler verifies all expected state exists before treating the Org/Workspace as fully provisioned. Failed initializers retry forever; the reconciler is the safety net. | kcp initializers are async with no rollback (verified). Without this rule a partial init leaves silent breakage that surfaces only when a tenant hits 403. |
 | O-12 | **Self-leave Org + multiple admins via Membership.role PATCH.** `DELETE /api/orgs/{uuid}/memberships/me` lets a member remove themselves (O-9 sole-admin/child-Workspace blocks still apply, so they must hand off first). Any Org admin can PATCH another Membership.role between `member` and `admin`; multiple admins are allowed. No separate "transfer ownership" endpoint. | Matches GitHub Orgs. Promotion + sole-admin block together cover the handoff case. |
 | O-13 | **Soft delete with 30-day grace for both Org and Workspace** (symmetric with O-8). `DELETE /api/orgs/{uuid}` sets `Organization.status.deletionRequestedAt`; same for Workspace. Hidden from switchers immediately, recoverable inside the window via `POST .../undelete`. After grace expires the cascade controller removes child Workspaces/Memberships/CatalogEntries/APIBindings/edges/etc. | One number (30 days) for every soft-delete. Recovery for accidental deletes. Carries cost (state lingers) — acceptable. |
-| O-14 | **ServiceAccounts = native kube `core/v1.ServiceAccount`s in the child Workspace**, marked with faros annotations. No wrapping CRD. Admins create via `POST /api/orgs/{org}/workspaces/{ws}/serviceaccounts`; the hub writes the kube SA + a `ClusterRoleBinding` mapping `system:serviceaccount:default:<sa-name>` → `faros:workspace:admin` or `faros:workspace:member`. Tokens are minted via the kube TokenRequest API and returned once; revoke = delete the SA (kills all its tokens; CRB GCs via owner ref). Role is `admin` or `member`, same enum as `Membership.role`. Bot identities don't conflate with human Users. | Real platform users will run CI against Workspaces from day one; PATs on humans tie a person's lifecycle to a bot's. Reusing kube SAs avoids a custom JWT signing path, validates tokens natively, and lets the workspace cascade kill SAs for free. |
+| O-14 | **ServiceAccounts = native kube `core/v1.ServiceAccount`s in the child Workspace**, marked with railgrid annotations. No wrapping CRD. Admins create via `POST /api/orgs/{org}/workspaces/{ws}/serviceaccounts`; the hub writes the kube SA + a `ClusterRoleBinding` mapping `system:serviceaccount:default:<sa-name>` → `railgrid:workspace:admin` or `railgrid:workspace:member`. Tokens are minted via the kube TokenRequest API and returned once; revoke = delete the SA (kills all its tokens; CRB GCs via owner ref). Role is `admin` or `member`, same enum as `Membership.role`. Bot identities don't conflate with human Users. | Real platform users will run CI against Workspaces from day one; PATs on humans tie a person's lifecycle to a bot's. Reusing kube SAs avoids a custom JWT signing path, validates tokens natively, and lets the workspace cascade kill SAs for free. |
 | O-15 | **Org admin has implicit admin in every child Workspace.** No "private from Org admin" Workspace in v1. Document loudly in onboarding so users understand the privacy boundary is the Org, not the Workspace. | Simplest mental model, matches GitHub Orgs default, makes audit/compliance straightforward. Sensitive teams should use a separate Org, not a private Workspace. |
 
 ---
@@ -67,7 +67,7 @@ Don't re-litigate; the doc body assumes these.
 
 ```
 root
-└── faros
+└── railgrid
     ├── providers/                  ← Public CatalogEntries (admin-curated)
     └── orgs/
         └── 7f3a91d2.../            ← Organization workspace (UUID-named)
@@ -96,13 +96,13 @@ root
 Every Organization and Workspace is keyed by a server-assigned UUID,
 **not** the user-provided name. Two users can each create an Org with
 `displayName: "ACME Corp"` and they get distinct workspaces
-(`root:faros:orgs:7f3a91d2…` and `root:faros:orgs:b62e4a09…`). The
+(`root:railgrid:orgs:7f3a91d2…` and `root:railgrid:orgs:b62e4a09…`). The
 human-readable name lives in `spec.displayName` and exists only for
 the portal, CLI output, and email subjects.
 
 Consequences:
 
-- The `X-Faros-Org` / `X-Faros-Workspace` headers carry UUIDs, never
+- The `X-Railgrid-Org` / `X-Railgrid-Workspace` headers carry UUIDs, never
   display names.
 - REST paths look like `/api/orgs/{org-uuid}/workspaces/{ws-uuid}/…`.
   Display-name lookup is a portal-side convenience scoped to the
@@ -132,7 +132,7 @@ namespace" state we have today:
 4. **Org workspaces are hub-mediated only (O-10).** Tenants get no
    direct kubeconfig to a workspace of type `organization`. Every
    write into the Org workspace happens via a hub REST endpoint that
-   uses the hub's privileged service account. The faros kcp proxy
+   uses the hub's privileged service account. The railgrid kcp proxy
    refuses to mint exec-credentials for Org-typed workspaces.
 
 Enforcement: O-10's api-proxy mediation makes invariant #1 physically
@@ -147,7 +147,7 @@ machinery (allowed children, default bindings).
 Two new types under `tenancy.kcp.io/v1alpha1`, both materialized at
 hub bootstrap:
 
-### `organization` (path `root:faros`)
+### `organization` (path `root:railgrid`)
 
 ```yaml
 apiVersion: tenancy.kcp.io/v1alpha1
@@ -156,11 +156,11 @@ metadata:
   name: organization
 spec:
   defaultAPIBindings:
-    - path: root:faros:providers
-      export: tenancy.faros.sh   # Organization, Membership, CatalogEntry
+    - path: root:railgrid:providers
+      export: tenancy.railgrid.ai   # Organization, Membership, CatalogEntry
   limitAllowedChildren:
     types:
-      - { path: root:faros, name: workspace }
+      - { path: root:railgrid, name: workspace }
   initializer: true
 ```
 
@@ -168,7 +168,7 @@ Initializer runs on creation:
 - Adds the creating user as a `Membership` scope=`org`, role=`admin`.
 - Seeds default RBAC (org-admin ClusterRole bound to the user's rbacIdentity).
 
-### `workspace` (path `root:faros`)
+### `workspace` (path `root:railgrid`)
 
 ```yaml
 apiVersion: tenancy.kcp.io/v1alpha1
@@ -179,24 +179,24 @@ spec:
   # Deliberately NO `extend: universal` and NO defaultAPIBindings.
   # Universal would pull tenancy.kcp.io + topology.kcp.io into the
   # tenant's view, letting them spawn arbitrary child workspaces.
-  # tenancy.faros.sh (Membership / Organization / User / UMI)
-  # is a faros-system surface and stays invisible to tenants.
+  # tenancy.railgrid.ai (Membership / Organization / User / UMI)
+  # is a railgrid-system surface and stays invisible to tenants.
   limitAllowedParents:
     types:
-      - { path: root:faros, name: organization }
+      - { path: root:railgrid, name: organization }
   limitAllowedChildren:
     none: true                          # v1: workspaces are leaves
 ```
 
 Trade-off: dropping `extend: universal` means kcp does NOT auto-create
 a `default` namespace. The org-bootstrap controller compensates by
-creating one inside the child workspace right after it adds the faros
+creating one inside the child workspace right after it adds the railgrid
 APIBinding (so tenant kubectl with no `-n` still works).
 
 The bootstrap controller (`pkg/hub/controllers/organization`) drives
 all post-create wiring — there is no kcp initializer:
 
-1. **faros `core.faros.sh` APIBinding** with the permission claims
+1. **railgrid `core.railgrid.ai` APIBinding** with the permission claims
    tenants need (secrets, namespaces, configmaps, serviceaccounts,
    clusterroles, clusterrolebindings — explicitly NOT tenancy.kcp.io).
 2. **Default `default` namespace**, post-binding.
@@ -214,7 +214,7 @@ requires an explicit Enable that creates an APIBinding.
 Workspace-scope `Membership` CRs intentionally do NOT exist in the
 tenant Workspace — the tenancy CRDs aren't bound there. The
 workspace-scope `UserMembershipIndex` entry written to the user's
-UMI at `root:faros:users` is the canonical view for the portal
+UMI at `root:railgrid:users` is the canonical view for the portal
 switcher. Manual workspace-membership management (add/remove other
 users) lands later via a hub-mediated REST API rather than direct CR
 writes.
@@ -223,7 +223,7 @@ writes.
 
 ## CRDs
 
-### `Organization` (cluster-scoped, `tenancy.faros.sh`)
+### `Organization` (cluster-scoped, `tenancy.railgrid.ai`)
 
 Thin metadata wrapper. The actual storage is the kcp Workspace; this
 CR exists so the hub has a single object to list, status, and reconcile.
@@ -234,7 +234,7 @@ type Organization struct {
 
     // metadata.name is a server-assigned UUID (the kubectl name field
     // is generated, never user-supplied). The same UUID is used as the
-    // child workspace name under root:faros:orgs.
+    // child workspace name under root:railgrid:orgs.
     metav1.ObjectMeta
 
     Spec   OrganizationSpec
@@ -276,7 +276,7 @@ type OrganizationSpec struct {
 
 type OrganizationStatus struct {
     // Path to the materialized kcp Workspace.
-    // Always root:faros:orgs:{metadata.name}.
+    // Always root:railgrid:orgs:{metadata.name}.
     WorkspacePath string `json:"workspacePath,omitempty"`
     Conditions    []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -286,7 +286,7 @@ type OrganizationStatus struct {
 
 No wrapper CR. A Workspace is a kcp `Workspace` of type `workspace`,
 created directly in the parent Org's workspace. Naming
-(`root:faros:orgs:{org}:{ws}`) follows from the parent path.
+(`root:railgrid:orgs:{org}:{ws}`) follows from the parent path.
 
 ### `Membership` (namespaced or cluster — see below)
 
@@ -302,7 +302,7 @@ type Membership struct {
 }
 
 type MembershipSpec struct {
-    // UserRef points to a User CR (always cluster-scoped at root:faros).
+    // UserRef points to a User CR (always cluster-scoped at root:railgrid).
     UserRef corev1.LocalObjectReference `json:"userRef"`
 
     // Scope chooses the target. The Membership object itself lives in
@@ -325,7 +325,7 @@ type MembershipSpec struct {
 Workspace removes its Memberships for free. Deleting an Org cascades to
 children, which cascades to their Memberships.
 
-### `UserMembershipIndex` (cluster-scoped, `tenancy.faros.sh`)
+### `UserMembershipIndex` (cluster-scoped, `tenancy.railgrid.ai`)
 
 One per User, owned by the Membership controller. Solves the "what
 orgs/workspaces is user Alice in?" fan-out without scanning every Org
@@ -386,13 +386,13 @@ POST /api/orgs
 1. Hub generates a UUID, creates an `Organization` CR with
    `metadata.name = <uuid>` and `spec.displayName = "ACME Corp"`. No
    "slug" or `name` field is taken from the request.
-2. Org controller creates kcp `Workspace` `root:faros:orgs:{uuid}` of
+2. Org controller creates kcp `Workspace` `root:railgrid:orgs:{uuid}` of
    type `organization`. The initializer adds the caller as
    `Membership{scope: org, role: admin}`.
 3. Index controller appends a `MembershipIndexEntry` to the caller's
    `UserMembershipIndex`.
 4. Returns 201 with `{ "uuid": "...", "displayName": "...",
-   "workspacePath": "root:faros:orgs:..." }`.
+   "workspacePath": "root:railgrid:orgs:..." }`.
 
 ### Create a Workspace inside an Org
 
@@ -405,7 +405,7 @@ POST /api/orgs/{org-uuid}/workspaces
 2. If `org.spec.workspaceCreation == admin`, require `role=admin`.
    Else any `member` is allowed.
 3. Generates a Workspace UUID. Creates kcp `Workspace`
-   `root:faros:orgs:{org-uuid}:{ws-uuid}` of type `workspace`. The
+   `root:railgrid:orgs:{org-uuid}:{ws-uuid}` of type `workspace`. The
    initializer adds the caller as
    `Membership{scope: workspace, role: admin}`.
 4. Index controller appends a `MembershipIndexEntry` (with
@@ -417,8 +417,8 @@ POST /api/orgs/{org-uuid}/workspaces
 The portal sends headers on every request:
 
 ```
-X-Faros-Org:       7f3a91d2-...     # Org UUID, required for org/workspace-scoped APIs
-X-Faros-Workspace: 9c4b8e1f-...     # Workspace UUID, required for workspace-scoped APIs
+X-Railgrid-Org:       7f3a91d2-...     # Org UUID, required for org/workspace-scoped APIs
+X-Railgrid-Workspace: 9c4b8e1f-...     # Workspace UUID, required for workspace-scoped APIs
 ```
 
 Display names are never sent on the wire — the portal looks them up
@@ -427,7 +427,7 @@ from the caller's `UserMembershipIndex` and renders the switcher locally.
 Tenant middleware in `pkg/hub/server.go`:
 
 1. Resolves token → User.
-2. Reads `X-Faros-Org` and `X-Faros-Workspace`.
+2. Reads `X-Railgrid-Org` and `X-Railgrid-Workspace`.
 3. Validates a matching entry exists in the User's
    `UserMembershipIndex.spec.entries`. Else 403.
 4. Stuffs `{user, org, workspace, role}` into `r.Context()`.
@@ -533,7 +533,7 @@ delete cascade (O-8).
 30-day grace.
 
 1. Hub sets the
-   `tenancy.faros.sh/deletion-requested-at` annotation (RFC3339)
+   `tenancy.railgrid.ai/deletion-requested-at` annotation (RFC3339)
    on the kcp Workspace. We don't extend kcp's `Workspace` CRD; an
    annotation IS the source of truth. Requires caller is Workspace
    admin or Org admin (O-15).
@@ -556,11 +556,11 @@ lost.
 ## ServiceAccounts and tokens (O-14)
 
 Bots and CI pipelines authenticate as kube `core/v1.ServiceAccount`s
-living in the child Workspace's `default` namespace, marked with faros
+living in the child Workspace's `default` namespace, marked with railgrid
 annotations. They are not Users; they do not appear in the User CR
 list or in Memberships.
 
-There is **no wrapping faros CRD**. The kube SA itself, plus a few
+There is **no wrapping railgrid CRD**. The kube SA itself, plus a few
 annotations and one ClusterRoleBinding, is the entire surface. This
 keeps the GVR count down, reuses native kube token issuance + token
 validation, and lets the workspace cascade kill SAs (and their
@@ -568,7 +568,7 @@ tokens) without extra plumbing.
 
 ### Storage layout
 
-A faros ServiceAccount is exactly:
+A railgrid ServiceAccount is exactly:
 
 ```yaml
 apiVersion: v1
@@ -578,29 +578,29 @@ metadata:
   name: 7d4e5b1c-…
   namespace: default            # child Workspace's default ns (created by bootstrap)
   labels:
-    tenancy.faros.sh/faros-sa: "true"   # cheap listing selector
+    tenancy.railgrid.ai/railgrid-sa: "true"   # cheap listing selector
   annotations:
-    tenancy.faros.sh/display-name: "ci-bot"
-    tenancy.faros.sh/role: "admin"      # admin | member
-    tenancy.faros.sh/last-token-issued-at: "2026-06-01T08:30:00Z"
+    tenancy.railgrid.ai/display-name: "ci-bot"
+    tenancy.railgrid.ai/role: "admin"      # admin | member
+    tenancy.railgrid.ai/last-token-issued-at: "2026-06-01T08:30:00Z"
 ```
 
 Plus, in the same Workspace, a `ClusterRoleBinding` (owned by the SA
 via ownerReferences so it cascades on delete) mapping
 `system:serviceaccount:default:<sa-name>` to either
-`faros:workspace:admin` or `faros:workspace:member` — the same
+`railgrid:workspace:admin` or `railgrid:workspace:member` — the same
 ClusterRoles human Users land on.
 
 Naming: `metadata.name` is a UUID, mirroring O-1's
 "identity = UUID; displayName is metadata" rule everywhere else in
-the doc. The annotation `tenancy.faros.sh/display-name` carries
+the doc. The annotation `tenancy.railgrid.ai/display-name` carries
 the human-facing label and is editable.
 
 Workspace admin and Org admin both have permission to create
 ServiceAccounts (per O-15). The hub uses its own privileged config
 (same as for Membership writes) to create the SA + CRB; tenants
 themselves never reach the kube SA API in the Workspace through any
-faros code path.
+railgrid code path.
 
 ### Endpoints
 
@@ -614,7 +614,7 @@ PATCH  /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}             rol
 ```
 
 `POST .../tokens` calls the kube `TokenRequest` API against the SA
-with a fixed audience (`faros`) and a default 1-year expiry; the
+with a fixed audience (`railgrid`) and a default 1-year expiry; the
 response carries the token exactly once and the hub stamps
 `last-token-issued-at` on the SA. There is no Get endpoint — admins
 store the token themselves; lost tokens require a rotation.
@@ -630,7 +630,7 @@ the CRB (delete + recreate with the new role-binding).
 
 ### Wire-through to the proxy
 
-faros proxy at [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)
+railgrid proxy at [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)
 already passes `Authorization: Bearer …` through unchanged once the
 caller has resolved a workspace. kube SA tokens go through the same
 path; kcp validates them natively at the kube layer, the CRB above
@@ -670,7 +670,7 @@ through ClusterRoles in the workspace).
   workspace itself, because no tenant ever reaches it (O-10). The hub
   uses its own privileged ServiceAccount for kcp writes there.
 - **Direct-kcp side**: cluster-scoped `ClusterRole`s
-  (`faros:workspace:admin`, `faros:workspace:member`) bound via
+  (`railgrid:workspace:admin`, `railgrid:workspace:member`) bound via
   `ClusterRoleBinding` in each child Workspace to the user's
   `rbacIdentity` (existing pattern in
   [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)). The
@@ -700,7 +700,7 @@ type UserStatus struct {
 
     // PersonalOrg is the UUID of the Organization auto-created for
     // this user. Set once at bootstrap; never reassigned. The portal
-    // uses this as the default X-Faros-Org when the user hasn't
+    // uses this as the default X-Railgrid-Org when the user hasn't
     // explicitly switched orgs.
     PersonalOrg string `json:"personalOrg,omitempty"`
 
@@ -750,8 +750,8 @@ Ten PRs:
    honors undelete inside the 30-day window, runs the cascade after.
 9. **ServiceAccount REST endpoints (O-14).** Bot identity surface for
    Workspaces — kube `core/v1.ServiceAccount`s in the child Workspace's
-   `default` namespace, marked with faros annotations + a
-   `ClusterRoleBinding` to `faros:workspace:admin|member`. Tokens are
+   `default` namespace, marked with railgrid annotations + a
+   `ClusterRoleBinding` to `railgrid:workspace:admin|member`. Tokens are
    issued via the kube TokenRequest API and returned once. No new CRD;
    no custom signing path; workspace soft-delete naturally cascades the
    SA and its tokens.
@@ -786,7 +786,7 @@ Open after this round of decisions:
   promoting anyone. Cascade controller behavior — auto-promote the
   oldest other Member, or delete the Org? Decide before shipping the
   cascade.
-- **OIDC group → Membership sync.** If faros is deployed against an
+- **OIDC group → Membership sync.** If railgrid is deployed against an
   IdP that publishes group claims, do those groups map automatically
   to Memberships? Out of scope for v1; flag for v2.
 
@@ -802,6 +802,6 @@ design:
 - A controller can update a separate CRD (`UserMembershipIndex`) across
   the cluster with one ClusterRole — the easy case for O-3, expected to
   work but worth confirming.
-- The faros kcp proxy can selectively gate by workspace type (refusing
+- The railgrid kcp proxy can selectively gate by workspace type (refusing
   exec-credentials for `organization`-typed workspaces) — load-bearing
   for O-10. Spike before PR #5.

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/faroshq/faros/test/e2e/framework"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // TestSessionCommands covers the commands every user runs first: login,
@@ -39,7 +39,7 @@ func TestSessionCommands(t *testing.T) {
 
 	// whoami resolves the personal org and default workspace with roles.
 	me := s.whoami()
-	if me.Hub != hubURL || me.Context != "faros" || me.Auth != "static-token" {
+	if me.Hub != hubURL || me.Context != "railgrid" || me.Auth != "static-token" {
 		t.Fatalf("whoami = %+v", me)
 	}
 	if me.Org == nil || !me.Org.Personal || me.Org.Role != "admin" {
@@ -48,11 +48,11 @@ func TestSessionCommands(t *testing.T) {
 	if me.Workspace == nil || me.Workspace.ClusterName == "" || me.Workspace.UUID == "" {
 		t.Fatalf("whoami workspace = %+v", me.Workspace)
 	}
-	if me.KubectlContext != "faros" || me.KubectlTarget != "hub workspace" {
+	if me.KubectlContext != "railgrid" || me.KubectlTarget != "hub workspace" {
 		t.Fatalf("whoami kubectl = %q → %q", me.KubectlContext, me.KubectlTarget)
 	}
 	text := s.run("whoami")
-	for _, want := range []string{"Hub:        " + hubURL, "Auth:       static-token", "role: admin", `context "faros" → hub workspace`} {
+	for _, want := range []string{"Hub:        " + hubURL, "Auth:       static-token", "role: admin", `context "railgrid" → hub workspace`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("whoami text lacks %q:\n%s", want, text)
 		}
@@ -112,7 +112,7 @@ func TestSessionCommands(t *testing.T) {
 	}
 
 	// version / help / completion / docs.
-	if v := s.run("version"); !strings.Contains(v, "faros version") {
+	if v := s.run("version"); !strings.Contains(v, "railgrid version") {
 		t.Fatalf("version: %s", v)
 	}
 	help := s.run("--help")
@@ -124,12 +124,12 @@ func TestSessionCommands(t *testing.T) {
 	if strings.Contains(help, "  get ") || strings.Contains(help, "  apply ") || strings.Contains(help, "get-token") {
 		t.Fatalf("help shows hidden commands:\n%s", help)
 	}
-	if comp := s.run("completion", "bash"); !strings.Contains(comp, "faros") {
+	if comp := s.run("completion", "bash"); !strings.Contains(comp, "railgrid") {
 		t.Fatalf("completion bash: %s", comp)
 	}
 	docsDir := suiteTempDir(t, "docs")
 	s.run("docs", "--dir", docsDir)
-	if _, err := os.Stat(filepath.Join(docsDir, "faros_org_members_add.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(docsDir, "railgrid_org_members_add.md")); err != nil {
 		t.Fatalf("docs not generated: %v", err)
 	}
 
@@ -142,8 +142,8 @@ func TestSessionCommands(t *testing.T) {
 	if out := s.run("logout"); !strings.Contains(out, "Logged out") {
 		t.Fatalf("logout: %s", out)
 	}
-	s.mustFail("run 'faros login'", "whoami")
-	s.mustFail("faros login", "edge", "list")
+	s.mustFail("run 'railgrid login'", "whoami")
+	s.mustFail("railgrid login", "edge", "list")
 	if out := s.run("logout"); !strings.Contains(out, "Not logged in") {
 		t.Fatalf("second logout: %s", out)
 	}
@@ -196,7 +196,7 @@ func TestMembershipCommands(t *testing.T) {
 		t.Fatalf("org list after create = %+v", orgs)
 	}
 	t.Cleanup(func() {
-		_, _, _ = framework.DoRESTRequest(context.Background(), "DELETE", hubURL+"/api/orgs/"+team.UUID, tokenA, map[string]string{"X-Faros-Org": team.UUID}, nil)
+		_, _, _ = framework.DoRESTRequest(context.Background(), "DELETE", hubURL+"/api/orgs/"+team.UUID, tokenA, map[string]string{"X-Railgrid-Org": team.UUID}, nil)
 	})
 
 	out = a.run("workspace", "create", "Platform", "--org", team.UUID)
@@ -288,7 +288,7 @@ func TestMembershipCommands(t *testing.T) {
 	// admin and can read its roster; the same call is refused again once B
 	// is demoted back to org member.
 	platformURL := hubURL + "/api/orgs/" + team.UUID + "/workspaces/" + platform.UUID
-	platformHeaders := map[string]string{"X-Faros-Org": team.UUID, "X-Faros-Workspace": platform.UUID}
+	platformHeaders := map[string]string{"X-Railgrid-Org": team.UUID, "X-Railgrid-Workspace": platform.UUID}
 	if !waitFor(t, time.Minute, func() (bool, string) {
 		code, body, err := framework.DoRESTRequest(context.Background(), "GET", platformURL+"/memberships", tokenB, platformHeaders, nil)
 		if err != nil {
@@ -356,7 +356,7 @@ func TestMembershipCommands(t *testing.T) {
 	// workspace but only a member of the org. Sending the workspace header on
 	// an org route must not let B act as an org admin — neither promote
 	// themselves nor add anyone.
-	wsHeaders := map[string]string{"X-Faros-Org": team.UUID, "X-Faros-Workspace": platform.UUID}
+	wsHeaders := map[string]string{"X-Railgrid-Org": team.UUID, "X-Railgrid-Workspace": platform.UUID}
 	orgMembersURL := hubURL + "/api/orgs/" + team.UUID + "/memberships"
 	if code, body, err := framework.DoRESTRequest(context.Background(), "POST", orgMembersURL, tokenB, wsHeaders,
 		map[string]any{"user": bUser, "role": "admin"}); err != nil || code != 403 {
@@ -405,12 +405,12 @@ func TestMembershipCommands(t *testing.T) {
 
 // TestServerEdgeSSH registers a Linux server edge with the CLI, connects a
 // server-mode agent backed by the in-process test sshd, and runs a command
-// over `faros ssh` through the tunnel; then inspects and deletes the edge.
+// over `railgrid ssh` through the tunnel; then inspects and deletes the edge.
 func TestServerEdgeSSH(t *testing.T) {
 	const (
 		edgeName = "cli-srv"
 		sshPort  = 22032
-		marker   = "faros_cli_ssh_ok"
+		marker   = "railgrid_cli_ssh_ok"
 	)
 	s := login(t, "server-edge", tokenA)
 	tenantWS, tenantAdmin := prepareEdgesWorkspace(t, s)
@@ -460,7 +460,7 @@ func TestServerEdgeSSH(t *testing.T) {
 		t.Fatal("edge list never showed the edge connected")
 	}
 	get := s.run("edge", "get", edgeName)
-	for _, want := range []string{"Type:           server", "Connected:      true", "Proxy URL:      https://", "Next: faros ssh " + edgeName} {
+	for _, want := range []string{"Type:           server", "Connected:      true", "Proxy URL:      https://", "Next: railgrid ssh " + edgeName} {
 		if !strings.Contains(get, want) {
 			t.Fatalf("edge get lacks %q:\n%s", want, get)
 		}
@@ -481,7 +481,7 @@ func TestServerEdgeSSH(t *testing.T) {
 		last = out
 		return strings.Contains(out, marker), out
 	}) {
-		t.Fatalf("faros ssh never returned the marker; last output:\n%s", last)
+		t.Fatalf("railgrid ssh never returned the marker; last output:\n%s", last)
 	}
 
 	// delete needs confirmation unless --yes; then the edge is gone.
@@ -507,7 +507,7 @@ func TestKubernetesEdgeConnect(t *testing.T) {
 	}
 	const (
 		edgeName = "cli-k8s"
-		kindName = "faros-cli-e2e"
+		kindName = "railgrid-cli-e2e"
 	)
 	s := login(t, "k8s-edge", tokenA)
 	tenantWS, tenantAdmin := prepareEdgesWorkspace(t, s)
@@ -543,20 +543,20 @@ func TestKubernetesEdgeConnect(t *testing.T) {
 	s.run("kubeconfig", "edge", edgeName, "-o", edgeKubeconfig+".legacy")
 
 	// 2. connect: kubectl's current context is the edge.
-	if out := s.run("connect", edgeName); !strings.Contains(out, `context "faros-`+edgeName+`"`) {
+	if out := s.run("connect", edgeName); !strings.Contains(out, `context "railgrid-`+edgeName+`"`) {
 		t.Fatalf("connect: %s", out)
 	}
 	me := s.whoami()
-	if me.KubectlContext != "faros-"+edgeName || me.KubectlTarget != "edge "+edgeName {
+	if me.KubectlContext != "railgrid-"+edgeName || me.KubectlTarget != "edge "+edgeName {
 		t.Fatalf("whoami after connect: %+v", me)
 	}
 	if !waitFor(t, 60*time.Second, func() (bool, string) {
 		out, err := s.kubectl("get", "nodes")
 		return err == nil && strings.Contains(out, "Ready"), out
 	}) {
-		t.Fatal("kubectl get nodes through 'faros connect' never succeeded")
+		t.Fatal("kubectl get nodes through 'railgrid connect' never succeeded")
 	}
-	// Hub commands keep working while connected (they use the faros context).
+	// Hub commands keep working while connected (they use the railgrid context).
 	if !strings.Contains(s.run("edge", "list"), edgeName) {
 		t.Fatal("edge list while connected")
 	}
@@ -565,22 +565,22 @@ func TestKubernetesEdgeConnect(t *testing.T) {
 	if out := s.run("disconnect"); !strings.Contains(out, "Disconnected") {
 		t.Fatalf("disconnect: %s", out)
 	}
-	if me := s.whoami(); me.KubectlContext != "faros" {
+	if me := s.whoami(); me.KubectlContext != "railgrid" {
 		t.Fatalf("whoami after disconnect: %+v", me)
 	}
 	s.run("connect", edgeName)
 	s.run("use", "--org", me.Org.UUID, "--workspace", me.Workspace.UUID)
-	if me := s.whoami(); me.KubectlContext != "faros" {
+	if me := s.whoami(); me.KubectlContext != "railgrid" {
 		t.Fatalf("use must return kubectl to the hub: %+v", me)
 	}
 	// The edge context is kept for kubectl --context.
-	if out, err := s.kubectl("--context", "faros-"+edgeName, "get", "nodes"); err != nil {
-		t.Fatalf("kubectl --context faros-%s: %v\n%s", edgeName, err, out)
+	if out, err := s.kubectl("--context", "railgrid-"+edgeName, "get", "nodes"); err != nil {
+		t.Fatalf("kubectl --context railgrid-%s: %v\n%s", edgeName, err, out)
 	}
 
 	// logout drops the edge contexts too.
 	s.run("logout")
-	if b, _ := os.ReadFile(s.kubeconfig); strings.Contains(string(b), "faros-"+edgeName) {
+	if b, _ := os.ReadFile(s.kubeconfig); strings.Contains(string(b), "railgrid-"+edgeName) {
 		t.Fatalf("logout kept the edge context:\n%s", b)
 	}
 }

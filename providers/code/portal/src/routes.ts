@@ -14,7 +14,7 @@ export interface CodeNavigationDetail {
   replace?: boolean
 }
 
-/** Build the detail payload used by the shell's faros-navigate event. */
+/** Build the detail payload used by the shell's railgrid-navigate event. */
 export function codeNavigationDetail(path: string, options: { replace?: boolean } = {}): CodeNavigationDetail {
   const detail: CodeNavigationDetail = { path: path.replace(/^\/+/, '') }
   if (options.replace) detail.replace = true
@@ -35,7 +35,7 @@ function decodeSegment(value: string): string {
  * Parse the provider-relative part of `/providers/code/<subPath>`.
  *
  * The shell owns the `/providers/code/` prefix and passes only its trailing
- * segments through FarosContext.subPath. Keeping this parser provider-relative
+ * segments through RailgridContext.subPath. Keeping this parser provider-relative
  * means links emitted by the provider work both from the bare provider landing
  * page and from a deep-linked browser refresh.
  */

@@ -14,7 +14,7 @@ replicaCount: 1
 internalPort: 8091
 
 image:
-  repository: ghcr.io/faroshq/faros/app-studio-provider
+  repository: ghcr.io/railgrid/railgrid/app-studio-provider
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -47,7 +47,7 @@ catalogEntry:
 # via /bonkers (admin onboarding). Consumed by both the init container and the
 # serve container. Key must be "kubeconfig".
 providerKubeconfig:
-  secretName: faros-provider-kubeconfig
+  secretName: railgrid-provider-kubeconfig
 
 # Assistant chat behavior.
 assistant:
@@ -107,7 +107,7 @@ previewBridge:
 # See docs/app-studio-runtime-decoupling.md.
 
 # Development runtime images are NOT configured here — the infrastructure
-# provider owns them (its chart's development.images / FAROS_DEV_IMAGE_*).
+# provider owns them (its chart's development.images / RAILGRID_DEV_IMAGE_*).
 # App Studio passes only the project reference. See
 # providers/infrastructure/docs/template-conventions.md.
 
@@ -142,7 +142,7 @@ store:
 # Before upgrading an ephemeral installation, migrate its workspace tree to
 # the PVC as described in README.md; changing this value does not copy data.
 workspace:
-  path: /var/lib/faros-app-studio/workspaces
+  path: /var/lib/railgrid-app-studio/workspaces
   existingClaim: ""
   emptyDir: false
   persistence:
@@ -153,7 +153,7 @@ workspace:
     storageClassName: ""
 
 hub:
-  url: "http://faros-hub.faros.svc.cluster.local:8080"
+  url: "http://railgrid-hub.railgrid.svc.cluster.local:8080"
   # Browser-reachable HTTPS hub origin used by private preview authorization
   # redirects and one-use browser-session handoffs. Required when a Project's
   # preview is private; leave empty only when private browser inspection is not

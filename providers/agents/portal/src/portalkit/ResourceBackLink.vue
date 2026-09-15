@@ -9,9 +9,9 @@
 -->
 <script setup lang="ts">
 import { ArrowLeft } from 'lucide-vue-next'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
-ensureFarosUIStyles()
+ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
   /** The collection URL used when the Vue route handler is unavailable. */

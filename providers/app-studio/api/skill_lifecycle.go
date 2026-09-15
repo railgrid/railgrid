@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ import (
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v3"
 
-	appskills "github.com/faroshq/provider-app-studio/skills"
-	"github.com/faroshq/provider-app-studio/workspace"
+	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
@@ -507,7 +507,7 @@ func (s *Server) exportProjectAssistantSkill(w http.ResponseWriter, r *http.Requ
 	}
 	projectAssistantSkillMetric("lifecycle", "export")
 	filename := strings.ReplaceAll(entry.PackagePath, "/", "-")
-	writeJSON(w, http.StatusOK, projectAssistantSkillExport{Format: "faros.skill.v1", PackageName: entry.PackagePath, Digest: entry.Digest, Files: files, Filename: filename + ".json", Content: string(content), Package: packageValue})
+	writeJSON(w, http.StatusOK, projectAssistantSkillExport{Format: "railgrid.skill.v1", PackageName: entry.PackagePath, Digest: entry.Digest, Files: files, Filename: filename + ".json", Content: string(content), Package: packageValue})
 }
 
 func (s *Server) projectSkillProjectEntry(w http.ResponseWriter, r *http.Request, scope workspace.Scope, packageName string) (appskills.Snapshot, appskills.Entry, bool) {
@@ -573,7 +573,7 @@ func validateProjectSkillPackageName(raw string) (string, error) {
 		return "", newValidationError("packageName is too large")
 	}
 	clean, err := appskills.ValidatePackagePath(raw)
-	if err != nil || clean != raw || !projectSkillPathSafe(clean) || clean == "SKILL.md" || strings.Contains(clean, "/SKILL.md") || strings.Contains(clean, "/.faros-") || strings.HasPrefix(clean, ".faros-") {
+	if err != nil || clean != raw || !projectSkillPathSafe(clean) || clean == "SKILL.md" || strings.Contains(clean, "/SKILL.md") || strings.Contains(clean, "/.railgrid-") || strings.HasPrefix(clean, ".railgrid-") {
 		return "", newValidationError("packageName must be a clean project-relative package identity")
 	}
 	return clean, nil
@@ -629,7 +629,7 @@ func normalizeProjectSkillImportRequest(request *projectAssistantSkillMutationRe
 	if request == nil || len(request.Files) == 0 {
 		return nil
 	}
-	if request.Format != "" && request.Format != "faros.skill.v1" {
+	if request.Format != "" && request.Format != "railgrid.skill.v1" {
 		return newValidationError("unsupported skill export format")
 	}
 	var document string

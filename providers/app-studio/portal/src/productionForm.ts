@@ -30,9 +30,9 @@ export type ProductionValidationErrors = Record<string, string[]>
 
 const ALWAYS_PLATFORM_OWNED = new Set([
   'name',
-  'farosMode',
-  'farosRedeployRevision',
-  'farosCluster',
+  'railgridMode',
+  'railgridRedeployRevision',
+  'railgridCluster',
   'credentialsSecretName',
 ])
 

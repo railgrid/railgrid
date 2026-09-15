@@ -1,9 +1,9 @@
 import type { ProviderFetch } from './portalkit/tenant'
 
-// FarosContext is the shell→element contract: the portal sets element
-// .farosContext after auth and on every workspace/token change. subPath is the
+// RailgridContext is the shell→element contract: the portal sets element
+// .railgridContext after auth and on every workspace/token change. subPath is the
 // trailing segment of /providers/edges/<subPath> the shell's router pushes.
-export interface FarosContext {
+export interface RailgridContext {
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).

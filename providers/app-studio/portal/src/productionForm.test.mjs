@@ -4,7 +4,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/faros-vite-production-form',
+  cacheDir: '/tmp/railgrid-vite-production-form',
   configFile: false,
   server: { middlewareMode: true },
 })
@@ -25,7 +25,7 @@ const schema = {
   properties: {
     name: { type: 'string' },
     webImage: { type: 'string' },
-    farosRedeployRevision: { type: 'string', description: 'Computed by the platform' },
+    railgridRedeployRevision: { type: 'string', description: 'Computed by the platform' },
     access: { type: 'string', enum: ['public', 'private'], default: 'public' },
     database: {
       type: 'object',
@@ -51,7 +51,7 @@ test('filters platform and image-owned fields while retaining persisted producti
       database: { size: 'large' },
       name: 'ignored',
       webImage: 'ignored',
-      farosRedeployRevision: 'ignored',
+      railgridRedeployRevision: 'ignored',
     }, ['webImage']),
     { database: { size: 'large', version: '16' }, webEnv: {}, emailDomains: [] },
   )

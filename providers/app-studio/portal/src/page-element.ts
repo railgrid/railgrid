@@ -1,13 +1,13 @@
 import { createApp, h, reactive } from 'vue'
 import App from './App.vue'
 import { ensureAppStudioStyles } from './styles'
-import type { FarosContext } from './types'
+import type { RailgridContext } from './types'
 
 type NavigationOptions = { replace?: boolean }
 
-export function mount(element: HTMLElement, context: FarosContext | null) {
+export function mount(element: HTMLElement, context: RailgridContext | null) {
   ensureAppStudioStyles()
-  const state = reactive<{ ctx: FarosContext | null }>({ ctx: context })
+  const state = reactive<{ ctx: RailgridContext | null }>({ ctx: context })
 
   element.style.display = 'block'
   element.style.height = '100%'
@@ -28,7 +28,7 @@ export function mount(element: HTMLElement, context: FarosContext | null) {
 
   const navigate = (path: string, options: NavigationOptions = {}) => {
     element.dispatchEvent(
-      new CustomEvent('faros-navigate', {
+      new CustomEvent('railgrid-navigate', {
         detail: { path, ...(options.replace === true ? { replace: true } : {}) },
         bubbles: true,
       }),
@@ -37,7 +37,7 @@ export function mount(element: HTMLElement, context: FarosContext | null) {
 
   const requestFullBleed = (fullBleed: boolean) => {
     element.dispatchEvent(
-      new CustomEvent('faros-layout-change', {
+      new CustomEvent('railgrid-layout-change', {
         detail: { fullBleed },
         bubbles: true,
       }),
@@ -55,7 +55,7 @@ export function mount(element: HTMLElement, context: FarosContext | null) {
   app.mount(host)
 
   return {
-    setContext(value: FarosContext | null) {
+    setContext(value: RailgridContext | null) {
       state.ctx = value
     },
     unmount() {

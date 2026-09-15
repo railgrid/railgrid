@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,10 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestExactRestoreFilesRejectsWrongOrIncompleteCheckout(t *testing.T) {
@@ -315,9 +315,9 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 func restoreRequest(commitSHA string, expectedSourceRevision uint64) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(fmt.Sprintf(`{"commitSHA":%q,"expectedSourceRevision":%d}`, commitSHA, expectedSourceRevision)))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }
 
@@ -447,8 +447,8 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 func restoreRequestWithBody(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/shop/restore-workspace", strings.NewReader(body))
 	request = mux.SetURLVars(request, map[string]string{"project": "shop"})
-	request.Header.Set("X-Faros-Tenant", "cluster-a")
+	request.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
 }

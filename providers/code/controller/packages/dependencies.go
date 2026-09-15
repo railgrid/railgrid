@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import (
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/tenant"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/tenant"
 )
 
 // Dependency events enter the normal workqueue immediately, even if a previous

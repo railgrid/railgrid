@@ -253,7 +253,7 @@ test('history renders image previews through the scoped API while text stays com
     api.getAssistantAttachment = originalGet
   }
   assert.match(app, /<AssistantMessageAttachments[\s\S]*:ctx="props\.ctx"[\s\S]*:project-name="message\.projectID"/)
-  assert.match(apiSource, /async getAssistantAttachment\(ctx: FarosContext \| null, name: string, attachmentID: string, signal\?: AbortSignal\)/)
+  assert.match(apiSource, /async getAssistantAttachment\(ctx: RailgridContext \| null, name: string, attachmentID: string, signal\?: AbortSignal\)/)
   assert.match(apiSource, /cache: 'no-cache'[\s\S]*signal,/)
 })
 

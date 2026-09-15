@@ -169,7 +169,7 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  // createProvider creates a Provider object in root:faros:system:providers.
+  // createProvider creates a Provider object in root:railgrid:system:providers.
   // The hub's Provider controller then provisions the sub-workspace +
   // ServiceAccount + kubeconfig Secret. Declarative — no imperative onboard.
   async function createProvider(name: string, displayName: string): Promise<void> {
@@ -205,7 +205,7 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   // downloadProviderKubeconfig fetches the minted kubeconfig (read from the
-  // Secret the Provider controller wrote into root:faros:system:providers) and
+  // Secret the Provider controller wrote into root:railgrid:system:providers) and
   // triggers a browser download.
   //
   // server re-points the kubeconfig's server URL for this download only:

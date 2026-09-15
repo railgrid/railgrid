@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,10 +34,10 @@ func newOrgCommand() *cobra.Command {
 		Long: `An organization owns workspaces and members. You get a personal
 organization on first login; teams create shared ones.
 
-  faros org list                      # your organizations and your role in each
-  faros org members                   # members of the current organization
-  faros org members --org acme        # …of another one you belong to
-  faros org create "Acme"`,
+  railgrid org list                      # your organizations and your role in each
+  railgrid org members                   # members of the current organization
+  railgrid org members --org acme        # …of another one you belong to
+  railgrid org create "Acme"`,
 	}
 	cmd.PersistentFlags().StringVar(&target.org, "org", "", "Organization display name or UUID (default: the one owning the current workspace)")
 	cmd.AddCommand(newOrgListCommand(), newOrgCreateCommand(), newMembersCommand(orgScope, &target))
@@ -137,7 +137,7 @@ func newOrgCreateCommand() *cobra.Command {
 			if err := s.do(ctx, http.MethodPost, s.Hub+"/api/orgs", body, &created); err != nil {
 				return fmt.Errorf("creating organization: %w", err)
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Organization %q created (%s).\nSwitch to it with: faros use --org %s\n", created.DisplayName, created.UUID, created.UUID)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Organization %q created (%s).\nSwitch to it with: railgrid use --org %s\n", created.DisplayName, created.UUID, created.UUID)
 			return nil
 		},
 	}

@@ -1,5 +1,5 @@
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectIntegration,
   ProjectProviderActionGrant,
   ProviderAction,
@@ -32,7 +32,7 @@ export interface ProjectIntegrationCreatePayload {
  * workspace. Token rotation and host context object replacement do not change
  * that resource authority, so they intentionally do not participate here.
  */
-export function projectIntegrationsAuthorityKey(ctx: FarosContext | null, projectName: string): string {
+export function projectIntegrationsAuthorityKey(ctx: RailgridContext | null, projectName: string): string {
   return JSON.stringify([
     projectName.trim(),
     ctx?.tenant ?? '',

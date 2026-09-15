@@ -53,7 +53,7 @@ const connectionChoices = computed(() => connections.value.filter(connection => 
 const guidanceValues = computed(() => {
   const objectName = name.value.trim() ? normalizeResourceName(name.value) : ''
   return [
-    { label: 'Faros object', value: objectName || 'Not entered yet', technical: true },
+    { label: 'Railgrid object', value: objectName || 'Not entered yet', technical: true },
     { label: 'GitHub repository', value: repo.value.trim() || objectName || 'Not entered yet', technical: true },
     { label: 'Connection', value: connectionRef.value || 'Not selected yet', technical: true },
     { label: 'Visibility', value: visibility.value, technical: true },
@@ -65,7 +65,7 @@ const guidancePrerequisites = [
   'Permission for that connection to create repositories for its configured owner.',
 ]
 const guidanceNextSteps = [
-  'Faros creates the repository through the selected connection and records its remote URL.',
+  'Railgrid creates the repository through the selected connection and records its remote URL.',
   'The repository controller reports readiness independently after GitHub accepts the request.',
   'Add deploy keys and collaborators from the repository detail page after creation.',
 ]
@@ -315,7 +315,7 @@ onUnmounted(() => {
         </div>
         <CreateGuidance
           title="Define the GitHub repository"
-          description="Choose the workspace identity and remote repository settings Faros will manage."
+          description="Choose the workspace identity and remote repository settings Railgrid will manage."
           :prerequisites="guidancePrerequisites"
           :values="guidanceValues"
           :next-steps="guidanceNextSteps"

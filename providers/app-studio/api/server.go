@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ limitations under the License.
 // Package api serves the App Studio projects REST + LLM surface. It runs in
 // the standalone provider binary: the hub's backend proxy forwards
 // /services/providers/app-studio/* here (stripping that prefix), injecting the
-// verified X-Faros-Tenant/X-Faros-User headers and forwarding the caller's
+// verified X-Railgrid-Tenant/X-Railgrid-User headers and forwarding the caller's
 // bearer token. Every request therefore acts as the calling user against the
 // tenant's kcp workspace — there is no provider service-account escalation.
 package api
@@ -34,14 +34,14 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/faroshq/provider-sdk/tenantaccess"
+	"github.com/railgrid/provider-sdk/tenantaccess"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/hubmcp"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // Server holds the dependencies the project handlers need. clients builds a
@@ -213,8 +213,8 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		tenantWorkspaces:         workspaceLookupFor(tenantClient, hubBase, mcpInsecureSkipTLSVerify),
-		hubPublicURL:             strings.TrimSpace(os.Getenv("FAROS_HUB_PUBLIC_URL")),
-		actionsExternalURL:       strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXTERNAL_URL")),
+		hubPublicURL:             strings.TrimSpace(os.Getenv("RAILGRID_HUB_PUBLIC_URL")),
+		actionsExternalURL:       strings.TrimSpace(os.Getenv("RAILGRID_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
 		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
@@ -486,7 +486,7 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster for this workspace")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Railgrid-Cluster missing) — the hub did not resolve a cluster for this workspace")
 		return nil, identity{}, false
 	}
 	c, err := s.clientFor(id)

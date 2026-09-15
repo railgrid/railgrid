@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	v1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	v1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestEnsureProviderServePropagatesSandboxRuntimeClass(t *testing.T) {
@@ -60,12 +60,12 @@ func TestEnsureProviderServePropagatesSandboxRuntimeClass(t *testing.T) {
 			}
 			got, present := "", false
 			for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
-				if variable.Name == "FAROS_SANDBOX_RUNTIME_CLASS_NAME" {
+				if variable.Name == "RAILGRID_SANDBOX_RUNTIME_CLASS_NAME" {
 					got, present = variable.Value, true
 				}
 			}
 			if present != tt.wantPresent || got != tt.want {
-				t.Fatalf("FAROS_SANDBOX_RUNTIME_CLASS_NAME = %q (present=%t), want %q (present=%t)", got, present, tt.want, tt.wantPresent)
+				t.Fatalf("RAILGRID_SANDBOX_RUNTIME_CLASS_NAME = %q (present=%t), want %q (present=%t)", got, present, tt.want, tt.wantPresent)
 			}
 		})
 	}

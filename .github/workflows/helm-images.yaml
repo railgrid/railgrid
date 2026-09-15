@@ -68,7 +68,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/faroshq/faros-hub
+          images: ghcr.io/railgrid/railgrid-hub
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -138,8 +138,8 @@ jobs:
                 # Without the gate, Flux (10min OCI poll + semver range) grabs
                 # the new chart, deploys it, and the pod sits in
                 # ImagePullBackOff until the image lands — every release fails
-                # its first helm upgrade. Both platform charts (faros-hub,
-                # faros-agent) are named after their image repo, which the
+                # its first helm upgrade. Both platform charts (railgrid-hub,
+                # railgrid-agent) are named after their image repo, which the
                 # charts' image.tag default (.Chart.AppVersion) relies on too.
                 if [[ "${{ github.ref_type }}" == "tag" ]]; then
                   IMAGE="ghcr.io/${{ github.repository_owner }}/${chart_name}"

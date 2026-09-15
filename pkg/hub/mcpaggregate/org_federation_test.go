@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 // These tests drive the real handler, the real provider Registry, the real
@@ -64,9 +64,9 @@ func (l *backendLog) add(r *http.Request, method string) {
 	l.reqs = append(l.reqs, seenRequest{
 		path: r.URL.Path, method: method,
 		authorization: r.Header.Get("Authorization"),
-		user:          r.Header.Get("X-Faros-User"),
-		tenant:        r.Header.Get("X-Faros-Tenant"),
-		cluster:       r.Header.Get("X-Faros-Cluster"),
+		user:          r.Header.Get("X-Railgrid-User"),
+		tenant:        r.Header.Get("X-Railgrid-Tenant"),
+		cluster:       r.Header.Get("X-Railgrid-Cluster"),
 	})
 }
 
@@ -133,7 +133,7 @@ func (f *fakeIssuer) tuples() []string {
 // edgePath is where the platform edges provider serves a tunnelled request to
 // an org-owned provider's Service (providers.EdgeRoute.EdgeProxyPath).
 func edgePath(cluster, service string) string {
-	return "/edgeproxy/clusters/" + cluster + "/apis/edges.faros.sh/v1alpha1/services/" + service + "/proxy"
+	return "/edgeproxy/clusters/" + cluster + "/apis/edges.railgrid.ai/v1alpha1/services/" + service + "/proxy"
 }
 
 type orgFixture struct {
@@ -317,7 +317,7 @@ func assertOrgRequestsDelegated(t *testing.T, reqs []seenRequest, wantToken, wan
 			t.Errorf("a caller's own bearer reached an org-owned provider (%s)", r.path)
 		}
 		if r.user != wantUser {
-			t.Errorf("org-owned provider request X-Faros-User = %q, want %q", r.user, wantUser)
+			t.Errorf("org-owned provider request X-Railgrid-User = %q, want %q", r.user, wantUser)
 		}
 	}
 	return n
@@ -463,7 +463,7 @@ func TestOrgProviderSkippedWhenMintFails(t *testing.T) {
 }
 
 // Platform providers are unchanged: dialled directly with the caller's bearer
-// and the verified cluster as X-Faros-Tenant / X-Faros-Cluster.
+// and the verified cluster as X-Railgrid-Tenant / X-Railgrid-Cluster.
 func TestPlatformProvidersStillReceiveCallerBearer(t *testing.T) {
 	f := newOrgFixture(t)
 	for _, bearer := range []string{"alice-a", "platform"} {
@@ -481,7 +481,7 @@ func TestPlatformProvidersStillReceiveCallerBearer(t *testing.T) {
 			t.Fatalf("platform provider saw tenant=%q cluster=%q, want some-cluster for both", r.tenant, r.cluster)
 		}
 		if r.user != "" {
-			t.Fatalf("platform provider saw X-Faros-User %q, want none (unchanged)", r.user)
+			t.Fatalf("platform provider saw X-Railgrid-User %q, want none (unchanged)", r.user)
 		}
 	}
 	// An Org-less caller gets the platform catalog only.

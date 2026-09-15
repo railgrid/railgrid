@@ -1,11 +1,11 @@
-apiVersion: infrastructure.faros.sh/v1alpha1
+apiVersion: infrastructure.railgrid.ai/v1alpha1
 kind: Template
 metadata:
   name: database
   annotations:
     # A Postgres major upgrade is not an in-place operation; update_instance
     # rejects it (recreate — and migrate — instead).
-    faros.sh/immutable-inputs: "version"
+    railgrid.ai/immutable-inputs: "version"
 spec:
   displayName: "PostgreSQL database"
   description: "A standalone PostgreSQL database for workloads. StatefulSet + Service + credentials Secret; credentials stay in-cluster and are exposed only as a Secret reference. Workloads (simple-webapp, worker, cron-job) consume it via connections.database, which injects DATABASE_URL."
@@ -82,7 +82,7 @@ spec:
           - label: Database
             path: status.ready
   instanceCRD:
-    group: infrastructure.faros.sh
+    group: infrastructure.railgrid.ai
     version: v1alpha1
     resource: postgresdatabases
     kind: PostgresDatabase

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,19 +25,19 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 const (
-	// HeaderFarosOrg carries the active Organization UUID. Required for
+	// HeaderRailgridOrg carries the active Organization UUID. Required for
 	// any endpoint mounted behind this middleware.
-	HeaderFarosOrg = "X-Faros-Org"
+	HeaderRailgridOrg = "X-Railgrid-Org"
 
-	// HeaderFarosWorkspace carries the active child Workspace UUID.
+	// HeaderRailgridWorkspace carries the active child Workspace UUID.
 	// Optional: Org-scoped endpoints can omit it; Workspace-scoped
 	// endpoints must include it (callers downstream of the middleware
 	// can branch on tc.WorkspaceUUID == "").
-	HeaderFarosWorkspace = "X-Faros-Workspace"
+	HeaderRailgridWorkspace = "X-Railgrid-Workspace"
 )
 
 // ErrUserNotResolved is returned by a UserResolver when the request
@@ -66,7 +66,7 @@ func (f UserResolverFunc) ResolveUser(r *http.Request) (string, error) { return 
 
 // MembershipLookup reads the UserMembershipIndex CR for the named user.
 // Implementations typically wrap a Kubernetes/kcp dynamic or typed
-// client targeting root:faros:users.
+// client targeting root:railgrid:users.
 //
 // Returning a Kubernetes "not found" error (apierrors.IsNotFound) is
 // the convention for "this user has no memberships yet" — the
@@ -186,7 +186,7 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 	}
 	tc := TenantContext{User: user}
 
-	orgUUID := r.Header.Get(HeaderFarosOrg)
+	orgUUID := r.Header.Get(HeaderRailgridOrg)
 	if orgUUID == "" {
 		return tc, true
 	}
@@ -194,7 +194,7 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 	if err != nil {
 		return tc, true
 	}
-	workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
+	workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
 	role, ok := matchEntryOrOrgAdmin(index, orgUUID, workspaceUUID)
 	if !ok {
 		return tc, true
@@ -213,8 +213,8 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 //
 //  1. Calls userResolver to identify the caller. 401 on
 //     ErrUserNotResolved; 500 on any other error.
-//  2. Reads X-Faros-Org; 400 if missing.
-//  3. Reads X-Faros-Workspace (optional).
+//  2. Reads X-Railgrid-Org; 400 if missing.
+//  3. Reads X-Railgrid-Workspace (optional).
 //  4. Calls lookup to fetch UserMembershipIndex for the user. 403 on
 //     "not found"; 500 on other errors.
 //  5. Walks index.spec.entries looking for a (OrgUUID, WorkspaceUUID)
@@ -250,14 +250,14 @@ func Middleware(userResolver UserResolver, lookup MembershipLookup) func(next ht
 				return
 			}
 
-			// Step 2: read X-Faros-Org.
-			orgUUID := r.Header.Get(HeaderFarosOrg)
+			// Step 2: read X-Railgrid-Org.
+			orgUUID := r.Header.Get(HeaderRailgridOrg)
 			if orgUUID == "" {
-				writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("missing required header %q", HeaderFarosOrg))
+				writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("missing required header %q", HeaderRailgridOrg))
 				return
 			}
-			// Step 3: read X-Faros-Workspace (optional).
-			workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
+			// Step 3: read X-Railgrid-Workspace (optional).
+			workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
 
 			// Step 4: fetch UserMembershipIndex.
 			index, err := lookup.GetUserMembershipIndex(r.Context(), user)
@@ -291,7 +291,7 @@ func Middleware(userResolver UserResolver, lookup MembershipLookup) func(next ht
 			// Step 6: attach context, invoke next.
 			// The org-scope role is resolved separately so org routes can
 			// authorize against it even when the request also names a
-			// workspace (the portal and providers send X-Faros-Workspace on
+			// workspace (the portal and providers send X-Railgrid-Workspace on
 			// nearly every call). Only a live org-scope row counts here.
 			orgRole := role
 			if workspaceUUID != "" {
@@ -437,10 +437,10 @@ func softDeletedOrgEntry(index *tenancyv1alpha1.UserMembershipIndex, orgUUID str
 }
 
 // isOrgUndeleteRequest recognizes the only Org-scoped route that may use a
-// prior org-scope grant. The path Org must match X-Faros-Org, and a workspace
+// prior org-scope grant. The path Org must match X-Railgrid-Org, and a workspace
 // header is forbidden because this exception is not workspace-scoped.
 func isOrgUndeleteRequest(r *http.Request, orgUUID string) bool {
-	if r == nil || r.Method != http.MethodPost || orgUUID == "" || r.Header.Get(HeaderFarosWorkspace) != "" {
+	if r == nil || r.Method != http.MethodPost || orgUUID == "" || r.Header.Get(HeaderRailgridWorkspace) != "" {
 		return false
 	}
 	parts := pathParts(r)
@@ -449,7 +449,7 @@ func isOrgUndeleteRequest(r *http.Request, orgUUID string) bool {
 }
 
 // requestPathOrgMatches binds lifecycle exceptions to the Org in their REST
-// path as well as the X-Faros-Org header. The middleware is mounted at
+// path as well as the X-Railgrid-Org header. The middleware is mounted at
 // /api/orgs, so the route's orgs/{org} segment is the authoritative path
 // portion to compare here; handlers perform the same consistency check for
 // ordinary live-membership requests.
@@ -471,7 +471,7 @@ func requestPathOrgMatches(r *http.Request, orgUUID string) bool {
 // The tenant middleware is mounted at /api/orgs, so checking the route shape
 // here keeps the exception from applying to unrelated handlers.
 func isWorkspaceListRequest(r *http.Request) bool {
-	if r == nil || r.Method != http.MethodGet || r.Header.Get(HeaderFarosWorkspace) != "" {
+	if r == nil || r.Method != http.MethodGet || r.Header.Get(HeaderRailgridWorkspace) != "" {
 		return false
 	}
 	parts := pathParts(r)
@@ -483,7 +483,7 @@ func isWorkspaceDeleteRequest(r *http.Request) bool {
 		return false
 	}
 	parts := pathParts(r)
-	workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
+	workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
 	return workspaceUUID != "" && len(parts) >= 2 && parts[len(parts)-2] == "workspaces" && parts[len(parts)-1] == workspaceUUID
 }
 
@@ -492,7 +492,7 @@ func isWorkspaceUndeleteRequest(r *http.Request) bool {
 		return false
 	}
 	parts := pathParts(r)
-	workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
+	workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
 	return workspaceUUID != "" && len(parts) >= 3 && parts[len(parts)-3] == "workspaces" &&
 		parts[len(parts)-2] == workspaceUUID && parts[len(parts)-1] == "undelete"
 }
@@ -511,7 +511,7 @@ func pathParts(r *http.Request) []string {
 // writeStatus emits a minimal Kubernetes Status envelope so kubectl /
 // other Kubernetes-aware tooling renders the error nicely while plain
 // HTTP clients still see a sensible JSON body. Reason follows the
-// existing faros convention from pkg/server/proxy/proxy.go.
+// existing railgrid convention from pkg/server/proxy/proxy.go.
 func writeStatus(w http.ResponseWriter, code int, reason, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

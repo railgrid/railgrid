@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,18 +29,18 @@ import (
 const mintedKubeconfig = `apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
-    server: https://console-dev.faros.sh/clusters/xhk2soqt2d3dujnw
+    server: https://console-dev.railgrid.ai/clusters/xhk2soqt2d3dujnw
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: sa-token-abc123
 `
@@ -51,9 +51,9 @@ func serverOf(t *testing.T, kc []byte) string {
 	if err != nil {
 		t.Fatalf("loading rewritten kubeconfig: %v", err)
 	}
-	c, ok := cfg.Clusters["faros"]
+	c, ok := cfg.Clusters["railgrid"]
 	if !ok {
-		t.Fatalf("cluster %q missing from rewritten kubeconfig", "faros")
+		t.Fatalf("cluster %q missing from rewritten kubeconfig", "railgrid")
 	}
 	return c.Server
 }
@@ -66,13 +66,13 @@ func TestRewriteKubeconfigServer(t *testing.T) {
 	}{
 		{
 			name: "in-cluster service",
-			base: "https://faros-faros-hub.faros-dev.svc.cluster.local:9443",
-			want: "https://faros-faros-hub.faros-dev.svc.cluster.local:9443/clusters/xhk2soqt2d3dujnw",
+			base: "https://railgrid-railgrid-hub.railgrid-dev.svc.cluster.local:9443",
+			want: "https://railgrid-railgrid-hub.railgrid-dev.svc.cluster.local:9443/clusters/xhk2soqt2d3dujnw",
 		},
 		{
 			name: "external host is a no-op on the path",
-			base: "https://console-dev.faros.sh",
-			want: "https://console-dev.faros.sh/clusters/xhk2soqt2d3dujnw",
+			base: "https://console-dev.railgrid.ai",
+			want: "https://console-dev.railgrid.ai/clusters/xhk2soqt2d3dujnw",
 		},
 		{
 			name: "trailing slash does not double up",
@@ -81,8 +81,8 @@ func TestRewriteKubeconfigServer(t *testing.T) {
 		},
 		{
 			name: "base path prefix is preserved",
-			base: "https://gw.example.com/faros",
-			want: "https://gw.example.com/faros/clusters/xhk2soqt2d3dujnw",
+			base: "https://gw.example.com/railgrid",
+			want: "https://gw.example.com/railgrid/clusters/xhk2soqt2d3dujnw",
 		},
 		{
 			// A base that already carries a /clusters/ suffix must not stack
@@ -117,14 +117,14 @@ func TestRewriteKubeconfigServerPreservesCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading rewritten kubeconfig: %v", err)
 	}
-	if got := cfg.AuthInfos["faros"].Token; got != "sa-token-abc123" {
+	if got := cfg.AuthInfos["railgrid"].Token; got != "sa-token-abc123" {
 		t.Errorf("token: got %q, want %q", got, "sa-token-abc123")
 	}
-	if !cfg.Clusters["faros"].InsecureSkipTLSVerify {
+	if !cfg.Clusters["railgrid"].InsecureSkipTLSVerify {
 		t.Error("insecure-skip-tls-verify was dropped")
 	}
-	if cfg.CurrentContext != "faros" {
-		t.Errorf("current-context: got %q, want %q", cfg.CurrentContext, "faros")
+	if cfg.CurrentContext != "railgrid" {
+		t.Errorf("current-context: got %q, want %q", cfg.CurrentContext, "railgrid")
 	}
 }
 
@@ -175,13 +175,13 @@ func TestAvailableKubeconfigServerModes(t *testing.T) {
 	}{
 		{
 			name:     "both configured",
-			external: "https://console-dev.faros.sh",
+			external: "https://console-dev.railgrid.ai",
 			internal: "https://svc.internal:9443",
 			want:     []KubeconfigServerMode{ServerModeExternal, ServerModeInternal},
 		},
 		{
 			name:     "internal unset",
-			external: "https://console-dev.faros.sh",
+			external: "https://console-dev.railgrid.ai",
 			want:     []KubeconfigServerMode{ServerModeExternal},
 		},
 		{
@@ -208,7 +208,7 @@ func TestAvailableKubeconfigServerModes(t *testing.T) {
 // Asking for an address the hub was not started with is the caller's mistake,
 // and the handler maps it to 400 — so it has to be distinguishable by errors.Is.
 func TestServerBaseForUnavailable(t *testing.T) {
-	s := &Service{hubExternalURL: "https://console-dev.faros.sh"}
+	s := &Service{hubExternalURL: "https://console-dev.railgrid.ai"}
 
 	if _, err := s.serverBaseFor(ServerModeInternal); !errors.Is(err, ErrServerModeUnavailable) {
 		t.Errorf("internal without --hub-internal-url: got %v, want ErrServerModeUnavailable", err)
@@ -217,7 +217,7 @@ func TestServerBaseForUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("external: %v", err)
 	}
-	if got != "https://console-dev.faros.sh" {
+	if got != "https://console-dev.railgrid.ai" {
 		t.Errorf("external base: got %q", got)
 	}
 

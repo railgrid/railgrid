@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
-	"github.com/faroshq/provider-code/commitbundle"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/commitbundle"
 )
 
 // commitFilesFixture returns a tenant client holding the demo-app Repository.
@@ -45,7 +45,7 @@ func commitFilesFixture(t *testing.T, status map[string]any) (*dynamicfake.FakeD
 		"metadata": map[string]any{
 			"name": "demo-app",
 			"labels": map[string]any{
-				"app-studio.ai.faros.sh/project": "demo-project",
+				"app-studio.ai.railgrid.ai/project": "demo-project",
 			},
 		},
 		"spec": map[string]any{
@@ -119,7 +119,7 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 	if created.GetLabels()[codev1alpha1.LabelRepository] != "demo-app" {
 		t.Fatalf("repository label = %q, want demo-app", created.GetLabels()[codev1alpha1.LabelRepository])
 	}
-	if created.GetLabels()["app-studio.ai.faros.sh/project"] != "demo-project" {
+	if created.GetLabels()["app-studio.ai.railgrid.ai/project"] != "demo-project" {
 		t.Fatalf("project label was not copied: %#v", created.GetLabels())
 	}
 	if _, found, _ := unstructured.NestedSlice(created.Object, "spec", "files"); found {
@@ -376,8 +376,8 @@ func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "demo-app",
 			Labels: map[string]string{
-				codev1alpha1.LabelRepository:     "stale-repo",
-				"app-studio.ai.faros.sh/project": "demo-project",
+				codev1alpha1.LabelRepository:        "stale-repo",
+				"app-studio.ai.railgrid.ai/project": "demo-project",
 			},
 		},
 	}
@@ -391,7 +391,7 @@ func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
 	if got := obj.GetLabels()[codev1alpha1.LabelRepository]; got != "demo-app" {
 		t.Fatalf("repository label = %q, want demo-app", got)
 	}
-	if got := obj.GetLabels()["app-studio.ai.faros.sh/project"]; got != "demo-project" {
+	if got := obj.GetLabels()["app-studio.ai.railgrid.ai/project"]; got != "demo-project" {
 		t.Fatalf("project label = %q, want demo-project", got)
 	}
 	scope, _, _ := unstructured.NestedString(obj.Object, "spec", "source", "bundleRef", "scope")

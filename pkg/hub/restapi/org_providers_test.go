@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,11 +22,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros/pkg/hub/kcp"
-	"github.com/faroshq/faros/pkg/hub/providers"
-	"github.com/faroshq/faros/pkg/hub/tenant"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // fakeOrgProviderOps is a stand-in for the kcp Bootstrapper's org-provider
@@ -127,18 +127,18 @@ func fakeKubeconfig(token string) string {
 	return `apiVersion: v1
 kind: Config
 clusters:
-- name: faros
+- name: railgrid
   cluster:
     server: https://hub.test/clusters/abcd1234
     insecure-skip-tls-verify: true
 contexts:
-- name: faros
+- name: railgrid
   context:
-    cluster: faros
-    user: faros
-current-context: faros
+    cluster: railgrid
+    user: railgrid
+current-context: railgrid
 users:
-- name: faros
+- name: railgrid
   user:
     token: ` + token + "\n"
 }
@@ -186,7 +186,7 @@ func newOrgProviderTestServerWithPolicy(
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 	}
 	objects := append([]runtime.Object{org, alice}, extra...)
 	mgr, wsOps, _ := newTestManager(t, objects...)
@@ -253,7 +253,7 @@ func TestRegisterOrgProvider_DefaultsToAdminOnly(t *testing.T) {
 
 	// A member who is admin of their own team workspace is still just a
 	// member of the Org: the gate reads the org-scope Membership, not the
-	// workspace-scope role the portal's X-Faros-Workspace header names.
+	// workspace-scope role the portal's X-Railgrid-Workspace header names.
 	t.Run("workspace admin who is only an org member is refused", func(t *testing.T) {
 		ops, creds, url := newOrgProviderTestServerWithPolicy(t, edges, adminTC("alice", "org-a", "ws-1"), []runtime.Object{umi}, "", tenancyv1alpha1.MembershipRoleMember)
 		resp := postRegister(t, url(), body)
@@ -472,7 +472,7 @@ func TestListOrgProviderInstallTargets_ReportsEligibilityAndReason(t *testing.T)
 
 // The org-providers container is not a team workspace. If it leaks into the
 // workspace list the portal renders a row that 403s the moment a user selects
-// it, because no Membership matches that X-Faros-Workspace.
+// it, because no Membership matches that X-Railgrid-Workspace.
 func TestListWorkspaces_ExcludesOrgProvidersContainer(t *testing.T) {
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
@@ -480,7 +480,7 @@ func TestListWorkspaces_ExcludesOrgProvidersContainer(t *testing.T) {
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, alice)
 	ctx := context.Background()
@@ -523,8 +523,8 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 	selfHosting := func(chartVersion string) *providers.SelfHosting {
 		return &providers.SelfHosting{
 			Supported:    true,
-			ChartRepo:    "oci://ghcr.io/faroshq/charts",
-			ChartName:    "faros-edges-provider",
+			ChartRepo:    "oci://ghcr.io/railgrid/charts",
+			ChartName:    "railgrid-edges-provider",
 			ChartVersion: chartVersion,
 		}
 	}
@@ -579,7 +579,7 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 			}
 			alice := &tenancyv1alpha1.User{
 				ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-				Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+				Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 			}
 			mgr, _, _ := newTestManager(t, org, alice)
 			mgr.WithOrgProviders(&fakeOrgProviderOps{
@@ -640,7 +640,7 @@ func TestOrgProviders_NotWiredReturns501(t *testing.T) {
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
 	}
 	mgr, _, _ := newTestManager(t, org, alice)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
@@ -709,7 +709,7 @@ func TestRotateOrgProviderCredential_IsAdminOnlyWhateverThePolicy(t *testing.T) 
 			http.StatusForbidden,
 		},
 		{
-			// The portal attaches X-Faros-Workspace to every request, so a
+			// The portal attaches X-Railgrid-Workspace to every request, so a
 			// workspace admin who is merely an org member must not slip through
 			// on the role the headers name.
 			"workspace admin who is only an org member may not",

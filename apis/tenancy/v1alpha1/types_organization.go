@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -58,18 +58,18 @@ const (
 
 	// OrganizationConditionDefaultWorkspaceReady reports whether the
 	// personal Org's default child Workspace has been provisioned at
-	// root:faros:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
-	// UUID as the default X-Faros-Workspace so members always have
+	// root:railgrid:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
+	// UUID as the default X-Railgrid-Workspace so members always have
 	// somewhere to land on first login.
 	OrganizationConditionDefaultWorkspaceReady = "DefaultWorkspaceReady"
 
-	// OrganizationConditionDefaultWorkspaceFarosBound reports whether
-	// the faros APIBinding (core.faros.sh) has been written inside the
-	// default child Workspace, with the permission claims faros
+	// OrganizationConditionDefaultWorkspaceRailgridBound reports whether
+	// the railgrid APIBinding (core.railgrid.ai) has been written inside the
+	// default child Workspace, with the permission claims railgrid
 	// controllers need. Until this flips True the user can't read or
 	// write Edges / MCPServers / Placements in their default
 	// Workspace.
-	OrganizationConditionDefaultWorkspaceFarosBound = "DefaultWorkspaceFarosBound"
+	OrganizationConditionDefaultWorkspaceRailgridBound = "DefaultWorkspaceRailgridBound"
 
 	// OrganizationConditionDefaultWorkspaceAdminReady reports whether
 	// the user has been granted cluster-admin (via ClusterRoleBinding
@@ -105,8 +105,8 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Organization is the unit of tenancy in faros. An Organization owns a kcp
-// workspace at root:faros:tenants:{metadata.name} that holds catalog metadata
+// Organization is the unit of tenancy in railgrid. An Organization owns a kcp
+// workspace at root:railgrid:tenants:{metadata.name} that holds catalog metadata
 // and membership for its members. All tenant work (APIBindings, edges, MCP
 // instances, …) lives in child Workspaces beneath the Organization, never
 // in the Organization workspace itself.
@@ -170,7 +170,7 @@ type OrganizationSpec struct {
 	// chose. Unset is treated as admin by the hub. Organizations that predate
 	// the admin default carry an explicit "members", written once by the
 	// organization controller and recorded in the
-	// tenants.faros.sh/catalog-entry-creation-migrated annotation.
+	// tenants.railgrid.ai/catalog-entry-creation-migrated annotation.
 	//
 	// +optional
 	// +kubebuilder:default=admin
@@ -189,7 +189,7 @@ type OrganizationSpec struct {
 // OrganizationStatus defines the observed state of an Organization.
 type OrganizationStatus struct {
 	// WorkspacePath is the path to the materialized kcp Workspace, always
-	// root:faros:tenants:{metadata.name}. Set by the bootstrap controller once
+	// root:railgrid:tenants:{metadata.name}. Set by the bootstrap controller once
 	// the workspace has been provisioned.
 	//
 	// +optional

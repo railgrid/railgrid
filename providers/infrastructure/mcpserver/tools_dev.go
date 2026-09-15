@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/kro"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 const (
@@ -63,7 +63,7 @@ type devSyncFile struct {
 }
 
 type devSyncInput struct {
-	Instance string        `json:"instance" jsonschema:"Development-mode instance name (provisioned with values.farosMode=development)"`
+	Instance string        `json:"instance" jsonschema:"Development-mode instance name (provisioned with values.railgridMode=development)"`
 	Files    []devSyncFile `json:"files" jsonschema:"Files to sync, paths relative to the workspace root; each is routed to the component whose workspacePath prefixes it"`
 	Restart  string        `json:"restart,omitempty" jsonschema:"auto (default) restarts the dev process when needed per the template's reload rules; none only writes files"`
 }
@@ -171,7 +171,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		Title: "Sync source files into a development instance",
 		Description: "Push workspace files into a development-mode instance's sandbox with hot reload — no image build. Files are routed to components by the template's development.components workspacePath prefixes (see describe_template); files outside every component directory are rejected. " +
 			"Send text as UTF-8 (the default); send binary files (images, fonts, models) with encoding \"base64\" — they are only sent to components whose dev agent reports base64 support. At most 500 files and 48 MiB (decoded) per call, 25 MiB per binary file. " +
-			"Requires an instance provisioned with values.farosMode=\"development\".",
+			"Requires an instance provisioned with values.railgridMode=\"development\".",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no, OpenWorldHint: &yes},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in devSyncInput) (*mcp.CallToolResult, devSyncOutput, error) {
 		target, err := resolveDevTarget(ctx, deps, ident, in.Instance)
@@ -229,7 +229,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 		Title: "Run a command in a development component's sandbox",
 		Description: "Run one command (tests, a build, a migration, a quick check) inside a development-mode instance's sandbox, against the source last applied by dev_sync, and return its state, exit code, stdout and stderr (output is bounded). " +
 			"argv is executed directly with NO shell: pass [\"npm\",\"test\"], or [\"sh\",\"-c\",\"...\"] when you need pipes, redirects, globbing or $VAR expansion. " +
-			"The command runs in a separate executor container that shares the component's workspace and network: it gets PORT (the dev server's port, so it can reach the running app at localhost:$PORT) and FAROS_COMPONENT, but NOT the app's own environment variables or secrets. " +
+			"The command runs in a separate executor container that shares the component's workspace and network: it gets PORT (the dev server's port, so it can reach the running app at localhost:$PORT) and RAILGRID_COMPONENT, but NOT the app's own environment variables or secrets. " +
 			"workdir is relative to the component directory. The call waits up to ~90s; if state is still \"running\", call dev_exec again with the same argv and idempotencyKey (the returned requestID) to keep waiting instead of starting a second run. " +
 			"If it reports that no source revision is applied, dev_sync the component first.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: false, DestructiveHint: &yes, OpenWorldHint: &yes},
@@ -336,7 +336,7 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	inst, err := getInstance(ctx, dyn, instanceName)
 	if err != nil {
 		if err == kro.ErrInstanceNotFound {
-			return devTarget{}, fmt.Errorf("instance %q not found — provision it first (values.farosMode=\"development\")", instanceName)
+			return devTarget{}, fmt.Errorf("instance %q not found — provision it first (values.railgridMode=\"development\")", instanceName)
 		}
 		return devTarget{}, fmt.Errorf("get instance: %w", err)
 	}
@@ -353,8 +353,8 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	if tmpl.Development == nil || len(tmpl.Development.Components) == 0 {
 		return devTarget{}, fmt.Errorf("template %q has no development mode — the dev tools only work on development-capable templates (see describe_template)", tmpl.Name)
 	}
-	if mode, _ := inst.Values["farosMode"].(string); mode != "development" {
-		return devTarget{}, fmt.Errorf("instance %q is not in development mode (farosMode=%q) — provision a dev instance with values.farosMode=\"development\"", instanceName, mode)
+	if mode, _ := inst.Values["railgridMode"].(string); mode != "development" {
+		return devTarget{}, fmt.Errorf("instance %q is not in development mode (railgridMode=%q) — provision a dev instance with values.railgridMode=\"development\"", instanceName, mode)
 	}
 	components := make(map[string]kro.TemplateDevelopmentComponent, len(tmpl.Development.Components))
 	maps.Copy(components, tmpl.Development.Components)
@@ -586,7 +586,7 @@ func runDevExec(ctx context.Context, dp http.Handler, ident identity, resource, 
 // override the caller identity headers, which are set last.
 func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method, resource, name, component, verb string, payload []byte, extra http.Header) ([]byte, int, error) {
 	if strings.TrimSpace(ident.clusterID) == "" {
-		return nil, 0, fmt.Errorf("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the development data plane")
+		return nil, 0, fmt.Errorf("no workspace cluster on this request (X-Railgrid-Cluster missing) — cannot address the development data plane")
 	}
 	p := "/dataplane/clusters/" + url.PathEscape(ident.clusterID) +
 		"/" + url.PathEscape(resource) + "/" + url.PathEscape(name)
@@ -606,8 +606,8 @@ func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method,
 		}
 	}
 	req.Header.Set("Authorization", "Bearer "+ident.token)
-	req.Header.Set("X-Faros-Tenant", ident.tenant)
-	req.Header.Set("X-Faros-User", ident.user)
+	req.Header.Set("X-Railgrid-Tenant", ident.tenant)
+	req.Header.Set("X-Railgrid-User", ident.user)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -641,7 +641,7 @@ func routeDevSyncFiles(files []devSyncFile, components map[string]kro.TemplateDe
 
 // devToolchainManifests names the file each known toolchain needs at a
 // component's root before its start command can run. Keyed by the toolchain
-// from the template's ${faros.devImage.<toolchain>} token. A toolchain absent
+// from the template's ${railgrid.devImage.<toolchain>} token. A toolchain absent
 // here is never validated: the template, not this server, is the authority on
 // what its sandbox can run, so an unknown toolchain must not block a sync.
 var devToolchainManifests = map[string]struct {

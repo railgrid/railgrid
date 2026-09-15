@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ func setupRouter(downstream *rest.Config, sshPort int, svc SvcProxyOptions) *mux
 	router.HandleFunc("/api/v1/services", newServicesHandler()).Methods("GET")
 
 	// Generic HTTP service proxy. The provider computes the target (from a
-	// Service CR) and sets X-Faros-Svc-Target per request. Loopback and the
+	// Service CR) and sets X-Railgrid-Svc-Target per request. Loopback and the
 	// --svc-allow-cidr ranges are dialable in either mode; kubernetes mode
 	// (downstream != nil) also allows cluster-DNS names, since Services on a
 	// KubernetesCluster edge live behind cluster DNS. See newSvcProxyHandler.

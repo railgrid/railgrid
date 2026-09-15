@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,8 +30,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	appskills "github.com/faroshq/provider-app-studio/skills"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	appskills "github.com/railgrid/provider-app-studio/skills"
 )
 
 const (
@@ -306,19 +306,19 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		req.Header.Set("Authorization", "Bearer "+id.token)
 	}
 	if id.tenant != "" {
-		req.Header.Set("X-Faros-Tenant", id.tenant)
+		req.Header.Set("X-Railgrid-Tenant", id.tenant)
 	}
 	if id.clusterID != "" {
-		req.Header.Set("X-Faros-Cluster", id.clusterID)
+		req.Header.Set("X-Railgrid-Cluster", id.clusterID)
 	}
 	if id.orgUUID != "" {
-		req.Header.Set("X-Faros-Org", id.orgUUID)
+		req.Header.Set("X-Railgrid-Org", id.orgUUID)
 	}
 	if id.workspaceUUID != "" {
-		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
 	}
 	if id.user != "" {
-		req.Header.Set("X-Faros-User", id.user)
+		req.Header.Set("X-Railgrid-User", id.user)
 	}
 	client := &http.Client{
 		Timeout: providerCatalogCallTimeout,

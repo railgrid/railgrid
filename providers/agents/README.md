@@ -4,7 +4,7 @@ Long-running personal AI agents: chat, scheduled and heartbeat runs, tool use,
 approvals, budgets, and durable memory — reachable from Slack, Telegram,
 Discord, SMTP, and the portal.
 
-APIExport: `agents.faros.sh`, in `root:faros:providers:agents` (or your own
+APIExport: `agents.railgrid.ai`, in `root:railgrid:providers:agents` (or your own
 workspace when self-hosted).
 
 ## Messaging channels
@@ -42,12 +42,12 @@ agents is meant to run on its own.
 
 The hub is also how the provider reaches a tenant's workspace. Every portal,
 CLI, and MCP request carries the caller's bearer token and the workspace's
-cluster ID (`X-Faros-Cluster`); the provider turns those into a plain kube
-REST client on the hub's kcp proxy at `<FAROS_HUB_URL>/clusters/<cluster-id>`
+cluster ID (`X-Railgrid-Cluster`); the provider turns those into a plain kube
+REST client on the hub's kcp proxy at `<RAILGRID_HUB_URL>/clusters/<cluster-id>`
 and acts as the caller. The proxy authorizes by workspace membership, so the
 provider can read and write Agents, Connections, Toolsets, and Secrets in any
 workspace the caller belongs to, with kcp's own admission and RBAC errors
-surfacing unchanged. `FAROS_HUB_INSECURE` relaxes TLS for in-cluster hub
+surfacing unchanged. `RAILGRID_HUB_INSECURE` relaxes TLS for in-cluster hub
 certificates.
 
 Compute- and storage-backed features — the claude-code runner and the file
@@ -62,7 +62,7 @@ Configure storage with `store.databaseURLSecretRef`. See
 ## Running it
 
 - **On the platform**, an admin onboards the provider and mints its credential.
-- **Yourself**, faros creates a workspace in your organization, mints a
+- **Yourself**, railgrid creates a workspace in your organization, mints a
   credential scoped to it, and generates the install commands under
   **Providers → Self-Hosting** in the portal. See
   [docs/byo-providers.md](../../docs/byo-providers.md).

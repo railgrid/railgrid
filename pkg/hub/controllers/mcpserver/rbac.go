@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,15 +39,15 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	farosv1alpha1 "github.com/faroshq/faros/apis/faros/v1alpha1"
-	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
-	"github.com/faroshq/faros/pkg/apiurl"
-	"github.com/faroshq/faros/pkg/kcppaths"
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // roleNamePrefix prefixes the generated per-server ClusterRole name:
-// faros:mcpserver:<MCPServer name>.
-const roleNamePrefix = "faros:mcpserver:"
+// railgrid:mcpserver:<MCPServer name>.
+const roleNamePrefix = "railgrid:mcpserver:"
 
 var (
 	// readVerbs is granted on every bound provider resource.
@@ -90,13 +90,13 @@ var dataPlaneGrants = map[string]dataPlaneGrant{
 	// The tunnel checks "proxy" for every HTTP method on the k8s subresource
 	// and for ssh sessions alike, so this is never granted to readOnly
 	// servers (see dataPlaneGrant.verbs).
-	"edges.faros.sh": {verbs: []string{"proxy"}},
+	"edges.railgrid.ai": {verbs: []string{"proxy"}},
 	// The infrastructure data plane authorizes "create" on <instance>/exec
 	// before running a command in a dev instance
 	// (providers/infrastructure/dataplane/authorizer.go). instances is the
 	// only resource the data plane serves — the handler rejects anything else
 	// — so exec is granted on instances alone and never on, say, templates.
-	"infrastructure.faros.sh": {resources: []string{"instances"}, subresources: []string{"exec"}},
+	"infrastructure.railgrid.ai": {resources: []string{"instances"}, subresources: []string{"exec"}},
 }
 
 // ActionGrant is one provider action from the platform catalog, expressed as
@@ -246,7 +246,7 @@ func listBoundResources(ctx context.Context, kcp kcpclientset.Interface) ([]apis
 // ensureMCPRBAC converges the generated ClusterRole and the ClusterRoleBinding
 // pointing at it. RoleRef is immutable, so a binding left over from the
 // cluster-admin era (or any other role) is deleted and recreated.
-func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer, owner metav1.OwnerReference, saName string, rules []rbacv1.PolicyRule) error {
+func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *railgridv1alpha1.MCPServer, owner metav1.OwnerReference, saName string, rules []rbacv1.PolicyRule) error {
 	roleName := roleNamePrefix + srv.Name
 	if rules == nil {
 		rules = []rbacv1.PolicyRule{}

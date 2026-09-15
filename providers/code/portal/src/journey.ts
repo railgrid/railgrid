@@ -2,7 +2,7 @@ export type CodeJourneyAction = 'create-connection' | 'create-repository'
 export type CodeJourneyKind = 'connection' | 'repository'
 export type CodeReturnPath = 'create/repository'
 
-const CODE_RETURN_INTENT_KEY = 'faros:code:return-intent'
+const CODE_RETURN_INTENT_KEY = 'railgrid:code:return-intent'
 
 export interface CodeJourneyStorage {
   getItem(key: string): string | null
@@ -144,7 +144,7 @@ export function codeFirstRunModel(
   if (kind === 'connection') {
     return {
       title: 'Connect a GitHub account',
-      description: 'Connect once so Faros can create and manage repositories for this workspace.',
+      description: 'Connect once so Railgrid can create and manage repositories for this workspace.',
       currentStep: 0,
       primary: oauthEnabled
         ? { label: 'Connect with GitHub', action: 'create-connection' }

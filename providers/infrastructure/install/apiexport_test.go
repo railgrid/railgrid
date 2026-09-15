@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ func schemaWithPointers() *apiextensionsv1.CustomResourceDefinition {
 	preserve := true
 	return &apiextensionsv1.CustomResourceDefinition{
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: "infrastructure.faros.sh",
+			Group: "infrastructure.railgrid.ai",
 			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "Template", Plural: "templates"},
 			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
 				Name: "v1alpha1",

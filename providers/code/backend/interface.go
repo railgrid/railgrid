@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 	"sort"
 	"sync"
 
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 )
 
 // Credential is the resolved secret material a GitBackend authenticates with.
@@ -166,7 +166,7 @@ func FreshContainerPackages(ctx context.Context) bool {
 
 // WorkflowRunQuery identifies the CI run to inspect.
 type WorkflowRunQuery struct {
-	// WorkflowFileName is the workflow file (e.g. "faros-app-studio-build.yml").
+	// WorkflowFileName is the workflow file (e.g. "railgrid-app-studio-build.yml").
 	WorkflowFileName string
 	// HeadSHA optionally pins the commit; empty means the most recent run.
 	HeadSHA string
@@ -272,7 +272,7 @@ type GitBackend interface {
 	ValidateConnection(ctx context.Context, conn *codev1alpha1.Connection, cred Credential) (login string, scopes []string, err error)
 
 	// EnsureRepository creates the repository if absent and returns its host
-	// identifiers. With code.faros.sh/create-only="true", an existing remote
+	// identifiers. With code.railgrid.ai/create-only="true", an existing remote
 	// must match status.repoID; a name match alone must never adopt it.
 	EnsureRepository(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) (RepositoryResult, error)
 	// DeleteRepository removes the repository. Idempotent: a missing repo is success.

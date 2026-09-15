@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-provider-fetch'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-provider-fetch'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,
@@ -34,8 +34,8 @@ test('allows exactly the same-origin paths both provider auth models need', () =
   assert.ok(allowed('/services/providers/agents/api/agents'))
   assert.ok(allowed('/ui/providers/agents/icon.svg'))
   // cluster-in-path model: kcp REST by cluster, reads and writes.
-  assert.ok(allowed('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', { name: 'code' }))
-  assert.ok(allowed('/clusters/2abc1/apis/code.faros.sh/v1alpha1/repositories', { name: 'code', method: 'POST' }))
+  assert.ok(allowed('/clusters/2abc1/apis/code.railgrid.ai/v1alpha1/repositories', { name: 'code' }))
+  assert.ok(allowed('/clusters/2abc1/apis/code.railgrid.ai/v1alpha1/repositories', { name: 'code', method: 'POST' }))
   assert.ok(!allowed('/graphql/2abc1', { name: 'code', method: 'POST' }), 'the removed GraphQL gateway path is no longer allow-listed')
   // shared, as the user: org-scoped hub REST and the read-only catalog.
   assert.ok(allowed(`/api/orgs/${ORG}/workspaces/ws1/providers/enabled`))
@@ -59,7 +59,7 @@ test('denies other providers, other orgs, hub-only surfaces, and other origins',
   assert.ok(!allowed('/api/providers', { method: 'POST' }))
   assert.ok(!allowed('/api/providers/agents/heartbeat', { method: 'POST' }))
   assert.ok(!allowed('/api/admin/providers'))
-  assert.ok(!allowed('/apis/faros.sh/v1alpha1/organizations'))
+  assert.ok(!allowed('/apis/railgrid.ai/v1alpha1/organizations'))
   assert.ok(!allowed('/services/agent-proxy/x'))
   assert.ok(!allowed('/ui/'))
   assert.ok(!allowed('https://evil.example/services/providers/agents/api/agents'))
@@ -92,7 +92,7 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
 
   await providerFetch('/services/providers/agents/api/agents', {
     method: 'POST',
-    headers: { Accept: 'application/json', Authorization: 'Bearer provider-supplied', 'X-Faros-Org': 'spoofed' },
+    headers: { Accept: 'application/json', Authorization: 'Bearer provider-supplied', 'X-Railgrid-Org': 'spoofed' },
     body: '{}',
   })
   assert.equal(calls.length, 1)
@@ -105,15 +105,15 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
   // The host is authoritative: provider-supplied credentials and tenant
   // headers are replaced, never merged.
   assert.equal(headers.get('Authorization'), 'Bearer id-token-1')
-  assert.equal(headers.get('X-Faros-Org'), ORG)
-  assert.equal(headers.get('X-Faros-Workspace'), 'ws-1')
+  assert.equal(headers.get('X-Railgrid-Org'), ORG)
+  assert.equal(headers.get('X-Railgrid-Workspace'), 'ws-1')
 
   // Token refresh is allowed within the same context; tenant changes require
   // a new context and must never retarget an old caller's mutation.
   scope.token = 'id-token-2'
   await providerFetch('/services/providers/agents/api/agents')
   assert.equal(calls[1].init.headers.get('Authorization'), 'Bearer id-token-2')
-  assert.equal(calls[1].init.headers.get('X-Faros-Workspace'), 'ws-1')
+  assert.equal(calls[1].init.headers.get('X-Railgrid-Workspace'), 'ws-1')
   scope.workspaceUUID = null
   await assert.rejects(providerFetch('/services/providers/agents/api/agents', { method: 'POST' }), { name: 'AbortError' })
   assert.equal(calls.length, 2)
@@ -212,7 +212,7 @@ test('the pushed context exposes fetch and warns once when the deprecated token 
   assert.equal(ctx.token, 'id-token')
   assert.equal(ctx.token, 'id-token')
   assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /provider "agents" read farosContext\.token, which is deprecated/)
+  assert.match(warnings[0], /provider "agents" read railgridContext\.token, which is deprecated/)
   // A spread copy (providers commonly snapshot the context) still carries the
   // token during the deprecation window.
   assert.equal({ ...ctx }.token, 'id-token')

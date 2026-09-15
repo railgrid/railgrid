@@ -8,7 +8,7 @@ import { parsePortalScope } from './navigation.js'
 // This exact contract must match the hub's tenant middleware — the wrong header
 // name or a missing org/workspace yields 401/403 — so it lives in ONE place.
 //
-// Applies to portals on the "hub-proxy" auth model (X-Faros-* headers + tenant
+// Applies to portals on the "hub-proxy" auth model (X-Railgrid-* headers + tenant
 // from localStorage): agents, app-studio, kuery, quickstart. Portals that
 // address kcp by cluster ID in the path (code, edges, infrastructure,
 // databricks — the /clusters/<cluster> kube REST form in ./kube.ts, plus
@@ -24,7 +24,7 @@ export interface Tenant {
 
 // TENANT_STORAGE_KEY is where the host portal persists the active org/workspace
 // selection. Every provider portal reads the same key.
-export const TENANT_STORAGE_KEY = 'faros:portal:tenant'
+export const TENANT_STORAGE_KEY = 'railgrid:portal:tenant'
 
 // readTenant returns the active org/workspace from localStorage, tolerating a
 // missing or malformed value (both null).
@@ -61,33 +61,33 @@ export function serviceBase(basePath: string): string {
 }
 
 // tenantHeaders builds the request headers for a hub-proxied call: Accept, an
-// optional Content-Type for bodies, the bearer token, and the X-Faros-Org /
-// X-Faros-Workspace tenant scope. Header names and precedence must match the
+// optional Content-Type for bodies, the bearer token, and the X-Railgrid-Org /
+// X-Railgrid-Workspace tenant scope. Header names and precedence must match the
 // hub's tenant middleware.
 //
 // Prefer sending requests through providerFetch(ctx) and leaving `token`
 // unset: the host then injects Authorization and the tenant scope itself and
 // the bundle never handles the user's raw id token. `token` remains for the
-// deprecation window in which the host still exposes farosContext.token.
+// deprecation window in which the host still exposes railgridContext.token.
 export function tenantHeaders(opts: { token?: string | null; json?: boolean } = {}): Record<string, string> {
   const t = readTenant()
   const h: Record<string, string> = { Accept: 'application/json' }
   if (opts.json) h['Content-Type'] = 'application/json'
   if (opts.token) h.Authorization = `Bearer ${opts.token}`
-  if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
-  if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
+  if (t.orgUUID) h['X-Railgrid-Org'] = t.orgUUID
+  if (t.workspaceUUID) h['X-Railgrid-Workspace'] = t.workspaceUUID
   return h
 }
 
 // ProviderFetch is the fetch-compatible transport the host portal hands every
-// provider bundle as farosContext.fetch. It resolves relative URLs against the
-// portal origin, injects Authorization and the X-Faros-* tenant headers from
+// provider bundle as railgridContext.fetch. It resolves relative URLs against the
+// portal origin, injects Authorization and the X-Railgrid-* tenant headers from
 // the host's own state, and refuses same-origin paths outside the provider's
 // allow list (its own /services/providers/<name>/ and /ui/providers/<name>/,
 // /clusters/, /api/orgs/<org>/, and GET /api/providers).
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-// ProviderFetchContext is the slice of farosContext providerFetch reads.
+// ProviderFetchContext is the slice of railgridContext providerFetch reads.
 export interface ProviderFetchContext {
   fetch?: ProviderFetch | null
   /** @deprecated Fallback only; hosts stop exposing the raw token after the deprecation window. */

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ensureFarosUIStyles,
-  FAROS_UI_CANONICAL_MARKER,
-  FAROS_UI_CANONICAL_VALUE,
-  FAROS_UI_CORE_VERSION,
-  FAROS_UI_CORE_VERSION_MARKER,
-  FAROS_UI_STYLE_ID,
+  ensureRailgridUIStyles,
+  RAILGRID_UI_CANONICAL_MARKER,
+  RAILGRID_UI_CANONICAL_VALUE,
+  RAILGRID_UI_CORE_VERSION,
+  RAILGRID_UI_CORE_VERSION_MARKER,
+  RAILGRID_UI_STYLE_ID,
 } from './portalkit/styles'
 
 interface FakeStyle {
@@ -32,7 +32,7 @@ function installFakeHost(initialVersion = ''): {
   setVersion(version: string): void
   restore(): void
 } {
-  const stale = fakeStyle(FAROS_UI_STYLE_ID)
+  const stale = fakeStyle(RAILGRID_UI_STYLE_ID)
   const appended: FakeStyle[] = []
   let version = initialVersion
   const document = {
@@ -53,8 +53,8 @@ function installFakeHost(initialVersion = ''): {
   const window = {
     getComputedStyle: () => ({
       getPropertyValue(name: string): string {
-        if (name === FAROS_UI_CANONICAL_MARKER) return FAROS_UI_CANONICAL_VALUE
-        if (name === FAROS_UI_CORE_VERSION_MARKER) return version
+        if (name === RAILGRID_UI_CANONICAL_MARKER) return RAILGRID_UI_CANONICAL_VALUE
+        if (name === RAILGRID_UI_CORE_VERSION_MARKER) return version
         return ''
       },
     }),
@@ -83,29 +83,29 @@ describe('PortalKit stylesheet compatibility', () => {
     const host = installFakeHost()
 
     try {
-      ensureFarosUIStyles()
+      ensureRailgridUIStyles()
 
       expect(host.stale.textContent).toBe('stale host stylesheet')
       expect(host.appended).toHaveLength(1)
-      expect(host.appended[0].id).toBe(`${FAROS_UI_STYLE_ID}-v${FAROS_UI_CORE_VERSION}`)
-      expect(host.appended[0].attributes['data-faros-ui-source']).toBe('portalkit-fallback')
-      expect(host.appended[0].attributes['data-faros-ui-core-version']).toBe(String(FAROS_UI_CORE_VERSION))
+      expect(host.appended[0].id).toBe(`${RAILGRID_UI_STYLE_ID}-v${RAILGRID_UI_CORE_VERSION}`)
+      expect(host.appended[0].attributes['data-railgrid-ui-source']).toBe('portalkit-fallback')
+      expect(host.appended[0].attributes['data-railgrid-ui-core-version']).toBe(String(RAILGRID_UI_CORE_VERSION))
 
-      host.setVersion(String(FAROS_UI_CORE_VERSION))
-      ensureFarosUIStyles()
+      host.setVersion(String(RAILGRID_UI_CORE_VERSION))
+      ensureRailgridUIStyles()
       expect(host.appended).toHaveLength(1)
     } finally {
       host.restore()
     }
   })
 
-  it.each([String(FAROS_UI_CORE_VERSION), String(FAROS_UI_CORE_VERSION + 1)])(
+  it.each([String(RAILGRID_UI_CORE_VERSION), String(RAILGRID_UI_CORE_VERSION + 1)])(
     'accepts a current or newer host stylesheet version (%s)',
     version => {
       const host = installFakeHost(version)
 
       try {
-        ensureFarosUIStyles()
+        ensureRailgridUIStyles()
         expect(host.appended).toHaveLength(0)
       } finally {
         host.restore()

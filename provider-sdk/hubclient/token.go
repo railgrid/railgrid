@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package hubclient holds the pieces a provider needs to talk to the faros
+// Package hubclient holds the pieces a provider needs to talk to the railgrid
 // hub itself (as opposed to kcp): today, the credential for the heartbeat.
 package hubclient
 
@@ -29,20 +29,20 @@ import (
 const (
 	// EnvHubToken is an explicit bearer token for hub calls. When set it wins
 	// over the kubeconfig-derived token.
-	EnvHubToken = "FAROS_HUB_TOKEN"
+	EnvHubToken = "RAILGRID_HUB_TOKEN"
 	// EnvProviderKubeconfig is the workspace-scoped kubeconfig the hub minted
 	// for the provider's own service account. Its bearer token is what the
 	// hub verifies heartbeats against, so it doubles as the hub credential.
-	EnvProviderKubeconfig = "FAROS_PROVIDER_KUBECONFIG"
+	EnvProviderKubeconfig = "RAILGRID_PROVIDER_KUBECONFIG"
 )
 
 // ResolveHubToken returns the bearer token a provider should present to the
 // hub, e.g. on POST /api/providers/{name}/heartbeat. The hub authenticates
 // that call as the provider's own service account, so the token is, in order:
 //
-//  1. FAROS_HUB_TOKEN, if set (explicit override; charts that still wire
+//  1. RAILGRID_HUB_TOKEN, if set (explicit override; charts that still wire
 //     hub.tokenSecretRef keep working unchanged);
-//  2. the bearer token inside the kubeconfig at FAROS_PROVIDER_KUBECONFIG,
+//  2. the bearer token inside the kubeconfig at RAILGRID_PROVIDER_KUBECONFIG,
 //     which every provider already mounts.
 //
 // An empty string with a nil error means neither is configured; callers keep

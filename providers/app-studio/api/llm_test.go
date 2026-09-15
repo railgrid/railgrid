@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 	"time"
 
 	einoschema "github.com/cloudwego/eino/schema"
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func TestVerifyProjectLLMConnectionCallsConfiguredModel(t *testing.T) {
@@ -733,18 +733,18 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 	}
 	prompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
-		`"@faros/actions-node": "npm:@crwilhit/faros-actions-node@0.1.0"`,
+		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"`,
 		"server component's package.json MUST declare this exact dependency alias",
-		"import { createActionsClient } from '@faros/actions-node';",
-		"FAROS_ACTIONS_BASE_URL",
-		"FAROS_PROJECT",
-		"FAROS_PROJECT_UID",
-		"FAROS_ACTIONS_TOKEN_FILE",
-		"FAROS_ACTIONS_ENVIRONMENT",
-		"FAROS_ACTIONS_INSTANCE",
-		"FAROS_ACTIONS_TENANT_PATH",
-		"FAROS_ACTIONS_ORG",
-		"FAROS_ACTIONS_WORKSPACE",
+		"import { createActionsClient } from '@railgrid/actions-node';",
+		"RAILGRID_ACTIONS_BASE_URL",
+		"RAILGRID_PROJECT",
+		"RAILGRID_PROJECT_UID",
+		"RAILGRID_ACTIONS_TOKEN_FILE",
+		"RAILGRID_ACTIONS_ENVIRONMENT",
+		"RAILGRID_ACTIONS_INSTANCE",
+		"RAILGRID_ACTIONS_TENANT_PATH",
+		"RAILGRID_ACTIONS_ORG",
+		"RAILGRID_ACTIONS_WORKSPACE",
 		"component automatically installs and reloads dependencies after the manifest synchronizes",
 		"do not manually run npm install, npm exec, npm search, or package discovery",
 		"do not discover the gateway",
@@ -791,7 +791,7 @@ func TestProjectPromptDoesNotClaimActionsSDKWithoutActiveGrant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prompt := projectSystemPromptForMode(tt.project, nil, projectAssistantCollaborationModeDefault, false)
-			if strings.Contains(prompt, "MUST declare this exact dependency alias") || strings.Contains(prompt, "import { createActionsClient } from '@faros/actions-node';") {
+			if strings.Contains(prompt, "MUST declare this exact dependency alias") || strings.Contains(prompt, "import { createActionsClient } from '@railgrid/actions-node';") {
 				t.Fatalf("prompt made an SDK availability claim without an active grant:\n%s", prompt)
 			}
 			if !strings.Contains(prompt, "No active integration action grant is present") {

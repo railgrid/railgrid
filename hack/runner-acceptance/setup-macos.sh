@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 # Disposable, local-only acceptance fixture. No credentials leave this script.
 set -eu
 
@@ -15,13 +15,13 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-runner_binary="$script_dir/faros-runner"
+runner_binary="$script_dir/railgrid-runner"
 if [ ! -x "$runner_binary" ]; then
-  echo 'Place setup-macos.sh beside the matching faros-runner binary.' >&2
+  echo 'Place setup-macos.sh beside the matching railgrid-runner binary.' >&2
   exit 1
 fi
 
-fixture_root="${FAROS_RUNNER_FIXTURE_ROOT:-$HOME/.faros-runner-preview}"
+fixture_root="${RAILGRID_RUNNER_FIXTURE_ROOT:-$HOME/.railgrid-runner-preview}"
 umask 077
 mkdir -p "$fixture_root"
 fixture_root=$(CDPATH='' cd -- "$fixture_root" && pwd)
@@ -63,7 +63,7 @@ PY
 
 printf 'Fixture base commit: %s\n' "$base_commit"
 printf 'Runner token file (keep private): %s/token\n' "$fixture_root"
-printf 'Copy the token locally into your Faros Service credential field. Do not send it in chat.\n'
+printf 'Copy the token locally into your Railgrid Service credential field. Do not send it in chat.\n'
 printf 'If the dedicated Codex home is not signed in, run:\n'
 printf '  CODEX_HOME="%s/codex-home" codex login\n' "$fixture_root"
 printf 'Then start or restart the runner with:\n'

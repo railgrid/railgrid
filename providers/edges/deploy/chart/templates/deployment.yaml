@@ -34,27 +34,27 @@ spec:
         # Bootstrap the provider workspace (KubernetesCluster + LinuxServer + MacOSServer
         # APIResourceSchemas, APIExport, endpoint slice, bind grant) with the
         # onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/faros/schemas. Idempotent.
+        # /etc/railgrid/schemas. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/kubeconfig
-            - name: FAROS_SCHEMAS_DIR
-              value: /etc/faros/schemas
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/kubeconfig
+            - name: RAILGRID_SCHEMAS_DIR
+              value: /etc/railgrid/schemas
             {{- if .Values.catalogEntry.enabled }}
-            - name: FAROS_CATALOGENTRY_FILE
-              value: /etc/faros/catalogentry/catalogentry.yaml
+            - name: RAILGRID_CATALOGENTRY_FILE
+              value: /etc/railgrid/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
             - name: provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/faros/catalogentry
+              mountPath: /etc/railgrid/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -93,39 +93,39 @@ spec:
                   fieldPath: status.podIP
             - name: EDGES_INTERNAL_PORT
               value: {{ .Values.internalPort | quote }}
-            - name: FAROS_PROVIDER_NAME
+            - name: RAILGRID_PROVIDER_NAME
               value: "edges"
-            - name: FAROS_HUB_URL
+            - name: RAILGRID_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: FAROS_HUB_EXTERNAL_URL
+            - name: RAILGRID_HUB_EXTERNAL_URL
               value: {{ .Values.hub.externalURL | default .Values.hub.url | quote }}
             {{- if .Values.hub.internalURL }}
-            - name: FAROS_HUB_INTERNAL_URL
+            - name: RAILGRID_HUB_INTERNAL_URL
               value: {{ .Values.hub.internalURL | quote }}
             {{- end }}
-            - name: FAROS_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/faros/kubeconfig
+            - name: RAILGRID_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/railgrid/kubeconfig
             {{- if .Values.devMode }}
-            - name: FAROS_DEV_MODE
+            - name: RAILGRID_DEV_MODE
               value: "true"
             {{- end }}
             {{- if .Values.allowUnverifiedSSHHostKey }}
-            - name: FAROS_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY
+            - name: RAILGRID_EDGES_ALLOW_UNVERIFIED_SSH_HOST_KEY
               value: "true"
             {{- end }}
             {{- if .Values.hub.insecure }}
-            - name: FAROS_HUB_INSECURE
+            - name: RAILGRID_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.caData }}
-            - name: FAROS_HUB_CA_DATA
+            - name: RAILGRID_HUB_CA_DATA
               value: {{ .Values.hub.caData | quote }}
             {{- else if .Values.hub.caSecretRef.name }}
-            - name: FAROS_HUB_CA_FILE
-              value: /var/run/secrets/faros-hub-ca/{{ .Values.hub.caSecretRef.key }}
+            - name: RAILGRID_HUB_CA_FILE
+              value: /var/run/secrets/railgrid-hub-ca/{{ .Values.hub.caSecretRef.key }}
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: FAROS_HUB_TOKEN
+            - name: RAILGRID_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -133,11 +133,11 @@ spec:
             {{- end }}
           volumeMounts:
             - name: provider-kubeconfig
-              mountPath: /var/run/secrets/faros
+              mountPath: /var/run/secrets/railgrid
               readOnly: true
             {{- if and (not .Values.hub.caData) .Values.hub.caSecretRef.name }}
             - name: hub-ca
-              mountPath: /var/run/secrets/faros-hub-ca
+              mountPath: /var/run/secrets/railgrid-hub-ca
               readOnly: true
             {{- end }}
           resources:

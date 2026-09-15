@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,11 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/hubmcp"
-	"github.com/faroshq/provider-app-studio/tenant"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
@@ -421,7 +421,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 }
 
 // postProjectComponentSync sends one component's authoritative sync. The
-// development agent also stamps revisions on plain syncs (the faros CLI, MCP
+// development agent also stamps revisions on plain syncs (the railgrid CLI, MCP
 // dev_sync), which can move its applied revision past App Studio's FileStore
 // revision; the agent then rejects the next authoritative sync with a 409.
 // On such a conflict App Studio reads the applied revision from the
@@ -629,7 +629,7 @@ func routeProjectSyncDeletedPaths(paths []string, components map[string]projectT
 // immediately (or never starts), the port stays closed, and the only symptom is
 // an app that "looks up" while every request to it fails.
 //
-// Keyed by the toolchain half of the template's ${faros.devImage.<toolchain>}
+// Keyed by the toolchain half of the template's ${railgrid.devImage.<toolchain>}
 // token. A toolchain absent from this map is not validated — an unknown
 // toolchain must never block a sync, since the template, not App Studio, is the
 // authority on what its sandbox can run.

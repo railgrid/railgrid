@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 )
 
 // fakeCR serves one websearch Connection to the search path.
@@ -51,7 +51,7 @@ func (f fakeSecrets) GetSecret(context.Context, string, string) (*corev1.Secret,
 	return &corev1.Secret{Data: map[string][]byte{"token": []byte(f.token)}}, nil
 }
 
-// searxngStub mimics the JSON API the faros searxng Template exposes, including
+// searxngStub mimics the JSON API the railgrid searxng Template exposes, including
 // its bearer-token gate.
 func searxngStub(t *testing.T, wantToken string) *httptest.Server {
 	t.Helper()
@@ -84,7 +84,7 @@ func searxngDeps(server *httptest.Server, token string) Deps {
 	return Deps{
 		CR:             fakeCR{conns: []agentsv1alpha1.Connection{conn}},
 		Secrets:        fakeSecrets{token: token},
-		ConnSecretName: func(n string) string { return "faros-agents-conn-" + n },
+		ConnSecretName: func(n string) string { return "railgrid-agents-conn-" + n },
 	}
 }
 

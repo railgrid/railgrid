@@ -1,5 +1,5 @@
 <!--
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -948,8 +948,8 @@ async function onDownloadKubeconfig() {
   kubeconfigBusy.value = true
   try {
     // Reuse the persisted install variant for kubeconfig downloads. Defaults
-    // to 'faros'.
-    const install = (localStorage.getItem('faros:portal:kubeconfig:install') === 'krew' ? 'krew' : 'faros') as 'faros' | 'krew'
+    // to 'railgrid'.
+    const install = (localStorage.getItem('railgrid:portal:kubeconfig:install') === 'krew' ? 'krew' : 'railgrid') as 'railgrid' | 'krew'
     await tenant.downloadKubeconfig(target.org, target.ws, install)
   } finally {
     kubeconfigBusy.value = false
@@ -1104,7 +1104,7 @@ async function onRemoveWsMember(user: string) {
 // ===== Workspace pane: app access grants ===================================
 // Plain workspace RBAC (labeled ClusterRoleBindings) written by App Studio's
 // share dialog; listed here so invitations are visible and revocable in the
-// faros UI. Granting stays app-scoped in the share dialog, where the app and
+// railgrid UI. Granting stays app-scoped in the share dialog, where the app and
 // member context live.
 
 const appAccessGrants = ref<AppAccessGrantRow[]>([])

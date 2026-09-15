@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ cd "${ROOT_DIR}"
 # Make imports the repository .env for direct invocations as well as Make
 # recipes. The file is gitignored; only its path and the credential filename
 # are passed to kubectl, never the JSON contents.
-ENV_FILE="${FAROS_KCC_ENV_FILE:-.env}"
+ENV_FILE="${RAILGRID_KCC_ENV_FILE:-.env}"
 dotenv_names=()
 command -v sed >/dev/null || {
   echo "sed is required to load ${ENV_FILE}" >&2
@@ -47,21 +47,21 @@ fi
 # this script, but explicitly remove their export attributes before invoking
 # curl/kubectl so unrelated credentials are never inherited by subprocesses.
 dotenv_names+=(
-  FAROS_CONFIG_CONNECTOR_GCP_PROJECT
-  FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE
-  FAROS_E2E_GCP_PROJECT
-  FAROS_E2E_GCP_CREDENTIALS_FILE
+  RAILGRID_CONFIG_CONNECTOR_GCP_PROJECT
+  RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE
+  RAILGRID_E2E_GCP_PROJECT
+  RAILGRID_E2E_GCP_CREDENTIALS_FILE
 )
 for env_name in "${dotenv_names[@]}"; do
   export -n "${env_name}" 2>/dev/null || true
 done
 
-: "${FAROS_E2E_TILT_RUNTIME_KUBECONFIG:?FAROS_E2E_TILT_RUNTIME_KUBECONFIG is required}"
-gcp_credentials_file="${FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE:-${FAROS_E2E_GCP_CREDENTIALS_FILE:-}}"
-: "${gcp_credentials_file:?FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required}"
+: "${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG:?RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG is required}"
+gcp_credentials_file="${RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE:-${RAILGRID_E2E_GCP_CREDENTIALS_FILE:-}}"
+: "${gcp_credentials_file:?RAILGRID_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy RAILGRID_E2E_GCP_CREDENTIALS_FILE) is required}"
 
-if [[ ! -f "${FAROS_E2E_TILT_RUNTIME_KUBECONFIG}" ]]; then
-  echo "runtime kubeconfig does not exist: ${FAROS_E2E_TILT_RUNTIME_KUBECONFIG}" >&2
+if [[ ! -f "${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG}" ]]; then
+  echo "runtime kubeconfig does not exist: ${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG}" >&2
   exit 1
 fi
 if [[ ! -f "${gcp_credentials_file}" ]]; then
@@ -85,7 +85,7 @@ curl -fsSL "${KCC_BUNDLE_URL}" -o "${bundle}"
 echo "${KCC_BUNDLE_SHA256}  ${bundle}" | sha256sum -c -
 tar -xzf "${bundle}" -C "${task_tmp}"
 
-kc=(kubectl --kubeconfig "${FAROS_E2E_TILT_RUNTIME_KUBECONFIG}")
+kc=(kubectl --kubeconfig "${RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG}")
 
 echo ">>> applying Config Connector operator ${KCC_VERSION}"
 "${kc[@]}" apply -f "${task_tmp}/operator-system/configconnector-operator.yaml"

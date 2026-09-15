@@ -11,7 +11,7 @@ import {
 
 const resourceRef = {
   name: 'orders',
-  apiVersion: 'example.faros.sh/v1alpha1',
+  apiVersion: 'example.railgrid.ai/v1alpha1',
   kind: 'Table',
   resource: 'tables',
 };
@@ -54,16 +54,16 @@ test('invokes through the App Studio gateway and unwraps the stable result', asy
 
 test('uses action URL, project, org, and workspace environment defaults', async () => {
   const prior = {
-    base: process.env.FAROS_ACTIONS_BASE_URL,
-    project: process.env.FAROS_PROJECT,
-    org: process.env.FAROS_ACTIONS_ORG,
-    workspace: process.env.FAROS_ACTIONS_WORKSPACE,
+    base: process.env.RAILGRID_ACTIONS_BASE_URL,
+    project: process.env.RAILGRID_PROJECT,
+    org: process.env.RAILGRID_ACTIONS_ORG,
+    workspace: process.env.RAILGRID_ACTIONS_WORKSPACE,
   };
   try {
-    process.env.FAROS_ACTIONS_BASE_URL = 'https://hub.example/services/providers/app-studio';
-    process.env.FAROS_PROJECT = 'env-project';
-    process.env.FAROS_ACTIONS_ORG = 'org-from-env';
-    process.env.FAROS_ACTIONS_WORKSPACE = 'workspace-from-env';
+    process.env.RAILGRID_ACTIONS_BASE_URL = 'https://hub.example/services/providers/app-studio';
+    process.env.RAILGRID_PROJECT = 'env-project';
+    process.env.RAILGRID_ACTIONS_ORG = 'org-from-env';
+    process.env.RAILGRID_ACTIONS_WORKSPACE = 'workspace-from-env';
     let request;
     const client = createActionsClient({
       token: 'token',
@@ -74,14 +74,14 @@ test('uses action URL, project, org, and workspace environment defaults', async 
     });
     await client.integration('sales').invoke('lookup/v1');
     assert.equal(request.url, 'https://hub.example/services/providers/app-studio/api/projects/env-project/integrations/sales/invoke');
-    assert.equal(request.options.headers['X-Faros-Org'], 'org-from-env');
-    assert.equal(request.options.headers['X-Faros-Workspace'], 'workspace-from-env');
+    assert.equal(request.options.headers['X-Railgrid-Org'], 'org-from-env');
+    assert.equal(request.options.headers['X-Railgrid-Workspace'], 'workspace-from-env');
   } finally {
     for (const [name, value] of Object.entries({
-      FAROS_ACTIONS_BASE_URL: prior.base,
-      FAROS_PROJECT: prior.project,
-      FAROS_ACTIONS_ORG: prior.org,
-      FAROS_ACTIONS_WORKSPACE: prior.workspace,
+      RAILGRID_ACTIONS_BASE_URL: prior.base,
+      RAILGRID_PROJECT: prior.project,
+      RAILGRID_ACTIONS_ORG: prior.org,
+      RAILGRID_ACTIONS_WORKSPACE: prior.workspace,
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
@@ -166,7 +166,7 @@ test('propagates idempotency, correlation, deadline, signal, and custom headers'
 
   assert.equal(request.options.headers['Idempotency-Key'], 'idem-1');
   assert.equal(request.options.headers['X-Request-ID'], 'corr-1');
-  assert.equal(request.options.headers['X-Faros-Action-Deadline-Ms'], '45000');
+  assert.equal(request.options.headers['X-Railgrid-Action-Deadline-Ms'], '45000');
   assert.equal(request.options.headers['X-Test'], 'present');
   assert.equal(request.options.signal.aborted, false);
 });
@@ -194,7 +194,7 @@ test('refreshes a dynamic credential once after HTTP 401', async () => {
 });
 
 test('reads the atomically refreshed token file on every request', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'faros-actions-sdk-'));
+  const dir = await mkdtemp(join(tmpdir(), 'railgrid-actions-sdk-'));
   const tokenPath = join(dir, 'token');
   const requests = [];
   try {
@@ -218,13 +218,13 @@ test('reads the atomically refreshed token file on every request', async () => {
   }
 });
 
-test('uses FAROS_ACTIONS_TOKEN_FILE when no credential option is supplied', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'faros-actions-sdk-'));
+test('uses RAILGRID_ACTIONS_TOKEN_FILE when no credential option is supplied', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'railgrid-actions-sdk-'));
   const tokenPath = join(dir, 'token');
-  const prior = process.env.FAROS_ACTIONS_TOKEN_FILE;
+  const prior = process.env.RAILGRID_ACTIONS_TOKEN_FILE;
   try {
     await writeFile(tokenPath, 'env-token\n', { mode: 0o600 });
-    process.env.FAROS_ACTIONS_TOKEN_FILE = tokenPath;
+    process.env.RAILGRID_ACTIONS_TOKEN_FILE = tokenPath;
     let authorization;
     const client = createActionsClient({
       baseURL: 'https://hub.example/services/providers/app-studio',
@@ -237,8 +237,8 @@ test('uses FAROS_ACTIONS_TOKEN_FILE when no credential option is supplied', asyn
     await client.integration('sales').invoke('query_table/v1');
     assert.equal(authorization, 'Bearer env-token');
   } finally {
-    if (prior === undefined) delete process.env.FAROS_ACTIONS_TOKEN_FILE;
-    else process.env.FAROS_ACTIONS_TOKEN_FILE = prior;
+    if (prior === undefined) delete process.env.RAILGRID_ACTIONS_TOKEN_FILE;
+    else process.env.RAILGRID_ACTIONS_TOKEN_FILE = prior;
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -307,8 +307,8 @@ test('rejects malformed success envelopes and non-envelope HTTP errors', async (
 });
 
 test('does not infer development credentials', async () => {
-  const prior = process.env.FAROS_ACTIONS_DEV_TOKEN;
-  process.env.FAROS_ACTIONS_DEV_TOKEN = 'local-token';
+  const prior = process.env.RAILGRID_ACTIONS_DEV_TOKEN;
+  process.env.RAILGRID_ACTIONS_DEV_TOKEN = 'local-token';
   try {
     const client = createActionsClient({
       baseURL: 'https://hub.example', project: 'demo', devToken: 'synthetic-token', allowDevelopmentToken: true,
@@ -319,8 +319,8 @@ test('does not infer development credentials', async () => {
       (error) => error instanceof ActionsClientError && error.code === 'credential_required',
     );
   } finally {
-    if (prior === undefined) delete process.env.FAROS_ACTIONS_DEV_TOKEN;
-    else process.env.FAROS_ACTIONS_DEV_TOKEN = prior;
+    if (prior === undefined) delete process.env.RAILGRID_ACTIONS_DEV_TOKEN;
+    else process.env.RAILGRID_ACTIONS_DEV_TOKEN = prior;
   }
 });
 

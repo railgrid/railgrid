@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The Faros Authors.
+# Copyright 2026 The Railgrid Authors.
 """Local, checksum-pinned runner installation. Never edits enrollment or state."""
 import argparse
 import fcntl
@@ -38,7 +38,7 @@ def selected(root, state, field='current'):
     sha = state.get(field, '')
     if len(sha) != 64 or any(c not in '0123456789abcdef' for c in sha):
         raise ValueError('no valid ' + field + ' installation')
-    binary = root / 'releases' / sha / 'faros-runner'
+    binary = root / 'releases' / sha / 'railgrid-runner'
     if digest(binary) != sha:
         raise ValueError('installed binary checksum mismatch')
     return binary
@@ -76,7 +76,7 @@ def install(root, state, source, expected):
         info = metadata(binary)
         destination = releases / expected
         destination.mkdir(exist_ok=True)
-        os.replace(binary, destination / 'faros-runner')
+        os.replace(binary, destination / 'railgrid-runner')
         if state.get('current') != expected:
             save(root, {'current': expected, 'previous': state.get('current')})
         print(json.dumps(info))
@@ -86,7 +86,7 @@ def install(root, state, source, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path.home() / '.local/share/faros-runner')
+    parser.add_argument('--root', type=Path, default=Path.home() / '.local/share/railgrid-runner')
     commands = parser.add_subparsers(dest='command', required=True)
     add = commands.add_parser('install')
     add.add_argument('--binary', type=Path, required=True)

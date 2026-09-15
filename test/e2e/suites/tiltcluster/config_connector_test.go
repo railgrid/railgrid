@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ var (
 	// Terraform use the same provider publication, tenant binding, and runtime
 	// composition path; backend-specific resources remain declared separately.
 	infrastructureProviderGVR = schema.GroupVersionResource{
-		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "infrastructureproviders",
+		Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "infrastructureproviders",
 	}
 	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
@@ -55,12 +55,12 @@ var (
 )
 
 const (
-	infrastructureOperatorNamespace  = "faros-infrastructure-operator"
+	infrastructureOperatorNamespace  = "railgrid-infrastructure-operator"
 	infrastructureOperatorName       = "infrastructure"
 	configConnectorTemplatePrefix    = "gcs-bucket-kcc-demo-"
 	configConnectorWorkspacePrefix   = "e2e-gcs-"
 	configConnectorStorageBucketNode = "storageBucket"
-	configConnectorTestLabel         = "faros.sh/e2e-config-connector"
+	configConnectorTestLabel         = "railgrid.ai/e2e-config-connector"
 	configConnectorTestLabelValue    = "infra-operator-kcc-demo"
 
 	infrastructureOperatorWait = 3 * time.Minute
@@ -84,7 +84,7 @@ const (
 // controller is installed. This proves only that KRO composes the expected CR
 // with the expected fields; it does not contact GCP or reconcile a bucket.
 func TestConfigConnectorComposition(t *testing.T) {
-	if os.Getenv("FAROS_E2E_CONFIG_CONNECTOR_COMPOSITION") != "1" {
+	if os.Getenv("RAILGRID_E2E_CONFIG_CONNECTOR_COMPOSITION") != "1" {
 		t.Skip("run only through make e2e-tilt-cluster-config-connector")
 	}
 	requireStack(t)
@@ -153,7 +153,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 	}
 
 	workspaceName := configConnectorWorkspacePrefix + shortNonce()
-	parentClient := kcpAdminDynamic(t, "root:faros")
+	parentClient := kcpAdminDynamic(t, "root:railgrid")
 	workspacePath := createConfigConnectorWorkspace(t, parentClient, workspaceName)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -281,7 +281,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 
 func infrastructureRuntimeClient(t *testing.T) dynamic.Interface {
 	t.Helper()
-	path := envOr("FAROS_E2E_TILT_RUNTIME_KUBECONFIG", filepath.Join(repoRoot, ".faros-cluster.kubeconfig"))
+	path := envOr("RAILGRID_E2E_TILT_RUNTIME_KUBECONFIG", filepath.Join(repoRoot, ".railgrid-cluster.kubeconfig"))
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		t.Skipf("runtime kubeconfig %q is absent; start `make tilt-cluster` first", path)
 	}
@@ -298,7 +298,7 @@ func infrastructureRuntimeClient(t *testing.T) dynamic.Interface {
 
 func waitInfrastructureProviderReady(t *testing.T, runtimeClient dynamic.Interface) {
 	t.Helper()
-	namespace := envOr("FAROS_E2E_TILT_OPERATOR_NAMESPACE", infrastructureOperatorNamespace)
+	namespace := envOr("RAILGRID_E2E_TILT_OPERATOR_NAMESPACE", infrastructureOperatorNamespace)
 	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
 		provider, err := runtimeClient.Resource(infrastructureProviderGVR).Namespace(namespace).Get(context.Background(), infrastructureOperatorName, metav1.GetOptions{})
 		if err != nil {

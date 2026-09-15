@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 const source = readFileSync(new URL('./ProvidersPage.vue', import.meta.url), 'utf8')
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: join(tmpdir(), 'faros-vite-provider-binding-action'),
+  cacheDir: join(tmpdir(), 'railgrid-vite-provider-binding-action'),
   configFile: false,
   optimizeDeps: { noDiscovery: true },
   root: new URL('../../', import.meta.url).pathname,

@@ -2,8 +2,8 @@
 
 Status: **NOT IMPLEMENTED.** Proposal written 12 September 2026; no phase has
 started. Nothing in this document describes shipped behaviour: there is no
-`faros provider` command group, no `provider-sdk/runtime` package, no
-`faros-provider` library chart, and the CatalogEntry still exists in three
+`railgrid provider` command group, no `provider-sdk/runtime` package, no
+`railgrid-provider` library chart, and the CatalogEntry still exists in three
 copies. Sections 2.1 to 2.3 describe the current state and are accurate as of
 the date above; everything from section 3 on is a plan. When a phase lands,
 update this line and move the document out of `docs/roadmap/`.
@@ -13,21 +13,21 @@ and [provider-publishing.md](../provider-publishing.md).
 
 ## 1. The target
 
-Someone who has never seen faros, using the SaaS hub with an ordinary org
+Someone who has never seen railgrid, using the SaaS hub with an ordinary org
 account, should be able to go from nothing to a provider running and visible
 in the portal with three commands, and never open a YAML file they did not
 write:
 
 ```sh
-faros login https://faros.example.com   # the SaaS hub, an ordinary org account
-faros provider init acme                # scaffold ./acme: Go backend, portal, chart, manifest, CI
-faros provider dev                      # ephemeral edge + this provider as a local process,
+railgrid login https://railgrid.example.com   # the SaaS hub, an ordinary org account
+railgrid provider init acme                # scaffold ./acme: Go backend, portal, chart, manifest, CI
+railgrid provider dev                      # ephemeral edge + this provider as a local process,
                                         # registered and enabled; change code, reload, repeat
-faros provider install acme             # for real: register, mint credential, helm install
+railgrid provider install acme             # for real: register, mint credential, helm install
                                         # into a cluster connected as an edge, wait Ready
 ```
 
-`faros provider quickstart` is `init` + `dev` in one command for the very
+`railgrid provider quickstart` is `init` + `dev` in one command for the very
 first run. No platform admin is involved at any step. The measure is the same
 one `helm install` meets: one command, one credential the user never copies
 by hand, idempotent, and a clear failure when a prerequisite is missing.
@@ -54,7 +54,7 @@ the Makefile and the Tiltfile, a new provider today needs:
 | 10 | Write the Helm chart and the chart README (embedded as `valuesDoc`) | deploy/chart/ | yes |
 | 11 | Add 8 Makefile targets and 3 Tilt resources | Makefile (70 quickstart lines), Tiltfile:155-203 | yes |
 | 12 | Build and push the image and chart | provider-release.yaml, `cmd/release` | monorepo CI only |
-| 13 | `kubectl apply` Provider + CatalogEntry into `root:faros:system:providers` with an admin kubeconfig | Makefile:1054-1064 | yes |
+| 13 | `kubectl apply` Provider + CatalogEntry into `root:railgrid:system:providers` with an admin kubeconfig | Makefile:1054-1064 | yes |
 | 14 | Hub provisions workspace, SA, kubeconfig Secret | pkg/hub/providers/provider_controller.go:144-160 | automatic |
 | 15 | Read the SA token out of kcp and hand-write a kubeconfig with `printf` | Makefile:1417-1426 | yes |
 | 16 | `kubectl create secret` + `helm upgrade --install` | deploy/chart/README.md | yes |
@@ -80,11 +80,11 @@ by hand. The BYO path (`POST /api/orgs/{org}/providers`) already collapses
 workspace + credential + rendered helm commands into one call
 (`pkg/hub/restapi/org_providers.go:281`, `pkg/hub/providers/selfhosting.go:148`),
 but only the portal calls it. The platform path has no equivalent, and neither
-has a CLI verb. `docs/providers.md` literally says "There is no `faros` CLI
+has a CLI verb. `docs/providers.md` literally says "There is no `railgrid` CLI
 subcommand — use curl" for rotation.
 
-**P3. No scaffold.** `faros provider init` does not exist. `faros init` runs a
-hub, `faros install` installs an agent, `faros dev init` builds a kind cluster.
+**P3. No scaffold.** `railgrid provider init` does not exist. `railgrid init` runs a
+hub, `railgrid install` installs an agent, `railgrid dev init` builds a kind cluster.
 The root command tree (`pkg/cli/cmd/root.go:89-131`) has no provider group.
 
 **P4. The runtime is boilerplate.** Every provider `main.go` re-implements the
@@ -117,7 +117,7 @@ describes.
 
 | Situation | Who | Provisioning | Data plane | Works today? |
 |---|---|---|---|---|
-| Local dev hub (embedded kcp) | you are admin | Provider + CatalogEntry into `root:faros:system:providers` | hub dials `localhost` | yes, via make targets |
+| Local dev hub (embedded kcp) | you are admin | Provider + CatalogEntry into `root:railgrid:system:providers` | hub dials `localhost` | yes, via make targets |
 | Self-hosted hub, platform provider | platform admin | same, or `/bonkers` | hub dials the in-cluster Service | yes, manual |
 | SaaS org, custom provider (BYO) | org admin, no platform admin | `POST /api/orgs/{org}/providers` mints an org-scoped workspace + credential | only through a connected Kubernetes edge's tunnel | yes, with the caveats below |
 
@@ -156,18 +156,18 @@ provider binary, and `init` applies it from there. The chart stops rendering
 its own copy.
 
 - The chart passes only what it knows and the manifest cannot: the in-cluster
-  URLs and the version. Two env vars on the init container, `FAROS_UI_URL` and
-  `FAROS_BACKEND_URL`, plus `FAROS_PROVIDER_VERSION` which already exists.
+  URLs and the version. Two env vars on the init container, `RAILGRID_UI_URL` and
+  `RAILGRID_BACKEND_URL`, plus `RAILGRID_PROVIDER_VERSION` which already exists.
   `init` patches `spec.ui.url`, `spec.backend.url`, `spec.version` and
   `spec.selfHosting.chart.version` before applying.
 - Claims come from the manifest. `sdkinstall.Bootstrap` grows a
   `ClaimsFromCatalogEntry` mode that maps `ProviderPermissionClaim` to
   `PermissionClaim`. Identity hashes for first-party claim groups, which the
   CatalogEntry type deliberately does not carry, come from env
-  (`FAROS_CLAIM_IDENTITY_HASH_<GROUP>`), which the chart sets from values
+  (`RAILGRID_CLAIM_IDENTITY_HASH_<GROUP>`), which the chart sets from values
   exactly as `selfHosting.requiredValues[].identityFor` already describes.
 - GitOps users who manage the CatalogEntry separately keep
-  `catalogEntry.enabled=false`; `FAROS_CATALOGENTRY_FILE` still overrides the
+  `catalogEntry.enabled=false`; `RAILGRID_CATALOGENTRY_FILE` still overrides the
   embedded copy.
 
 Result: P1 disappears. `deploy/chart/templates/catalogentry.yaml` is deleted,
@@ -206,24 +206,24 @@ request logging, portal static serving with index fallback and SRI-stable
 path is under `:tenants:`, so a BYO copy never beats the platform endpoint),
 graceful shutdown, and a `tenantaccess` dynamic-client factory on
 `runtime.Context`. Schemas embed into the binary too, so the Dockerfile stops
-copying `deploy/chart/files/schemas` and `FAROS_SCHEMAS_DIR` becomes an override.
+copying `deploy/chart/files/schemas` and `RAILGRID_SCHEMAS_DIR` becomes an override.
 
 Quickstart's `main.go` drops to roughly 40 lines and `init_cmd.go` is deleted.
 The infrastructure provider's 279-line init keeps working via the hooks; nothing
 forces the large providers to migrate.
 
-### 3.3 A library chart: `faros-provider`
+### 3.3 A library chart: `railgrid-provider`
 
 Every provider chart is the same Deployment, Service, ServiceAccount and Secret
 mount with different names. Publish a Helm library chart
-`oci://ghcr.io/faroshq/charts/faros-provider` and have provider charts depend on
+`oci://ghcr.io/railgrid/charts/railgrid-provider` and have provider charts depend on
 it:
 
 ```
 deploy/chart/
-├── Chart.yaml          # dependencies: [{name: faros-provider, version: 0.x}]
+├── Chart.yaml          # dependencies: [{name: railgrid-provider, version: 0.x}]
 ├── values.yaml         # name, image, port, hub, resources — nothing else
-├── templates/all.yaml  # {{ include "faros-provider.workload" . }}
+├── templates/all.yaml  # {{ include "railgrid-provider.workload" . }}
 └── README.md           # values reference, still embedded as valuesDoc
 ```
 
@@ -233,7 +233,7 @@ charts (infrastructure, edges) stay as they are; the library is opt-in and
 quickstart migrates first. `hack/helm-build.sh` currently only walks
 `deploy/charts/*/`; it gains the library and the provider charts.
 
-### 3.4 `faros provider`: the CLI group
+### 3.4 `railgrid provider`: the CLI group
 
 A new `groupProviders` in `pkg/cli/cmd/root.go`, files under
 `pkg/cli/cmd/provider*.go`, following the `edge` pattern
@@ -245,7 +245,7 @@ A new `groupProviders` in `pkg/cli/cmd/root.go`, files under
 | `dev` | The iteration loop, section 3.5. Default: ephemeral in-process edge against the hub you are logged into. `--local` runs an embedded hub instead. `--edge` reuses a persistent edge. | org register (default) or admin |
 | `quickstart [name]` | `init` + `dev` in one command: scaffold, register, run, open the portal. The first-run experience. | as `dev` |
 | `register <name>` | Create the provider on the hub and print the credential and instructions. Org-scoped by default (the SaaS case); `--platform` for hub admins. `--edge ws/name` picks the tunnel; with one connected edge it is chosen automatically. `-o kubeconfig-file`. | `POST /api/orgs/{org}/providers`; `POST /api/admin/providers` + `GET .../kubeconfig` |
-| `install <name>` | `register`, then preflight (§3.6), then namespace + Secret + `helm upgrade --install` in-process (the CLI already links `helm.sh/helm/v3` for `faros dev`), then wait for `CatalogEntry` Ready. `--chart`, `--version`, `--set`, `--namespace`, `--kubeconfig`, `--enable` to enable in the current workspace. For a custom provider the instructions are rendered locally from the scaffolded manifest's `selfHosting` block (§3.6). | as above + enable |
+| `install <name>` | `register`, then preflight (§3.6), then namespace + Secret + `helm upgrade --install` in-process (the CLI already links `helm.sh/helm/v3` for `railgrid dev`), then wait for `CatalogEntry` Ready. `--chart`, `--version`, `--set`, `--namespace`, `--kubeconfig`, `--enable` to enable in the current workspace. For a custom provider the instructions are rendered locally from the scaffolded manifest's `selfHosting` block (§3.6). | as above + enable |
 | `list`, `get`, `status` | Catalog view, endpoints, last heartbeat, Ready conditions. | `GET /api/providers`, `GET /api/orgs/{org}/providers` |
 | `enable`, `disable` | Per-workspace enable with claim consent shown in the terminal. | `POST .../workspaces/{ws}/providers/{name}/enable` |
 | `credentials rotate` | Replaces the curl snippet in providers.md. | `POST .../credentials/rotate` |
@@ -259,7 +259,7 @@ hand, idempotent because both register endpoints already are.
 scaffold template lives at `pkg/cli/scaffold/quickstart/` and is copy-synced
 from `providers/quickstart/` by `make sync-scaffold`, with `make
 verify-scaffold` in CI. This is exactly the portalkit pattern
-(`hack/sync-portalkit.sh`), and it keeps `faros provider init` working offline.
+(`hack/sync-portalkit.sh`), and it keeps `railgrid provider init` working offline.
 Rendering is a token substitution (`quickstart` to the name, module path, port)
 plus dropping the monorepo-only bits (`replace` directive, mirror notice).
 
@@ -270,7 +270,7 @@ and `instructions` once provisioned, rendered with the same
 `RenderInstallInstructions` the BYO path uses. This also gives the portal's
 `/bonkers` page the same one-click experience the org page has.
 
-### 3.5 `faros provider dev`: the iteration loop
+### 3.5 `railgrid provider dev`: the iteration loop
 
 The loop is: change code, the provider restarts, reload the portal, repeat.
 `dev` has two modes. The first is the default whenever the CLI is logged into
@@ -281,7 +281,7 @@ people developing the hub itself.
 
 The person this is for writes a custom provider, uses the SaaS hub, is not a
 platform admin, and does not want to install an agent on their machine.
-`faros provider dev` therefore owns an edge that exists only while it runs.
+`railgrid provider dev` therefore owns an edge that exists only while it runs.
 
 The inner loop is: change code, the provider restarts, reload the portal,
 repeat. Nothing in that loop talks to the hub except one cheap CatalogEntry
@@ -291,11 +291,11 @@ re-apply (below). Session start and end do.
 
 1. Resolve hub, org and workspace from the CLI login. Preflight (§3.6 above).
 2. Create an ephemeral host edge in the current workspace:
-   `faros edge create dev-<provider>-<user>-<rand> --type server` (or `macos`),
-   labelled `faros.sh/ephemeral=true`, `faros.sh/owner=<user>`,
-   `faros.sh/provider=<name>`. Mint its join token
-   (`faros agent token create`) and run the agent **in-process**: the CLI
-   already links the agent package for `faros agent run`
+   `railgrid edge create dev-<provider>-<user>-<rand> --type server` (or `macos`),
+   labelled `railgrid.ai/ephemeral=true`, `railgrid.ai/owner=<user>`,
+   `railgrid.ai/provider=<name>`. Mint its join token
+   (`railgrid agent token create`) and run the agent **in-process**: the CLI
+   already links the agent package for `railgrid agent run`
    (`pkg/cli/cmd/agent.go:222`), so no child binary and no launchd/systemd.
    The agent runs with a loopback-only service policy.
 3. Register the provider bound to that edge, `POST /api/orgs/{org}/providers`
@@ -303,7 +303,7 @@ re-apply (below). Session start and end do.
    `RecordProviderEdgeBinding` overwrites the previous session's edge
    (`pkg/hub/kcp/edgeroute.go:104-110`), so the provider workspace and
    credential persist while the edge is replaced each time. The credential is
-   cached at `~/.faros/providers/<hub>/<org>/<name>.kubeconfig` and re-fetched
+   cached at `~/.railgrid/providers/<hub>/<org>/<name>.kubeconfig` and re-fetched
    from the kubeconfig endpoint if missing (same token).
 4. The hub reconciles the hub-owned edges Service `provider-<name>` with
    `host: 127.0.0.1` and the declared port (needs the three hub changes
@@ -317,7 +317,7 @@ re-apply (below). Session start and end do.
 
 - Go changes: rebuild, restart `serve`. Portal changes: `vite build --watch`
   into `portal/dist`, and the SDK runtime serves the portal from disk when
-  `FAROS_PORTAL_DIR` is set, so a UI change needs no Go rebuild.
+  `RAILGRID_PORTAL_DIR` is set, so a UI change needs no Go rebuild.
 - After every rebuild, re-apply the CatalogEntry with
   `spec.version: <base>-dev.<n>`. This matters: the ui-grant caches the
   bundle's SRI hash keyed by version and only re-hashes every ten minutes
@@ -352,7 +352,7 @@ than an hour.
   the bound edge is a host edge.
 - Ephemeral-edge sweeper in the edges provider, keyed on the label.
 
-`faros provider quickstart` is `init` + `dev` in one command for the very
+`railgrid provider quickstart` is `init` + `dev` in one command for the very
 first run: scaffold, ephemeral edge, register, run, open the portal. A local
 kind/k3d cluster as the edge remains the fallback for a provider that must
 run in-cluster, with an image reload instead of a process restart.
@@ -363,7 +363,7 @@ For hub developers and CI. Replaces `make run-hub-embedded-static`,
 `install-provider-X`, `init-provider-X`, `run-provider-X` and the three Tilt
 resources:
 
-1. Start an embedded-kcp hub in-process (`faros init` already does this) with a
+1. Start an embedded-kcp hub in-process (`railgrid init` already does this) with a
    static dev token and `--hub-external-url` set.
 2. Create the Provider and CatalogEntry through the admin API, not kubectl.
 3. Wait for the minted Secret, write the runtime kubeconfig to the data dir.
@@ -395,7 +395,7 @@ small hub change and not on the critical path.
 **Edge selection.** `install` calls `GET /api/orgs/{org}/providers/install-targets`,
 picks the only connected Kubernetes edge or asks with `--edge`, and passes it
 to register. The helm install then targets that cluster's kubeconfig, which
-`faros edge kubeconfig` already produces. The user never learns that an edges
+`railgrid edge kubeconfig` already produces. The user never learns that an edges
 Service exists.
 
 **Preflight, before anything is minted.** `install` and `validate --hub` check
@@ -427,10 +427,10 @@ Each phase is one or two PRs and leaves `make e2e-provider` green.
 |---|---|---|
 | 0 | Fix stale text: quickstart README "not in this iteration" list, `manifest.yaml` header (`schemas[]`), chart README's `/bonkers` references. Half a day. | P7 |
 | 1 | `provider-sdk/runtime` + `ClaimsFromCatalogEntry` + embedded manifest and schemas. Quickstart adopts; `init_cmd.go` and the chart ConfigMap go. | P1, P4 |
-| 2 | `faros provider init` with embedded template and `make sync-scaffold`/`verify-scaffold`. CI job scaffolds `acme` into a temp dir, builds it, runs it under the provider e2e suite. `faros provider dev --local`. | P3, P5 |
-| 3 | `faros provider register/install/list/status/enable/disable/delete/credentials rotate/validate`, org-scoped by default with edge selection, local instruction rendering and the §3.6 preflight. `dev` with an ephemeral in-process host edge (three small hub changes plus a sweeper, §3.5.1) and `faros provider quickstart`. Admin create returns kubeconfig and instructions; portal `/bonkers` uses it. Docs and `skills/faros` updated; `verify-docs-cli` regenerates the CLI reference. | P2, SaaS gap |
-| 4 | `faros-provider` library chart published; quickstart chart shrinks to four files; `helm-build.sh` covers it. Optional: register request accepts an inline `selfHosting` recipe so the portal shows steps for custom providers. | P4 (chart half) |
-| 5 | Standalone-repo story: `init` emits a GitHub workflow that builds image and chart on `v*` tags (a generalised `provider-release.yaml`); `faros provider publish` cuts the tag. | P6 |
+| 2 | `railgrid provider init` with embedded template and `make sync-scaffold`/`verify-scaffold`. CI job scaffolds `acme` into a temp dir, builds it, runs it under the provider e2e suite. `railgrid provider dev --local`. | P3, P5 |
+| 3 | `railgrid provider register/install/list/status/enable/disable/delete/credentials rotate/validate`, org-scoped by default with edge selection, local instruction rendering and the §3.6 preflight. `dev` with an ephemeral in-process host edge (three small hub changes plus a sweeper, §3.5.1) and `railgrid provider quickstart`. Admin create returns kubeconfig and instructions; portal `/bonkers` uses it. Docs and `skills/railgrid` updated; `verify-docs-cli` regenerates the CLI reference. | P2, SaaS gap |
+| 4 | `railgrid-provider` library chart published; quickstart chart shrinks to four files; `helm-build.sh` covers it. Optional: register request accepts an inline `selfHosting` recipe so the portal shows steps for custom providers. | P4 (chart half) |
+| 5 | Standalone-repo story: `init` emits a GitHub workflow that builds image and chart on `v*` tags (a generalised `provider-release.yaml`); `railgrid provider publish` cuts the tag. | P6 |
 
 Phases 1 and 2 are where most of the smoothness comes from and they do not
 depend on any hub change. Phase 3 is the one that touches the hub and is the
@@ -440,7 +440,7 @@ depend on any hub change. Phase 3 is the one that touches the hub and is the
 
 - **Manifest in the binary vs the chart.** §3.1 puts it in the binary so there
   is exactly one copy. The cost is that changing display metadata means a new
-  image. The chart override (`FAROS_CATALOGENTRY_FILE`) stays for anyone who
+  image. The chart override (`RAILGRID_CATALOGENTRY_FILE`) stays for anyone who
   needs a faster cadence. Recommended: binary.
 - **Template source: embedded copy vs download.** Downloading the mirror tarball
   at a pinned tag avoids a sync step but breaks offline and adds a network

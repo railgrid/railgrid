@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
-	"github.com/faroshq/provider-sdk/revdial"
+	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
+	"github.com/railgrid/provider-sdk/revdial"
 )
 
 // edgeHeartbeatInterval is how often the hub stamps status.lastHeartbeatTime
@@ -50,7 +50,7 @@ var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: 
 //
 // Agents connect via WebSocket to:
 //
-//	/services/agent-proxy/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
+//	/services/agent-proxy/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
 //
 // The hub upgrades the connection, wraps it in a revdial.Dialer, and stores
 // it in p.edgeConnManager keyed by "edges/{cluster}/{name}". Subsequent
@@ -90,13 +90,13 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 
 	// / — initial agent connection handler.
 	// Path (after mount-prefix stripping):
-	//   /{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
+	//   /{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Dispatch MCP requests before agent auth — MCP handler has its own auth.
 		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/mcp") {
 			cluster, resource, name, ok := p.parseEdgeMCPPath(r.URL.Path)
 			if !ok {
-				http.Error(w, "invalid path: expected /{cluster}/apis/edges.faros.sh/v1alpha1/{resource}/{name}/mcp", http.StatusBadRequest)
+				http.Error(w, "invalid path: expected /{cluster}/apis/edges.railgrid.ai/v1alpha1/{resource}/{name}/mcp", http.StatusBadRequest)
 				return
 			}
 			p.buildMCPHandler(cluster, resource, name).ServeHTTP(w, r)
@@ -130,7 +130,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		}
 		// authenticatedByJoinToken tracks whether the agent was authenticated via a
 		// bootstrap join token. When true, the hub echoes the token back in the
-		// X-Faros-Agent-Token upgrade response header so the agent can persist it
+		// X-Railgrid-Agent-Token upgrade response header so the agent can persist it
 		// as its durable credential (token-exchange flow).
 		authenticatedByJoinToken := false
 		if !isStaticToken {
@@ -175,7 +175,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, resource, name, token)
 			upgradeHeaders = http.Header{}
 			if kubeconfigHeader != "" {
-				upgradeHeaders.Set("X-Faros-Agent-Kubeconfig", kubeconfigHeader)
+				upgradeHeaders.Set("X-Railgrid-Agent-Kubeconfig", kubeconfigHeader)
 				kubeconfigDelivered = true
 			}
 		}
@@ -276,7 +276,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 //
 // Expected format:
 //
-//	/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
+//	/{cluster}/apis/edges.railgrid.ai/v1alpha1/edges/{name}/proxy
 //
 // parseEdgeAgentPath validates the path against this Server's configured kinds
 // and returns (cluster, resource, name). resource is one of the served kinds'
@@ -323,7 +323,7 @@ func edgeConnKey(resource, cluster, name string) string {
 
 // buildAgentKubeconfigHeader reads the ServiceAccount token from the kubeconfig
 // secret created by the RBAC controller, builds a minimal kubeconfig with it,
-// and returns the result base64-encoded for the X-Faros-Agent-Kubeconfig header.
+// and returns the result base64-encoded for the X-Railgrid-Agent-Kubeconfig header.
 // Returns an empty string if the SA token is not yet available.
 func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ string) string {
 	if p.kcpConfig == nil {
@@ -346,11 +346,11 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, resource, edgeName, _ strin
 	}
 
 	secretName := edgeCredentialName(resource, edgeName) + "-kubeconfig"
-	secret, err := dynClient.Resource(secretGVR).Namespace("faros-system").Get(
+	secret, err := dynClient.Resource(secretGVR).Namespace("railgrid-system").Get(
 		context.Background(), secretName, metav1.GetOptions{})
 	if err != nil {
 		p.logger.Error(err, "failed to get kubeconfig secret for token-exchange",
-			"secret", "faros-system/"+secretName)
+			"secret", "railgrid-system/"+secretName)
 		return ""
 	}
 
@@ -399,18 +399,18 @@ func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi
 	if cluster != "" && cluster != "default" {
 		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
 	}
-	contextName := "faros-" + edgeName
+	contextName := "railgrid-" + edgeName
 	return &clientcmdapi.Config{
 		APIVersion: "v1",
 		Kind:       "Config",
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"faros-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
+			"railgrid-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			contextName: {Token: token},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
-			"default": {Cluster: "faros-hub", AuthInfo: contextName},
+			"default": {Cluster: "railgrid-hub", AuthInfo: contextName},
 		},
 		CurrentContext: "default",
 	}
@@ -489,7 +489,7 @@ func (p *Server) authorizeByIssuedToken(ctx context.Context, gvr schema.GroupVer
 // reports the hostname of the machine it runs on; the provider records it in
 // status.hostname (edgeapi.ConnectionStatus.Hostname) on every tunnel open.
 // Absent or empty leaves the recorded value untouched.
-const AgentHostnameHeader = "X-Faros-Agent-Hostname"
+const AgentHostnameHeader = "X-Railgrid-Agent-Hostname"
 
 // maxAgentHostnameLen bounds the agent-asserted value stored in status: a
 // hostname is at most 253 characters (RFC 1035), and anything longer is not
@@ -525,24 +525,24 @@ type sshCredsFromAgent struct {
 
 // extractSSHCredsFromHeaders reads SSH credential headers set by the agent.
 func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
-	user := r.Header.Get("X-Faros-SSH-User")
+	user := r.Header.Get("X-Railgrid-SSH-User")
 	if user == "" {
 		return nil
 	}
 	creds := &sshCredsFromAgent{User: user}
-	if pw := r.Header.Get("X-Faros-SSH-Password"); pw != "" {
+	if pw := r.Header.Get("X-Railgrid-SSH-Password"); pw != "" {
 		decoded, err := base64.StdEncoding.DecodeString(pw)
 		if err == nil {
 			creds.Password = string(decoded)
 		}
 	}
-	if pk := r.Header.Get("X-Faros-SSH-PrivateKey"); pk != "" {
+	if pk := r.Header.Get("X-Railgrid-SSH-PrivateKey"); pk != "" {
 		decoded, err := base64.StdEncoding.DecodeString(pk)
 		if err == nil {
 			creds.PrivateKey = decoded
 		}
 	}
-	if hk := r.Header.Get("X-Faros-SSH-HostKey"); hk != "" {
+	if hk := r.Header.Get("X-Railgrid-SSH-HostKey"); hk != "" {
 		decoded, err := base64.StdEncoding.DecodeString(hk)
 		if err == nil {
 			creds.HostKey = string(decoded)

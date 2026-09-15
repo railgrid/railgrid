@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros/pkg/browsersession"
+	"github.com/railgrid/railgrid/pkg/browsersession"
 )
 
 const (
@@ -312,7 +312,7 @@ func (h *Handler) appTokenSecret(ctx context.Context) ([]byte, error) {
 // rejectBearer answers 401 and charges the source's failure budget.
 func (h *Handler) rejectBearer(w http.ResponseWriter, source string) {
 	h.verifyFailures.record(source)
-	w.Header().Set("WWW-Authenticate", `Bearer realm="faros", error="invalid_token"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="railgrid", error="invalid_token"`)
 	writeVerifyJSON(w, http.StatusUnauthorized, map[string]any{"allowed": false, "error": "invalid bearer token"})
 }
 

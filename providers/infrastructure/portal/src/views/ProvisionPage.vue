@@ -149,7 +149,7 @@ async function submit() {
       return
     }
     if (err.reason === REASON_API_BINDING_MISSING) {
-      mutationError.value = 'This provider is not enabled in your workspace. Click Enable in the faros portal first.'
+      mutationError.value = 'This provider is not enabled in your workspace. Click Enable in the railgrid portal first.'
       return
     }
     if (err.reason === REASON_TENANT_MISSING) {

@@ -13,15 +13,15 @@ not render a standalone component:
   The fallback imports canonical CSS through Vite's `?inline` loader, which
   embeds minified canonical rules; the authored stylesheet and synced source
   copies remain byte-identical. The current core style version is 18, from
-  `FAROS_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`, and is read
-  from `--faros-ui-core-version`. Existing style elements are never replaced.
+  `RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`, and is read
+  from `--railgrid-ui-core-version`. Existing style elements are never replaced.
   Optional AI styles load independently through `agentkit/styles.ts`, with
   their own marker and version; see
   [AI presentation](ai-conversation.md).
 - `tenant.ts` owns the security-critical hub-proxy contract: `readTenant()`
-  reads `faros:portal:tenant`; `tenantHeaders({ token, json })` emits
-  `Accept`, optional JSON content type, bearer authorization, `X-Faros-Org`, and
-  `X-Faros-Workspace`; `serviceBase()` rewrites `/ui/providers/*` to
+  reads `railgrid:portal:tenant`; `tenantHeaders({ token, json })` emits
+  `Accept`, optional JSON content type, bearer authorization, `X-Railgrid-Org`, and
+  `X-Railgrid-Workspace`; `serviceBase()` rewrites `/ui/providers/*` to
   `/services/providers/*`. Callers never re-inline these headers. Cluster-in-
   path portals use their separate bearer-token model.
 - `page-state.ts` and Vue `useDelayedLoading.ts` preserve truthful first-read,
@@ -32,11 +32,11 @@ not render a standalone component:
   contract. It follows the same stale/read-state and semantic-token rules as
   resource pages; provider facts remain provider-owned. Tailwind consumers use
   `tileClass`, while plain-DOM consumers use the matching
-  `dashboardTileSemanticClass` hooks implemented in `faros-ui.css`. Both maps
+  `dashboardTileSemanticClass` hooks implemented in `railgrid-ui.css`. Both maps
   describe the same slots; the semantic map is names only and therefore
   requires the canonical stylesheet. Neither authorizes provider-local visual
   variants. A change to either map or its CSS increments the matching
-  `FAROS_UI_CORE_VERSION` style-handoff contract before the assets are synced.
+  `RAILGRID_UI_CORE_VERSION` style-handoff contract before the assets are synced.
 
 See the [resource reads pattern](../patterns/resource-reads.md) and
 [provider integration foundation](../foundations/provider-integration.md) for

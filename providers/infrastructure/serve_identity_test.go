@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,18 +59,18 @@ func TestWorkloadIdentityReviewAttestsBoundProjectedToken(t *testing.T) {
 				Namespace: "runtime",
 				UID:       "pod-uid-1",
 				Annotations: map[string]string{
-					"faros.sh/actions-tenant":      "root:faros:tenants:org:ws",
-					"faros.sh/actions-project":     "demo",
-					"faros.sh/actions-project-uid": "project-uid-1",
-					"faros.sh/actions-environment": "development",
-					"faros.sh/actions-instance":    "demo-dev",
+					"railgrid.ai/actions-tenant":      "root:railgrid:tenants:org:ws",
+					"railgrid.ai/actions-project":     "demo",
+					"railgrid.ai/actions-project-uid": "project-uid-1",
+					"railgrid.ai/actions-environment": "development",
+					"railgrid.ai/actions-instance":    "demo-dev",
 				},
 			},
 			Spec: corev1.PodSpec{ServiceAccountName: "actions"},
 		},
 	}
 	handler := newWorkloadIdentityReviewHandler(fake)
-	req := httptest.NewRequest(http.MethodPost, workloadIdentityReviewPath, stringsReader(`{"tenantPath":"root:faros:tenants:org:ws","project":"demo","projectUID":"project-uid-1","environment":"development","instance":"demo-dev"}`))
+	req := httptest.NewRequest(http.MethodPost, workloadIdentityReviewPath, stringsReader(`{"tenantPath":"root:railgrid:tenants:org:ws","project":"demo","projectUID":"project-uid-1","environment":"development","instance":"demo-dev"}`))
 	req.Header.Set("Authorization", "Bearer projected-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)

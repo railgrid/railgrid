@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api, isContextChangedError, setTenant, setToken } from './api'
 
-const API_PREFIX = '/apis/infrastructure.faros.sh/v1alpha1'
+const API_PREFIX = '/apis/infrastructure.railgrid.ai/v1alpha1'
 
 // KubeCall is one request as the kube REST client issued it: method, the
 // path under /clusters/<tenant>, the query string, and the decoded body.
@@ -38,9 +38,9 @@ function kubeStatus(code: number, reason: string, message: string, details?: Rec
 }
 
 function namedNotFound(resource: string, name: string): Response {
-  return kubeStatus(404, 'NotFound', `${resource}.infrastructure.faros.sh "${name}" not found`, {
+  return kubeStatus(404, 'NotFound', `${resource}.infrastructure.railgrid.ai "${name}" not found`, {
     name,
-    group: 'infrastructure.faros.sh',
+    group: 'infrastructure.railgrid.ai',
     kind: resource,
   })
 }
@@ -82,7 +82,7 @@ function isGet(req: KubeCall, tenant: string, resource: string): string | null {
 
 function kubeList(kind: string, items: unknown[], metadata: Record<string, unknown> = {}): Response {
   return response({
-    apiVersion: 'infrastructure.faros.sh/v1alpha1',
+    apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
     kind,
     metadata,
     items,
@@ -91,7 +91,7 @@ function kubeList(kind: string, items: unknown[], metadata: Record<string, unkno
 
 function template(name: string, spec: Record<string, unknown>, labels?: Record<string, string>) {
   return {
-    apiVersion: 'infrastructure.faros.sh/v1alpha1',
+    apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
     kind: 'Template',
     metadata: { name, ...(labels ? { labels } : {}) },
     spec,
@@ -112,14 +112,14 @@ function templateList(view?: unknown): Response {
 
 function templateListWithPlatformOwned(): Response {
   return kubeList('TemplateList', [
-    template('universal-coding-sandbox', { displayName: 'Universal coding sandbox', instanceCRD: { kind: 'Instance' } }, { 'faros.sh/platform-owned': 'true' }),
+    template('universal-coding-sandbox', { displayName: 'Universal coding sandbox', instanceCRD: { kind: 'Instance' } }, { 'railgrid.ai/platform-owned': 'true' }),
     template('widget', { displayName: 'Widget', instanceCRD: { kind: 'Widget' } }, {}),
   ])
 }
 
 function instance(overrides: Record<string, unknown> = {}) {
   return {
-    apiVersion: 'infrastructure.faros.sh/v1alpha1',
+    apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
     kind: 'Instance',
     metadata: {
       uid: 'instance-uid',
@@ -127,7 +127,7 @@ function instance(overrides: Record<string, unknown> = {}) {
       namespace: 'default',
       generation: 2,
       creationTimestamp: '2026-08-17T00:00:00Z',
-      labels: { 'faros.sh/template': 'widget' },
+      labels: { 'railgrid.ai/template': 'widget' },
     },
     spec: { template: 'widget', values: { foo: 'bar' } },
     status: {
@@ -178,7 +178,7 @@ describe('stable Instance API lifecycle contract', () => {
       const req = call(input, init)
       if (isGet(req, tenant, 'templates') === 'missing') return namedNotFound('templates', 'missing')
       if (isGet(req, tenant, 'templates') === 'unbound') return typeNotFound()
-      if (isList(req, tenant, 'templates')) return kubeStatus(403, 'Forbidden', 'templates.infrastructure.faros.sh is forbidden')
+      if (isList(req, tenant, 'templates')) return kubeStatus(403, 'Forbidden', 'templates.infrastructure.railgrid.ai is forbidden')
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 
@@ -256,7 +256,7 @@ describe('stable Instance API lifecycle contract', () => {
     setToken('instance-page-walk-token')
     const first = instance()
     const second = instance({
-      metadata: { ...instance().metadata, name: 'plain', uid: 'plain-uid', labels: { 'faros.sh/template': 'plain' } },
+      metadata: { ...instance().metadata, name: 'plain', uid: 'plain-uid', labels: { 'railgrid.ai/template': 'plain' } },
       spec: { template: 'plain' },
     })
     const detailReads: string[] = []
@@ -338,7 +338,7 @@ describe('stable Instance API lifecycle contract', () => {
       const req = call(input, init)
       if (isList(req, tenant, 'instances')) {
         return status === 403
-          ? kubeStatus(403, 'Forbidden', 'instances.infrastructure.faros.sh is forbidden: no RBAC policy matched')
+          ? kubeStatus(403, 'Forbidden', 'instances.infrastructure.railgrid.ai is forbidden: no RBAC policy matched')
           : response('bad gateway', 502)
       }
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
@@ -394,7 +394,7 @@ describe('stable Instance API lifecycle contract', () => {
     // ProtocolError so the views retry rather than render partial state.
     const cases: Array<{ label: string; body: Response }> = [
       { label: 'missing-next-token', body: instanceList([instance()], { remainingItemCount: 1 }) },
-      { label: 'missing-items', body: response({ apiVersion: 'infrastructure.faros.sh/v1alpha1', kind: 'InstanceList', metadata: {} }) },
+      { label: 'missing-items', body: response({ apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'InstanceList', metadata: {} }) },
       { label: 'not-json', body: response('<html>not json</html>') },
     ]
     for (const testCase of cases) {
@@ -454,7 +454,7 @@ describe('stable Instance API lifecycle contract', () => {
         generation: 2,
         deletionTimestamp: '2026-08-17T00:01:00Z',
         creationTimestamp: '2026-08-17T00:00:00Z',
-        labels: { 'faros.sh/template': 'widget' },
+        labels: { 'railgrid.ai/template': 'widget' },
       },
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -537,7 +537,7 @@ describe('stable Instance API lifecycle contract', () => {
         generation: 2,
         deletionTimestamp: '2026-08-17T00:01:00Z',
         creationTimestamp: '2026-08-17T00:00:00Z',
-        labels: { 'faros.sh/template': 'widget' },
+        labels: { 'railgrid.ai/template': 'widget' },
       },
     })
     let detailReads = 0
@@ -688,7 +688,7 @@ describe('stable Instance API lifecycle contract', () => {
     expect(applied?.contentType).toBe('application/apply-patch+yaml')
     expect(applied?.query).toEqual({ fieldManager: 'provider-infrastructure', force: 'true' })
     expect(applied?.body).toMatchObject({
-      apiVersion: 'infrastructure.faros.sh/v1alpha1',
+      apiVersion: 'infrastructure.railgrid.ai/v1alpha1',
       kind: 'Instance',
       metadata: { name: 'demo' },
       spec: { template: 'widget', values: { foo: 'bar' } },
@@ -702,7 +702,7 @@ describe('stable Instance API lifecycle contract', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = call(input, init)
       if (isList(req, tenant, 'templates')) return templateList()
-      if (req.method === 'PATCH') return kubeStatus(403, 'Forbidden', 'instances.infrastructure.faros.sh is forbidden: no RBAC policy matched')
+      if (req.method === 'PATCH') return kubeStatus(403, 'Forbidden', 'instances.infrastructure.railgrid.ai is forbidden: no RBAC policy matched')
       throw new Error('unexpected request ' + req.method + ' ' + req.path)
     }))
 

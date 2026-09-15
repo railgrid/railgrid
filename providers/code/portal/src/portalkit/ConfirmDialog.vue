@@ -11,11 +11,11 @@
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { Info, TriangleAlert } from 'lucide-vue-next'
 import { confirmState, resolveConfirm } from './confirm'
-import { ensureFarosUIStyles } from '../portalkit/styles'
+import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 // Standalone provider portals load the exact canonical recipe through the
-// shared helper; the host portal already imports the same faros-ui.css file.
-ensureFarosUIStyles()
+// shared helper; the host portal already imports the same railgrid-ui.css file.
+ensureRailgridUIStyles()
 
 const cancelBtn = ref<HTMLButtonElement | null>(null)
 const confirmBtn = ref<HTMLButtonElement | null>(null)

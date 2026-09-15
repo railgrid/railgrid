@@ -1,6 +1,6 @@
 # Local runner runbook
 
-`faros-runner` is a single-execution runner for a host that is already enrolled
+`railgrid-runner` is a single-execution runner for a host that is already enrolled
 by its operator. It exposes the `runner/v1` protocol on a loopback-only HTTP
 listener and uses a bearer token for every request. The default listener is
 `127.0.0.1:8787`; the listener cannot be configured to a non-loopback address.
@@ -24,14 +24,14 @@ binary:
 
 ```sh
 make build-runner-darwin
-# bin/faros-runner-darwin-arm64
-# bin/faros-runner-darwin-amd64
+# bin/railgrid-runner-darwin-arm64
+# bin/railgrid-runner-darwin-amd64
 ```
 
 For a disposable Mac acceptance check, place the matching binary under the name
-`faros-runner` beside [setup-macos.sh](../hack/runner-acceptance/setup-macos.sh)
+`railgrid-runner` beside [setup-macos.sh](../hack/runner-acceptance/setup-macos.sh)
 and run `sh setup-macos.sh`. It creates a tiny local Git source, token, and
-configuration below `~/.faros-runner-preview`, then prints login and launch
+configuration below `~/.railgrid-runner-preview`, then prints login and launch
 commands. It requires Git, OpenSSL, Python 3, and Codex. It does not enroll a
 Service, send credentials, or start a coding task. Its setup can be repeated
 without replacing the token or resetting the fixture repository.
@@ -44,7 +44,7 @@ developer home into it. The runner's default expected Codex version is
 to another version:
 
 ```sh
-./bin/faros-runner --version-pin <codex-version> --help
+./bin/railgrid-runner --version-pin <codex-version> --help
 ```
 
 The runner probes the executable and its app-server authentication state during
@@ -102,7 +102,7 @@ runner to fetch a missing approved commit into the isolated task clone.
 
 `runnerID` and map keys use the identifier form accepted by the protocol. The
 runner defaults `runnerID` to a platform-qualified value, `stateDir` to the
-user configuration directory followed by `faros-runner`, and `maximumCapacity`
+user configuration directory followed by `railgrid-runner`, and `maximumCapacity`
 to one. It rejects a capacity greater than one. The source path is resolved at
 startup and the source directory must exist. Without `fetchRemoteURL`, the
 requested full commit must already exist in that source. With it, the runner
@@ -157,7 +157,7 @@ timed out`, or `git fetch canceled`) instead of remote command output.
 ## Start the runner
 
 ```sh
-./bin/faros-runner \
+./bin/railgrid-runner \
   --config <absolute-runner-config.json> \
   --codex-binary <codex-executable>
 ```
@@ -407,7 +407,7 @@ interruption, restart, and same-session resume evidence.
 
 ## Managed local installation and upgrades
 
-`faros-runner --version` prints JSON build, protocol, and host metadata without
+`railgrid-runner --version` prints JSON build, protocol, and host metadata without
 loading enrollment, credentials, or Codex. The running capabilities response
 reports the executable's build version; enrollment cannot override it.
 
@@ -422,7 +422,7 @@ network, never changes runner configuration, and retains the previous binary.
 Run it as your worker account, using the same install root for every command:
 
 ```sh
-python3 manage.py install --binary ./faros-runner --sha256 EXPECTED_BINARY_SHA256
+python3 manage.py install --binary ./railgrid-runner --sha256 EXPECTED_BINARY_SHA256
 python3 manage.py run -- --config /absolute/path/runner.json \
   --codex-home /absolute/path/codex-home --version-pin YOUR_TESTED_CODEX_VERSION
 ```

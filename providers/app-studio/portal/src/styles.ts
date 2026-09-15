@@ -11,10 +11,10 @@ const styles = rawStyles.replace(/--color-[\w-]+:var\(--color[^;}]*;?/g, '')
 // this boundary: use :scope for either custom-element root and unprefixed
 // selectors for descendants. Repeating either tag in the body would look for a
 // nested custom element and silently miss the actual root.
-const APP_STUDIO_SCOPE = 'faros-provider-app-studio, faros-dashboard-tile-app-studio'
+const APP_STUDIO_SCOPE = 'railgrid-provider-app-studio, railgrid-dashboard-tile-app-studio'
 const scopedStyles = `@scope (${APP_STUDIO_SCOPE}) {\n${styles}\n}`
 
-const STYLE_ID = 'faros-provider-app-studio-css'
+const STYLE_ID = 'railgrid-provider-app-studio-css'
 
 export function ensureAppStudioStyles(): void {
   if (typeof document === 'undefined') return

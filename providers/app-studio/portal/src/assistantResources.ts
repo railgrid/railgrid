@@ -1,5 +1,5 @@
 import type {
-  FarosContext,
+  RailgridContext,
   ProjectAssistantContextResource,
   ProviderActionBoundResource,
   ProviderItem,
@@ -101,7 +101,7 @@ export function buildAssistantResourceRequest(type: Pick<AssistantResourceType, 
   return { ref, path: kubeResourcePath(cluster, ref) }
 }
 
-async function queryResourceType(ctx: FarosContext, type: AssistantResourceType, fetcher: typeof fetch | undefined): Promise<AssistantResourceGroup> {
+async function queryResourceType(ctx: RailgridContext, type: AssistantResourceType, fetcher: typeof fetch | undefined): Promise<AssistantResourceGroup> {
   const tenant = ctx.tenant?.trim() ?? ''
   if (!tenant || !(typeof ctx.fetch === 'function' || ctx.token?.trim())) throw new Error('tenant context unavailable')
   const { ref } = buildAssistantResourceRequest(type, tenant)
@@ -130,7 +130,7 @@ async function queryResourceType(ctx: FarosContext, type: AssistantResourceType,
 }
 
 export async function discoverAssistantResources(
-  ctx: FarosContext | null,
+  ctx: RailgridContext | null,
   types: AssistantResourceType[],
   fetcher?: typeof fetch,
 ): Promise<AssistantResourceDiscoveryResult> {

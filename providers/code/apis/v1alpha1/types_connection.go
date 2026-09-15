@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gconn
+// +kubebuilder:resource:scope=Cluster,categories=railgrid,shortName=gconn
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
 // +kubebuilder:printcolumn:name="Login",type=string,JSONPath=`.status.login`
@@ -141,4 +141,4 @@ const (
 )
 
 // FinalizerConnection is added by the ConnectionController.
-const FinalizerConnection = "connections.code.faros.sh/finalizer"
+const FinalizerConnection = "connections.code.railgrid.ai/finalizer"

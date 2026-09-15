@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/faros/pkg/apiurl"
-	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 const (
@@ -44,16 +44,16 @@ func newEdgeCommand() *cobra.Command {
 		Use:     "edge",
 		Aliases: []string{"edges"},
 		Short:   "Create, list, inspect and remove edges (clusters and servers)",
-		Long: `An edge is a Kubernetes cluster or a Linux server that runs the faros agent
-and dials out to the hub. Once connected, 'faros connect' points kubectl at a
-cluster edge and 'faros ssh' opens a shell on a server edge.
+		Long: `An edge is a Kubernetes cluster or a Linux server that runs the railgrid agent
+and dials out to the hub. Once connected, 'railgrid connect' points kubectl at a
+cluster edge and 'railgrid ssh' opens a shell on a server edge.
 
-  faros edge create my-cluster                  # prints the join command
-  faros edge create my-vps --type server
-  faros edge list
-  faros edge get my-cluster -o yaml
-  faros edge kubeconfig my-cluster -o ./my-cluster.kubeconfig
-  faros edge delete my-vps`,
+  railgrid edge create my-cluster                  # prints the join command
+  railgrid edge create my-vps --type server
+  railgrid edge list
+  railgrid edge get my-cluster -o yaml
+  railgrid edge kubeconfig my-cluster -o ./my-cluster.kubeconfig
+  railgrid edge delete my-vps`,
 	}
 
 	cmd.AddCommand(
@@ -73,7 +73,7 @@ cluster edge and 'faros ssh' opens a shell on a server edge.
 // kind IS the type (KubernetesCluster → kubernetes, LinuxServer → server,
 // MacOSServer → macos).
 func edgeTypeOf(u *unstructured.Unstructured) string {
-	return farosclient.EdgeTypeForGVR(edgeGVRForKind(u.GetKind()))
+	return railgridclient.EdgeTypeForGVR(edgeGVRForKind(u.GetKind()))
 }
 
 func newEdgeCreateCommand() *cobra.Command {
@@ -103,7 +103,7 @@ func newEdgeCreateCommand() *cobra.Command {
 			default:
 				return fmt.Errorf("unknown edge type %q (want kubernetes, server or macos)", edgeType)
 			}
-			kind, gvr := farosclient.EdgeKindForType(edgeType), farosclient.EdgeGVRForType(edgeType)
+			kind, gvr := railgridclient.EdgeKindForType(edgeType), railgridclient.EdgeGVRForType(edgeType)
 
 			edge := &unstructured.Unstructured{
 				Object: map[string]interface{}{
@@ -135,7 +135,7 @@ func newEdgeCreateCommand() *cobra.Command {
 			joinToken, err := pollJoinTokenDynamic(ctx, name, 30*time.Second)
 			if err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not retrieve join token: %v\n", err)
-				_, _ = fmt.Fprintf(out, "\nRun 'faros edge join-command %s' to print the join command once the token is available.\n", name)
+				_, _ = fmt.Fprintf(out, "\nRun 'railgrid edge join-command %s' to print the join command once the token is available.\n", name)
 				return nil
 			}
 
@@ -201,35 +201,35 @@ func loadHubURL() string {
 func printJoinCommand(w io.Writer, name, edgeType, hubURL, joinToken string) {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	p("\n")
-	p("# Step 1: Install the faros CLI (if not already installed)\n\n")
+	p("# Step 1: Install the railgrid CLI (if not already installed)\n\n")
 	p("  # Linux/macOS — download from GitHub Releases:\n")
-	p("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
-	p("  sudo mv kubectl-faros /usr/local/bin/faros\n")
+	p("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
+	p("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
 	p("\n")
 	p("  # Or via krew:\n")
-	p("  kubectl krew index add faros https://github.com/faroshq/krew-index.git\n")
-	p("  kubectl krew install faros/faros\n")
+	p("  kubectl krew index add railgrid https://github.com/railgrid/krew-index.git\n")
+	p("  kubectl krew install railgrid/railgrid\n")
 	p("\n")
 
 	switch edgeType {
 	case edgeTypeKubernetes:
 		p("# Step 2: Connect this Kubernetes cluster as an edge\n\n")
 		p("  # Option A — Helm (recommended for production):\n")
-		p("  helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\\n")
-		p("    --namespace faros-agent --create-namespace \\\n")
+		p("  helm install railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\\n")
+		p("    --namespace railgrid-agent --create-namespace \\\n")
 		p("    --set agent.edgeName=%s \\\n", name)
 		p("    --set agent.hub.url=%s \\\n", hubURL)
 		p("    --set agent.hub.token=%s\n", joinToken)
 		p("\n")
-		p("  # Option B — CLI persistent install (creates a Deployment in faros-agent):\n")
-		p("  faros agent join \\\n")
+		p("  # Option B — CLI persistent install (creates a Deployment in railgrid-agent):\n")
+		p("  railgrid agent join \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type kubernetes \\\n")
 		p("    --token %s\n", joinToken)
 		p("\n")
 		p("  # Option C — foreground process (dev/containers):\n")
-		p("  faros agent run \\\n")
+		p("  railgrid agent run \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type kubernetes \\\n")
@@ -237,14 +237,14 @@ func printJoinCommand(w io.Writer, name, edgeType, hubURL, joinToken string) {
 	case edgeTypeServer:
 		p("# Step 2: Connect this Linux server as an edge\n\n")
 		p("  # Option A — persistent install as a systemd service (recommended):\n")
-		p("  faros agent join \\\n")
+		p("  railgrid agent join \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type server \\\n")
 		p("    --token %s\n", joinToken)
 		p("\n")
 		p("  # Option B — foreground process (dev/containers):\n")
-		p("  faros agent run \\\n")
+		p("  railgrid agent run \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type server \\\n")
@@ -252,7 +252,7 @@ func printJoinCommand(w io.Writer, name, edgeType, hubURL, joinToken string) {
 	default:
 		p("# Step 2: Connect this macOS host as a service edge\n\n")
 		p("  # Persistent launchd service (configured non-root worker account):\n")
-		p("  sudo faros agent join \\\n")
+		p("  sudo railgrid agent join \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type macos \\\n")
@@ -263,17 +263,17 @@ func printJoinCommand(w io.Writer, name, edgeType, hubURL, joinToken string) {
 		p("    --token %s\n", joinToken)
 		p("\n")
 		p("  # Foreground process (dev/validation):\n")
-		p("  faros agent run \\\n")
+		p("  railgrid agent run \\\n")
 		p("    --hub-url %s \\\n", hubURL)
 		p("    --edge-name %s \\\n", name)
 		p("    --type macos \\\n")
 		p("    --token %s\n", joinToken)
 	}
 	p("\n")
-	p("Run 'faros edge join-command %s' to print this again.\n", name)
+	p("Run 'railgrid edge join-command %s' to print this again.\n", name)
 }
 
-// newEdgeJoinCommandCommand returns the 'faros edge join-command <name>' subcommand.
+// newEdgeJoinCommandCommand returns the 'railgrid edge join-command <name>' subcommand.
 func newEdgeJoinCommandCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "join-command <name>",
@@ -322,7 +322,7 @@ func newEdgeListCommand() *cobra.Command {
 
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
+				return fmt.Errorf("not logged in — run: railgrid login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			items, err := listAllEdges(ctx, dynClient)
@@ -349,7 +349,7 @@ func printEdgeList(w io.Writer, output *outputFlags, items []unstructured.Unstru
 		return printNames(w, names)
 	}
 	if len(items) == 0 {
-		_, err := fmt.Fprintln(w, "No edges found. Create one with: faros edge create <name> [--type server]")
+		_, err := fmt.Fprintln(w, "No edges found. Create one with: railgrid edge create <name> [--type server]")
 		return err
 	}
 	t := &table{headers: []string{"NAME", "TYPE", "PHASE", "CONNECTED", "AGENT VERSION", "AGE"}}
@@ -490,9 +490,9 @@ func printEdgeDetails(w io.Writer, edge *unstructured.Unstructured, raw *clientc
 
 	switch edgeTypeOf(edge) {
 	case edgeTypeKubernetes:
-		_, _ = fmt.Fprintf(w, "\nNext: faros connect %s   (or: faros edge kubeconfig %s -o <file>)\n", edge.GetName(), edge.GetName())
+		_, _ = fmt.Fprintf(w, "\nNext: railgrid connect %s   (or: railgrid edge kubeconfig %s -o <file>)\n", edge.GetName(), edge.GetName())
 	case edgeTypeServer:
-		_, _ = fmt.Fprintf(w, "\nNext: faros ssh %s\n", edge.GetName())
+		_, _ = fmt.Fprintf(w, "\nNext: railgrid ssh %s\n", edge.GetName())
 	case edgeTypeMacOS:
 		_, _ = fmt.Fprintln(w, "\nmacOS hosts are service-only: reach them through the EdgeServices they publish (no kubectl or SSH).")
 	}

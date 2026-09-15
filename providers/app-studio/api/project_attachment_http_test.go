@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,9 +32,9 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *testing.T) {
@@ -61,10 +61,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 	upload := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 	upload.Header.Set("Content-Type", writer.FormDataContentType())
-	upload.Header.Set("X-Faros-Tenant", "cluster")
+	upload.Header.Set("X-Railgrid-Tenant", "cluster")
 	upload.Header.Set("Authorization", "Bearer test-token")
-	upload.Header.Set("X-Faros-Cluster", "cluster")
-	upload.Header.Set("X-Faros-User", "alice")
+	upload.Header.Set("X-Railgrid-Cluster", "cluster")
+	upload.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, upload)
 	if response.Code != http.StatusCreated {
@@ -88,10 +88,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "bob")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
@@ -99,10 +99,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), data) || response.Header().Get("ETag") == "" {
@@ -110,10 +110,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments", nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -125,10 +125,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments", nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "bob")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if err := json.Unmarshal(response.Body.Bytes(), &listed); response.Code != http.StatusOK || err != nil || len(listed.Items) != 0 {
@@ -136,10 +136,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "bob")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "bob")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -147,10 +147,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -158,10 +158,10 @@ func TestProjectAssistantAttachmentHTTPReceiptDownloadListAndOwnerDelete(t *test
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/attachments/"+receipt.ID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
@@ -270,10 +270,10 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 		}
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
-		request.Header.Set("X-Faros-Tenant", "cluster")
+		request.Header.Set("X-Railgrid-Tenant", "cluster")
 		request.Header.Set("Authorization", "Bearer test-token")
-		request.Header.Set("X-Faros-Cluster", "cluster")
-		request.Header.Set("X-Faros-User", actor)
+		request.Header.Set("X-Railgrid-Cluster", "cluster")
+		request.Header.Set("X-Railgrid-User", actor)
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		var receipt attachmentReceiptResponse
@@ -311,10 +311,10 @@ func TestProjectAssistantAttachmentHTTPStableClientIDIsIdempotentAndDeletable(t 
 	}
 
 	request := httptest.NewRequest(http.MethodDelete, "/api/projects/demo/assistant/attachments/"+clientID, nil)
-	request.Header.Set("X-Faros-Tenant", "cluster")
+	request.Header.Set("X-Railgrid-Tenant", "cluster")
 	request.Header.Set("Authorization", "Bearer test-token")
-	request.Header.Set("X-Faros-Cluster", "cluster")
-	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("X-Railgrid-Cluster", "cluster")
+	request.Header.Set("X-Railgrid-User", "alice")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -347,10 +347,10 @@ func TestProjectAssistantAttachmentHTTPAcceptsFileKind(t *testing.T) {
 		_ = writer.Close()
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/attachments", &body)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
-		request.Header.Set("X-Faros-Tenant", "cluster")
+		request.Header.Set("X-Railgrid-Tenant", "cluster")
 		request.Header.Set("Authorization", "Bearer test-token")
-		request.Header.Set("X-Faros-Cluster", "cluster")
-		request.Header.Set("X-Faros-User", "alice")
+		request.Header.Set("X-Railgrid-Cluster", "cluster")
+		request.Header.Set("X-Railgrid-User", "alice")
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		var receipt attachmentReceiptResponse

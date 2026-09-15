@@ -22,7 +22,7 @@ the Vue toast files.
   route/section navigation. The shared `.k-tabs` recipe (including
   icon-plus-label tabs, optional square mono counts, active/hover/focus states,
   and narrow-host overflow) lives in the canonical
-  `provider-sdk/portalkit/faros-ui.css`. The Vue
+  `provider-sdk/portalkit/railgrid-ui.css`. The Vue
   counterpart is `provider-sdk/portalkit-vue/Tabs.vue`; it emits `select` and
   exposes `data-k-tab-id`, while routing remains caller-owned.
 - `modal.ts` — promise-based `confirmModal()` / `alertModal()`, replacing native
@@ -31,7 +31,7 @@ the Vue toast files.
   TypeScript kit and for Agents' existing compatibility adapter. It is not the
   Vue toast implementation.
 - `styles.ts` — the standalone handoff for the exact canonical
-  `provider-sdk/portalkit/faros-ui.css` bytes.
+  `provider-sdk/portalkit/railgrid-ui.css` bytes.
 - `FirstRunGuide.vue` — Vue first-use value, action, and ordered journey
   surface. Vanilla portals emit the same `k-first-run*` classes.
 - `CreateGuidance.vue` — Vue prerequisites, live output summary, and next-step
@@ -49,18 +49,18 @@ The portals have **no npm workspace** and each must build **self-contained**
 into each portal at `src/portalkit/` and committed, rather than imported across
 package boundaries.
 
-`faros-ui.css` is the canonical stylesheet and the host copy at
-`portal/src/assets/faros-ui.css` plus each vendored `src/portalkit/faros-ui.css`
+`railgrid-ui.css` is the canonical stylesheet and the host copy at
+`portal/src/assets/railgrid-ui.css` plus each vendored `src/portalkit/railgrid-ui.css`
 must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
-`ensureFarosUIStyles()`: a computed `:root` marker
-`--faros-ui-canonical: 1` is accepted only when its `--faros-ui-core-version` is at
+`ensureRailgridUIStyles()`: a computed `:root` marker
+`--railgrid-ui-canonical: 1` is accepted only when its `--railgrid-ui-core-version` is at
 least the bundle's required core version (currently 18, from
-`FAROS_UI_CORE_VERSION` in `styles.ts`). Otherwise the
+`RAILGRID_UI_CORE_VERSION` in `styles.ts`). Otherwise the
 canonical CSS is imported with Vite's `?inline` loader, so the embedded
 fallback uses Vite's minified form of the canonical rules and is appended
 under a versioned fallback ID with
-`data-faros-ui-source="portalkit-fallback"`. Existing style elements are never
+`data-railgrid-ui-source="portalkit-fallback"`. Existing style elements are never
 replaced, and a newer host stylesheet is never downgraded.
 
 ## Editing
@@ -72,12 +72,12 @@ make sync-portalkit
 ```
 
 which copies the vanilla kit into the string-building portals and the Vue SFC
-kit into the Vue portals. It also copies the canonical `faros-ui.css` into every
+kit into the Vue portals. It also copies the canonical `railgrid-ui.css` into every
 vendored kit directory and verifies that no unexpected asset is present. CI can
 run `make sync-portalkit && git diff --exit-code` to guard against drift.
 
 The Vue portals (`agents`, `app-studio`, `code`, `databricks`, `edges`,
-`infrastructure`, `kuery`, and the root `faros-portal`) use `lucide-vue-next`
+`infrastructure`, `kuery`, and the root `railgrid-portal`) use `lucide-vue-next`
 for icons and the
 `confirm.ts` + `ConfirmDialog.vue` pattern for modals. Agents, App Studio,
 Code, Databricks, Edges, and Kuery use the provider-level tab bar;

@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -6,9 +6,9 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// infrastructure is a faros provider that brokers application
+// infrastructure is a railgrid provider that brokers application
 // templates from a central kro (Kube Resource Orchestrator) cluster
-// into faros tenant workspaces. See /Users/mjudeikis/.claude/plans/
+// into railgrid tenant workspaces. See /Users/mjudeikis/.claude/plans/
 // zippy-baking-jellyfish.md for the staged plan + design notes.
 //
 // Routes on a single port ($PORT, default 8081):
@@ -19,7 +19,7 @@
 //
 // Templates and instances are NOT served as REST here: the portal and
 // tenants drive them as CRDs directly against kcp
-// (templates.infrastructure.faros.sh + the per-template instance
+// (templates.infrastructure.railgrid.ai + the per-template instance
 // kinds), projected to tenant workspaces via the CachedResource +
 // APIExport. The MCP surface keeps its own kro.Client.
 package main
@@ -37,14 +37,14 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/provider-sdk/hubclient"
-	"github.com/faroshq/provider-sdk/vwhealth"
+	"github.com/railgrid/provider-sdk/hubclient"
+	"github.com/railgrid/provider-sdk/vwhealth"
 
-	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
-	"github.com/faroshq/provider-infrastructure/install"
-	"github.com/faroshq/provider-infrastructure/mcpserver"
-	"github.com/faroshq/provider-infrastructure/server"
-	"github.com/faroshq/provider-infrastructure/tenant"
+	krobackend "github.com/railgrid/provider-infrastructure/backend/kro"
+	"github.com/railgrid/provider-infrastructure/install"
+	"github.com/railgrid/provider-infrastructure/mcpserver"
+	"github.com/railgrid/provider-infrastructure/server"
+	"github.com/railgrid/provider-infrastructure/tenant"
 )
 
 // heartbeatVersion is reported to the hub by non-release builds; align with
@@ -54,11 +54,11 @@ const heartbeatVersion = "0.1.0"
 // buildVersion is the provider release version, stamped by the provider
 // Dockerfile (-ldflags "-X main.buildVersion=${VERSION}"; provider-release.yaml
 // passes VERSION=vX.Y.Z). Local `go build`/Tilt builds keep "dev". A release
-// version selects the same release's faros-dev-agent image as the in-binary
+// version selects the same release's railgrid-dev-agent image as the in-binary
 // default (backend/kro defaultDevAgentImage) and is what the heartbeat reports.
 var buildVersion = "dev"
 
-// reportedVersion is the version sent in hub heartbeats (FAROS_PROVIDER_VERSION
+// reportedVersion is the version sent in hub heartbeats (RAILGRID_PROVIDER_VERSION
 // still overrides it inside hubclient.ConfigFromEnv).
 func reportedVersion() string {
 	if krobackend.IsReleaseVersion(buildVersion) {
@@ -224,7 +224,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	}
 
 	// Cross-tenant Application instance controller (fqdn stamp + OIDC
-	// client-secret bridge). Opt-in via FAROS_APP_BASE_DOMAIN + KRO_KUBECONFIG.
+	// client-secret bridge). Opt-in via RAILGRID_APP_BASE_DOMAIN + KRO_KUBECONFIG.
 	startInstanceController(ctx, kcpConfig)
 
 	hb, err := hubclient.ConfigFromEnv("infrastructure", reportedVersion())

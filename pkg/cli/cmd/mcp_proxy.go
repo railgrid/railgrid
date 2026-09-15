@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // mcpProxyErrorCode is the JSON-RPC error code the proxy answers a request
@@ -54,27 +54,27 @@ func newMCPProxyCommand() *cobra.Command {
 		Short: "Serve the workspace MCP endpoint over stdio, authenticated as you",
 		Long: `Serves the workspace's aggregate MCP endpoint to an MCP client over stdio.
 
-Every message the client writes is forwarded to the hub with your own faros
+Every message the client writes is forwarded to the hub with your own railgrid
 login — the same credentials kubectl uses, OIDC tokens refreshed as they
 expire — and the hub's replies are written back. Nothing needs to be pasted
 into the client's configuration, and the hub's CA from your kubeconfig is
 trusted, so a local hub needs no extra certificate settings.
 
 Because the calls are made as you rather than with the workspace's MCP
-ServiceAccount token ('faros mcp url'), org-owned providers — for example
+ServiceAccount token ('railgrid mcp url'), org-owned providers — for example
 an organization's self-hosted infrastructure — are federated too.
 
-The workspace is the one the faros context points at when the client starts
-the proxy; after 'faros use', restart the client's MCP connection. Pass
+The workspace is the one the railgrid context points at when the client starts
+the proxy; after 'railgrid use', restart the client's MCP connection. Pass
 --org / --workspace to pin one instead.`,
 		Example: `  # Claude Code
-  claude mcp add faros -- faros mcp proxy
+  claude mcp add railgrid -- railgrid mcp proxy
 
   # Codex
-  codex mcp add faros -- faros mcp proxy
+  codex mcp add railgrid -- railgrid mcp proxy
 
   # Claude Desktop, Cursor and other mcpServers configurations
-  { "mcpServers": { "faros": { "command": "faros", "args": ["mcp", "proxy"] } } }`,
+  { "mcpServers": { "railgrid": { "command": "railgrid", "args": ["mcp", "proxy"] } } }`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -90,7 +90,7 @@ the proxy; after 'faros use', restart the client's MCP connection. Pass
 	return cmd
 }
 
-// resolveTarget builds the endpoint and authenticated client from the faros
+// resolveTarget builds the endpoint and authenticated client from the railgrid
 // kubeconfig context. Without --org / --workspace it needs no hub call.
 func (o *mcpProxyOptions) resolveTarget(ctx context.Context) (*mcpProxyTarget, error) {
 	var s *hubSession
@@ -104,7 +104,7 @@ func (o *mcpProxyOptions) resolveTarget(ctx context.Context) (*mcpProxyTarget, e
 		return nil, err
 	}
 	if s.Cluster == "" || s.Cluster == "default" {
-		return nil, fmt.Errorf("kubeconfig context %q does not point at a workspace; run 'faros use'", s.Context)
+		return nil, fmt.Errorf("kubeconfig context %q does not point at a workspace; run 'railgrid use'", s.Context)
 	}
 	return &mcpProxyTarget{url: apiurl.MCPServerURL(s.Hub, s.Cluster, o.mcpserverName), client: s.client}, nil
 }
@@ -208,7 +208,7 @@ func (p *mcpProxy) handle(ctx context.Context, raw []byte) {
 
 // forward POSTs one message and relays every JSON-RPC message of the reply,
 // returning how many it wrote. A 401 is retried once with credentials
-// reloaded from the kubeconfig (a fresh 'faros login' or a rotated token).
+// reloaded from the kubeconfig (a fresh 'railgrid login' or a rotated token).
 func (p *mcpProxy) forward(ctx context.Context, raw []byte, initialize bool) (int, error) {
 	for attempt := 0; ; attempt++ {
 		t, err := p.currentTarget(ctx)
@@ -226,7 +226,7 @@ func (p *mcpProxy) forward(ctx context.Context, raw []byte, initialize bool) (in
 			if attempt == 0 {
 				continue
 			}
-			return 0, errors.New("the hub rejected your credentials (HTTP 401); run 'faros login'")
+			return 0, errors.New("the hub rejected your credentials (HTTP 401); run 'railgrid login'")
 		}
 		defer resp.Body.Close() //nolint:errcheck
 		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -346,7 +346,7 @@ func (p *mcpProxy) writeError(id json.RawMessage, err error) {
 
 // currentTarget returns the resolved endpoint, resolving it on first use —
 // and again after a 401 or a failed resolution, so a client started before
-// 'faros login' recovers without a restart.
+// 'railgrid login' recovers without a restart.
 func (p *mcpProxy) currentTarget(ctx context.Context) (*mcpProxyTarget, error) {
 	p.mu.Lock()
 	t := p.target
@@ -405,7 +405,7 @@ func (p *mcpProxy) cancel(id json.RawMessage) {
 // logf writes a diagnostic to stderr, which MCP clients keep as the server's
 // log; stdout carries only JSON-RPC.
 func (p *mcpProxy) logf(format string, args ...any) {
-	_, _ = fmt.Fprintf(p.stderr, "faros mcp proxy: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(p.stderr, "railgrid mcp proxy: "+format+"\n", args...)
 }
 
 func describeMessage(msg jsonRPCMessage) string {

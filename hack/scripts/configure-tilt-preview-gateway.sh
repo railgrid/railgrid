@@ -12,7 +12,7 @@ usage: configure-tilt-preview-gateway.sh [apply|cleanup]
 
 Environment:
   KUBECONFIG                         target cluster kubeconfig
-  PREVIEW_GATEWAY_CONTEXT            target kubeconfig context (default: kind-faros-kro)
+  PREVIEW_GATEWAY_CONTEXT            target kubeconfig context (default: kind-railgrid-kro)
   ENVOY_GATEWAY_RELEASE              Helm release name (default: envoy-gateway)
   ENVOY_GATEWAY_CHART                Helm OCI chart (default: oci://docker.io/envoyproxy/gateway-helm)
   ENVOY_GATEWAY_CRDS_CHART           Envoy-only CRD OCI chart (default: oci://docker.io/envoyproxy/gateway-crds-helm)
@@ -43,7 +43,7 @@ fi
 
 kubectl_bin="${KUBECTL_BIN:-kubectl}"
 helm_bin="${HELM_BIN:-helm}"
-kube_context="${PREVIEW_GATEWAY_CONTEXT:-kind-faros-kro}"
+kube_context="${PREVIEW_GATEWAY_CONTEXT:-kind-railgrid-kro}"
 kubectl=("${kubectl_bin}" --context "$kube_context")
 helm=("${helm_bin}")
 
@@ -97,7 +97,7 @@ resource_exists() {
 resource_ownership() {
   local resource_namespace="$1" kind="$2" name="$3"
   local output=(
-    -o 'jsonpath={.metadata.labels.faros\.sh/managed-by}{"|"}{.metadata.labels.faros\.sh/component}'
+    -o 'jsonpath={.metadata.labels.railgrid\.sh/managed-by}{"|"}{.metadata.labels.railgrid\.sh/component}'
   )
   if [[ -n "$resource_namespace" ]]; then
     "${kubectl[@]}" -n "$resource_namespace" get "$kind" "$name" "${output[@]}"
@@ -233,7 +233,7 @@ assert_owned_or_absent "$namespace" gateway "$gateway_name"
 ensure_certificate
 
 echo ">>> installing Envoy Gateway ${helm_version} into ${namespace}"
-# The faros-kro bootstrap owns the standard Gateway API CRDs. Apply only the
+# The railgrid-kro bootstrap owns the standard Gateway API CRDs. Apply only the
 # Envoy-specific CRDs from Envoy's companion chart, then disable the main
 # chart's CRD dependency so Helm cannot replace or compete with that ownership.
 work_dir="$(mktemp -d "${state_dir}.chart.XXXXXX")"
@@ -277,8 +277,8 @@ kind: GatewayClass
 metadata:
   name: ${gateway_class}
   labels:
-    faros.sh/managed-by: tilt
-    faros.sh/component: preview-gateway
+    railgrid.ai/managed-by: tilt
+    railgrid.ai/component: preview-gateway
 spec:
   controllerName: ${controller_name}
 EOF
@@ -293,8 +293,8 @@ assert_owned_or_absent "$namespace" secret "$tls_secret"
   --dry-run=client \
   -o yaml |
   "${kubectl[@]}" label --local -f - \
-    faros.sh/managed-by=tilt \
-    faros.sh/component=preview-gateway \
+    railgrid.ai/managed-by=tilt \
+    railgrid.ai/component=preview-gateway \
     --overwrite -o yaml |
   "${kubectl[@]}" apply -f - >/dev/null
 
@@ -328,8 +328,8 @@ metadata:
   name: ${proxy_config}
   namespace: ${namespace}
   labels:
-    faros.sh/managed-by: tilt
-    faros.sh/component: preview-gateway
+    railgrid.ai/managed-by: tilt
+    railgrid.ai/component: preview-gateway
 spec:
   provider:
     type: Kubernetes
@@ -347,8 +347,8 @@ metadata:
   name: ${gateway_name}
   namespace: ${namespace}
   labels:
-    faros.sh/managed-by: tilt
-    faros.sh/component: preview-gateway
+    railgrid.ai/managed-by: tilt
+    railgrid.ai/component: preview-gateway
 spec:
   gatewayClassName: ${gateway_class}
   infrastructure:

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/hubmcp"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // Keeping git in step with the workspace.
@@ -52,8 +52,8 @@ import (
 // (the reconciler only knows the cluster; scopes are keyed by org/workspace
 // UUIDs the hub derives from the tenant path). Stamped at project creation.
 const (
-	orgUUIDAnnotation       = "ai.faros.sh/org-uuid"
-	workspaceUUIDAnnotation = "ai.faros.sh/workspace-uuid"
+	orgUUIDAnnotation       = "ai.railgrid.ai/org-uuid"
+	workspaceUUIDAnnotation = "ai.railgrid.ai/workspace-uuid"
 )
 
 // scopeOf derives the workspace scope from the Project's identity
@@ -89,7 +89,7 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, token string, tc clien
 		return false, nil // legacy project without identity annotations
 	}
 
-	if p.Annotations["ai.faros.sh/initialize-repository"] == b.RepositoryRef {
+	if p.Annotations["ai.railgrid.ai/initialize-repository"] == b.RepositoryRef {
 		if err := r.Workspace.InitializeRepositorySource(ctx, scope, b.RepositoryRef); err != nil {
 			return true, fmt.Errorf("initialize repository source: %w", err)
 		}
@@ -379,7 +379,7 @@ func shortSHA(sha string) string {
 const pendingCommitRecheckInterval = 60 * time.Second
 
 // repositoryCommitGVK is the Code provider's RepositoryCommit resource.
-var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.faros.sh", Version: "v1alpha1", Kind: "RepositoryCommit"}
+var repositoryCommitGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: "v1alpha1", Kind: "RepositoryCommit"}
 
 type pendingCommit struct {
 	Name          string

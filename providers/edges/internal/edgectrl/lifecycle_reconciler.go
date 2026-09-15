@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgesv1alpha1 "github.com/railgrid/provider-edges/apis/v1alpha1"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"

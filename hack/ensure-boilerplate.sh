@@ -35,7 +35,7 @@ while IFS= read -r -d '' file; do
 
   # Check if file already has a copyright header (any year).
   # Use head -20 to handle files with //go:build directives before the copyright.
-  if head -20 "$file" | grep -q "Copyright .* The Faros Authors"; then
+  if head -20 "$file" | grep -q "Copyright .* The Railgrid Authors"; then
     continue
   fi
 

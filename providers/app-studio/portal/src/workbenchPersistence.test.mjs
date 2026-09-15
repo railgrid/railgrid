@@ -166,7 +166,7 @@ test('catalog fingerprints remain usable and isolated when persistence identity 
 
 test('persists workbench visibility separately from the project tab layout', () => {
   const storage = memoryStorage()
-  assert.equal(persistence.WORKBENCH_VISIBILITY_STORAGE_KEY, 'faros:app-studio:workbench-visible:v1')
+  assert.equal(persistence.WORKBENCH_VISIBILITY_STORAGE_KEY, 'railgrid:app-studio:workbench-visible:v1')
   assert.equal(persistence.readWorkbenchVisibility(storage), true)
 
   persistence.writeWorkbenchVisibility(false, storage)

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,10 +25,10 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
-const orgBundleBody = "customElements.define('faros-provider-infrastructure', class extends HTMLElement {})"
+const orgBundleBody = "customElements.define('railgrid-provider-infrastructure', class extends HTMLElement {})"
 
 var uiGrantTestKey = serviceaccounts.StaticProofKeySource(bytes.Repeat([]byte{7}, 32))
 
@@ -52,8 +52,8 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.edge.hit = true
 		f.edge.path = r.URL.Path
-		f.edge.user = r.Header.Get("X-Faros-User")
-		f.edge.tenant = r.Header.Get("X-Faros-Tenant")
+		f.edge.user = r.Header.Get("X-Railgrid-User")
+		f.edge.tenant = r.Header.Get("X-Railgrid-Tenant")
 		f.edge.authorization = r.Header.Get("Authorization")
 		if r.URL.Query().Get(UIGrantQueryParam) != "" {
 			t.Errorf("the grant reached the tenant's cluster: query %q", r.URL.RawQuery)
@@ -79,7 +79,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	// platform-scope would 503 and be caught.
 	platformURL, _ := url.Parse("http://platform.invalid")
 	f.reg.Upsert(Provider{Name: "infrastructure", UIURL: platformURL, BackendURL: platformURL, EndpointsValid: true, HeartbeatRequired: true, HeartbeatStale: true})
-	orgURL, _ := url.Parse("http://infrastructure.faros-infrastructure-provider.svc.cluster.local:8081")
+	orgURL, _ := url.Parse("http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081")
 	f.reg.Upsert(Provider{
 		Name: "infrastructure", OrgUUID: testOrg, Version: "v0.1.20", EndpointsValid: true,
 		UIURL: orgURL, BackendURL: orgURL,
@@ -94,7 +94,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		if orgOfCaller == "" {
 			return "", "", errors.New("anonymous caller")
 		}
-		path := "root:faros:tenants:" + orgOfCaller
+		path := "root:railgrid:tenants:" + orgOfCaller
 		if wsOfCaller != "" {
 			path += ":" + wsOfCaller
 		}
@@ -170,7 +170,7 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if got.Body.String() != orgBundleBody {
 		t.Errorf("bundle body = %q, want the org's bundle", got.Body.String())
 	}
-	wantPath := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy/main.js"
+	wantPath := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/main.js"
 	if f.edge.path != wantPath {
 		t.Errorf("edges provider saw path %q, want %q", f.edge.path, wantPath)
 	}
@@ -178,7 +178,7 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 		t.Errorf("Authorization at the edge = %q, want the delegated token", f.edge.authorization)
 	}
 	if f.edge.user != "alice" {
-		t.Errorf("X-Faros-User at the edge = %q, want the grant's user", f.edge.user)
+		t.Errorf("X-Railgrid-User at the edge = %q, want the grant's user", f.edge.user)
 	}
 	if f.issuer.calls != 1 || f.issuer.org != testOrg || f.issuer.ws != testWS || f.issuer.user != "alice" || f.issuer.provider != "infrastructure" {
 		t.Errorf("delegated token minted for (%s,%s,%s,%s) x%d, want (org,ws,alice,infrastructure) once",
@@ -433,11 +433,11 @@ func TestUIProxyRefusesBadGrants(t *testing.T) {
 func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	f := newUIGrantFixture(t, testOrg, testWS)
 	p, _ := f.reg.GetForOrg(testOrg, "infrastructure")
-	p.UIURL, _ = url.Parse("http://infrastructure.faros-infrastructure-provider.svc.cluster.local:8081/ui")
+	p.UIURL, _ = url.Parse("http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081/ui")
 	f.reg.Upsert(p)
 
 	_, grant := f.requestGrant(t, "infrastructure")
-	wantHash := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy/ui/main.js"
+	wantHash := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/main.js"
 	if f.edge.path != wantHash {
 		t.Errorf("hash fetch path %q, want %q", f.edge.path, wantHash)
 	}
@@ -446,7 +446,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %q)", got.Code, got.Body.String())
 	}
-	wantIcon := "/edgeproxy/clusters/" + testCluster + "/apis/edges.faros.sh/v1alpha1/services/provider-infrastructure/proxy/ui/icon.svg"
+	wantIcon := "/edgeproxy/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/icon.svg"
 	if f.edge.path != wantIcon {
 		t.Errorf("asset path %q, want %q", f.edge.path, wantIcon)
 	}

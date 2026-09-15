@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
 
-	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	cliauth "github.com/railgrid/railgrid/pkg/cli/auth"
 )
 
 func newLogoutCommand() *cobra.Command {
@@ -31,9 +31,9 @@ func newLogoutCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logout",
 		Short: "Forget the hub credentials on this machine",
-		Long: `Delete the cached OIDC tokens for the hub and remove the faros kubeconfig
-context (and every faros-<edge> context created by 'faros connect'). The
-hub-side session is untouched; log in again with 'faros login'.`,
+		Long: `Delete the cached OIDC tokens for the hub and remove the railgrid kubeconfig
+context (and every railgrid-<edge> context created by 'railgrid connect'). The
+hub-side session is untouched; log in again with 'railgrid login'.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			raw, path, err := loadRawKubeconfig()
@@ -41,9 +41,9 @@ hub-side session is untouched; log in again with 'faros login'.`,
 				return err
 			}
 			out := cmd.OutOrStdout()
-			kctx, ok := raw.Contexts[farosContextName]
+			kctx, ok := raw.Contexts[railgridContextName]
 			if !ok {
-				_, _ = fmt.Fprintf(out, "Not logged in: no %q context in %s.\n", farosContextName, path)
+				_, _ = fmt.Fprintf(out, "Not logged in: no %q context in %s.\n", railgridContextName, path)
 				return nil
 			}
 
@@ -62,9 +62,9 @@ hub-side session is untouched; log in again with 'faros login'.`,
 			}
 
 			// 2. Kubeconfig entries.
-			removedCtx := []string{farosContextName}
+			removedCtx := []string{railgridContextName}
 			userName, clusterName := kctx.AuthInfo, kctx.Cluster
-			delete(raw.Contexts, farosContextName)
+			delete(raw.Contexts, railgridContextName)
 			if !keepContexts {
 				for name, c := range raw.Contexts {
 					if isEdgeContext(name) && c.AuthInfo == userName {
@@ -85,10 +85,10 @@ hub-side session is untouched; log in again with 'faros login'.`,
 				return fmt.Errorf("writing kubeconfig to %s: %w", path, err)
 			}
 			sort.Strings(removedCtx)
-			_, _ = fmt.Fprintf(out, "Removed kubeconfig context(s) %v from %s.\nLogged out. Run 'faros login --hub-url <hub>' to log in again.\n", removedCtx, path)
+			_, _ = fmt.Fprintf(out, "Removed kubeconfig context(s) %v from %s.\nLogged out. Run 'railgrid login --hub-url <hub>' to log in again.\n", removedCtx, path)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&keepContexts, "keep-edge-contexts", false, "Keep the faros-<edge> contexts (they stop working until you log in again)")
+	cmd.Flags().BoolVar(&keepContexts, "keep-edge-contexts", false, "Keep the railgrid-<edge> contexts (they stop working until you log in again)")
 	return cmd
 }

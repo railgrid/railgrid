@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const workbenchTab = await readFile(new URL('./agentkit/AIWorkbenchTab.vue', import.meta.url), 'utf8')
-const farosUI = await readFile(new URL('./agentkit/agent-ui.css', import.meta.url), 'utf8')
+const railgridUI = await readFile(new URL('./agentkit/agent-ui.css', import.meta.url), 'utf8')
 const dialog = await readFile(new URL('./ProjectShareDialog.vue', import.meta.url), 'utf8')
 const releasePipeline = await readFile(new URL('./ReleasePipeline.vue', import.meta.url), 'utf8')
 const promotionState = await readFile(new URL('./promotionState.ts', import.meta.url), 'utf8')
@@ -123,10 +123,10 @@ test('keeps New tab in the horizontal tab flow while preserving tablist semantic
   assert.match(workbenchTab, /class="k-workbench-tab"/)
   assert.match(workbenchTab, /class="k-workbench-tab__button"[\s\S]*role="tab"[\s\S]*:aria-selected="selected"[\s\S]*:aria-controls="controls"[\s\S]*:tabindex="tabindex"[\s\S]*:title="title"/)
   assert.match(workbenchTab, /<slot name="leading" \/>[\s\S]*<span class="k-workbench-tab__label"><slot \/><\/span>[\s\S]*<slot name="after-label" \/>[\s\S]*<slot name="trailing" \/>/)
-  const tabRecipeStart = farosUI.indexOf('.k-workbench-tab {')
-  const tabRecipeEnd = farosUI.indexOf('button.k-workbench-tab {', tabRecipeStart)
+  const tabRecipeStart = railgridUI.indexOf('.k-workbench-tab {')
+  const tabRecipeEnd = railgridUI.indexOf('button.k-workbench-tab {', tabRecipeStart)
   assert.ok(tabRecipeStart >= 0 && tabRecipeEnd > tabRecipeStart)
-  assert.match(farosUI.slice(tabRecipeStart, tabRecipeEnd), /max-width: 240px/)
+  assert.match(railgridUI.slice(tabRecipeStart, tabRecipeEnd), /max-width: 240px/)
   assert.match(header, /title="Open full provider"[\s\S]*@click="openToolFull"/)
 })
 

@@ -2,13 +2,13 @@
 layout: default
 title: Helm Deployment
 nav_order: 5
-description: "Deploy Faros Hub using Helm charts"
+description: "Deploy Railgrid Hub using Helm charts"
 ---
 
 # Helm Deployment
 {: .no_toc }
 
-Deploy faros-hub into a Kubernetes cluster using Helm.
+Deploy railgrid-hub into a Kubernetes cluster using Helm.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,7 +21,7 @@ Deploy faros-hub into a Kubernetes cluster using Helm.
 
 ## Overview
 
-The faros-hub Helm chart deploys **kcp + faros-hub**. In the default embedded-kcp mode it runs as a StatefulSet (kcp's embedded etcd is persisted to a PVC). When `kcp.external.enabled=true`, the hub is stateless and runs as a Deployment instead. This guide covers deploying to both local clusters (kind) and production environments.
+The railgrid-hub Helm chart deploys **kcp + railgrid-hub**. In the default embedded-kcp mode it runs as a StatefulSet (kcp's embedded etcd is persisted to a PVC). When `kcp.external.enabled=true`, the hub is stateless and runs as a Deployment instead. This guide covers deploying to both local clusters (kind) and production environments.
 
 For authentication configuration, see [Security]({% link security.md %}).
 
@@ -43,20 +43,20 @@ For authentication configuration, see [Security]({% link security.md %}).
 ### 1. Create a kind cluster
 
 ```bash
-kind create cluster --name faros
+kind create cluster --name railgrid
 ```
 
 Verify it's running:
 
 ```bash
-kubectl cluster-info --context kind-faros
+kubectl cluster-info --context kind-railgrid
 ```
 
 ### 2. Build and load the hub image
 
 ```bash
 make docker-build-hub
-kind load docker-image ghcr.io/faroshq/faros-hub:$(git describe --tags --always --dirty 2>/dev/null || echo dev) --name faros
+kind load docker-image ghcr.io/railgrid/railgrid-hub:$(git describe --tags --always --dirty 2>/dev/null || echo dev) --name railgrid
 ```
 
 {: .note }
@@ -78,22 +78,22 @@ For OIDC authentication instead of static token, see [Security]({% link security
 ### 4. Install the chart
 
 ```bash
-helm upgrade --install faros deploy/charts/faros-hub/ \
+helm upgrade --install railgrid deploy/charts/railgrid-hub/ \
   -f values-kind.yaml \
-  --namespace faros-system \
+  --namespace railgrid-system \
   --create-namespace
 ```
 
 ### 5. Wait for pods to be ready
 
 ```bash
-kubectl -n faros-system get pods -w
+kubectl -n railgrid-system get pods -w
 ```
 
-Wait until `faros-faros-hub-0` is Running with all containers ready:
+Wait until `railgrid-railgrid-hub-0` is Running with all containers ready:
 
 ```bash
-kubectl -n faros-system wait --for=condition=ready pod -l app.kubernetes.io/name=faros-hub --timeout=120s
+kubectl -n railgrid-system wait --for=condition=ready pod -l app.kubernetes.io/name=railgrid-hub --timeout=120s
 ```
 
 {: .note }
@@ -102,13 +102,13 @@ The hub container waits for kcp to generate `admin.kubeconfig` before starting (
 ### 6. Port-forward and log in
 
 ```bash
-kubectl -n faros-system port-forward svc/faros-faros-hub 9443:9443
+kubectl -n railgrid-system port-forward svc/railgrid-railgrid-hub 9443:9443
 ```
 
 In another terminal:
 
 ```bash
-faros login \
+railgrid login \
   --hub-url https://localhost:9443 \
   --token <your-static-token> \
   --insecure-skip-tls-verify
@@ -152,7 +152,7 @@ idp:
   issuerURL: "https://idp.example.com"
   # Optional for split-horizon IdPs:
   # browserAuthURL: "https://login.example.com/oauth2/auth"
-  clientID: "faros"
+  clientID: "railgrid"
   clientSecret: "<secret>"
 
 ingress:
@@ -191,7 +191,7 @@ hub:
 
 The third flag, `providerWorkspaceClusterAdmin`, is deliberately not in that
 snippet. It binds provider service accounts to the narrow generated
-`faros:provider` ClusterRole instead of cluster-admin in their own workspace,
+`railgrid:provider` ClusterRole instead of cluster-admin in their own workspace,
 and the infrastructure provider defines and serves its own CRDs from its
 provider workspace, which the narrow role does not grant. Leave it unset (or
 `true`) while you run the infrastructure provider. Once you have confirmed
@@ -225,7 +225,7 @@ kcp:
     enabled: false
   external:
     enabled: true
-    existingSecret: faros-kcp-kubeconfig
+    existingSecret: railgrid-kcp-kubeconfig
 
 replicaCount: 3
 ```
@@ -240,7 +240,7 @@ needed on the ingress. Three pieces of hub state are what make that true:
 
 - **Singleton controllers** (provider provisioning, MCPServer, organization
   bootstrap, soft-delete) run only on the replica holding the
-  `faros-hub-controllers` Lease in `root:faros:system:controllers`. The provider
+  `railgrid-hub-controllers` Lease in `root:railgrid:system:controllers`. The provider
   *catalog* controller is deliberately exempt: it maintains the routing table
   the request path reads, so it runs everywhere.
 - **Browser sessions and published-app authorization codes** live in
@@ -264,18 +264,18 @@ One thing costs more per replica rather than less:
 
 ```bash
 # kcp container
-kubectl -n faros-system logs faros-faros-hub-0 -c kcp
+kubectl -n railgrid-system logs railgrid-railgrid-hub-0 -c kcp
 
 # hub container
-kubectl -n faros-system logs faros-faros-hub-0 -c hub
+kubectl -n railgrid-system logs railgrid-railgrid-hub-0 -c hub
 ```
 
 ### Upgrading
 
 ```bash
-helm upgrade faros deploy/charts/faros-hub/ \
+helm upgrade railgrid deploy/charts/railgrid-hub/ \
   -f values.yaml \
-  --namespace faros-system
+  --namespace railgrid-system
 ```
 
 {: .note }
@@ -284,21 +284,21 @@ TLS secrets have `helm.sh/resource-policy: keep` and survive upgrades.
 ### Uninstalling
 
 ```bash
-helm uninstall faros --namespace faros-system
+helm uninstall railgrid --namespace railgrid-system
 ```
 
 This preserves PVCs (kcp data) and TLS secrets. To fully clean up:
 
 ```bash
-kubectl -n faros-system delete pvc --all
-kubectl -n faros-system delete secret faros-faros-hub-tls
-kubectl delete namespace faros-system
+kubectl -n railgrid-system delete pvc --all
+kubectl -n railgrid-system delete secret railgrid-railgrid-hub-tls
+kubectl delete namespace railgrid-system
 ```
 
 To also remove the kind cluster:
 
 ```bash
-kind delete cluster --name faros
+kind delete cluster --name railgrid
 ```
 
 ---
@@ -318,7 +318,7 @@ kind delete cluster --name faros
 | `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all`. Next release defaults to `platform` | `""` (binary: `off`) |
 | `hub.security.providerHubAccessPlatformDefault` | Let platform providers use the hub capabilities they declare where no one has accepted or declined them; `false` requires acceptance for every provider | `null` (binary: `true`) |
 | `hub.security.providerDelegatedTokensExclude` | Platform providers kept on the caller's bearer under `platform`; replaces the built-in list | `[]` (binary: `[edges]`) |
-| `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `faros:provider` role. Next release defaults to `false` | `null` (binary: `true`) |
+| `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `railgrid:provider` role. Next release defaults to `false` | `null` (binary: `true`) |
 | `hub.extraArgs` | Extra hub flags appended after the modelled ones; entries repeating a modelled flag are refused | `[]` |
 
 ### Identity Provider
@@ -327,7 +327,7 @@ kind delete cluster --name faros
 |:----|:------------|:--------|
 | `idp.issuerURL` | OIDC issuer URL | `""` |
 | `idp.browserAuthURL` | Public HTTPS browser authorization endpoint; discovery and token operations still use `issuerURL` | `""` |
-| `idp.clientID` | OIDC client ID | `"faros"` |
+| `idp.clientID` | OIDC client ID | `"railgrid"` |
 | `idp.clientSecret` | OIDC client secret | `""` |
 | `hub.publishedAppsDomain` | DNS zone published apps are served under; enables private published-app sign-in (`/auth/apps/*`) | `""` |
 | `hub.disableTokenLogin` | Disable interactive static-token login (endpoint + portal form); bearer tokens still work for APIs | `false` |

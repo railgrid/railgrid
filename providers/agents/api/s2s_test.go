@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/provider-agents/store"
-	"github.com/faroshq/provider-agents/tools"
+	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 )
 
 // saToken builds a JWT-shaped kcp ServiceAccount token. Only the payload matters:
@@ -93,7 +93,7 @@ func TestQualifyServiceAccount(t *testing.T) {
 
 func TestShardBase(t *testing.T) {
 	cases := map[string]string{
-		"https://shard.example/services/apiexport/abc/agents.faros.sh/clusters/xyz": "https://shard.example/services/apiexport/abc/agents.faros.sh",
+		"https://shard.example/services/apiexport/abc/agents.railgrid.ai/clusters/xyz": "https://shard.example/services/apiexport/abc/agents.railgrid.ai",
 		"https://shard.example/base":  "https://shard.example/base",
 		"https://shard.example/base/": "https://shard.example/base",
 	}

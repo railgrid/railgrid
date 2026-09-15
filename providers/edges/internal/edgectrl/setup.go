@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 

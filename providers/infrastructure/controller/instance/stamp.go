@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package instance
 //   - gateRequired    ⇔ the schema's oidc.mode enum offers no "none" —
 //     a workload with no auth of its own must never publish ungated, so an
 //     instance hand-edited past its schema is refused here, defence in depth
-//   - fqdn / farosCluster / credentialsSecretName stamps ⇔ the schema
+//   - fqdn / railgridCluster / credentialsSecretName stamps ⇔ the schema
 //     declares those fields (stamping undeclared fields would desync the
 //     stored values from what the runtime CRD prunes)
 
@@ -32,10 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/apps"
-	"github.com/faroshq/provider-infrastructure/instancespec"
-	"github.com/faroshq/provider-infrastructure/kro"
+	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
+	"github.com/railgrid/provider-infrastructure/apps"
+	"github.com/railgrid/provider-infrastructure/instancespec"
+	"github.com/railgrid/provider-infrastructure/kro"
 )
 
 const (
@@ -46,13 +46,13 @@ const (
 
 // templateTraits is the exposure treatment derived from one Template.
 type templateTraits struct {
-	publishable      bool // exposure public or optional
-	optionalExposure bool // exposure optional: expose.enabled gates publish
-	hasFQDN          bool // schema declares expose.fqdn (stampable)
-	hasOIDC          bool // schema declares an oidc block
-	gateRequired     bool // oidc.mode enum offers no "none"
-	hasCredentials   bool // schema declares credentialsSecretName (stampable)
-	hasFarosCluster  bool // schema declares farosCluster (stampable)
+	publishable        bool // exposure public or optional
+	optionalExposure   bool // exposure optional: expose.enabled gates publish
+	hasFQDN            bool // schema declares expose.fqdn (stampable)
+	hasOIDC            bool // schema declares an oidc block
+	gateRequired       bool // oidc.mode enum offers no "none"
+	hasCredentials     bool // schema declares credentialsSecretName (stampable)
+	hasRailgridCluster bool // schema declares railgridCluster (stampable)
 }
 
 // traitsFor derives the exposure treatment from the Template's effective
@@ -74,7 +74,7 @@ func traitsFor(tmpl *infrav1alpha1.Template) (templateTraits, error) {
 		t.gateRequired = !oidcModeAllowsNone(oidc)
 	}
 	_, t.hasCredentials = spec.Properties["credentialsSecretName"]
-	_, t.hasFarosCluster = spec.Properties["farosCluster"]
+	_, t.hasRailgridCluster = spec.Properties["railgridCluster"]
 	return t, nil
 }
 
@@ -133,7 +133,7 @@ type gateDecision struct {
 	// cond is the OIDCConfigured condition to report; nil for kinds without
 	// an oidc block.
 	cond *conditionSpec
-	// stamp is whether the platform fields (fqdn, farosCluster, and — when
+	// stamp is whether the platform fields (fqdn, railgridCluster, and — when
 	// withCredentials — credentialsSecretName) must be stamped.
 	stamp bool
 	// withCredentials adds the credentialsSecretName stamp.
@@ -209,7 +209,7 @@ func (c *Controller) applyExposure(ctx context.Context, tenantClient client.Clie
 	if !d.stamp {
 		return d.cond, exposureOutcome{}, nil
 	}
-	stamped, err := c.stampValues(ctx, tenantClient, tenant, inst, d.withCredentials, traits.hasFarosCluster)
+	stamped, err := c.stampValues(ctx, tenantClient, tenant, inst, d.withCredentials, traits.hasRailgridCluster)
 	if err != nil {
 		return d.cond, exposureOutcome{}, err
 	}
@@ -221,13 +221,13 @@ func (c *Controller) applyExposure(ctx context.Context, tenantClient client.Clie
 	return d.cond, exposureOutcome{bridgeOIDC: d.bridgeOIDC}, nil
 }
 
-// stampValues computes the fqdn (and, when requested, farosCluster and the
+// stampValues computes the fqdn (and, when requested, railgridCluster and the
 // bridged-Secret name) and writes them into spec.values if not already set.
 // Idempotent: a no-op once everything is stamped. Returns whether an update
 // was written.
 func (c *Controller) stampValues(ctx context.Context, tenantClient client.Client, tenant string, inst *unstructured.Unstructured, withCredentials, withCluster bool) (bool, error) {
 	if c.cfg.BaseDomain == "" {
-		return false, fmt.Errorf("cannot compute the public hostname: FAROS_APP_BASE_DOMAIN is not configured on this provider")
+		return false, fmt.Errorf("cannot compute the public hostname: RAILGRID_APP_BASE_DOMAIN is not configured on this provider")
 	}
 
 	prefix := nestedString(inst, "spec", "values", "expose", "hostnamePrefix")
@@ -238,7 +238,7 @@ func (c *Controller) stampValues(ctx context.Context, tenantClient client.Client
 		return false, fmt.Errorf("computing fqdn: %w", err)
 	}
 
-	curCluster := nestedString(inst, "spec", "values", "farosCluster")
+	curCluster := nestedString(inst, "spec", "values", "railgridCluster")
 	stampCluster := withCluster && curCluster != tenant
 
 	current := curFQDN == fqdn && !stampCluster
@@ -252,8 +252,8 @@ func (c *Controller) stampValues(ctx context.Context, tenantClient client.Client
 		return false, fmt.Errorf("set spec.values.expose.fqdn: %w", err)
 	}
 	if stampCluster {
-		if err := unstructured.SetNestedField(inst.Object, tenant, "spec", "values", "farosCluster"); err != nil {
-			return false, fmt.Errorf("set spec.values.farosCluster: %w", err)
+		if err := unstructured.SetNestedField(inst.Object, tenant, "spec", "values", "railgridCluster"); err != nil {
+			return false, fmt.Errorf("set spec.values.railgridCluster: %w", err)
 		}
 	}
 	if withCredentials {

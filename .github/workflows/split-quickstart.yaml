@@ -1,7 +1,7 @@
 name: Split quickstart provider
 
 # Publishes providers/quickstart from this monorepo to the standalone,
-# read-only mirror at faroshq/provider-quickstart, preserving git history.
+# read-only mirror at railgrid/provider-quickstart, preserving git history.
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
@@ -18,7 +18,7 @@ name: Split quickstart provider
 #
 # Required secret: QUICKSTART_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
-#   faroshq/provider-quickstart.
+#   railgrid/provider-quickstart.
 
 on:
   push:
@@ -42,7 +42,7 @@ concurrency:
 
 env:
   PREFIX: providers/quickstart
-  TARGET_REPO: git@github.com:faroshq/provider-quickstart.git
+  TARGET_REPO: git@github.com:railgrid/provider-quickstart.git
   TARGET_BRANCH: main
   SPLITSH_VERSION: v1.0.1
 

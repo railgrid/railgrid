@@ -9,14 +9,14 @@ kind: ResourceGraphDefinition
 metadata:
   name: redis-cache
   labels:
-    faros.sh/expose: "true"
-    faros.sh/template-name: redis-cache
-    faros.sh/template-version: 0.1.0
-    faros.sh/category: Databases
-    faros.sh/cloud: k8s
+    railgrid.ai/expose: "true"
+    railgrid.ai/template-name: redis-cache
+    railgrid.ai/template-version: 0.1.0
+    railgrid.ai/category: Databases
+    railgrid.ai/cloud: k8s
   annotations:
-    faros.sh/display-name: "Redis cache"
-    faros.sh/description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
+    railgrid.ai/display-name: "Redis cache"
+    railgrid.ai/description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
 spec:
   schema:
     apiVersion: v1alpha1

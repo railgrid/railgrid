@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,10 +33,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func newRunSandboxTestClient(objects ...runtime.Object) *asclient.Client {
@@ -73,11 +73,11 @@ func newRunSandboxTestInstance(name, state string, now time.Time) *unstructured.
 
 func readyRunSandboxStatus(generation int64) map[string]any {
 	return map[string]any{
-		"observedGeneration": generation,
-		"phase":              "Ready",
-		"farosNetworkPhase":  "runtime",
-		"runtimeNamespace":   "run-ns",
-		"controlSecretRef":   map[string]any{"name": "run-control"},
+		"observedGeneration":   generation,
+		"phase":                "Ready",
+		"railgridNetworkPhase": "runtime",
+		"runtimeNamespace":     "run-ns",
+		"controlSecretRef":     map[string]any{"name": "run-control"},
 		"conditions": []any{map[string]any{
 			"type":               "Ready",
 			"status":             "True",
@@ -703,11 +703,11 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 	_ = unstructured.SetNestedField(cached.Object, readyRunSandboxStatus(1), "status")
 	cached.SetAnnotations(cacheAnnotations)
 	template := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": projectAssistantRunSandboxDefaultTemplate},
 		"spec": map[string]any{"development": map[string]any{"components": map[string]any{
-			"workspace": map[string]any{"workspacePath": ".", "devImage": "${faros.devImage.universal}"},
+			"workspace": map[string]any{"workspacePath": ".", "devImage": "${railgrid.devImage.universal}"},
 		}}},
 	}}
 	client := newRunSandboxTestClient(cached, template)
@@ -779,8 +779,8 @@ func TestProjectAssistantRunSandboxColdMultiMutationWarmFollowUpKeepsRemoteRevis
 	cached.SetGeneration(1)
 	_ = unstructured.SetNestedField(cached.Object, readyRunSandboxStatus(1), "status")
 	template := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Template", "metadata": map[string]any{"name": projectAssistantRunSandboxDefaultTemplate},
-		"spec": map[string]any{"development": map[string]any{"components": map[string]any{"workspace": map[string]any{"workspacePath": ".", "devImage": "${faros.devImage.universal}"}}}},
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Template", "metadata": map[string]any{"name": projectAssistantRunSandboxDefaultTemplate},
+		"spec": map[string]any{"development": map[string]any{"components": map[string]any{"workspace": map[string]any{"workspacePath": ".", "devImage": "${railgrid.devImage.universal}"}}}},
 	}}
 	client := newRunSandboxTestClient(cached, template)
 	files := workspace.NewFileStore(t.TempDir())
@@ -1010,19 +1010,19 @@ func TestProjectAssistantRunSandboxInstanceReadinessRequiresCurrentRuntimeState(
 		{
 			name: "missing network phase",
 			mutate: func(instance *unstructured.Unstructured) {
-				unstructured.RemoveNestedField(instance.Object, "status", "farosNetworkPhase")
+				unstructured.RemoveNestedField(instance.Object, "status", "railgridNetworkPhase")
 			},
 		},
 		{
 			name: "setup network phase",
 			mutate: func(instance *unstructured.Unstructured) {
-				_ = unstructured.SetNestedField(instance.Object, "setup", "status", "farosNetworkPhase")
+				_ = unstructured.SetNestedField(instance.Object, "setup", "status", "railgridNetworkPhase")
 			},
 		},
 		{
 			name: "wrong network phase casing",
 			mutate: func(instance *unstructured.Unstructured) {
-				_ = unstructured.SetNestedField(instance.Object, "Runtime", "status", "farosNetworkPhase")
+				_ = unstructured.SetNestedField(instance.Object, "Runtime", "status", "railgridNetworkPhase")
 			},
 		},
 		{
@@ -1761,7 +1761,7 @@ func TestCodingSandboxBYOResolverIsScopedAndFailsClosed(t *testing.T) {
 		return CodingSandboxEligibility{
 			Eligible:            true,
 			Reason:              "organization binding resolved",
-			ProviderExportPath:  "root:faros:tenants:org-a:providers:infrastructure",
+			ProviderExportPath:  "root:railgrid:tenants:org-a:providers:infrastructure",
 			TransportGeneration: "hub-virtual-workspace-v2",
 		}, nil
 	}

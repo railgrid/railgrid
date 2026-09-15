@@ -1,4 +1,4 @@
-// Copyright 2026 The Faros Authors.
+// Copyright 2026 The Railgrid Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/faroshq/provider-agents/llm"
+	"github.com/railgrid/provider-agents/llm"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -48,7 +48,7 @@ func TestResolveCredentialDraftPreservesEndpointAuthority(t *testing.T) {
 			if err == nil && tt.key == "" && got.APIKey != "stored-key" {
 				t.Fatal("stored key was not reused")
 			}
-			if len(secrets.requested) > 0 && secrets.requested[0] != "default/faros-agents-model-main" {
+			if len(secrets.requested) > 0 && secrets.requested[0] != "default/railgrid-agents-model-main" {
 				t.Fatalf("wrong secret: %v", secrets.requested)
 			}
 		})

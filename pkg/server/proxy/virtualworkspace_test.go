@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 func TestParseVirtualWorkspacePath(t *testing.T) {
 	const (
 		cluster = "260dym853j73uupr"
-		export  = "infrastructure.providers.faros.sh"
+		export  = "infrastructure.providers.railgrid.ai"
 	)
 
 	for _, tc := range []struct {
@@ -56,9 +56,9 @@ func TestParseVirtualWorkspacePath(t *testing.T) {
 		// A workspace path rather than an id — accepted by the segment regex,
 		// and still safe because it must equal the token's own claim.
 		name:        "colon-separated workspace path",
-		path:        "/services/apiexport/root:faros:providers/" + export + "/clusters/*/api",
+		path:        "/services/apiexport/root:railgrid:providers/" + export + "/clusters/*/api",
 		wantOK:      true,
-		wantCluster: "root:faros:providers",
+		wantCluster: "root:railgrid:providers",
 		wantExport:  export,
 	}, {
 		name:   "not a virtual workspace path",
@@ -161,7 +161,7 @@ func TestServeVirtualWorkspaceRefusesForeignExports(t *testing.T) {
 	const (
 		mine   = "260dym853j73uupr"
 		theirs = "9xk2p0qwertyuiop"
-		export = "infrastructure.providers.faros.sh"
+		export = "infrastructure.providers.railgrid.ai"
 	)
 
 	for _, tc := range []struct {
@@ -218,7 +218,7 @@ func TestServeVirtualWorkspaceRelaysPathVerbatim(t *testing.T) {
 	const cluster = "260dym853j73uupr"
 	p, rec := vwProxyTo(t)
 
-	path := "/services/apiexport/" + cluster + "/infrastructure.providers.faros.sh/clusters/%2A/apis/apis.kcp.io/v1alpha1/apibindings"
+	path := "/services/apiexport/" + cluster + "/infrastructure.providers.railgrid.ai/clusters/%2A/apis/apis.kcp.io/v1alpha1/apibindings"
 	vw, ok := parseVirtualWorkspacePath(path)
 	if !ok {
 		t.Fatalf("test path did not parse: %s", path)

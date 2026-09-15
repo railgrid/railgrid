@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright 2026 The Railgrid Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package api
 
 import (
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -22,7 +22,7 @@ func projectRepositoryCreationRetryable(p *aiv1alpha1.Project, repo *unstructure
 	if b == nil || b.Adopted || p.GetDeletionTimestamp() != nil || p.UID == "" || repo == nil || repo.GetDeletionTimestamp() != nil || repo.GetName() != b.RepositoryRef {
 		return false
 	}
-	if repo.GetAnnotations()["code.faros.sh/create-only"] != "true" || repo.GetLabels()[projectRepositoryProjectLabel] != p.Name || repo.GetAnnotations()[projectRepositoryUIDAnnotation] != string(p.UID) {
+	if repo.GetAnnotations()["code.railgrid.ai/create-only"] != "true" || repo.GetLabels()[projectRepositoryProjectLabel] != p.Name || repo.GetAnnotations()[projectRepositoryUIDAnnotation] != string(p.UID) {
 		return false
 	}
 	id, _, _ := unstructured.NestedString(repo.Object, "status", "repoID")

@@ -98,8 +98,8 @@ cluster_dns_resource = section(
     "\n\n# ---------------------------------------------------------------------------\n# Static-token auth",
 )
 require(
-    "resource_deps=['faros-hub']" in cluster_dns_resource,
-    "cluster Tilt preview DNS must wait for the faros-hub Service",
+    "resource_deps=['railgrid-hub']" in cluster_dns_resource,
+    "cluster Tilt preview DNS must wait for the railgrid-hub Service",
 )
 
 cluster_app = section(

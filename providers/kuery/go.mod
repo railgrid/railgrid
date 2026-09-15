@@ -1,10 +1,10 @@
-module github.com/faroshq/provider-kuery
+module github.com/railgrid/provider-kuery
 
 go 1.26.8
 
 require (
 	github.com/faroshq/kuery v0.0.0-20260621053041-5342a07fc777
-	github.com/faroshq/provider-sdk v0.1.0
+	github.com/railgrid/provider-sdk v0.1.0
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -114,4 +114,4 @@ replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/mu
 // In-tree SDK: the monorepo is the source of truth until the SDK is
 // published with every package providers use (leaderelection landed after
 // v0.1.0). Image builds copy provider-sdk into the build context.
-replace github.com/faroshq/provider-sdk => ../../provider-sdk
+replace github.com/railgrid/provider-sdk => ../../provider-sdk
