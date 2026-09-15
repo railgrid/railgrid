@@ -83,8 +83,8 @@ const hasEmail = computed(() => !!(auth.user?.email?.trim() || auth.self?.email?
 // email, so without this they would have no way to tell anyone how to add them.
 const email = computed(() => auth.memberId || 'Authenticated user')
 const identityLabel = computed(() => {
-  if (hasEmail.value) return 'Email · others add you with it'
-  if (auth.memberId) return 'Member ID · others add you with it'
+  if (hasEmail.value) return 'Email'
+  if (auth.memberId) return 'Member ID'
   return 'Account'
 })
 const copiedMemberId = ref(false)

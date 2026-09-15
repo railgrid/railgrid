@@ -942,6 +942,12 @@ test('account developer access gates unverified Workspace context without anothe
 
 test('member role controls have resource-specific names and use muted badges', () => {
   assert.match(memberList, /placeholder="email or member ID"[\s\S]*aria-label="Member email or member ID"/)
+  // Typing an email suggests matching people from the rate-limited search,
+  // as an accessible combobox; existing members are not suggested again.
+  assert.match(memberList, /useUserSuggestions\(newUser\)/)
+  assert.match(memberList, /role="combobox"[\s\S]*:aria-expanded="showSuggestions"[\s\S]*:aria-controls="listboxId"/)
+  assert.match(memberList, /role="listbox"[\s\S]*role="option"[\s\S]*:aria-selected="i === activeSuggestion"/)
+  assert.match(memberList, /!existing\.has\(s\.user\)/)
   assert.match(memberList, /v-model="newRole"[\s\S]*aria-label="Role for new member"/)
 
   const roleStart = memberList.indexOf('<template #role="{ row }">')

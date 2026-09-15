@@ -56,6 +56,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
 // WorkspaceOps is the slice of *kcp.Bootstrapper the REST handlers
@@ -264,10 +265,14 @@ func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialM
 // /api/* endpoints across the two middlewares.
 type Handler struct {
 	mgr *Manager
+	// userSearch rate-limits GET /api/users/search per caller.
+	userSearch *proxy.IPRateLimiter
 }
 
 // NewHandler constructs a Handler.
-func NewHandler(mgr *Manager) *Handler { return &Handler{mgr: mgr} }
+func NewHandler(mgr *Manager) *Handler {
+	return &Handler{mgr: mgr, userSearch: newUserSearchLimiter()}
+}
 
 // RegisterUserOnly attaches the routes that only need the caller's
 // User identity (no active Org / Workspace yet). r is the subrouter
@@ -278,12 +283,14 @@ func NewHandler(mgr *Manager) *Handler { return &Handler{mgr: mgr} }
 //	GET    /api/orgs                       list orgs the caller is in
 //	POST   /api/orgs                       create a new Org
 //	GET    /api/users/me                   the caller's own identity
+//	GET    /api/users/search?q=            suggest users by email/name prefix (rate-limited)
 //	DELETE /api/users/me                   soft-delete self (O-8)
 //	POST   /api/users/me/undelete          undelete self (O-8)
 func (h *Handler) RegisterUserOnly(r *mux.Router) {
 	r.HandleFunc("/orgs", h.listOrgs).Methods(http.MethodGet)
 	r.HandleFunc("/orgs", h.createOrg).Methods(http.MethodPost)
 	r.HandleFunc("/users/me", h.getSelfUser).Methods(http.MethodGet)
+	r.HandleFunc("/users/search", h.searchUsers).Methods(http.MethodGet)
 	r.HandleFunc("/users/me", h.deleteSelfUser).Methods(http.MethodDelete)
 	r.HandleFunc("/users/me/undelete", h.undeleteSelfUser).Methods(http.MethodPost)
 }

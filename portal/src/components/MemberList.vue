@@ -8,9 +8,10 @@
 // All mutations are emitted upward: the parent owns the store calls, the
 // busy bookkeeping, and the reload. This stays a dumb roster.
 
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { Loader2, Plus, User as UserIcon } from 'lucide-vue-next'
 import type { MemberRow } from '@/stores/tenant'
+import { useUserSuggestions, type UserSuggestion } from '@/composables/useUserSuggestions'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 
@@ -44,6 +45,56 @@ const emit = defineEmits<{
 
 const newUser = ref('')
 const newRole = ref<'admin' | 'member'>('member')
+
+// Suggestions for the add box, from the rate-limited user search. People who
+// are already members are not suggested again.
+const { suggestions: foundUsers } = useUserSuggestions(newUser)
+const suggestions = computed(() => {
+  const existing = new Set(props.members.map((m) => m.user))
+  return foundUsers.value.filter((s) => !existing.has(s.user))
+})
+const suggestionsOpen = ref(false)
+const activeSuggestion = ref(-1)
+const listboxId = useId()
+const showSuggestions = computed(() => suggestionsOpen.value && suggestions.value.length > 0)
+
+function suggestionId(index: number): string {
+  return `${listboxId}-option-${index}`
+}
+
+function onUserInput() {
+  suggestionsOpen.value = true
+  activeSuggestion.value = -1
+}
+
+function pickSuggestion(s: UserSuggestion) {
+  newUser.value = s.email
+  suggestionsOpen.value = false
+  activeSuggestion.value = -1
+}
+
+function onUserKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && showSuggestions.value) {
+    event.preventDefault()
+    suggestionsOpen.value = false
+    return
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (!suggestions.value.length) return
+    event.preventDefault()
+    suggestionsOpen.value = true
+    const n = suggestions.value.length
+    const step = event.key === 'ArrowDown' ? 1 : -1
+    activeSuggestion.value = (activeSuggestion.value + step + n) % n
+    return
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    const picked = showSuggestions.value ? suggestions.value[activeSuggestion.value] : undefined
+    if (picked) pickSuggestion(picked)
+    else void submit()
+  }
+}
 
 const memberColumns = computed(() => [
   { key: 'user', label: 'User', primary: true, fullValue: memberPrimaryValue },
@@ -88,6 +139,7 @@ function memberPrimaryValue(row: Record<string, unknown>): string {
 async function submit() {
   const u = newUser.value.trim()
   if (!u || props.busy.__new__) return
+  suggestionsOpen.value = false
   const ok = await props.add(u, newRole.value)
   if (ok) {
     newUser.value = ''
@@ -99,14 +151,46 @@ async function submit() {
 <template>
   <div>
     <div v-if="!readonly" class="flex flex-wrap items-center gap-2">
-      <input
-        v-model="newUser"
-        class="k-input min-w-[200px] w-auto flex-1 text-sm"
-        placeholder="email or member ID"
-        aria-label="Member email or member ID"
-        title="Their email, or the member ID shown in their account menu (people signed in with a static token have no email)"
-        @keyup.enter="submit"
-      />
+      <div class="relative min-w-[200px] flex-1">
+        <input
+          v-model="newUser"
+          class="k-input w-full text-sm"
+          placeholder="email or member ID"
+          aria-label="Member email or member ID"
+          title="Start typing an email to see matching people, or paste the member ID from their account menu (people signed in with a static token have no email)"
+          role="combobox"
+          aria-autocomplete="list"
+          :aria-expanded="showSuggestions"
+          :aria-controls="listboxId"
+          :aria-activedescendant="showSuggestions && activeSuggestion >= 0 ? suggestionId(activeSuggestion) : undefined"
+          autocomplete="off"
+          @input="onUserInput"
+          @keydown="onUserKeydown"
+          @blur="suggestionsOpen = false"
+        />
+        <div
+          v-show="showSuggestions"
+          :id="listboxId"
+          role="listbox"
+          aria-label="Matching people"
+          class="k-menu absolute left-0 right-0 top-full z-20 mt-1"
+        >
+          <div
+            v-for="(s, i) in suggestions"
+            :id="suggestionId(i)"
+            :key="s.user"
+            role="option"
+            :aria-selected="i === activeSuggestion"
+            class="k-menu-item cursor-pointer"
+            :class="i === activeSuggestion ? 'is-selected' : ''"
+            @mousedown.prevent="pickSuggestion(s)"
+          >
+            <UserIcon class="h-3.5 w-3.5 shrink-0 text-text-muted/70" :stroke-width="1.75" aria-hidden="true" />
+            <span class="min-w-0 truncate text-[12px] text-text-primary">{{ s.email }}</span>
+            <span v-if="s.displayName" class="min-w-0 truncate text-[11px] text-text-muted">{{ s.displayName }}</span>
+          </div>
+        </div>
+      </div>
       <select
         v-model="newRole"
         class="k-input w-auto text-sm"
