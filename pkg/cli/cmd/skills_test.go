@@ -91,7 +91,7 @@ func sampleEntries() []tarEntry {
 		{name: "railgrid-main/skills/railgrid/references/cli.md", data: "# cli\n"},
 		{name: "railgrid-main/skills/railgrid/.claude-plugin/plugin.json", data: `{"name":"railgrid"}`},
 		{name: "railgrid-main/skills/not-a-skill/notes.md", data: "no SKILL.md here"},
-		{name: "railgrid-main/skills/kedge/SKILL.md", data: "---\nname: kedge\ndescription: \"Quoted description\"\n---\n"},
+		{name: "railgrid-main/skills/sample/SKILL.md", data: "---\nname: sample\ndescription: \"Quoted description\"\n---\n"},
 		{name: "railgrid-main/pkg/cli/cmd/skills.go", data: "package cmd"},
 	}
 }
@@ -135,8 +135,8 @@ func TestReadSkillsArchive(t *testing.T) {
 	if a.Commit != "0123456789abcdef0123456789abcdef01234567" {
 		t.Errorf("commit = %q", a.Commit)
 	}
-	if got := a.names(); strings.Join(got, ",") != "railgrid,kedge" {
-		t.Errorf("skills = %v, want railgrid and kedge only (README.md and dirs without SKILL.md are not skills)", got)
+	if got := a.names(); strings.Join(got, ",") != "railgrid,sample" {
+		t.Errorf("skills = %v, want railgrid and sample only (README.md and dirs without SKILL.md are not skills)", got)
 	}
 	f := a.Skills["railgrid"]
 	if f.Description != "Use when driving a railgrid hub as a user." {
@@ -149,8 +149,8 @@ func TestReadSkillsArchive(t *testing.T) {
 	if want := ".claude-plugin/plugin.json,SKILL.md,references/cli.md"; strings.Join(paths, ",") != want {
 		t.Errorf("files = %v, want %s", paths, want)
 	}
-	if a.Skills["kedge"].Description != "Quoted description" {
-		t.Errorf("quoted description not unwrapped: %q", a.Skills["kedge"].Description)
+	if a.Skills["sample"].Description != "Quoted description" {
+		t.Errorf("quoted description not unwrapped: %q", a.Skills["sample"].Description)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestSkillsListAndInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v\n%s", err, out)
 	}
-	if out != "railgrid\nkedge\n" {
+	if out != "railgrid\nsample\n" {
 		t.Errorf("list -o name = %q", out)
 	}
 	if *gotPath != "/railgrid/railgrid/tar.gz/v9" {
@@ -238,8 +238,8 @@ func TestSkillsListAndInstall(t *testing.T) {
 			t.Errorf("output does not mention %s:\n%s", dir, out)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "kedge")); !os.IsNotExist(err) {
-		t.Errorf("kedge was installed although only railgrid was named")
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "sample")); !os.IsNotExist(err) {
+		t.Errorf("sample was installed although only railgrid was named")
 	}
 	if !strings.Contains(out, "railgrid/railgrid@main (abcdef012345)") {
 		t.Errorf("output lacks the source line:\n%s", out)
@@ -256,10 +256,10 @@ func TestSkillsListAndInstall(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale file survived reinstall")
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "kedge", "SKILL.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "sample", "SKILL.md")); err != nil {
 		t.Errorf("install with no names should install every skill: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "kedge")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "sample")); !os.IsNotExist(err) {
 		t.Errorf("--target claude touched the codex directory")
 	}
 }
@@ -315,7 +315,7 @@ func TestSkillsInstallErrors(t *testing.T) {
 	}
 
 	serveTarball(t, http.StatusOK, githubTarball(t, "", sampleEntries()))
-	if _, err := runSkills(t, "install", "missing", "--dir", t.TempDir()); err == nil || !strings.Contains(err.Error(), `no skill "missing"`) || !strings.Contains(err.Error(), "have: railgrid, kedge") {
+	if _, err := runSkills(t, "install", "missing", "--dir", t.TempDir()); err == nil || !strings.Contains(err.Error(), `no skill "missing"`) || !strings.Contains(err.Error(), "have: railgrid, sample") {
 		t.Errorf("unknown skill: err = %v", err)
 	}
 	if _, err := runSkills(t, "install", "--target", "vim", "--dir", ""); err == nil || !strings.Contains(err.Error(), `unsupported --target "vim"`) {

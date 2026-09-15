@@ -341,11 +341,7 @@ func rewriteRailgridExecCommand(cfg *clientcmdapi.Config) {
 		if ai == nil || ai.Exec == nil {
 			continue
 		}
-		// `kedge` is the pre-rename sentinel — hubs deployed before the
-		// rename still emit it. Rewriting it too keeps the new CLI working
-		// against an old hub instead of shelling out to a stale `kedge`
-		// binary (which reads a different token cache and fails to refresh).
-		if ai.Exec.Command == "railgrid" || ai.Exec.Command == "kedge" {
+		if ai.Exec.Command == "railgrid" {
 			ai.Exec.Command = exe
 		}
 	}

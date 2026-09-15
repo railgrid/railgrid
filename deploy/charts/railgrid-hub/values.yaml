@@ -1,0 +1,278 @@
+# -- Image settings
+image:
+  hub:
+    repository: ghcr.io/railgrid/railgrid-hub
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Number of railgrid-hub replicas.
+# Only honoured with kcp.external.enabled=true. Embedded kcp runs a per-replica
+# etcd on its own PVC, so that mode is always a single-replica StatefulSet and
+# the chart refuses replicaCount > 1.
+replicaCount: 1
+
+# -- kcp settings
+kcp:
+  # -- Embedded kcp (default, runs in-process with railgrid-hub)
+  embedded:
+    enabled: true
+    # Secure port for embedded kcp API server
+    securePort: 6443
+    # Bind address for embedded kcp API server (0.0.0.0 for all interfaces)
+    bindAddress: "0.0.0.0"
+    # Comma-separated list of batteries to include
+    batteriesInclude: "admin,user"
+    # URL embedded kcp advertises for its shard (Shard.spec.externalURL and
+    # Shard.spec.virtualWorkspaceURL). Every APIExportEndpointSlice endpoint
+    # is derived from it, so it is what the hub's own controllers and
+    # in-cluster providers dial to watch their APIExports.
+    # Empty (default) → the pod's stable headless-Service name,
+    # https://<fullname>-0.<fullname>-kcp.<namespace>.svc.cluster.local:<securePort>,
+    # which the kcp serving cert covers. Left to kcp, the value is the pod IP:
+    # after a pod restart the IP changes and kcp does not refresh the
+    # endpoint slices, so every APIExport watch keeps dialing a dead address.
+    # Set this only when consumers outside the cluster must reach kcp's
+    # virtual workspaces directly (see docs/byo-providers.md).
+    shardURL: ""
+    # -- TLS configuration for embedded kcp API server.
+    # Required to avoid certificate errors when pod IP changes on restart.
+    # A headless service provides stable DNS names for the StatefulSet pod.
+    tls:
+      # Provide an existing Secret with tls.crt and tls.key
+      existingSecret: ""
+      # Auto-generate self-signed cert (default, includes stable DNS names)
+      selfSigned:
+        enabled: true
+        dnsNames: []
+        ipAddresses: []
+      # Use cert-manager to issue a certificate
+      certManager:
+        enabled: false
+        issuerRef:
+          name: ""
+          kind: ClusterIssuer
+          group: cert-manager.io
+        dnsNames: []
+
+  # -- External kcp (running outside the cluster)
+  # Enable this to connect to an external kcp instance
+  external:
+    enabled: false
+    # Kubeconfig for connecting to external kcp
+    # Can be provided via:
+    # 1. existingSecret - name of a secret containing admin.kubeconfig key
+    # 2. kubeconfig - inline kubeconfig content (not recommended for production)
+    existingSecret: ""
+    kubeconfig: ""
+
+# -- railgrid-hub settings
+hub:
+  # Required: external URL for kubeconfig generation and OIDC callbacks
+  hubExternalURL: ""
+  # Address in-cluster components use to reach the hub instead of
+  # hubExternalURL. Baked into minted provider kubeconfigs and offered as the
+  # "in-cluster" option by the admin kubeconfig download. Defaults to
+  # hubExternalURL, which sends every provider→hub call out to the public
+  # hostname and back in — through the CDN/tunnel when one fronts the hub.
+  # Set this to the hub's in-cluster Service so provider pods stay inside the
+  # cluster:
+  #   internalURL: "https://<release>-railgrid-hub.<namespace>.svc.cluster.local:9443"
+  # Minted kubeconfigs use insecure-skip-tls-verify, so the serving cert does
+  # not need a SAN for this name. Leave empty when providers run outside the
+  # cluster (e.g. local kind, where they need https://host.docker.internal:9443).
+  internalURL: ""
+  listenAddr: ":9443"
+  devMode: false
+  # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
+  staticAuthTokens: []
+  # Disable the interactive static-token login (endpoint + portal form) so
+  # humans must sign in through the IdP with a username and password. Static
+  # bearer tokens above still authenticate API/MCP/CLI calls.
+  disableTokenLogin: false
+  # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
+  # Each entry matches a User by name, email, or rbacIdentity (case-insensitive).
+  # Empty disables the admin surface entirely (the /bonkers menu item stays hidden).
+  # For OIDC, use the admin's email; for a static token, use its RBAC identity
+  # railgrid:static:<first 16 hex of sha256("static-token/<token>")>. Static-token
+  # users have no email, so the token never appears in member lists.
+  adminUsers: []
+  # Additional Content-Security-Policy frame-src entries allowed in the portal.
+  # Use this for platform-owned preview hosts that are rendered inside the portal.
+  portalFrameSources: []
+  # CIDRs of the reverse proxies that front the hub (ingress controller pods,
+  # load balancer, CDN egress). The hub keys its pre-auth rate limits
+  # (token-login, /auth/refresh, MCP bearer checks) on the client address and
+  # only believes X-Forwarded-For from a connection inside these ranges.
+  # REQUIRED when the hub is reached through ingress.enabled or any other
+  # proxy: left empty, every client arrives as the proxy's own address and
+  # shares one bucket (over-throttling, never under). Never list ranges that
+  # clients connect from — a peer inside them can choose its own bucket.
+  # Example for an in-cluster ingress controller: ["10.244.0.0/16"].
+  trustedProxyCIDRs: []
+  # DNS zone published apps are served under (the infrastructure provider's
+  # apps base domain, e.g. apps.example.com). Enables the login-time
+  # published-app authorize/exchange endpoints; sign-in redirects are only
+  # ever issued to hosts directly under this zone. Empty disables private
+  # published-app access (public apps are unaffected — they never touch the
+  # hub).
+  publishedAppsDomain: ""
+  # -- Provider hardening. Every key here is unset by default, which leaves
+  # the binary's own default for this release; nothing is rendered into the
+  # hub args until you set a value. The binary defaults are the soft, staged
+  # ones (warn / off / cluster-admin) so providers installed from older charts
+  # keep working while they are rolled forward. The NEXT release flips them to
+  # enforce / platform / false; set them here to move to that posture early
+  # and shake out any provider that needs it. See docs/helm.md "Turning on the
+  # hardened defaults early".
+  security:
+    # What the hub does with a provider heartbeat whose bearer token does not
+    # verify as that provider's own service account: "warn" logs and accepts
+    # it, "enforce" rejects it. Binary default this release: warn. Next
+    # release: enforce. Recommended for production: enforce (once every
+    # provider runs a chart that sends its own service-account token).
+    providerHeartbeatAuth: ""
+    # Which platform providers receive a short-lived workspace-scoped
+    # ServiceAccount token instead of the caller's own hub bearer on
+    # /services/providers/*: "off" (caller's bearer, historical behaviour),
+    # "platform" (delegated, except the names in providerDelegatedTokensExclude),
+    # or "all" (delegated, exclusion list ignored). Org-owned providers are
+    # always delegated regardless. Binary default this release: off. Next
+    # release: platform. Recommended for production: platform.
+    providerDelegatedTokens: ""
+    # Platform providers that keep receiving the caller's bearer under
+    # providerDelegatedTokens=platform. Empty leaves the binary's built-in
+    # list (currently just "edges": its SSH data plane resolves the caller
+    # with a TokenReview on the bearer). Setting this REPLACES the built-in
+    # list rather than adding to it, so include edges if you still need it.
+    providerDelegatedTokensExclude: []
+    # Role bound to each provider's ServiceAccount inside its own provider
+    # workspace: true keeps cluster-admin, false binds the narrower generated
+    # railgrid:provider ClusterRole. null (default) leaves the binary default,
+    # which is true this release so an operator can stage the change; the
+    # next release defaults to false. The narrow role cannot be the default
+    # yet because the infrastructure provider defines and serves its own CRDs
+    # from its provider workspace, which the generated role does not grant, so
+    # flip this per deployment once you have confirmed your providers do not
+    # need it. Flipping either way replaces the existing binding (RoleRef is
+    # immutable; the hub deletes and recreates it).
+    providerWorkspaceClusterAdmin: null
+    # Whether platform providers may use the hub capabilities they declare
+    # (CatalogEntry spec.hubAccess — e.g. App Studio reading member lists and
+    # inviting people) in workspaces where nobody has accepted or declined
+    # them yet. Org-owned providers always need an explicit acceptance in the
+    # Enable dialog. null (default) leaves the binary default, true, which
+    # keeps existing workspaces working across the upgrade; false requires
+    # acceptance for every provider.
+    providerHubAccessPlatformDefault: null
+  # -- Extra command-line flags appended to the hub container after the flags
+  # the chart renders from the values above, for flags the chart does not
+  # model yet (e.g. "--providers=edges,infrastructure"). The chart refuses an
+  # entry that repeats a flag it already renders from a value: set the value
+  # instead, so the modelled setting stays the single source of truth.
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi  # Includes embedded kcp overhead
+  # -- TLS configuration for hub serving
+  tls:
+    # Provide an existing Secret with tls.crt and tls.key
+    existingSecret: ""
+    # Auto-generate a CA-signed self-signed cert (dev/local only). The
+    # generated Secret also contains the CA as ca.crt.
+    selfSigned:
+      enabled: true
+      dnsNames: []
+      ipAddresses:
+        - "127.0.0.1"
+    # Use cert-manager to issue a certificate (recommended for production)
+    certManager:
+      enabled: false
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      dnsNames: []
+
+# -- Identity provider (OIDC) settings (see docs/idp.md)
+idp:
+  # Required: canonical OIDC issuer URL reachable by the hub. Tokens must use
+  # this exact issuer; discovery, token exchange, and JWKS use it.
+  issuerURL: ""
+  # Optional: public HTTPS authorization endpoint used only in browser redirects.
+  # Set this for split-horizon IdPs whose issuerURL is cluster-internal.
+  browserAuthURL: ""
+  # Client ID for the OIDC provider. Must be registered as a public client
+  # (no client secret) in your IdP (e.g. Dex: public: true).
+  clientID: "railgrid"
+  # Optional: name of a secret in the release namespace whose `ca.crt` (or
+  # `tls.crt`) holds the PEM CA bundle for the IdP. When set, the secret is
+  # mounted into the hub pod and `--idp-ca-file` is passed so embedded kcp
+  # can verify the IdP's TLS cert. Required when issuerURL is https with a
+  # self-signed / private CA (e.g. dev Dex).
+  caSecretName: ""
+  # Key inside the caSecretName secret holding the CA bundle.
+  caSecretKey: "ca.crt"
+
+# -- kcp data PVC (used for embedded kcp data and hub state)
+persistence:
+  size: 10Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+# -- Service configuration
+service:
+  type: ClusterIP
+  hub:
+    port: 9443
+
+# -- Ingress (optional, passthrough to hub TLS)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  - host: railgrid.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: ImplementationSpecific
+
+# -- HTTPRoute (Gateway API; e.g. for the cfgate Cloudflare Tunnel controller).
+# The hub serves HTTPS with a self-signed cert on service.hub.port, so when
+# attaching to cfgate set the origin annotations below so cloudflared opens a
+# TLS connection to the origin without verifying the cert.
+httpRoute:
+  enabled: false
+  parentRefs:
+    - name: cloudflare-tunnel
+      namespace: cfgate-system
+  annotations: {}
+  #  cfgate.io/origin-protocol: "https"
+  #  cfgate.io/origin-ssl-verify: "false"
+  hostnames: []
+  #  - railgrid.example.com
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+# -- Extra /etc/hosts entries injected into the hub pod. Used in the external
+# kcp dev flow to make the short name `kcp` (from kcp's --shard-base-url)
+# resolve from railgrid-system — the APIExportEndpointSlice URLs kcp advertises
+# use the bare service name.
+hostAliases: []
+# - ip: 10.96.0.42
+#   hostnames:
+#     - kcp
+podSecurityContext:
+  fsGroup: 65534
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534

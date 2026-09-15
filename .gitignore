@@ -104,8 +104,12 @@ edge-kubeconfig
 .env.edge.server
 .env.edge.kubernetes
 values.yaml
-# …but Helm chart defaults MUST be committed or the chart can't render.
+# …but Helm chart defaults and templates (some named *kubeconfig*.yaml) MUST
+# be committed or the chart can't render.
 !providers/*/deploy/chart/values.yaml
+!providers/*/deploy/chart/templates/*.yaml
+!deploy/charts/*/values.yaml
+!deploy/charts/*/templates/*.yaml
 
 # kuery dev sqlite store
 kuery.db
