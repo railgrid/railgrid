@@ -68,7 +68,7 @@ function onUserInput() {
 }
 
 function pickSuggestion(s: UserSuggestion) {
-  newUser.value = s.email
+  newUser.value = s.memberId
   suggestionsOpen.value = false
   activeSuggestion.value = -1
 }
@@ -157,7 +157,7 @@ async function submit() {
           class="k-input w-full text-sm"
           placeholder="email or member ID"
           aria-label="Member email or member ID"
-          title="Start typing an email to see matching people, or paste the member ID from their account menu (people signed in with a static token have no email)"
+          title="Start typing an email, or a member ID such as railgrid:static:02d4b…, to see matching people. Everyone can copy their member ID from their account menu."
           role="combobox"
           aria-autocomplete="list"
           :aria-expanded="showSuggestions"
@@ -186,8 +186,11 @@ async function submit() {
             @mousedown.prevent="pickSuggestion(s)"
           >
             <UserIcon class="h-3.5 w-3.5 shrink-0 text-text-muted/70" :stroke-width="1.75" aria-hidden="true" />
-            <span class="min-w-0 truncate text-[12px] text-text-primary">{{ s.email }}</span>
-            <span v-if="s.displayName" class="min-w-0 truncate text-[11px] text-text-muted">{{ s.displayName }}</span>
+            <span class="min-w-0 truncate text-[12px] text-text-primary" :class="s.email ? '' : 'font-mono'">{{ s.memberId }}</span>
+            <span
+              v-if="s.displayName && s.displayName !== s.memberId"
+              class="min-w-0 truncate text-[11px] text-text-muted"
+            >{{ s.displayName }}</span>
           </div>
         </div>
       </div>

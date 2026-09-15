@@ -3,7 +3,9 @@
 // The hub rate-limits that endpoint hard per caller (a small burst, then one
 // request every few seconds), so this spends requests carefully:
 //   - nothing is sent below USER_SEARCH_MIN_QUERY characters (the hub
-//     refuses those anyway) or for input with spaces;
+//     refuses those anyway) or for input with spaces, and a static-token
+//     member ID ("railgrid:static:<hash>") waits for that many hash characters,
+//     which is when the hub starts matching static-token accounts;
 //   - requests are debounced while the person types;
 //   - an answer with fewer than the hub's cap is complete for its prefix, so
 //     every longer query under it is answered by filtering locally;
@@ -16,7 +18,10 @@ import { authSessionRevision } from '@/auth/token'
 
 export interface UserSuggestion {
   user: string
-  email: string
+  // What goes in the add box: the email, or the member ID (RBAC identity)
+  // of an account without one.
+  memberId: string
+  email?: string
   displayName?: string
 }
 
@@ -40,16 +45,38 @@ function currentCache(): Map<string, UserSuggestion[]> {
   return cache
 }
 
+// staticHash mirrors restapi.staticSearchHash: the hash part of a query
+// written as a static-token member ID, or null.
+function staticHash(q: string): string | null {
+  const rest = q.startsWith('railgrid:') ? q.slice('railgrid:'.length) : q
+  return rest.startsWith('static:') ? rest.slice('static:'.length) : null
+}
+
+// searchable mirrors when the hub answers: every query needs the minimum
+// length, and a static-token member ID needs it in the hash part too (the
+// hub answers shorter ones, but never with a static-token account).
+function searchable(q: string): boolean {
+  if ([...q].length < USER_SEARCH_MIN_QUERY || /\s/.test(q)) return false
+  const hash = staticHash(q)
+  return hash === null || [...hash].length >= USER_SEARCH_MIN_QUERY
+}
+
 function matches(s: UserSuggestion, q: string): boolean {
-  return s.email.toLowerCase().startsWith(q) || (s.displayName ?? '').toLowerCase().startsWith(q)
+  return [s.memberId, s.email ?? '', s.displayName ?? ''].some((v) => v.toLowerCase().startsWith(q))
 }
 
 function cached(q: string): UserSuggestion[] | null {
   const c = currentCache()
   const exact = c.get(q)
   if (exact) return exact
+  const wantStatic = staticHash(q) !== null
   for (let n = q.length - 1; n >= USER_SEARCH_MIN_QUERY; n--) {
-    const shorter = c.get(q.slice(0, n))
+    const prefix = q.slice(0, n)
+    // An answer for a shorter prefix covers this query only if the hub
+    // would have included the same kinds of account: "railgrid" never returns
+    // static-token accounts, "railgrid:static:02d4b" does.
+    if (wantStatic && !(staticHash(prefix) !== null && searchable(prefix))) continue
+    const shorter = c.get(prefix)
     if (shorter && shorter.length < USER_SEARCH_MAX_RESULTS) return shorter.filter((s) => matches(s, q))
   }
   return null
@@ -64,7 +91,7 @@ export function useUserSuggestions(query: Ref<string>) {
     if (timer !== undefined) clearTimeout(timer)
     const request = ++latest
     const q = value.trim().toLowerCase()
-    if ([...q].length < USER_SEARCH_MIN_QUERY || /\s/.test(q)) {
+    if (!searchable(q)) {
       suggestions.value = []
       return
     }

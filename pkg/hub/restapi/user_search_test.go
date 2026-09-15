@@ -71,8 +71,12 @@ func TestSearchUsers(t *testing.T) {
 		deleting,
 		static,
 	)
-	srv := newTestServer(t, mgr, adminTC("user-alice", "", ""))
-	defer srv.Close()
+	// A fresh server per check: each has its own rate-limit bucket.
+	newServer := func(t *testing.T) *httptest.Server {
+		srv := newTestServer(t, mgr, adminTC("user-alice", "", ""))
+		t.Cleanup(srv.Close)
+		return srv
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -87,14 +91,20 @@ func TestSearchUsers(t *testing.T) {
 		{name: "name prefix", q: "carolina", want: []string{"user-carl"}},
 		// The caller is never suggested to themselves.
 		{name: "self excluded", q: "alice@", want: nil},
-		// Static-token users have no email and are never suggested, even
-		// though their display names share this prefix.
-		{name: "static excluded", q: "railgrid:static:", want: nil},
+		// Static-token users match on their member ID only once the query
+		// carries 5 characters of the hash: the shared "railgrid:static:" part
+		// alone must not list them all.
+		{name: "static prefix alone", q: "railgrid:static:", want: nil},
+		{name: "static 4 hash chars", q: "railgrid:static:47b9", want: nil},
+		{name: "static 5 hash chars", q: "railgrid:static:47b9d", want: []string{"static-user-47b9dce0e91570a1"}},
+		{name: "static short form", q: "STATIC:47B9DCE0", want: []string{"static-user-47b9dce0e91570a1"}},
+		// A bare hash prefix is not a member ID.
+		{name: "bare hash", q: "47b9dce0", want: nil},
 		// Prefix only, not substring.
 		{name: "no substring match", q: "example.com", want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			code, _, items := getUserSearch(t, srv, tc.q)
+			code, _, items := getUserSearch(t, newServer(t), tc.q)
 			if code != http.StatusOK {
 				t.Fatalf("status %d, want 200", code)
 			}
@@ -108,8 +118,20 @@ func TestSearchUsers(t *testing.T) {
 		})
 	}
 
+	srv := newServer(t)
 	if code, _, _ := getUserSearch(t, srv, "caro"); code != http.StatusBadRequest {
 		t.Errorf("4-character query: status %d, want 400", code)
+	}
+
+	// The member ID is what goes in the add box: the email when there is
+	// one, the RBAC identity otherwise.
+	_, _, items := getUserSearch(t, srv, "carol.")
+	if len(items) != 1 || items[0].MemberID != "Carol.Smith@example.com" {
+		t.Errorf("email account suggestion = %+v", items)
+	}
+	_, _, items = getUserSearch(t, srv, "static:47b9d")
+	if len(items) != 1 || items[0].MemberID != "railgrid:static:47b9dce0e91570a1" || items[0].Email != "" {
+		t.Errorf("static account suggestion = %+v", items)
 	}
 }
 

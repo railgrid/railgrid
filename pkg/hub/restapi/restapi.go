@@ -283,7 +283,7 @@ func NewHandler(mgr *Manager) *Handler {
 //	GET    /api/orgs                       list orgs the caller is in
 //	POST   /api/orgs                       create a new Org
 //	GET    /api/users/me                   the caller's own identity
-//	GET    /api/users/search?q=            suggest users by email/name prefix (rate-limited)
+//	GET    /api/users/search?q=            suggest users by email/name/member ID prefix (rate-limited)
 //	DELETE /api/users/me                   soft-delete self (O-8)
 //	POST   /api/users/me/undelete          undelete self (O-8)
 func (h *Handler) RegisterUserOnly(r *mux.Router) {

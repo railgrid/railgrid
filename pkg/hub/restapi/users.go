@@ -32,7 +32,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
-// User search lets any signed-in person discover other accounts' emails, so
+// User search lets any signed-in person discover other accounts' member IDs, so
 // it is deliberately narrow: a query must be a real prefix, only a handful of
 // suggestions come back, and each caller gets a small token bucket. With the
 // portal's debounce and client-side narrowing, typing one address costs one or
@@ -48,6 +48,10 @@ const (
 	// more per userSearchRefill.
 	userSearchBurst  = 10
 	userSearchRefill = 6 * time.Second
+
+	// staticMemberIDPrefix starts every static-token user's member ID (its
+	// RBAC identity, "railgrid:static:<hash>").
+	staticMemberIDPrefix = "railgrid:static:"
 )
 
 // newUserSearchLimiter returns the per-caller bucket for GET /api/users/search.
@@ -62,16 +66,30 @@ func newUserSearchLimiter() *proxy.IPRateLimiter {
 // person and add them, nothing more.
 type UserSuggestion struct {
 	// User is the User CR name; the membership endpoints accept it.
-	User        string `json:"user"`
-	Email       string `json:"email"`
+	User string `json:"user"`
+	// MemberID is what to put in the add-member box: the email, or the
+	// RBAC identity for accounts without one (static tokens).
+	MemberID    string `json:"memberId"`
+	Email       string `json:"email,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
 }
 
-// searchUsers suggests accounts whose email or display name starts with the
-// query (case-insensitive), for the add-member box. Accounts without an email
-// (static tokens) are never suggested: they share their member ID directly,
-// and every one of their display names starts with the same "railgrid:static:".
-// Accounts being deleted and the caller themselves are left out too.
+// staticSearchHash returns the hash part of a query written as a static-token
+// member ID ("railgrid:static:<hash>" or "static:<hash>"), and whether it was
+// one.
+func staticSearchHash(q string) (string, bool) {
+	return strings.CutPrefix(strings.TrimPrefix(q, "railgrid:"), "static:")
+}
+
+// searchUsers suggests accounts for the add-member box (case-insensitive,
+// prefix only):
+//   - accounts with an email, by the start of their email or display name;
+//   - static-token accounts, which have no email, by their member ID — but
+//     only once the query carries UserSearchMinQuery characters of the hash
+//     ("railgrid:static:02d4b" or "static:02d4b"). Every static member ID starts
+//     with the same "railgrid:static:", so matching on less would list them all.
+//
+// Accounts being deleted and the caller themselves are left out.
 func (h *Handler) searchUsers(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.requireUser(w, r)
 	if !ok {
@@ -99,19 +117,29 @@ func (h *Handler) searchUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	staticHash, staticQuery := staticSearchHash(q)
+	staticQuery = staticQuery && utf8.RuneCountInString(staticHash) >= UserSearchMinQuery
 	out := make([]UserSuggestion, 0, UserSearchMaxResults)
 	for i := range list.Items {
 		u := &list.Items[i]
-		if u.Name == user || u.Spec.Email == "" || u.Status.DeletionRequestedAt != nil {
+		if u.Name == user || u.Status.DeletionRequestedAt != nil {
 			continue
 		}
-		if !strings.HasPrefix(strings.ToLower(u.Spec.Email), q) &&
-			!strings.HasPrefix(strings.ToLower(u.Spec.Name), q) {
+		var match bool
+		memberID := u.Spec.Email
+		if memberID == "" {
+			memberID = u.Spec.RBACIdentity
+			match = staticQuery && strings.HasPrefix(strings.ToLower(memberID), staticMemberIDPrefix+staticHash)
+		} else {
+			match = strings.HasPrefix(strings.ToLower(u.Spec.Email), q) ||
+				strings.HasPrefix(strings.ToLower(u.Spec.Name), q)
+		}
+		if !match {
 			continue
 		}
-		out = append(out, UserSuggestion{User: u.Name, Email: u.Spec.Email, DisplayName: u.Spec.Name})
+		out = append(out, UserSuggestion{User: u.Name, MemberID: memberID, Email: u.Spec.Email, DisplayName: u.Spec.Name})
 	}
-	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Email) < strings.ToLower(out[j].Email) })
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].MemberID) < strings.ToLower(out[j].MemberID) })
 	if len(out) > UserSearchMaxResults {
 		out = out[:UserSearchMaxResults]
 	}
